@@ -57,6 +57,9 @@ private Q_SLOTS:
     void newTab();
     void newWindow();
     void newPrivateWindow();
+    void showTabOverview();
+    void showTabSearch();
+    void showQuickSwitch();
     void openLocation();
     void openFile();
     void closeWindow();

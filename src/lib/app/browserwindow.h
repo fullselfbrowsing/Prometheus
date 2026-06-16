@@ -147,6 +147,9 @@ public Q_SLOTS:
     void showWebInspector();
     void toggleWebInspector();
     void showHistoryManager();
+    void showTabOverview();
+    void showTabSearch();
+    void showQuickSwitch();
 
     void toggleShowMenubar();
     void toggleShowStatusBar();

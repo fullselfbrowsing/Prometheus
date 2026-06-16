@@ -57,6 +57,7 @@
 #include "downloadsbutton.h"
 #include "tabmodel.h"
 #include "tabmrumodel.h"
+#include "tabsearchpopup.h"
 
 #include <algorithm>
 
@@ -84,6 +85,27 @@
 #endif
 
 static const int savedWindowVersion = 2;
+
+namespace {
+constexpr int TabSearchPopupEdgeMargin = 8;
+
+void showTabSearchPopup(BrowserWindow *window, TabSearchPopup::Mode mode)
+{
+    if (!window || !window->navigationBar()) {
+        return;
+    }
+
+    auto *popup = new TabSearchPopup(window, window);
+    popup->setAttribute(Qt::WA_DeleteOnClose);
+    popup->setMode(mode);
+    popup->adjustSize();
+
+    QWidget *anchor = window->navigationBar();
+    const QSize popupSize = popup->sizeHint();
+    const int x = qMax(0, anchor->width() - popupSize.width() - TabSearchPopupEdgeMargin);
+    popup->popup(anchor->mapToGlobal(QPoint(x, anchor->height())));
+}
+}
 
 BrowserWindow::SavedWindow::SavedWindow()
 = default;
@@ -827,6 +849,21 @@ void BrowserWindow::loadAddress(const QUrl &url)
 void BrowserWindow::showHistoryManager()
 {
     mApp->browsingLibrary()->showHistory(this);
+}
+
+void BrowserWindow::showTabOverview()
+{
+    showTabSearchPopup(this, TabSearchPopup::OverviewMode);
+}
+
+void BrowserWindow::showTabSearch()
+{
+    showTabSearchPopup(this, TabSearchPopup::SearchMode);
+}
+
+void BrowserWindow::showQuickSwitch()
+{
+    showTabSearchPopup(this, TabSearchPopup::QuickSwitchMode);
 }
 
 void BrowserWindow::showSource(WebView *view)

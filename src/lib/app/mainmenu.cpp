@@ -78,6 +78,9 @@ void MainMenu::initSuperMenu(QMenu* superMenu) const
     superMenu->addAction(m_actions[QSL("File/NewTab")]);
     superMenu->addAction(m_actions[QSL("File/NewWindow")]);
     superMenu->addAction(m_actions[QSL("File/NewPrivateWindow")]);
+    superMenu->addAction(m_actions[QSL("File/TabOverview")]);
+    superMenu->addAction(m_actions[QSL("File/SearchTabs")]);
+    superMenu->addAction(m_actions[QSL("File/QuickSwitchTabs")]);
     superMenu->addAction(m_actions[QSL("File/OpenFile")]);
     if (mApp->sessionManager()) {
         superMenu->addSeparator();
@@ -151,6 +154,21 @@ void MainMenu::newWindow()
 void MainMenu::newPrivateWindow()
 {
     mApp->startPrivateBrowsing();
+}
+
+void MainMenu::showTabOverview()
+{
+    callSlot("showTabOverview");
+}
+
+void MainMenu::showTabSearch()
+{
+    callSlot("showTabSearch");
+}
+
+void MainMenu::showQuickSwitch()
+{
+    callSlot("showQuickSwitch");
 }
 
 void MainMenu::openLocation()
@@ -492,6 +510,9 @@ void MainMenu::init()
     ADD_ACTION("File/NewTab", m_menuFile, IconProvider::newTabIcon(), tr("New Tab"), SLOT(newTab()), "Ctrl+T");
     ADD_ACTION("File/NewWindow", m_menuFile, IconProvider::newWindowIcon(), tr("&New Window"), SLOT(newWindow()), "Ctrl+N");
     ADD_ACTION("File/NewPrivateWindow", m_menuFile, IconProvider::privateBrowsingIcon(), tr("New &Private Window"), SLOT(newPrivateWindow()), "Ctrl+Shift+P");
+    ADD_ACTION("File/TabOverview", m_menuFile, QIcon::fromTheme(QSL("view-list-icons"), QIcon(QSL(":icons/menu/tab.svg"))), tr("Tab Overview"), SLOT(showTabOverview()), "");
+    ADD_ACTION("File/SearchTabs", m_menuFile, QIcon::fromTheme(QSL("edit-find"), QIcon(QSL(":icons/menu/search-icon.svg"))), tr("Search Tabs"), SLOT(showTabSearch()), "");
+    ADD_ACTION("File/QuickSwitchTabs", m_menuFile, QIcon::fromTheme(QSL("go-jump"), QIcon(QSL(":icons/menu/tab.svg"))), tr("Quick Switch Tabs"), SLOT(showQuickSwitch()), "Ctrl+Shift+A");
     ADD_ACTION("File/OpenLocation", m_menuFile, QIcon::fromTheme(QSL("document-open-remote")), tr("Open Location"), SLOT(openLocation()), "Ctrl+L");
     ADD_ACTION("File/OpenFile", m_menuFile, QIcon::fromTheme(QSL("document-open")), tr("Open &File..."), SLOT(openFile()), "Ctrl+O");
     ADD_ACTION("File/CloseWindow", m_menuFile, QIcon::fromTheme(QSL("window-close")), tr("Close Window"), SLOT(closeWindow()), "Ctrl+Shift+W");
