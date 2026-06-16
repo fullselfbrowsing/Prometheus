@@ -24,9 +24,8 @@
 #include "tabwidget.h"
 #include "webtab.h"
 
-#include <QFile>
-#include <QFileInfo>
 #include <QHostAddress>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTcpSocket>
@@ -74,6 +73,25 @@ QJsonObject command(const QString &id, const QString &tool, const QJsonObject &p
         {QSL("tool"), tool},
         {QSL("params"), params}
     };
+}
+
+QJsonObject tabFromListTabsResponse(const QJsonObject &response, int windowIndex, int tabIndex)
+{
+    const QJsonArray windows = response.value(QSL("result")).toObject().value(QSL("windows")).toArray();
+    for (const QJsonValue &windowValue : windows) {
+        const QJsonObject window = windowValue.toObject();
+        if (window.value(QSL("windowIndex")).toInt(-1) != windowIndex) {
+            continue;
+        }
+        const QJsonArray tabs = window.value(QSL("tabs")).toArray();
+        for (const QJsonValue &tabValue : tabs) {
+            const QJsonObject tab = tabValue.toObject();
+            if (tab.value(QSL("tabIndex")).toInt(-1) == tabIndex) {
+                return tab;
+            }
+        }
+    }
+    return {};
 }
 
 } // namespace
@@ -260,30 +278,40 @@ void AgentCommandRouterTest::successfulActionDoesNotLeaveActiveAutomation()
 
 void AgentCommandRouterTest::listTabsContractIncludesGroupAndStateFields()
 {
-    const QFileInfo testSource(QString::fromLocal8Bit(__FILE__));
-    QFile routerSource(testSource.dir().filePath(QSL("../src/lib/agent/agentcommandrouter.cpp")));
-    QVERIFY2(routerSource.open(QIODevice::ReadOnly | QIODevice::Text), qPrintable(routerSource.fileName()));
+    BrowserWindow *window = mApp->createWindow(Qz::BW_NewWindow);
+    QTRY_VERIFY(window->tabWidget()->count() > 0);
+    const int windowIndex = mApp->windows().indexOf(window);
+    QVERIFY(windowIndex >= 0);
 
-    const QString source = QString::fromUtf8(routerSource.readAll());
-    const QStringList requiredTokens = {
-        QSL("TabGroupIdRole"),
-        QSL("TabGroupNameRole"),
-        QSL("TabGroupColorRole"),
-        QSL("TabGroupCollapsedRole"),
-        QSL("groupId"),
-        QSL("groupName"),
-        QSL("groupColor"),
-        QSL("groupCollapsed"),
-        QSL("owner"),
-        QSL("activeAutomation"),
-        QSL("supervisionActive"),
-        QSL("health")
-    };
+    WebTab *tab = window->tabWidget()->webTab(0);
+    QVERIFY(tab);
+    const QString groupId = window->tabWidget()->createTabGroup(QSL("Agent Reads"), QSL("#3a7bd5"));
+    QVERIFY(!groupId.isEmpty());
+    QVERIFY(window->tabWidget()->setTabGroup(tab, groupId));
 
-    for (const QString &token : requiredTokens) {
-        const QByteArray message = QByteArray("AgentCommandRouter::tabInfo must expose ") + token.toUtf8();
-        QVERIFY2(source.contains(token), message.constData());
-    }
+    AgentCommandRouter router;
+    const QJsonObject ownerResponse = router.routeForSession(command(QSL("own-list-tab"),
+                                                                     QSL("activate_tab"),
+                                                                     QJsonObject{{QSL("client"), QSL("list-tabs-client")}, {QSL("windowIndex"), windowIndex}, {QSL("tabIndex"), 0}}),
+                                                             QSL("list-tabs-session"));
+    QVERIFY2(ownerResponse.value(QSL("ok")).toBool(), qPrintable(QString::fromUtf8(QJsonDocument(ownerResponse).toJson(QJsonDocument::Compact))));
+    const QString agentId = ownerResponse.value(QSL("result")).toObject().value(QSL("agentId")).toString();
+
+    const QJsonObject response = router.routeForSession(command(QSL("list-behavior"), QSL("list_tabs")), QSL("list-tabs-session"));
+    QVERIFY2(response.value(QSL("ok")).toBool(), qPrintable(QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Compact))));
+    const QJsonObject listedTab = tabFromListTabsResponse(response, windowIndex, 0);
+    QVERIFY2(!listedTab.isEmpty(), qPrintable(QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Compact))));
+
+    QCOMPARE(listedTab.value(QSL("groupId")).toString(), groupId);
+    QCOMPARE(listedTab.value(QSL("groupName")).toString(), QSL("Agent Reads"));
+    QCOMPARE(listedTab.value(QSL("groupColor")).toString(), QSL("#3a7bd5"));
+    QCOMPARE(listedTab.value(QSL("groupCollapsed")).toBool(), false);
+    QCOMPARE(listedTab.value(QSL("owner")).toString(), agentId);
+    QCOMPARE(listedTab.value(QSL("activeAutomation")).toBool(), false);
+    QCOMPARE(listedTab.value(QSL("supervisionActive")).toBool(), false);
+    QCOMPARE(listedTab.value(QSL("health")).toString(), QSL("ok"));
+
+    delete window;
 }
 
 void AgentCommandRouterTest::unsupportedGroupMutationToolsReturnCompatibilityError()

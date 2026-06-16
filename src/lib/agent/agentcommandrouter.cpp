@@ -572,11 +572,6 @@ QJsonObject AgentCommandRouter::tabInfo(BrowserWindow* window, int windowIndex, 
     info.insert(QSL("groupName"), modelIndex.data(TabModel::TabGroupNameRole).toString());
     info.insert(QSL("groupColor"), modelIndex.data(TabModel::TabGroupColorRole).toString());
     info.insert(QSL("groupCollapsed"), modelIndex.data(TabModel::TabGroupCollapsedRole).toBool());
-    info.insert(QSL("owner"), modelIndex.data(TabModel::TabOwnerRole).toString());
-    info.insert(QSL("activeAutomation"), modelIndex.data(TabModel::ActiveAutomationRole).toBool());
-    info.insert(QSL("supervisionActive"), modelIndex.data(TabModel::SupervisionRole).toBool());
-    const QString health = modelIndex.data(TabModel::TabHealthRole).toString();
-    info.insert(QSL("health"), health.isEmpty() ? QSL("ok") : health);
     return info;
 }
 
