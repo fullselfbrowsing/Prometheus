@@ -4,6 +4,8 @@ set(falkon_autotests_SRCS )
 
 qt_add_resources(falkon_autotests_SRCS autotests.qrc)
 
+include_directories(${CMAKE_SOURCE_DIR}/src/lib/agent)
+
 macro(falkon_tests)
     foreach(_testname ${ARGN})
         add_executable(${_testname} ${_testname}.cpp ${_testname}.h ${falkon_autotests_SRCS})
@@ -19,6 +21,7 @@ falkon_tests(
     cookiestest
     adblocktest
     updatertest
+    agentcommandroutertest
     locationbartest
     webviewtest
     webtabtest
