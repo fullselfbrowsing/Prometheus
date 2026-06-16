@@ -152,7 +152,7 @@ Plans:
 - [x] 07-06-PLAN.md — Wire tab overview/search/quick-switch into chrome and menus.
 - [x] 07-07-PLAN.md — Add persistent native tab group metadata and model roles.
 - [x] 07-08-PLAN.md — Complete group actions, advanced tab operations, and MCP/native tab reads.
-- [ ] 07-09-PLAN.md — Wire native tab group roles into compact chrome and grouped overview/search.
+- [x] 07-09-PLAN.md — Wire native tab group roles into compact chrome and grouped overview/search.
 - [ ] 07-10-PLAN.md — Add compact-tab smoke validation and visual verification checkpoint.
 
 ### Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix

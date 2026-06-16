@@ -80,7 +80,7 @@
 - [x] **UX-03**: Browser supports advanced tab management: tab groups, tab overview/search, reorder, duplicate, detach, close/restore, unload/suspend, and quick switch.
 - [x] **UX-04**: Browser exposes tab group and tab state through native agent/MCP reads without letting agents bypass tab ownership or supervision boundaries.
 - [x] **UX-05**: Compact chrome preserves visible agent ownership, active automation state, supervision state, tab health, and secure-origin cues without overwhelming the browser chrome.
-- [ ] **UX-06**: Compact chrome and tab management pass visual checks across narrow, standard, and wide desktop window sizes with no text overlap or layout shift.
+- [x] **UX-06**: Compact chrome and tab management pass visual checks across narrow, standard, and wide desktop window sizes with no text overlap or layout shift.
 
 ### Icon and Theme System
 

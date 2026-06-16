@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 07-08-PLAN.md
-last_updated: "2026-06-16T20:38:40.177Z"
+stopped_at: Completed 07-09-PLAN.md
+last_updated: "2026-06-16T20:52:10.483Z"
 last_activity: 2026-06-16
 progress:
   total_phases: 9
   completed_phases: 6
   total_plans: 36
-  completed_plans: 34
-  percent: 94
+  completed_plans: 35
+  percent: 97
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-16)
 ## Current Position
 
 Phase: 7 of 9 (Compact Safari-style Browser Chrome and Advanced Tab Management)
-Plan: 8 of 10 in current phase
+Plan: 9 of 10 in current phase
 Status: Ready to execute
 Last activity: 2026-06-16
 
@@ -64,6 +64,7 @@ Progress: [█████████░] 92%
 | Phase 07 P06 | 7min | 2 tasks | 7 files |
 | Phase 07 P07 | 14min | 2 tasks | 10 files |
 | Phase 07 P08 | 12min | 2 tasks | 10 files |
+| Phase 07 P09 | 9min | 2 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -103,6 +104,9 @@ Recent decisions affecting current work:
 - [Phase 07]: Keep group mutation MCP/native tool names as typed compatibility errors while exposing group state through list_tabs.
 - [Phase 07]: Use disabled state rows and confirmation-body summaries to show owner/supervision state before destructive or group-moving UI actions.
 - [Phase 07]: Leave group registry metadata intact when closing a group so Recently Closed Tabs can restore group membership.
+- [Phase 07]: Use active tab, then TabMruModel, then source order as the representative precedence for collapsed groups.
+- [Phase 07]: Use an internal ungrouped filter sentinel while keeping user-facing copy as Ungrouped.
+- [Phase 07]: Group only Tab Overview into section order; Search Tabs and quick switch preserve source/MRU ordering semantics.
 
 ### Roadmap Evolution
 
@@ -135,6 +139,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-16T20:38:40.174Z
-Stopped at: Completed 07-08-PLAN.md
+Last session: 2026-06-16T20:52:10.479Z
+Stopped at: Completed 07-09-PLAN.md
 Resume file: None
