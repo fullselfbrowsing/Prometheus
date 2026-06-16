@@ -1,7 +1,7 @@
 ---
 phase: 07
 slug: compact-safari-style-browser-chrome-and-advanced-tab-managem
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-06-16
@@ -166,4 +166,4 @@ Visual checks must cover compact/separate layout, title-and-icon/favicon-only di
 - [ ] Dimension 5 Spacing: PASS
 - [ ] Dimension 6 Registry Safety: PASS
 
-**Approval:** pending
+**Approval:** approved
