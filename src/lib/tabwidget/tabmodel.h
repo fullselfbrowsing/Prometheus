@@ -25,6 +25,7 @@
 
 class WebTab;
 class BrowserWindow;
+class TabGroupModel;
 
 class FALKON_EXPORT TabModelMimeData : public QMimeData
 {
@@ -64,13 +65,19 @@ public:
         TabOwnerRole = Qt::UserRole + 11,
         ActiveAutomationRole = Qt::UserRole + 12,
         SupervisionRole = Qt::UserRole + 13,
-        TabHealthRole = Qt::UserRole + 14
+        TabHealthRole = Qt::UserRole + 14,
+        TabGroupIdRole = Qt::UserRole + 15,
+        TabGroupNameRole = Qt::UserRole + 16,
+        TabGroupColorRole = Qt::UserRole + 17,
+        TabGroupCollapsedRole = Qt::UserRole + 18
     };
 
     explicit TabModel(BrowserWindow *window, QObject *parent = nullptr);
 
     QModelIndex tabIndex(WebTab *tab) const;
     WebTab *tab(const QModelIndex &index) const;
+    TabGroupModel *tabGroupModel() const;
+    void setTabGroupModel(TabGroupModel *model);
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     Qt::ItemFlags flags(const QModelIndex &index) const override;
@@ -88,7 +95,10 @@ private:
     void tabRemoved(int index);
     void tabMoved(int from, int to);
     void tabChromeStateChanged(int windowIndex, int tabIndex);
+    void tabGroupChanged(WebTab *tab);
+    void tabGroupMetadataChanged(const QString &groupId);
 
     BrowserWindow *m_window;
+    QPointer<TabGroupModel> m_tabGroupModel;
     QVector<WebTab*> m_tabs;
 };

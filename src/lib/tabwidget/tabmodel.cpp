@@ -18,6 +18,7 @@
 #include "tabmodel.h"
 #include "agentcommandrouter.h"
 #include "mainapplication.h"
+#include "tabgroupmodel.h"
 #include "webtab.h"
 #include "tabwidget.h"
 #include "browserwindow.h"
@@ -76,6 +77,35 @@ QModelIndex TabModel::tabIndex(WebTab *tab) const
 WebTab *TabModel::tab(const QModelIndex &index) const
 {
     return m_tabs.value(index.row());
+}
+
+TabGroupModel *TabModel::tabGroupModel() const
+{
+    return m_tabGroupModel;
+}
+
+void TabModel::setTabGroupModel(TabGroupModel *model)
+{
+    if (m_tabGroupModel == model) {
+        return;
+    }
+
+    if (m_tabGroupModel) {
+        disconnect(m_tabGroupModel, nullptr, this, nullptr);
+    }
+
+    m_tabGroupModel = model;
+
+    if (m_tabGroupModel) {
+        connect(m_tabGroupModel, &TabGroupModel::tabGroupChanged, this, &TabModel::tabGroupChanged);
+        connect(m_tabGroupModel, &TabGroupModel::groupChanged, this, &TabModel::tabGroupMetadataChanged);
+        connect(m_tabGroupModel, &TabGroupModel::groupRemoved, this, &TabModel::tabGroupMetadataChanged);
+    }
+
+    if (!m_tabs.isEmpty()) {
+        Q_EMIT dataChanged(index(0, 0), index(m_tabs.size() - 1, 0),
+                           {TabGroupIdRole, TabGroupNameRole, TabGroupColorRole, TabGroupCollapsedRole});
+    }
 }
 
 int TabModel::rowCount(const QModelIndex &parent) const
@@ -160,6 +190,29 @@ QVariant TabModel::data(const QModelIndex &index, int role) const
         }
         QString health = chromeState.value(QSL("health")).toString(QSL("ok"));
         return health.isEmpty() ? QSL("ok") : health;
+    }
+
+    case TabGroupIdRole:
+    case TabGroupNameRole:
+    case TabGroupColorRole:
+    case TabGroupCollapsedRole: {
+        if (!m_tabGroupModel) {
+            return role == TabGroupCollapsedRole ? QVariant(false) : QVariant(QString());
+        }
+        const QString groupId = m_tabGroupModel->tabGroupId(t);
+        if (role == TabGroupIdRole) {
+            return groupId;
+        }
+        if (groupId.isEmpty()) {
+            return role == TabGroupCollapsedRole ? QVariant(false) : QVariant(QString());
+        }
+        if (role == TabGroupNameRole) {
+            return m_tabGroupModel->groupName(groupId);
+        }
+        if (role == TabGroupColorRole) {
+            return m_tabGroupModel->groupColor(groupId);
+        }
+        return m_tabGroupModel->isGroupCollapsed(groupId);
     }
 
     default:
@@ -308,4 +361,28 @@ void TabModel::tabChromeStateChanged(int windowIndex, int tabIndex)
 
     const QModelIndex idx = index(tabIndex, 0);
     Q_EMIT dataChanged(idx, idx, {TabOwnerRole, ActiveAutomationRole, SupervisionRole, TabHealthRole});
+}
+
+void TabModel::tabGroupChanged(WebTab *tab)
+{
+    const QModelIndex idx = tabIndex(tab);
+    if (!idx.isValid()) {
+        return;
+    }
+    Q_EMIT dataChanged(idx, idx, {TabGroupIdRole, TabGroupNameRole, TabGroupColorRole, TabGroupCollapsedRole});
+}
+
+void TabModel::tabGroupMetadataChanged(const QString &groupId)
+{
+    if (groupId.isEmpty() || !m_tabGroupModel) {
+        return;
+    }
+
+    for (int row = 0; row < m_tabs.size(); ++row) {
+        if (m_tabGroupModel->tabGroupId(m_tabs.at(row)) != groupId) {
+            continue;
+        }
+        const QModelIndex idx = index(row, 0);
+        Q_EMIT dataChanged(idx, idx, {TabGroupNameRole, TabGroupColorRole, TabGroupCollapsedRole});
+    }
 }

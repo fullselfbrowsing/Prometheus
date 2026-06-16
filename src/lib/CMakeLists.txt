@@ -229,6 +229,7 @@ set(SRCS ${SRCS}
     tabwidget/compacttabdelegate.cpp
     tabwidget/compacttabfiltermodel.cpp
     tabwidget/compacttabstrip.cpp
+    tabwidget/tabgroupmodel.cpp
     tabwidget/tabsearchdelegate.cpp
     tabwidget/tabsearchfiltermodel.cpp
     tabwidget/tabsearchpopup.cpp
@@ -474,6 +475,7 @@ set(SRCS ${SRCS}
     tabwidget/compacttabfiltermodel.h
     tabwidget/compacttabstrip.h
     tabwidget/combotabbar.h
+    tabwidget/tabgroupmodel.h
     tabwidget/tabsearchdelegate.h
     tabwidget/tabsearchfiltermodel.h
     tabwidget/tabsearchpopup.h
