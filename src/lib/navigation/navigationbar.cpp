@@ -37,6 +37,7 @@
 #include <QTimer>
 #include <QSplitter>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QStackedWidget>
 #include <QWebEngineHistory>
 #include <QMouseEvent>
@@ -127,6 +128,26 @@ NavigationBar::NavigationBar(BrowserWindow* window)
     buttonAddTab->setAutoRaise(true);
     buttonAddTab->setFocusPolicy(Qt::NoFocus);
 
+    m_buttonTabOverview = new ToolButton(this);
+    m_buttonTabOverview->setObjectName(QSL("button-taboverview"));
+    m_buttonTabOverview->setIcon(QIcon::fromTheme(QSL("view-list-icons"), QIcon(QSL(":icons/menu/tab.svg"))));
+    m_buttonTabOverview->setToolTip(tr("Tab Overview"));
+    m_buttonTabOverview->setAccessibleName(tr("Tab Overview"));
+    m_buttonTabOverview->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    m_buttonTabOverview->setToolbarButtonLook(true);
+    m_buttonTabOverview->setAutoRaise(true);
+    m_buttonTabOverview->setFocusPolicy(Qt::NoFocus);
+
+    m_buttonSearchTabs = new ToolButton(this);
+    m_buttonSearchTabs->setObjectName(QSL("button-searchtabs"));
+    m_buttonSearchTabs->setIcon(QIcon::fromTheme(QSL("edit-find"), QIcon(QSL(":icons/menu/search-icon.svg"))));
+    m_buttonSearchTabs->setToolTip(tr("Search Tabs"));
+    m_buttonSearchTabs->setAccessibleName(tr("Search Tabs"));
+    m_buttonSearchTabs->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    m_buttonSearchTabs->setToolbarButtonLook(true);
+    m_buttonSearchTabs->setAutoRaise(true);
+    m_buttonSearchTabs->setFocusPolicy(Qt::NoFocus);
+
     m_menuBack = new Menu(this);
     m_menuBack->setCloseOnMiddleClick(true);
     m_buttonBack->setMenu(m_menuBack);
@@ -196,6 +217,8 @@ NavigationBar::NavigationBar(BrowserWindow* window)
     connect(buttonHome, &ToolButton::controlClicked, m_window, &BrowserWindow::goHomeInNewTab);
     connect(buttonAddTab, &QAbstractButton::clicked, m_window, &BrowserWindow::addTab);
     connect(buttonAddTab, &ToolButton::middleMouseClicked, m_window->tabWidget(), &TabWidget::addTabFromClipboard);
+    connect(m_buttonTabOverview, &QAbstractButton::clicked, m_window, &BrowserWindow::showTabOverview);
+    connect(m_buttonSearchTabs, &QAbstractButton::clicked, m_window, &BrowserWindow::showTabSearch);
     connect(m_exitFullscreen, &QAbstractButton::clicked, m_window, &BrowserWindow::toggleFullScreen);
 
     addWidget(backNextWidget, QSL("button-backforward"), tr("Back and Forward buttons"));
@@ -204,6 +227,8 @@ NavigationBar::NavigationBar(BrowserWindow* window)
     addWidget(buttonAddTab, QSL("button-addtab"), tr("Add tab button"));
     addWidget(m_compactTabStrip, QSL("compact-tabs"), tr("Compact tabs"));
     addWidget(m_navigationSplitter, QSL("locationbar"), tr("Address and Search bar"));
+    addWidget(m_buttonTabOverview, QSL("button-taboverview"), tr("Tab Overview"));
+    addWidget(m_buttonSearchTabs, QSL("button-searchtabs"), tr("Search Tabs"));
     addWidget(buttonTools, QSL("button-tools"), tr("Tools button"));
     addWidget(m_exitFullscreen, QSL("button-exitfullscreen"), tr("Exit Fullscreen button"));
 
@@ -553,6 +578,8 @@ void NavigationBar::loadSettings()
             QSL("button-addtab"),
             QSL("compact-tabs"),
             QSL("locationbar"),
+            QSL("button-taboverview"),
+            QSL("button-searchtabs"),
             QSL("button-tools")
         };
         m_searchLine->setVisible(false);
@@ -565,6 +592,8 @@ void NavigationBar::loadSettings()
         QSL("button-reloadstop"),
         QSL("button-home"),
         QSL("locationbar"),
+        QSL("button-taboverview"),
+        QSL("button-searchtabs"),
         QSL("button-downloads"),
         QSL("adblock-icon"),
         QSL("button-tools")

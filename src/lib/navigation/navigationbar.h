@@ -112,6 +112,8 @@ private:
     ToolButton* m_buttonBack;
     ToolButton* m_buttonForward;
     ReloadStopButton* m_reloadStop;
+    ToolButton* m_buttonTabOverview;
+    ToolButton* m_buttonSearchTabs;
     Menu *m_menuTools;
     ToolButton* m_supMenu;
     ToolButton *m_exitFullscreen;
