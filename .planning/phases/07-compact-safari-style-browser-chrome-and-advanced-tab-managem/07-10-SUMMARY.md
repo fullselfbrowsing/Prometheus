@@ -1,7 +1,7 @@
 ---
 phase: 07-compact-safari-style-browser-chrome-and-advanced-tab-managem
 plan: "10"
-status: blocked
+status: complete
 subsystem: validation
 tags: [qt-widgets, compact-chrome, tab-management, smoke-tests, visual-verification]
 
@@ -11,14 +11,14 @@ requires:
 provides:
   - "Compact tab static and live list_tabs smoke validation"
   - "Release validation hook for compact tab smoke"
-  - "Final Phase 07 verification record with human visual checkpoint pending"
+  - "Final Phase 07 verification record with human visual approval"
 affects: [phase-07-verification, release-validation, gsd-verify-work]
 
 tech-stack:
   added: []
   patterns:
     - "Shell smoke scripts run static rg checks before optional live binary checks."
-    - "Verification artifacts distinguish automated pass state from human visual approval."
+    - "Verification artifacts record both automated pass state and human visual approval."
 
 key-files:
   created:
@@ -30,43 +30,45 @@ key-files:
 
 key-decisions:
   - "Use `falkon/tools/fsb-baseline/...` for validation scripts because the plan's root `tools/...` path does not exist in this workspace."
-  - "Do not auto-approve Task 3; record manual visual checks as NOT RUN - HUMAN PENDING until a human verifies the rendered app."
+  - "Do not auto-approve Task 3; record manual visual checks only after explicit user approval."
 
 patterns-established:
   - "Compact tab smoke validates static compact chrome classes plus live list_tabs owner, automation, supervision, health, and group fields."
-  - "Blocked verification summaries should not advance STATE.md, ROADMAP.md, or requirement completion."
+  - "Visual verification summaries should distinguish original automated evidence from later human approval."
 
-requirements-completed: []
+requirements-completed: [UX-01, UX-02, UX-03, UX-04, UX-05, UX-06]
 requirements-addressed: [UX-01, UX-02, UX-03, UX-04, UX-05, UX-06]
 
 duration: 6min
 started: 2026-06-16T20:55:40Z
-blocked: 2026-06-16T21:01:10Z
+automated_completed: 2026-06-16T21:01:10Z
+completed: 2026-06-16T21:05:29Z
 ---
 
 # Phase 07 Plan 10: Compact Tab Smoke and Verification Checkpoint Summary
 
-**Compact tab validation is automated and release-gated; final Phase 07 completion is blocked on human visual verification of rendered chrome.**
+**Compact tab validation is automated, release-gated, and visually approved.**
 
 ## Performance
 
 - **Duration:** 6 min
 - **Started:** 2026-06-16T20:55:40Z
-- **Blocked:** 2026-06-16T21:01:10Z
-- **Tasks completed:** 2/3
+- **Automated checks completed:** 2026-06-16T21:01:10Z
+- **Human approved:** 2026-06-16T21:05:29Z
+- **Tasks completed:** 3/3
 - **Files modified:** 4
 
 ## Accomplishments
 
 - Added `falkon/tools/fsb-baseline/smoke-compact-tabs.sh` with static compact chrome checks and live native command checks when a browser binary is available.
 - Updated `falkon/tools/fsb-baseline/release-validate.sh` to syntax-check and run compact smoke after agent/MCP smoke when `$BINARY` is executable.
-- Created `07-VERIFICATION.md` with automated evidence, smoke results, path correction, and every required manual visual scenario marked `NOT RUN - HUMAN PENDING`.
+- Created `07-VERIFICATION.md` with automated evidence, smoke results, path correction, and every required manual visual scenario marked `PASS - HUMAN APPROVED`.
 
 ## Task Commits
 
 1. **Task 1: Add compact tab smoke script and release validation hook** - `falkon@1e4bd4e76` (feat)
 2. **Task 2: Create final verification record** - `5701268` (docs)
-3. **Task 3: Human visual verification checkpoint** - BLOCKED, no approval available
+3. **Task 3: Human visual verification checkpoint** - approved by user on 2026-06-16 16:05:29 CDT
 
 ## Verification
 
@@ -81,19 +83,19 @@ blocked: 2026-06-16T21:01:10Z
 | `cmake --build falkon/build/fsb-baseline --target help` | PASS |
 | `falkon/tools/fsb-baseline/smoke-compact-tabs.sh --binary falkon/build/fsb-baseline/bin/prometheus.app/Contents/MacOS/prometheus --port 17887` | PASS |
 | `cmake --build falkon/build/fsb-baseline --target FalkonPrivate -j2` | NOT RUN - no C++/CMake source changed in this plan |
+| Human visual checklist in `07-VERIFICATION.md` | PASS - user approved |
 
 ## Files Created/Modified
 
 - `falkon/tools/fsb-baseline/smoke-compact-tabs.sh` - Adds compact tab static checks and live `list_tabs` validation for owner, active automation, supervision, health, and group fields.
 - `falkon/tools/fsb-baseline/release-validate.sh` - Adds compact smoke syntax check and release validation invocation.
-- `.planning/phases/07-compact-safari-style-browser-chrome-and-advanced-tab-managem/07-VERIFICATION.md` - Records automated checks, smoke results, and pending human visual checklist.
-- `.planning/phases/07-compact-safari-style-browser-chrome-and-advanced-tab-managem/07-10-SUMMARY.md` - Records blocked execution state.
+- `.planning/phases/07-compact-safari-style-browser-chrome-and-advanced-tab-managem/07-VERIFICATION.md` - Records automated checks, smoke results, and approved human visual checklist.
+- `.planning/phases/07-compact-safari-style-browser-chrome-and-advanced-tab-managem/07-10-SUMMARY.md` - Records completed execution state.
 
 ## Decisions Made
 
 - Used the actual nested path `falkon/tools/fsb-baseline/...` instead of the plan's incorrect root `tools/fsb-baseline/...` references.
-- Treated live GUI review as a hard human checkpoint and did not fabricate approval despite `workflow.auto_advance` being enabled.
-- Left `STATE.md`, `ROADMAP.md`, and `REQUIREMENTS.md` unchanged because the plan is blocked, not complete.
+- Treated live GUI review as a hard human checkpoint and recorded approval only after the user replied `approved`.
 
 ## Deviations from Plan
 
@@ -114,7 +116,7 @@ blocked: 2026-06-16T21:01:10Z
 
 ## Issues Encountered
 
-- Task 3 is blocked because human visual approval is not available in this execution turn.
+- Task 3 initially blocked because human visual approval was not available during automated execution; the user later approved the checklist.
 - The nested `falkon/tools/fsb-baseline` scripts were pre-existing untracked files in the nested repo. Only the two plan-owned paths were staged and committed.
 
 ## Known Stubs
@@ -131,7 +133,7 @@ None. The smoke script uses the existing local Prometheus agent command server a
 
 ## Human Visual Checkpoint
 
-Remaining required action: launch the built Prometheus app and complete the manual visual checklist in `07-VERIFICATION.md`.
+Completed: user approved the manual visual checklist in `07-VERIFICATION.md` on 2026-06-16 16:05:29 CDT.
 
 Minimum approval criteria:
 
@@ -142,7 +144,7 @@ Minimum approval criteria:
 
 ## Next Phase Readiness
 
-Not ready for Phase 08 until Task 3 human visual verification is approved and appended to `07-VERIFICATION.md`.
+Ready for Phase 7 post-execution gates: code review, verifier, and UI review.
 
 ## Self-Check: PASSED
 
@@ -151,7 +153,8 @@ Not ready for Phase 08 until Task 3 human visual verification is approved and ap
 - Verified `07-VERIFICATION.md` exists.
 - Verified `07-10-SUMMARY.md` exists.
 - Verified task commits `falkon@1e4bd4e76` and `5701268` exist.
+- Verified user approval was recorded in `07-VERIFICATION.md`.
 
 ---
 *Phase: 07-compact-safari-style-browser-chrome-and-advanced-tab-managem*
-*Blocked: 2026-06-16*
+*Completed: 2026-06-16*
