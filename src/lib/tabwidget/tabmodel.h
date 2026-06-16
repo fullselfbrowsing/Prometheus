@@ -60,7 +60,11 @@ public:
         LoadingRole = Qt::UserRole + 7,
         AudioPlayingRole = Qt::UserRole + 8,
         AudioMutedRole = Qt::UserRole + 9,
-        BackgroundActivityRole = Qt::UserRole + 10
+        BackgroundActivityRole = Qt::UserRole + 10,
+        TabOwnerRole = Qt::UserRole + 11,
+        ActiveAutomationRole = Qt::UserRole + 12,
+        SupervisionRole = Qt::UserRole + 13,
+        TabHealthRole = Qt::UserRole + 14
     };
 
     explicit TabModel(BrowserWindow *window, QObject *parent = nullptr);
@@ -83,6 +87,7 @@ private:
     void tabInserted(int index);
     void tabRemoved(int index);
     void tabMoved(int from, int to);
+    void tabChromeStateChanged(int windowIndex, int tabIndex);
 
     BrowserWindow *m_window;
     QVector<WebTab*> m_tabs;

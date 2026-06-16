@@ -16,9 +16,13 @@
 * along with this program.  If not, see <http://www.gnu.org/licenses/>.
 * ============================================================ */
 #include "tabmodel.h"
+#include "agentcommandrouter.h"
+#include "mainapplication.h"
 #include "webtab.h"
 #include "tabwidget.h"
 #include "browserwindow.h"
+
+#include <QJsonObject>
 
 // TabModelMimeData
 TabModelMimeData::TabModelMimeData()
@@ -134,6 +138,30 @@ QVariant TabModel::data(const QModelIndex &index, int role) const
     case BackgroundActivityRole:
         return t->backgroundActivity();
 
+    case TabOwnerRole:
+    case ActiveAutomationRole:
+    case SupervisionRole:
+    case TabHealthRole: {
+        QJsonObject chromeState;
+        MainApplication* app = mApp;
+        AgentCommandRouter* router = app ? app->agentCommandRouter() : nullptr;
+        const int windowIndex = app && m_window ? app->windows().indexOf(m_window) : -1;
+        if (router && windowIndex >= 0) {
+            chromeState = router->tabChromeState(windowIndex, index.row());
+        }
+        if (role == TabOwnerRole) {
+            return chromeState.value(QSL("owner")).toString();
+        }
+        if (role == ActiveAutomationRole) {
+            return chromeState.value(QSL("activeAutomation")).toBool(false);
+        }
+        if (role == SupervisionRole) {
+            return chromeState.value(QSL("supervisionActive")).toBool(false);
+        }
+        QString health = chromeState.value(QSL("health")).toString(QSL("ok"));
+        return health.isEmpty() ? QSL("ok") : health;
+    }
+
     default:
         return {};
     }
@@ -214,6 +242,12 @@ void TabModel::init()
     connect(m_window->tabWidget(), &TabWidget::tabRemoved, this, &TabModel::tabRemoved);
     connect(m_window->tabWidget(), &TabWidget::tabMoved, this, &TabModel::tabMoved);
 
+    MainApplication* app = mApp;
+    AgentCommandRouter* router = app ? app->agentCommandRouter() : nullptr;
+    if (router) {
+        connect(router, &AgentCommandRouter::tabChromeStateChanged, this, &TabModel::tabChromeStateChanged);
+    }
+
     connect(m_window, &QObject::destroyed, this, [this]() {
         beginResetModel();
         m_window = nullptr;
@@ -263,4 +297,15 @@ void TabModel::tabMoved(int from, int to)
     }
     m_tabs.insert(to, m_tabs.takeAt(from));
     endMoveRows();
+}
+
+void TabModel::tabChromeStateChanged(int windowIndex, int tabIndex)
+{
+    MainApplication* app = mApp;
+    if (!app || !m_window || app->windows().value(windowIndex) != m_window || tabIndex < 0 || tabIndex >= m_tabs.count()) {
+        return;
+    }
+
+    const QModelIndex idx = index(tabIndex, 0);
+    Q_EMIT dataChanged(idx, idx, {TabOwnerRole, ActiveAutomationRole, SupervisionRole, TabHealthRole});
 }
