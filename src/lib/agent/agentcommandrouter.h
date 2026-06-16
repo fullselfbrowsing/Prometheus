@@ -16,6 +16,7 @@
 class BrowserWindow;
 class QTcpSocket;
 class TabbedWebView;
+class WebTab;
 
 class FALKON_EXPORT AgentCommandRouter : public QObject
 {
@@ -86,6 +87,12 @@ private:
     QJsonValue jsonFromVariant(const QVariant &value) const;
     QString auditPath() const;
     QString targetKey(int windowIndex, int tabIndex) const;
+    QString targetKey(const Target &target) const;
+    QString ensureTargetKey(const Target &target);
+    QString existingTabKey(WebTab *tab) const;
+    QString ensureTabKey(WebTab *tab);
+    WebTab* webTabForTarget(const Target &target) const;
+    bool currentTargetForKey(const QString &key, Target* target) const;
     QJsonObject buildSupervisionSnapshot(const Target &target, QString* snapshotHash) const;
     bool validateSupervisionSession(const QString &sessionId, const Target &target, QString* errorCode, QString* errorMessage) const;
     QUrl taskUrlFromPrompt(const QString &prompt) const;
@@ -97,6 +104,7 @@ private:
     void updateTabChromeState(const Target &target, const QString &tool, const QString &agentId, const QString &health, const QString &reason, bool activeAutomation);
     void setTabChromeFailure(const Target &target, const QString &tool, const QString &message);
     void clearTabChromeState(int windowIndex, int tabIndex);
+    void clearTabStateForKey(const QString &key);
     void showActionStatus(const Target &target, const QString &tool, const QString &agentId, const QJsonObject &params);
     void waitForLoad(TabbedWebView* view, int timeoutMs);
 

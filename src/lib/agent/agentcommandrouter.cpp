@@ -30,6 +30,9 @@
 
 namespace {
 
+const char agentTabIdSessionKey[] = "prometheusAgentTabId";
+const char agentTabTrackedProperty[] = "_prometheusAgentTabTracked";
+
 bool isUnsupportedGroupMutationTool(const QString &tool)
 {
     return tool == QL1S("create_tab_group")
@@ -623,11 +626,15 @@ QJsonObject AgentCommandRouter::routeNewTab(const QString &id, const QString &to
     const QString rawUrl = params.value(QSL("url")).toString();
     const QUrl url = rawUrl.isEmpty() ? QUrl() : QUrl::fromUserInput(rawUrl);
     const int tabIndex = windows.at(windowIndex)->tabWidget()->addView(url, Qz::NT_SelectedTabAtTheEnd);
-    m_tabOwners.insert(targetKey(windowIndex, tabIndex), agentId);
     Target target;
     target.window = windows.at(windowIndex);
+    target.view = windows.at(windowIndex)->tabWidget()->webTab(tabIndex)->webView();
     target.windowIndex = windowIndex;
     target.tabIndex = tabIndex;
+    const QString key = ensureTargetKey(target);
+    if (!key.isEmpty()) {
+        m_tabOwners.insert(key, agentId);
+    }
     showActionStatus(target, tool, agentId, params);
     return success(id, tool, QJsonObject{{QSL("windowIndex"), windowIndex}, {QSL("tabIndex"), tabIndex}, {QSL("url"), url.toString()}, {QSL("agentId"), agentId}, {QSL("visual"), visualDetails(params, agentId)}}, auditSequence);
 }
@@ -715,7 +722,6 @@ QJsonObject AgentCommandRouter::routeCloseTab(const QString &id, const QString &
     }
 
     showActionStatus(target, tool, agentId, params);
-    m_tabOwners.remove(targetKey(target.windowIndex, target.tabIndex));
     clearTabChromeState(target.windowIndex, target.tabIndex);
     target.window->tabWidget()->requestCloseTab(target.tabIndex);
     return success(id, tool, QJsonObject{{QSL("windowIndex"), target.windowIndex}, {QSL("tabIndex"), target.tabIndex}, {QSL("agentId"), agentId}, {QSL("visual"), visualDetails(params, agentId)}}, auditSequence);
@@ -1247,13 +1253,14 @@ QJsonObject AgentCommandRouter::routeSupervision(const QString &id, const QStrin
         }
 
         const QJsonObject session = m_supervisionSessions.take(sessionId);
-        const QJsonObject targetJson = session.value(QSL("target")).toObject();
-        const int windowIndex = targetJson.value(QSL("windowIndex")).toInt(-1);
-        const int tabIndex = targetJson.value(QSL("tabIndex")).toInt(-1);
-        if (windowIndex >= 0 && tabIndex >= 0) {
-            Q_EMIT tabChromeStateChanged(windowIndex, tabIndex);
+        QJsonObject targetJson = session.value(QSL("target")).toObject();
+        Target currentTarget;
+        if (currentTargetForKey(targetJson.value(QSL("key")).toString(), &currentTarget)) {
+            targetJson.insert(QSL("windowIndex"), currentTarget.windowIndex);
+            targetJson.insert(QSL("tabIndex"), currentTarget.tabIndex);
+            Q_EMIT tabChromeStateChanged(currentTarget.windowIndex, currentTarget.tabIndex);
         }
-        return success(id, tool, QJsonObject{{QSL("sessionId"), sessionId}, {QSL("ended"), true}, {QSL("target"), session.value(QSL("target")).toObject()}}, auditSequence);
+        return success(id, tool, QJsonObject{{QSL("sessionId"), sessionId}, {QSL("ended"), true}, {QSL("target"), targetJson}}, auditSequence);
     }
 
     Target target;
@@ -1275,7 +1282,11 @@ QJsonObject AgentCommandRouter::routeSupervision(const QString &id, const QStrin
         QJsonObject snapshot = buildSupervisionSnapshot(target, &snapshotHash);
         const QString sessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const QString pairingCode = QUuid::createUuid().toString(QUuid::Id128).left(8).toUpper();
-        const QJsonObject targetJson{{QSL("windowIndex"), target.windowIndex}, {QSL("tabIndex"), target.tabIndex}, {QSL("key"), targetKey(target.windowIndex, target.tabIndex)}};
+        const QString key = ensureTargetKey(target);
+        if (key.isEmpty()) {
+            return failure(id, tool, QSL("invalid_target"), QSL("Target tab does not have a stable identity."), auditSequence);
+        }
+        const QJsonObject targetJson{{QSL("windowIndex"), target.windowIndex}, {QSL("tabIndex"), target.tabIndex}, {QSL("key"), key}};
         QJsonObject session{
             {QSL("sessionId"), sessionId},
             {QSL("pairingCode"), pairingCode},
@@ -1370,7 +1381,91 @@ QString AgentCommandRouter::auditPath() const
 
 QString AgentCommandRouter::targetKey(int windowIndex, int tabIndex) const
 {
-    return QSL("%1:%2").arg(windowIndex).arg(tabIndex);
+    const QList<BrowserWindow*> windows = mApp ? mApp->windows() : QList<BrowserWindow*>();
+    BrowserWindow* window = windows.value(windowIndex);
+    if (!window || !window->tabWidget()) {
+        return {};
+    }
+
+    return existingTabKey(window->tabWidget()->webTab(tabIndex));
+}
+
+QString AgentCommandRouter::targetKey(const Target &target) const
+{
+    return existingTabKey(webTabForTarget(target));
+}
+
+QString AgentCommandRouter::ensureTargetKey(const Target &target)
+{
+    return ensureTabKey(webTabForTarget(target));
+}
+
+QString AgentCommandRouter::existingTabKey(WebTab *tab) const
+{
+    if (!tab) {
+        return {};
+    }
+    return tab->sessionData().value(QLatin1String(agentTabIdSessionKey)).toString();
+}
+
+QString AgentCommandRouter::ensureTabKey(WebTab *tab)
+{
+    if (!tab) {
+        return {};
+    }
+
+    QString key = existingTabKey(tab);
+    if (key.isEmpty()) {
+        key = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        tab->setSessionData(QLatin1String(agentTabIdSessionKey), key);
+    }
+
+    if (!tab->property(agentTabTrackedProperty).toBool()) {
+        tab->setProperty(agentTabTrackedProperty, true);
+        connect(tab, &QObject::destroyed, this, [this, key]() {
+            clearTabStateForKey(key);
+        });
+    }
+    return key;
+}
+
+WebTab* AgentCommandRouter::webTabForTarget(const Target &target) const
+{
+    if (target.view) {
+        return target.view->webTab();
+    }
+    if (target.window && target.window->tabWidget() && target.tabIndex >= 0) {
+        return target.window->tabWidget()->webTab(target.tabIndex);
+    }
+    return nullptr;
+}
+
+bool AgentCommandRouter::currentTargetForKey(const QString &key, Target* target) const
+{
+    if (key.isEmpty() || !target) {
+        return false;
+    }
+
+    const QList<BrowserWindow*> windows = mApp ? mApp->windows() : QList<BrowserWindow*>();
+    for (int windowIndex = 0; windowIndex < windows.size(); ++windowIndex) {
+        BrowserWindow* window = windows.at(windowIndex);
+        TabWidget* tabs = window ? window->tabWidget() : nullptr;
+        if (!tabs) {
+            continue;
+        }
+        for (int tabIndex = 0; tabIndex < tabs->count(); ++tabIndex) {
+            WebTab* tab = tabs->webTab(tabIndex);
+            if (existingTabKey(tab) != key) {
+                continue;
+            }
+            target->window = window;
+            target->view = tab ? tab->webView() : nullptr;
+            target->windowIndex = windowIndex;
+            target->tabIndex = tabIndex;
+            return true;
+        }
+    }
+    return false;
 }
 
 QJsonObject AgentCommandRouter::buildSupervisionSnapshot(const Target &target, QString* snapshotHash) const
@@ -1456,7 +1551,7 @@ bool AgentCommandRouter::validateSupervisionSession(const QString &sessionId, co
 
     const QJsonObject session = m_supervisionSessions.value(sessionId);
     const QString expectedTarget = session.value(QSL("target")).toObject().value(QSL("key")).toString();
-    if (expectedTarget != targetKey(target.windowIndex, target.tabIndex)) {
+    if (expectedTarget != targetKey(target)) {
         *errorCode = QSL("SUPERVISION_TARGET_MISMATCH");
         *errorMessage = QSL("Supervision session belongs to a different tab.");
         return false;
@@ -1512,7 +1607,13 @@ bool AgentCommandRouter::enforceOwnership(const QJsonObject &params, const Targe
         return false;
     }
 
-    const QString key = targetKey(target.windowIndex, target.tabIndex);
+    const QString key = ensureTargetKey(target);
+    if (key.isEmpty()) {
+        *errorCode = QSL("invalid_target");
+        *errorMessage = QSL("Target tab does not have a stable identity.");
+        return false;
+    }
+
     const QString owner = m_tabOwners.value(key);
     if (owner.isEmpty()) {
         m_tabOwners.insert(key, *agentId);
@@ -1566,11 +1667,11 @@ QString AgentCommandRouter::sanitizedChromeStatus(const QString &status) const
 
 void AgentCommandRouter::updateTabChromeState(const Target &target, const QString &tool, const QString &agentId, const QString &health, const QString &reason, bool activeAutomation)
 {
-    if (target.windowIndex < 0 || target.tabIndex < 0) {
+    const QString key = ensureTargetKey(target);
+    if (key.isEmpty()) {
         return;
     }
 
-    const QString key = targetKey(target.windowIndex, target.tabIndex);
     QJsonObject state = m_tabChromeStates.value(key);
     state.insert(QSL("activeAutomation"), activeAutomation);
     if (!tool.isEmpty()) {
@@ -1597,8 +1698,31 @@ void AgentCommandRouter::setTabChromeFailure(const Target &target, const QString
 
 void AgentCommandRouter::clearTabChromeState(int windowIndex, int tabIndex)
 {
-    m_tabChromeStates.remove(targetKey(windowIndex, tabIndex));
-    Q_EMIT tabChromeStateChanged(windowIndex, tabIndex);
+    clearTabStateForKey(targetKey(windowIndex, tabIndex));
+}
+
+void AgentCommandRouter::clearTabStateForKey(const QString &key)
+{
+    if (key.isEmpty()) {
+        return;
+    }
+
+    Target currentTarget;
+    const bool hasCurrentTarget = currentTargetForKey(key, &currentTarget);
+
+    m_tabOwners.remove(key);
+    m_tabChromeStates.remove(key);
+    for (auto it = m_supervisionSessions.begin(); it != m_supervisionSessions.end();) {
+        if (it.value().value(QSL("target")).toObject().value(QSL("key")).toString() == key) {
+            it = m_supervisionSessions.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    if (hasCurrentTarget) {
+        Q_EMIT tabChromeStateChanged(currentTarget.windowIndex, currentTarget.tabIndex);
+    }
 }
 
 void AgentCommandRouter::showActionStatus(const Target &target, const QString &tool, const QString &agentId, const QJsonObject &params)

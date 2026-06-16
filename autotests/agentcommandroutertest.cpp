@@ -22,6 +22,7 @@
 #include "browserwindow.h"
 #include "mainapplication.h"
 #include "tabwidget.h"
+#include "webtab.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -30,6 +31,7 @@
 #include <QJsonObject>
 #include <QTcpSocket>
 #include <QStringList>
+#include <QUrl>
 
 namespace {
 
@@ -166,6 +168,71 @@ void AgentCommandRouterTest::callerControlledClientLabelDoesNotGrantOwnership()
     QCOMPARE(spoofedLabel.value(QSL("ok")).toBool(), false);
     QCOMPARE(spoofedLabel.value(QSL("error")).toObject().value(QSL("code")).toString(), QSL("TAB_OWNED_BY_OTHER_AGENT"));
 
+    delete window;
+}
+
+void AgentCommandRouterTest::tabChromeStateFollowsStableTabIdentity()
+{
+    BrowserWindow *window = mApp->createWindow(Qz::BW_NewWindow);
+    window->tabWidget()->addView(QUrl(QSL("data:text/html,<title>before</title>")));
+    window->tabWidget()->addView(QUrl(QSL("data:text/html,<title>owned</title>")));
+    QTRY_VERIFY(window->tabWidget()->count() >= 3);
+
+    AgentCommandRouter router;
+    WebTab *ownedTab = window->tabWidget()->webTab(2);
+    QVERIFY(ownedTab);
+
+    const QJsonObject firstOwner = router.routeForSession(command(QSL("own-stable-tab"),
+                                                                  QSL("activate_tab"),
+                                                                  QJsonObject{{QSL("client"), QSL("stable-owner")}, {QSL("tabIndex"), 2}}),
+                                                          QSL("stable-session"));
+    QVERIFY2(firstOwner.value(QSL("ok")).toBool(), qPrintable(QString::fromUtf8(QJsonDocument(firstOwner).toJson(QJsonDocument::Compact))));
+    const QString agentId = firstOwner.value(QSL("result")).toObject().value(QSL("agentId")).toString();
+    QVERIFY(!agentId.isEmpty());
+
+    const QJsonObject supervision = router.routeForSession(command(QSL("supervise-stable-tab"),
+                                                                   QSL("start_supervision_session"),
+                                                                   QJsonObject{{QSL("client"), QSL("stable-owner")}, {QSL("tabIndex"), 2}}),
+                                                           QSL("stable-session"));
+    QVERIFY2(supervision.value(QSL("ok")).toBool(), qPrintable(QString::fromUtf8(QJsonDocument(supervision).toJson(QJsonDocument::Compact))));
+    const QString sessionId = supervision.value(QSL("result")).toObject().value(QSL("session")).toObject().value(QSL("sessionId")).toString();
+    QVERIFY(!sessionId.isEmpty());
+
+    QCOMPARE(router.tabChromeState(0, 2).value(QSL("owner")).toString(), agentId);
+    QCOMPARE(router.tabChromeState(0, 2).value(QSL("supervisionActive")).toBool(), true);
+
+    window->tabWidget()->moveTab(2, 0);
+    QCOMPARE(window->tabWidget()->webTab(0), ownedTab);
+    QCOMPARE(router.tabChromeState(0, 0).value(QSL("owner")).toString(), agentId);
+    QCOMPARE(router.tabChromeState(0, 0).value(QSL("supervisionActive")).toBool(), true);
+    QCOMPARE(router.tabChromeState(0, 2).value(QSL("owner")).toString(), QString());
+
+    window->tabWidget()->moveTab(0, 1);
+    QCOMPARE(window->tabWidget()->webTab(1), ownedTab);
+    window->tabWidget()->closeTab(0);
+    QCOMPARE(window->tabWidget()->webTab(0), ownedTab);
+    QCOMPARE(router.tabChromeState(0, 0).value(QSL("owner")).toString(), agentId);
+    QCOMPARE(router.tabChromeState(0, 0).value(QSL("supervisionActive")).toBool(), true);
+
+    window->tabWidget()->detachTab(ownedTab->tabIndex());
+    QTRY_VERIFY(ownedTab->browserWindow() && ownedTab->browserWindow() != window);
+    BrowserWindow *detachedWindow = ownedTab->browserWindow();
+    const int detachedWindowIndex = mApp->windows().indexOf(detachedWindow);
+    QVERIFY(detachedWindowIndex >= 0);
+    QCOMPARE(router.tabChromeState(detachedWindowIndex, ownedTab->tabIndex()).value(QSL("owner")).toString(), agentId);
+    QCOMPARE(router.tabChromeState(detachedWindowIndex, ownedTab->tabIndex()).value(QSL("supervisionActive")).toBool(), true);
+
+    const QJsonObject ended = router.routeForSession(command(QSL("end-stable-supervision"),
+                                                            QSL("end_supervision_session"),
+                                                            QJsonObject{{QSL("sessionId"), sessionId}}),
+                                                    QSL("stable-session"));
+    QVERIFY2(ended.value(QSL("ok")).toBool(), qPrintable(QString::fromUtf8(QJsonDocument(ended).toJson(QJsonDocument::Compact))));
+    const QJsonObject endedTarget = ended.value(QSL("result")).toObject().value(QSL("target")).toObject();
+    QCOMPARE(endedTarget.value(QSL("windowIndex")).toInt(), detachedWindowIndex);
+    QCOMPARE(endedTarget.value(QSL("tabIndex")).toInt(), ownedTab->tabIndex());
+    QCOMPARE(router.tabChromeState(detachedWindowIndex, ownedTab->tabIndex()).value(QSL("supervisionActive")).toBool(), false);
+
+    delete detachedWindow;
     delete window;
 }
 

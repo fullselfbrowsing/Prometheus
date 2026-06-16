@@ -27,6 +27,7 @@ private Q_SLOTS:
     void defaultTabChromeState();
     void httpCommandRequiresAuthorizationToken();
     void callerControlledClientLabelDoesNotGrantOwnership();
+    void tabChromeStateFollowsStableTabIdentity();
     void listTabsContractIncludesGroupAndStateFields();
     void unsupportedGroupMutationToolsReturnCompatibilityError();
 };
