@@ -17,6 +17,7 @@
 * ============================================================ */
 #include "tabmodeltest.h"
 #include "autotests.h"
+#include "tabgroupmodel.h"
 #include "tabmodel.h"
 #include "tabtreemodel.h"
 #include "tabmrumodel.h"
@@ -122,6 +123,89 @@ void TabModelTest::dataTest()
 
     delete w;
 }
+
+void TabModelTest::tabGroupRoleDefaultsTest()
+{
+    BrowserWindow *w = mApp->createWindow(Qz::BW_NewWindow);
+    TabModel model(w);
+    ModelTest modelTest(&model);
+
+    QTRY_COMPARE(model.rowCount(), 1);
+
+    const QModelIndex firstTab = model.index(0, 0);
+    QCOMPARE(firstTab.data(TabModel::TabGroupIdRole).toString(), QString());
+    QCOMPARE(firstTab.data(TabModel::TabGroupNameRole).toString(), QString());
+    QCOMPARE(firstTab.data(TabModel::TabGroupColorRole).toString(), QString());
+    QCOMPARE(firstTab.data(TabModel::TabGroupCollapsedRole).toBool(), false);
+
+    delete w;
+}
+
+void TabModelTest::tabGroupRoleMetadataTest()
+{
+    BrowserWindow *w = mApp->createWindow(Qz::BW_NewWindow);
+    TabModel model(w);
+    TabGroupModel groups;
+    model.setTabGroupModel(&groups);
+    ModelTest modelTest(&model);
+
+    QTRY_COMPARE(model.rowCount(), 1);
+
+    WebTab *tab = w->tabWidget()->webTab(0);
+    const QString groupId = groups.createGroup(QSL("Research"), QSL("#3a7bd5"));
+    QVERIFY(!groupId.isEmpty());
+
+    QSignalSpy dataChangedSpy(&model, &TabModel::dataChanged);
+    QVERIFY(groups.setTabGroup(tab, groupId));
+
+    const QModelIndex firstTab = model.index(0, 0);
+    QCOMPARE(firstTab.data(TabModel::TabGroupIdRole).toString(), groupId);
+    QCOMPARE(firstTab.data(TabModel::TabGroupNameRole).toString(), QSL("Research"));
+    QCOMPARE(firstTab.data(TabModel::TabGroupColorRole).toString(), QSL("#3a7bd5"));
+    QCOMPARE(firstTab.data(TabModel::TabGroupCollapsedRole).toBool(), false);
+    QVERIFY(!dataChangedSpy.isEmpty());
+
+    dataChangedSpy.clear();
+    QVERIFY(groups.renameGroup(groupId, QSL("Work Queue")));
+    QVERIFY(groups.setGroupColor(groupId, QSL("#2f9e7e")));
+    QVERIFY(groups.setGroupCollapsed(groupId, true));
+
+    QCOMPARE(firstTab.data(TabModel::TabGroupNameRole).toString(), QSL("Work Queue"));
+    QCOMPARE(firstTab.data(TabModel::TabGroupColorRole).toString(), QSL("#2f9e7e"));
+    QCOMPARE(firstTab.data(TabModel::TabGroupCollapsedRole).toBool(), true);
+    QVERIFY(!dataChangedSpy.isEmpty());
+
+    delete w;
+}
+
+void TabModelTest::tabGroupRoleMovePreservesMembershipTest()
+{
+    BrowserWindow *w = mApp->createWindow(Qz::BW_NewWindow);
+    TabModel model(w);
+    TabGroupModel groups;
+    model.setTabGroupModel(&groups);
+    ModelTest modelTest(&model);
+
+    w->tabWidget()->addView(QUrl(QSL("http://test.com")));
+    QTRY_COMPARE(model.rowCount(), 2);
+
+    WebTab *tab0 = w->tabWidget()->webTab(0);
+    WebTab *tab1 = w->tabWidget()->webTab(1);
+    const QString groupId = groups.createGroup(QSL("Research"), QSL("#3a7bd5"));
+    QVERIFY(groups.setTabGroup(tab0, groupId));
+
+    w->tabWidget()->moveTab(0, 1);
+
+    QCOMPARE(w->tabWidget()->webTab(0), tab1);
+    QCOMPARE(w->tabWidget()->webTab(1), tab0);
+    QCOMPARE(model.index(0, 0).data(TabModel::TabGroupIdRole).toString(), QString());
+    QCOMPARE(model.index(1, 0).data(TabModel::TabGroupIdRole).toString(), groupId);
+    QCOMPARE(model.index(1, 0).data(TabModel::TabGroupNameRole).toString(), QSL("Research"));
+    QCOMPARE(model.index(1, 0).data(TabModel::TabGroupColorRole).toString(), QSL("#3a7bd5"));
+
+    delete w;
+}
+
 void TabModelTest::pinTabTest()
 {
     BrowserWindow *w = mApp->createWindow(Qz::BW_NewWindow);
