@@ -1731,7 +1731,7 @@ void AgentCommandRouter::showActionStatus(const Target &target, const QString &t
     if (reason.isEmpty()) {
         reason = tool;
     }
-    updateTabChromeState(target, tool, agentId, QSL("ok"), reason, true);
+    updateTabChromeState(target, tool, agentId, QSL("ok"), reason, false);
 
     if (!target.window || !target.window->statusBar()) {
         return;

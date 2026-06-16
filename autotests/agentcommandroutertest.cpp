@@ -236,6 +236,28 @@ void AgentCommandRouterTest::tabChromeStateFollowsStableTabIdentity()
     delete window;
 }
 
+void AgentCommandRouterTest::successfulActionDoesNotLeaveActiveAutomation()
+{
+    BrowserWindow *window = mApp->createWindow(Qz::BW_NewWindow);
+    QTRY_VERIFY(window->tabWidget()->count() > 0);
+
+    AgentCommandRouter router;
+    const QJsonObject response = router.routeForSession(command(QSL("activate-complete"),
+                                                               QSL("activate_tab"),
+                                                               QJsonObject{{QSL("client"), QSL("completion-state")}, {QSL("tabIndex"), 0}}),
+                                                       QSL("completion-session"));
+    QVERIFY2(response.value(QSL("ok")).toBool(), qPrintable(QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Compact))));
+
+    const QString agentId = response.value(QSL("result")).toObject().value(QSL("agentId")).toString();
+    const QJsonObject state = router.tabChromeState(0, 0);
+    QCOMPARE(state.value(QSL("owner")).toString(), agentId);
+    QCOMPARE(state.value(QSL("lastTool")).toString(), QSL("activate_tab"));
+    QCOMPARE(state.value(QSL("activeAutomation")).toBool(), false);
+    QCOMPARE(state.value(QSL("health")).toString(), QSL("ok"));
+
+    delete window;
+}
+
 void AgentCommandRouterTest::listTabsContractIncludesGroupAndStateFields()
 {
     const QFileInfo testSource(QString::fromLocal8Bit(__FILE__));
