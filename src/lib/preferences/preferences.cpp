@@ -263,6 +263,12 @@ Preferences::Preferences(BrowserWindow* window)
     ui->askWhenClosingMultipleTabs->setChecked(settings.value(QSL("AskOnClosing"), false).toBool());
     ui->showClosedTabsButton->setChecked(settings.value(QSL("showClosedTabsButton"), false).toBool());
     ui->showCloseOnInactive->setCurrentIndex(settings.value(QSL("showCloseOnInactiveTabs"), 0).toInt());
+    const QzSettings::TabLayout tabLayout = QzSettings::tabLayoutFromString(
+        settings.value(QSL("tabLayout"), QSL("Separate")).toString());
+    ui->tabLayout->setCurrentIndex(tabLayout == QzSettings::TabLayout::Compact ? 0 : 1);
+    const QzSettings::TabDisplay tabDisplay = QzSettings::tabDisplayFromString(
+        settings.value(QSL("tabDisplay"), QSL("TitleAndIcon")).toString());
+    ui->tabDisplay->setCurrentIndex(tabDisplay == QzSettings::TabDisplay::FaviconOnly ? 1 : 0);
     settings.endGroup();
 
     //AddressBar
@@ -1000,6 +1006,14 @@ void Preferences::saveSettings()
     settings.setValue(QSL("AskOnClosing"), ui->askWhenClosingMultipleTabs->isChecked());
     settings.setValue(QSL("showClosedTabsButton"), ui->showClosedTabsButton->isChecked());
     settings.setValue(QSL("showCloseOnInactiveTabs"), ui->showCloseOnInactive->currentIndex());
+    const QzSettings::TabLayout tabLayout = ui->tabLayout->currentIndex() == 0
+        ? QzSettings::TabLayout::Compact
+        : QzSettings::TabLayout::Separate;
+    settings.setValue(QSL("tabLayout"), QzSettings::tabLayoutToString(tabLayout));
+    const QzSettings::TabDisplay tabDisplay = ui->tabDisplay->currentIndex() == 1
+        ? QzSettings::TabDisplay::FaviconOnly
+        : QzSettings::TabDisplay::TitleAndIcon;
+    settings.setValue(QSL("tabDisplay"), QzSettings::tabDisplayToString(tabDisplay));
     settings.endGroup();
 
     //DOWNLOADS
