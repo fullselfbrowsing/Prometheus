@@ -146,7 +146,7 @@ Plans:
 Plans:
 - [x] 07-01-PLAN.md — Persist compact/separate layout and title/favicon tab display settings.
 - [x] 07-02-PLAN.md — Expose agent-aware tab state through native reads and TabModel roles.
-- [ ] 07-03-PLAN.md — Build the compact tab strip, filter model, and delegate primitives.
+- [x] 07-03-PLAN.md — Build the compact tab strip, filter model, and delegate primitives.
 - [ ] 07-04-PLAN.md — Integrate compact chrome into NavigationBar and preserve separate layout.
 - [ ] 07-05-PLAN.md — Build the tab overview, search, and quick-switch popup foundation.
 - [ ] 07-06-PLAN.md — Wire tab overview/search/quick-switch into chrome and menus.
