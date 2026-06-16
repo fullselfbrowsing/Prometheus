@@ -19,11 +19,14 @@
 #define TABCONTEXTMENU_H
 
 #include <QMenu>
+#include <QStringList>
+#include <QVector>
 
 #include "qzcommon.h"
 
 class BrowserWindow;
 class TabWidget;
+class WebTab;
 
 class FALKON_EXPORT TabContextMenu : public QMenu
 {
@@ -70,9 +73,22 @@ private Q_SLOTS:
     void closeAllButCurrent();
     void closeToRight();
     void closeToLeft();
+    void newTabGroup();
+    void renameTabGroup();
+    void toggleTabGroupCollapsed();
+    void moveTabToGroup();
+    void closeTabGroup();
+    void requestClearClosedTabsList();
 
 private:
     void init();
+    void addTabStateRows(WebTab *tab);
+    void populateTabGroupMenu(QMenu *menu, WebTab *tab);
+    void populateMoveToGroupMenu(QMenu *menu, WebTab *tab);
+    QString currentGroupId() const;
+    QStringList stateSummary(WebTab *tab) const;
+    QStringList stateSummary(const QVector<WebTab*> &tabs) const;
+    bool confirmTabs(const QString &settingsKey, const QString &title, const QString &description, const QStringList &stateLines = {}) const;
 
     int m_clickedTab;
     BrowserWindow *m_window;

@@ -111,6 +111,7 @@ public:
     bool setTabGroup(WebTab *tab, const QString &groupId);
     bool setTabGroup(int index, const QString &groupId);
     QString tabGroupForTab(WebTab *tab) const;
+    QVector<WebTab*> tabsInGroup(const QString &groupId) const;
     QVariantList saveTabGroups() const;
     void restoreTabGroups(const QVariantList &groups);
 
@@ -139,6 +140,8 @@ public Q_SLOTS:
     void unloadTab(int index);
     void restoreClosedTab(QObject* obj = nullptr);
     void restoreAllClosedTabs();
+    void closeTabGroup(const QString &groupId);
+    void requestClearClosedTabsList();
     void clearClosedTabsList();
 
     void moveAddTabButton(int posX);

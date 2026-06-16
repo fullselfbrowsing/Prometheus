@@ -31,6 +31,7 @@
 #include "tabicon.h"
 #include "tabgroupmodel.h"
 #include "pluginproxy.h"
+#include "checkboxdialog.h"
 
 #include <QFile>
 #include <QTimer>
@@ -39,6 +40,7 @@
 #include <QMouseEvent>
 #include <QWebEngineHistory>
 #include <QClipboard>
+#include <QMessageBox>
 
 namespace {
 const QString kTabGroupSessionKey = QSL("prometheusTabGroupId");
@@ -333,7 +335,7 @@ void TabWidget::aboutToShowClosedTabsMenu()
     else {
         m_menuClosedTabs->addSeparator();
         m_menuClosedTabs->addAction(tr("Restore All Closed Tabs"), this, &TabWidget::restoreAllClosedTabs);
-        m_menuClosedTabs->addAction(QIcon::fromTheme(QSL("edit-clear")), tr("Clear list"), this, &TabWidget::clearClosedTabsList);
+        m_menuClosedTabs->addAction(QIcon::fromTheme(QSL("edit-clear")), tr("Clear list"), this, &TabWidget::requestClearClosedTabsList);
     }
 }
 
@@ -678,6 +680,11 @@ QString TabWidget::tabGroupForTab(WebTab *tab) const
     return m_tabGroupModel->tabGroupId(tab);
 }
 
+QVector<WebTab*> TabWidget::tabsInGroup(const QString &groupId) const
+{
+    return m_tabGroupModel->tabsInGroup(groupId);
+}
+
 QVariantList TabWidget::saveTabGroups() const
 {
     QVariantList groups;
@@ -922,6 +929,45 @@ void TabWidget::restoreAllClosedTabs()
         WebTab* webTab = weTab(index);
         webTab->setParentTab(tab.parentTab);
         restoreClosedTabState(webTab, tab.tabState);
+    }
+
+    clearClosedTabsList();
+}
+
+void TabWidget::closeTabGroup(const QString &groupId)
+{
+    const QVector<WebTab*> tabs = tabsInGroup(groupId);
+    for (WebTab *tab : tabs) {
+        if (tab) {
+            requestCloseTab(tab->tabIndex());
+        }
+    }
+}
+
+void TabWidget::requestClearClosedTabsList()
+{
+    if (!canRestoreTab()) {
+        return;
+    }
+
+    Settings settings;
+    const QString settingsKey = QSL("Browser-Tabs-Settings/AskOnClearingClosedTabs");
+    const bool ask = settings.value(settingsKey, true).toBool();
+    if (ask) {
+        CheckBoxDialog dialog(QMessageBox::Yes | QMessageBox::No, m_window);
+        dialog.setDefaultButton(QMessageBox::No);
+        dialog.setWindowTitle(tr("Clear Closed Tabs"));
+        dialog.setText(tr("Clear the recently closed tabs list?"));
+        dialog.setCheckBoxText(tr("Don't ask again"));
+        dialog.setIcon(QMessageBox::Question);
+
+        if (dialog.exec() != QMessageBox::Yes) {
+            return;
+        }
+
+        if (dialog.isChecked()) {
+            settings.setValue(settingsKey, false);
+        }
     }
 
     clearClosedTabsList();

@@ -25,7 +25,13 @@
 #include "mainapplication.h"
 #include "iconprovider.h"
 #include "checkboxdialog.h"
+#include "tabgroupmodel.h"
+#include "tabmodel.h"
 
+#include <QAction>
+#include <QInputDialog>
+#include <QLineEdit>
+#include <QSet>
 
 TabContextMenu::TabContextMenu(int index, BrowserWindow *window, Options options)
     : QMenu()
@@ -50,16 +56,16 @@ TabContextMenu::TabContextMenu(int index, BrowserWindow *window, Options options
     init();
 }
 
-static bool canCloseTabs(const QString &settingsKey, const QString &title, const QString &description)
+static bool canCloseTabs(const QString &settingsKey, const QString &title, const QString &description, QWidget *parent, const QStringList &stateLines = {})
 {
     Settings settings;
     bool ask = settings.value(QSL("Browser-Tabs-Settings/") + settingsKey, true).toBool();
 
     if (ask) {
-        CheckBoxDialog dialog(QMessageBox::Yes | QMessageBox::No, mApp->activeWindow());
+        CheckBoxDialog dialog(QMessageBox::Yes | QMessageBox::No, parent ? parent : mApp->activeWindow());
         dialog.setDefaultButton(QMessageBox::No);
         dialog.setWindowTitle(title);
-        dialog.setText(description);
+        dialog.setText(stateLines.isEmpty() ? description : description + QSL("\n\n") + stateLines.join(QSL("\n")));
         dialog.setCheckBoxText(TabBar::tr("Don't ask again"));
         dialog.setIcon(QMessageBox::Question);
 
@@ -77,29 +83,53 @@ static bool canCloseTabs(const QString &settingsKey, const QString &title, const
 
 void TabContextMenu::closeAllButCurrent()
 {
-    if (canCloseTabs(QLatin1String("AskOnClosingAllButCurrent"), tr("Close Tabs"), tr("Do you really want to close other tabs?"))) {
+    QVector<WebTab*> affectedTabs;
+    TabWidget *tabWidget = m_window->tabWidget();
+    const auto tabs = tabWidget->allTabs(false);
+    for (WebTab *tab : tabs) {
+        if (tab && tab->tabIndex() != m_clickedTab) {
+            affectedTabs.append(tab);
+        }
+    }
+
+    if (confirmTabs(QLatin1String("AskOnClosingAllButCurrent"),
+                    tr("Close Other Tabs"),
+                    tr("Close all other tabs?"),
+                    stateSummary(affectedTabs))) {
         Q_EMIT closeAllButCurrent(m_clickedTab);
     }
 }
 
 void TabContextMenu::closeToRight()
 {
-    const QString label = m_options & HorizontalTabs
-            ? tr("Do you really want to close all tabs to the right?")
-            : tr("Do you really want to close all tabs to the bottom?");
+    QVector<WebTab*> affectedTabs;
+    TabWidget *tabWidget = m_window->tabWidget();
+    const auto tabs = tabWidget->allTabs(false);
+    for (WebTab *tab : tabs) {
+        if (tab && tab->tabIndex() > m_clickedTab) {
+            affectedTabs.append(tab);
+        }
+    }
 
-    if (canCloseTabs(QLatin1String("AskOnClosingToRight"), tr("Close Tabs"), label)) {
+    const QString title = m_options & HorizontalTabs ? tr("Close Tabs to the Right") : tr("Close Tabs to the Bottom");
+    if (confirmTabs(QLatin1String("AskOnClosingToRight"), title, tr("Close these tabs?"), stateSummary(affectedTabs))) {
         Q_EMIT closeToRight(m_clickedTab);
     }
 }
 
 void TabContextMenu::closeToLeft()
 {
-    const QString label = m_options & HorizontalTabs
-            ? tr("Do you really want to close all tabs to the left?")
-            : tr("Do you really want to close all tabs to the top?");
+    QVector<WebTab*> affectedTabs;
+    TabWidget *tabWidget = m_window->tabWidget();
+    const auto tabs = tabWidget->allTabs(false);
+    for (WebTab *tab : tabs) {
+        if (tab && tab->tabIndex() < m_clickedTab) {
+            affectedTabs.append(tab);
+        }
+    }
 
-    if (canCloseTabs(QLatin1String("AskOnClosingToLeft"), tr("Close Tabs"), label)) {
+    const QString title = m_options & HorizontalTabs ? tr("Close Tabs to the Left") : tr("Close Tabs to the Top");
+    if (confirmTabs(QLatin1String("AskOnClosingToLeft"), title, tr("Close these tabs?"), stateSummary(affectedTabs))) {
         Q_EMIT closeToLeft(m_clickedTab);
     }
 }
@@ -120,6 +150,7 @@ void TabContextMenu::init()
             addAction(QIcon::fromTheme(QSL("view-refresh")), tr("&Reload Tab"), this, SLOT(reloadTab()));
         }
 
+        addTabStateRows(webTab);
         addAction(QIcon::fromTheme(QSL("tab-duplicate")), tr("&Duplicate Tab"), this, SLOT(duplicateTab()));
 
         if (m_options & ShowDetachTabAction && (mApp->windowCount() > 1 || tabWidget->count() > 1)) {
@@ -135,6 +166,9 @@ void TabContextMenu::init()
             addAction(tr("Unload Tab"), this, SLOT(unloadTab()));
         }
 
+        QMenu *tabGroupMenu = addMenu(tr("Tab Group"));
+        populateTabGroupMenu(tabGroupMenu, webTab);
+
         addSeparator();
         addAction(tr("Re&load All Tabs"), tabWidget, &TabWidget::reloadAllTabs);
         addAction(tr("Bookmark &All Tabs"), m_window, &BrowserWindow::bookmarkAllTabs);
@@ -148,14 +182,21 @@ void TabContextMenu::init()
         }
 
         addAction(m_window->action(QSL("Other/RestoreClosedTab")));
+        if (tabWidget->canRestoreTab()) {
+            addAction(QIcon::fromTheme(QSL("edit-clear")), tr("Clear Closed Tabs"), this, &TabContextMenu::requestClearClosedTabsList);
+        }
         addAction(QIcon::fromTheme(QSL("window-close")), tr("Cl&ose Tab"), this, &TabContextMenu::closeTab);
     } else {
         addAction(IconProvider::newTabIcon(), tr("&New tab"), m_window, &BrowserWindow::addTab);
+        addAction(tr("New Tab Group"), this, &TabContextMenu::newTabGroup);
         addSeparator();
         addAction(tr("Reloa&d All Tabs"), tabWidget, &TabWidget::reloadAllTabs);
         addAction(tr("Bookmark &All Tabs"), m_window, &BrowserWindow::bookmarkAllTabs);
         addSeparator();
         addAction(m_window->action(QSL("Other/RestoreClosedTab")));
+        if (tabWidget->canRestoreTab()) {
+            addAction(QIcon::fromTheme(QSL("edit-clear")), tr("Clear Closed Tabs"), this, &TabContextMenu::requestClearClosedTabsList);
+        }
     }
 
     m_window->action(QSL("Other/RestoreClosedTab"))->setEnabled(tabWidget->canRestoreTab());
@@ -178,4 +219,280 @@ void TabContextMenu::muteTab()
     if (webTab) {
         webTab->toggleMuted();
     }
+}
+
+void TabContextMenu::newTabGroup()
+{
+    TabWidget *tabWidget = m_window->tabWidget();
+    bool ok = false;
+    const QString name = QInputDialog::getText(m_window,
+                                               tr("New Tab Group"),
+                                               tr("Group name:"),
+                                               QLineEdit::Normal,
+                                               tr("Tab Group"),
+                                               &ok);
+    if (!ok) {
+        return;
+    }
+
+    const QString groupId = tabWidget->createTabGroup(name, QString(), false);
+    if (groupId.isEmpty()) {
+        return;
+    }
+
+    if (m_clickedTab >= 0) {
+        tabWidget->setTabGroup(m_clickedTab, groupId);
+    }
+}
+
+void TabContextMenu::renameTabGroup()
+{
+    const QString groupId = currentGroupId();
+    if (groupId.isEmpty()) {
+        return;
+    }
+
+    TabGroupModel *groups = m_window->tabWidget()->tabGroupModel();
+    bool ok = false;
+    const QString name = QInputDialog::getText(m_window,
+                                               tr("Rename Tab Group"),
+                                               tr("Group name:"),
+                                               QLineEdit::Normal,
+                                               groups->groupName(groupId),
+                                               &ok);
+    if (ok) {
+        m_window->tabWidget()->renameTabGroup(groupId, name);
+    }
+}
+
+void TabContextMenu::toggleTabGroupCollapsed()
+{
+    const QString groupId = currentGroupId();
+    if (groupId.isEmpty()) {
+        return;
+    }
+
+    TabGroupModel *groups = m_window->tabWidget()->tabGroupModel();
+    m_window->tabWidget()->setTabGroupCollapsed(groupId, !groups->isGroupCollapsed(groupId));
+}
+
+void TabContextMenu::moveTabToGroup()
+{
+    if (m_clickedTab < 0) {
+        return;
+    }
+
+    auto *action = qobject_cast<QAction*>(sender());
+    if (!action) {
+        return;
+    }
+
+    m_window->tabWidget()->setTabGroup(m_clickedTab, action->data().toString());
+}
+
+void TabContextMenu::closeTabGroup()
+{
+    const QString groupId = currentGroupId();
+    if (groupId.isEmpty()) {
+        return;
+    }
+
+    const QVector<WebTab*> tabs = m_window->tabWidget()->tabsInGroup(groupId);
+    if (confirmTabs(QLatin1String("AskOnClosingTabGroup"),
+                    tr("Close Tab Group"),
+                    tr("Close all tabs in this group? This can be undone from Recently Closed Tabs."),
+                    stateSummary(tabs))) {
+        m_window->tabWidget()->closeTabGroup(groupId);
+    }
+}
+
+void TabContextMenu::requestClearClosedTabsList()
+{
+    m_window->tabWidget()->requestClearClosedTabsList();
+}
+
+void TabContextMenu::addTabStateRows(WebTab *tab)
+{
+    const QStringList lines = stateSummary(tab);
+    if (lines.isEmpty()) {
+        return;
+    }
+
+    for (const QString &line : lines) {
+        QAction *stateAction = addAction(line);
+        stateAction->setEnabled(false);
+    }
+    addSeparator();
+}
+
+void TabContextMenu::populateTabGroupMenu(QMenu *menu, WebTab *tab)
+{
+    if (!menu || !tab) {
+        return;
+    }
+
+    menu->addAction(tr("New Tab Group"), this, &TabContextMenu::newTabGroup);
+
+    QMenu *moveMenu = menu->addMenu(tr("Move Tab to Group"));
+    populateMoveToGroupMenu(moveMenu, tab);
+
+    const QString groupId = m_window->tabWidget()->tabGroupForTab(tab);
+    if (groupId.isEmpty()) {
+        return;
+    }
+
+    TabGroupModel *groups = m_window->tabWidget()->tabGroupModel();
+    menu->addSeparator();
+    menu->addAction(tr("Rename Tab Group"), this, &TabContextMenu::renameTabGroup);
+    menu->addAction(groups->isGroupCollapsed(groupId) ? tr("Expand Tab Group") : tr("Collapse Tab Group"),
+                    this,
+                    &TabContextMenu::toggleTabGroupCollapsed);
+    menu->addAction(QIcon::fromTheme(QSL("window-close")), tr("Close Tab Group"), this, &TabContextMenu::closeTabGroup);
+}
+
+void TabContextMenu::populateMoveToGroupMenu(QMenu *menu, WebTab *tab)
+{
+    if (!menu || !tab) {
+        return;
+    }
+
+    TabWidget *tabWidget = m_window->tabWidget();
+    TabGroupModel *groups = tabWidget->tabGroupModel();
+    const QString current = tabWidget->tabGroupForTab(tab);
+
+    QAction *noGroupAction = menu->addAction(tr("No Group"), this, &TabContextMenu::moveTabToGroup);
+    noGroupAction->setData(QString());
+    noGroupAction->setCheckable(true);
+    noGroupAction->setChecked(current.isEmpty());
+
+    const QStringList groupIds = groups->groupIds();
+    if (!groupIds.isEmpty()) {
+        menu->addSeparator();
+    }
+    for (const QString &groupId : groupIds) {
+        QAction *action = menu->addAction(groups->groupName(groupId), this, &TabContextMenu::moveTabToGroup);
+        action->setData(groupId);
+        action->setCheckable(true);
+        action->setChecked(groupId == current);
+    }
+}
+
+QString TabContextMenu::currentGroupId() const
+{
+    WebTab *tab = m_window->tabWidget()->webTab(m_clickedTab);
+    return tab ? m_window->tabWidget()->tabGroupForTab(tab) : QString();
+}
+
+QStringList TabContextMenu::stateSummary(WebTab *tab) const
+{
+    if (!tab || !m_window || !m_window->tabModel()) {
+        return {};
+    }
+
+    const QModelIndex index = m_window->tabModel()->tabIndex(tab);
+    if (!index.isValid()) {
+        return {};
+    }
+
+    QStringList lines;
+    const QString groupName = index.data(TabModel::TabGroupNameRole).toString().simplified();
+    const QString owner = index.data(TabModel::TabOwnerRole).toString().simplified();
+    const QString health = index.data(TabModel::TabHealthRole).toString().simplified();
+    if (!groupName.isEmpty()) {
+        lines.append(tr("Group: %1").arg(groupName));
+    }
+    if (!owner.isEmpty()) {
+        lines.append(tr("Owner: %1").arg(owner));
+    }
+    if (index.data(TabModel::ActiveAutomationRole).toBool()) {
+        lines.append(tr("Active automation"));
+    }
+    if (index.data(TabModel::SupervisionRole).toBool()) {
+        lines.append(tr("Supervised session active"));
+    }
+    if (!health.isEmpty() && health.compare(QSL("ok"), Qt::CaseInsensitive) != 0) {
+        lines.append(tr("Tab health: %1").arg(health));
+    }
+    return lines;
+}
+
+QStringList TabContextMenu::stateSummary(const QVector<WebTab*> &tabs) const
+{
+    if (!m_window || !m_window->tabModel()) {
+        return {};
+    }
+
+    QSet<QString> owners;
+    QSet<QString> groups;
+    QSet<QString> healthStates;
+    int activeAutomationCount = 0;
+    int supervisedCount = 0;
+    for (WebTab *tab : tabs) {
+        if (!tab) {
+            continue;
+        }
+        const QModelIndex index = m_window->tabModel()->tabIndex(tab);
+        if (!index.isValid()) {
+            continue;
+        }
+        const QString groupName = index.data(TabModel::TabGroupNameRole).toString().simplified();
+        const QString owner = index.data(TabModel::TabOwnerRole).toString().simplified();
+        const QString health = index.data(TabModel::TabHealthRole).toString().simplified();
+        if (!groupName.isEmpty()) {
+            groups.insert(groupName);
+        }
+        if (!owner.isEmpty()) {
+            owners.insert(owner);
+        }
+        if (index.data(TabModel::ActiveAutomationRole).toBool()) {
+            ++activeAutomationCount;
+        }
+        if (index.data(TabModel::SupervisionRole).toBool()) {
+            ++supervisedCount;
+        }
+        if (!health.isEmpty() && health.compare(QSL("ok"), Qt::CaseInsensitive) != 0) {
+            healthStates.insert(health);
+        }
+    }
+
+    QStringList groupList;
+    for (const QString &group : groups) {
+        groupList.append(group);
+    }
+    groupList.sort();
+
+    QStringList ownerList;
+    for (const QString &owner : owners) {
+        ownerList.append(owner);
+    }
+    ownerList.sort();
+
+    QStringList healthList;
+    for (const QString &health : healthStates) {
+        healthList.append(health);
+    }
+    healthList.sort();
+
+    QStringList lines;
+    if (!groupList.isEmpty()) {
+        lines.append(tr("Groups: %1").arg(groupList.join(QSL(", "))));
+    }
+    if (!ownerList.isEmpty()) {
+        lines.append(tr("Owned tabs: %1").arg(ownerList.join(QSL(", "))));
+    }
+    if (activeAutomationCount > 0) {
+        lines.append(tr("Active automation tabs: %1").arg(activeAutomationCount));
+    }
+    if (supervisedCount > 0) {
+        lines.append(tr("Supervised tabs: %1").arg(supervisedCount));
+    }
+    if (!healthList.isEmpty()) {
+        lines.append(tr("Tab health: %1").arg(healthList.join(QSL(", "))));
+    }
+    return lines;
+}
+
+bool TabContextMenu::confirmTabs(const QString &settingsKey, const QString &title, const QString &description, const QStringList &stateLines) const
+{
+    return canCloseTabs(settingsKey, title, description, m_window, stateLines);
 }

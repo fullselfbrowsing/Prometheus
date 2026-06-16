@@ -20,6 +20,7 @@
 #include "qzcommon.h"
 
 #include <QFrame>
+#include <QVector>
 
 class BrowserWindow;
 class QCheckBox;
@@ -27,7 +28,9 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QListView;
+class QMenu;
 class QStackedWidget;
+class QToolButton;
 class TabSearchDelegate;
 class TabSearchFilterModel;
 class WebTab;
@@ -68,6 +71,20 @@ private:
     void activateCurrentIndex();
     void routeNavigationKey(QKeyEvent *event);
     WebTab *currentTab() const;
+    void showRowMenu(const QPoint &position);
+    void populateTabActions(QMenu *menu, WebTab *tab);
+    void populateGroupActions(QMenu *menu, WebTab *tab);
+    void populateMoveToGroupMenu(QMenu *menu, WebTab *tab);
+    void populateGlobalGroupMenu(QMenu *menu);
+    void addTabStateRows(QMenu *menu, WebTab *tab) const;
+    QStringList stateSummary(WebTab *tab) const;
+    QStringList stateSummary(const QVector<WebTab*> &tabs) const;
+    QString createTabGroup(WebTab *tab);
+    void renameTabGroup(const QString &groupId);
+    void toggleTabGroupCollapsed(const QString &groupId);
+    void moveTabToGroup(WebTab *tab, const QString &groupId);
+    void closeTabGroup(const QString &groupId);
+    bool confirmTabs(const QString &settingsKey, const QString &title, const QString &description, const QStringList &stateLines = {}) const;
 
     BrowserWindow *m_window = nullptr;
     Mode m_mode = OverviewMode;
@@ -76,6 +93,7 @@ private:
     QLineEdit *m_searchEdit = nullptr;
     QCheckBox *m_mruOrder = nullptr;
     QComboBox *m_groupFilter = nullptr;
+    QToolButton *m_groupActions = nullptr;
     QListView *m_view = nullptr;
     QLabel *m_titleLabel = nullptr;
     QLabel *m_emptyTitle = nullptr;
