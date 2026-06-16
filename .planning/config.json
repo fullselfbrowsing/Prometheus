@@ -42,6 +42,9 @@
     "context_warnings": true
   },
   "project_code": null,
+  "sub_repos": [
+    "falkon"
+  ],
   "phase_naming": "sequential",
   "agent_skills": {},
   "claude_md_path": "./CLAUDE.md",
