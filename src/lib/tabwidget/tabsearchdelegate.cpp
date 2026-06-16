@@ -21,8 +21,10 @@
 
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QFontMetrics>
 #include <QHelpEvent>
 #include <QPainter>
+#include <QPen>
 #include <QToolTip>
 #include <QUrl>
 
@@ -33,9 +35,48 @@ constexpr int DotSize = 8;
 constexpr int BadgeHeight = 16;
 constexpr int BadgeMinWidth = 20;
 constexpr int MaxBadgeText = 10;
+constexpr int GroupRailHeight = 2;
+constexpr int GroupLabelHeight = 16;
+constexpr int GroupLabelMinWidth = 32;
+constexpr int GroupLabelMaxWidth = 92;
+constexpr int GroupLabelMaxLength = 24;
 
 const QColor AccentColor(QSL("#ff6b35"));
 const QColor DestructiveColor(QSL("#ff6666"));
+const QColor DefaultGroupColor(QSL("#3a7bd5"));
+
+QList<QColor> approvedGroupColors()
+{
+    return {
+        QColor(QSL("#3a7bd5")),
+        QColor(QSL("#2f9e7e")),
+        QColor(QSL("#9b6ade")),
+        QColor(QSL("#d29b36")),
+        QColor(QSL("#a65b5b"))
+    };
+}
+
+bool sameColor(const QColor &left, const QColor &right)
+{
+    return left.isValid() && right.isValid() && left.rgb() == right.rgb();
+}
+
+QColor approvedGroupColor(const QVariant &value)
+{
+    QColor color = value.value<QColor>();
+    if (!color.isValid()) {
+        color = QColor(value.toString());
+    }
+
+    const QList<QColor> swatches = approvedGroupColors();
+    for (const QColor &swatch : swatches) {
+        if (sameColor(color, swatch)) {
+            return swatch;
+        }
+    }
+
+    return DefaultGroupColor;
+}
 
 bool isUnhealthy(const QString &health)
 {
@@ -50,6 +91,25 @@ QString boundedBadgeText(const QString &text, int maxLength)
         return normalized;
     }
     return normalized.left(qMax(0, maxLength - 3)) + QSL("...");
+}
+
+QString boundedGroupLabel(const QModelIndex &index)
+{
+    const QString groupId = index.data(TabModel::TabGroupIdRole).toString();
+    if (groupId.isEmpty()) {
+        return TabSearchDelegate::tr("Ungrouped");
+    }
+    return boundedBadgeText(index.data(TabModel::TabGroupNameRole).toString(), GroupLabelMaxLength);
+}
+
+bool startsSection(const QModelIndex &index)
+{
+    if (!index.isValid() || index.row() == 0) {
+        return true;
+    }
+
+    const QModelIndex previous = index.model()->index(index.row() - 1, index.column(), index.parent());
+    return previous.data(TabModel::TabGroupIdRole).toString() != index.data(TabModel::TabGroupIdRole).toString();
 }
 }
 
@@ -73,6 +133,17 @@ void TabSearchDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
     const int centerY = contentRect.center().y();
     int left = contentRect.left();
     int right = contentRect.right();
+    const QString groupId = index.data(TabModel::TabGroupIdRole).toString();
+    const bool grouped = !groupId.isEmpty();
+    const QColor groupColor = approvedGroupColor(index.data(TabModel::TabGroupColorRole));
+    const QString groupLabel = boundedGroupLabel(index);
+    const bool drawSectionLabel = startsSection(index) && !groupLabel.isEmpty();
+
+    if (grouped) {
+        painter->save();
+        painter->fillRect(QRect(opt.rect.left(), opt.rect.top(), opt.rect.width(), GroupRailHeight), groupColor);
+        painter->restore();
+    }
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
@@ -94,6 +165,34 @@ void TabSearchDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         painter->drawPixmap(iconRect, icon.pixmap(IconSize, IconSize));
     }
     left = iconRect.right() + Gap + 1;
+
+    if (drawSectionLabel && right > left) {
+        QFont groupFont = opt.font;
+        groupFont.setWeight(QFont::DemiBold);
+        QFontMetrics groupMetrics(groupFont);
+        const int available = right - left + 1;
+        const int labelWidth = qMin(qMin(GroupLabelMaxWidth, available), qMax(GroupLabelMinWidth, groupMetrics.horizontalAdvance(groupLabel) + Gap * 3));
+        if (labelWidth >= GroupLabelMinWidth && available >= labelWidth + Gap + BadgeMinWidth) {
+            const QRect labelRect(left, opt.rect.top() + 2, labelWidth, GroupLabelHeight);
+            painter->save();
+            QColor labelFill = grouped ? groupColor : opt.palette.color(QPalette::Window).darker(115);
+            if (grouped) {
+                labelFill.setAlpha(42);
+            }
+            if (grouped) {
+                painter->setPen(QPen(groupColor, 1));
+            } else {
+                painter->setPen(Qt::NoPen);
+            }
+            painter->setBrush(labelFill);
+            painter->drawRoundedRect(labelRect, GroupLabelHeight / 2, GroupLabelHeight / 2);
+            painter->setFont(groupFont);
+            painter->setPen(opt.palette.color(QPalette::Text));
+            painter->drawText(labelRect.adjusted(Gap, 0, -Gap, 0), Qt::AlignCenter, groupMetrics.elidedText(groupLabel, Qt::ElideRight, labelRect.width() - Gap * 2));
+            painter->restore();
+            left = labelRect.right() + Gap + 1;
+        }
+    }
 
     const int textWidth = right - left + 1;
     if (textWidth <= 0) {
@@ -230,6 +329,15 @@ QString TabSearchDelegate::domainTextForIndex(const QModelIndex &index) const
 QString TabSearchDelegate::tooltipForIndex(const QModelIndex &index) const
 {
     QStringList parts;
+    const QString groupId = index.data(TabModel::TabGroupIdRole).toString();
+    const QString groupLabel = boundedGroupLabel(index);
+    if (!groupLabel.isEmpty()) {
+        parts.append(groupId.isEmpty()
+                ? tr("Ungrouped")
+                : index.data(TabModel::TabGroupCollapsedRole).toBool()
+                    ? tr("Collapsed group: %1").arg(groupLabel)
+                    : tr("Group: %1").arg(groupLabel));
+    }
     const QString title = index.data(TabModel::TitleRole).toString().simplified();
     const QString url = domainTextForIndex(index).simplified();
     if (!title.isEmpty()) {

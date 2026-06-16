@@ -19,8 +19,10 @@
 
 #include "qzcommon.h"
 
+#include <QPointer>
 #include <QSortFilterProxyModel>
 
+class QAbstractItemModel;
 class WebTab;
 
 class FALKON_EXPORT TabSearchFilterModel : public QSortFilterProxyModel
@@ -35,6 +37,10 @@ public:
 
     QString groupFilter() const;
     void setGroupFilter(const QString &group);
+    static QString ungroupedGroupFilter();
+
+    void setGroupSectionsEnabled(bool enabled);
+    void setMruModel(QAbstractItemModel *model);
 
     WebTab *tab(const QModelIndex &index) const;
 
@@ -45,8 +51,17 @@ protected:
 private:
     QString searchableText(const QModelIndex &sourceIndex) const;
     QString normalizedFilterText(const QString &text) const;
+    QString normalizedGroupFilter(const QString &group) const;
+    int representativeSourceRowForGroup(const QString &groupId, const QModelIndex &sourceParent) const;
+    int activeSourceRowForGroup(const QString &groupId, const QModelIndex &sourceParent) const;
+    int mruSourceRowForGroup(const QString &groupId, const QModelIndex &sourceParent) const;
+    int firstSourceRowForGroup(const QString &groupId, const QModelIndex &sourceParent) const;
+    int sourceRowForTabVariant(const QVariant &tabVariant, const QModelIndex &sourceParent) const;
+    int groupSectionOrder(const QString &groupId, const QModelIndex &sourceParent) const;
 
     QString m_filterText;
     QStringList m_filterTerms;
     QString m_groupFilter;
+    bool m_groupSectionsEnabled = false;
+    QPointer<QAbstractItemModel> m_mruModel;
 };

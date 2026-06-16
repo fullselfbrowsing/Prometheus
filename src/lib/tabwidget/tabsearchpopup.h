@@ -66,6 +66,8 @@ protected:
 
 private:
     void updateSourceModel();
+    void populateGroupFilter();
+    void updateGroupFilterVisibility();
     void updateEmptyState();
     void selectFirstVisibleRow();
     void activateCurrentIndex();

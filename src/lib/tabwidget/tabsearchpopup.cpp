@@ -45,6 +45,7 @@
 #include <QPersistentModelIndex>
 #include <QPointer>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QTimer>
@@ -102,6 +103,7 @@ TabSearchPopup::TabSearchPopup(BrowserWindow *window, QWidget *parent)
     connect(m_mruOrder, &QCheckBox::toggled, this, &TabSearchPopup::updateSourceModel);
 
     m_groupFilter->addItem(tr("All Groups"), QString());
+    m_groupFilter->addItem(tr("Ungrouped"), TabSearchFilterModel::ungroupedGroupFilter());
     m_groupFilter->setVisible(false);
     connect(m_groupFilter, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
         m_filterModel->setGroupFilter(m_groupFilter->itemData(index).toString());
@@ -204,12 +206,15 @@ void TabSearchPopup::setMode(Mode mode)
         m_titleLabel->setText(tr("Search Tabs"));
         m_mruOrder->setChecked(true);
         m_mruOrder->setEnabled(false);
+        m_groupFilter->setCurrentIndex(0);
     } else {
         m_titleLabel->setText(m_mode == OverviewMode ? tr("Tab Overview") : tr("Search Tabs"));
         m_mruOrder->setEnabled(true);
     }
 
+    m_filterModel->setGroupSectionsEnabled(m_mode == OverviewMode);
     updateSourceModel();
+    updateGroupFilterVisibility();
     updateEmptyState();
     selectFirstVisibleRow();
 }
@@ -217,8 +222,10 @@ void TabSearchPopup::setMode(Mode mode)
 void TabSearchPopup::setGroupFilters(const QStringList &groups)
 {
     const QString previous = m_groupFilter->currentData().toString();
+    QSignalBlocker blocker(m_groupFilter);
     m_groupFilter->clear();
     m_groupFilter->addItem(tr("All Groups"), QString());
+    m_groupFilter->addItem(tr("Ungrouped"), TabSearchFilterModel::ungroupedGroupFilter());
     for (const QString &group : groups) {
         const QString normalized = group.simplified();
         if (!normalized.isEmpty()) {
@@ -228,7 +235,9 @@ void TabSearchPopup::setGroupFilters(const QStringList &groups)
 
     const int index = m_groupFilter->findData(previous);
     m_groupFilter->setCurrentIndex(index >= 0 ? index : 0);
-    m_groupFilter->setVisible(m_groupFilter->count() > 1);
+    blocker.unblock();
+    m_filterModel->setGroupFilter(m_groupFilter->currentData().toString());
+    updateGroupFilterVisibility();
 }
 
 void TabSearchPopup::showOverview()
@@ -325,9 +334,61 @@ void TabSearchPopup::updateSourceModel()
     } else {
         sourceModel = m_window->tabModel();
     }
+    m_filterModel->setMruModel(m_window->tabMruModel());
     if (m_filterModel->sourceModel() != sourceModel) {
         m_filterModel->setSourceModel(sourceModel);
     }
+    populateGroupFilter();
+}
+
+void TabSearchPopup::populateGroupFilter()
+{
+    const QString previous = m_groupFilter->currentData().toString();
+    QSignalBlocker blocker(m_groupFilter);
+    m_groupFilter->clear();
+    m_groupFilter->addItem(tr("All Groups"), QString());
+
+    QSet<QString> seenGroups;
+    bool hasUngrouped = false;
+    if (m_window && m_window->tabModel()) {
+        TabModel *model = m_window->tabModel();
+        const int rows = model->rowCount();
+        for (int row = 0; row < rows; ++row) {
+            const QModelIndex index = model->index(row, 0);
+            const QString groupId = index.data(TabModel::TabGroupIdRole).toString();
+            if (groupId.isEmpty()) {
+                hasUngrouped = true;
+                continue;
+            }
+
+            if (seenGroups.contains(groupId)) {
+                continue;
+            }
+            seenGroups.insert(groupId);
+
+            QString groupName = index.data(TabModel::TabGroupNameRole).toString().simplified();
+            if (groupName.isEmpty()) {
+                groupName = tr("Tab Group");
+            }
+            const bool collapsed = index.data(TabModel::TabGroupCollapsedRole).toBool();
+            m_groupFilter->addItem(collapsed ? tr("%1 (Collapsed)").arg(groupName) : groupName, groupId);
+        }
+    }
+
+    if (hasUngrouped) {
+        m_groupFilter->addItem(tr("Ungrouped"), TabSearchFilterModel::ungroupedGroupFilter());
+    }
+
+    const int index = m_groupFilter->findData(previous);
+    m_groupFilter->setCurrentIndex(index >= 0 ? index : 0);
+    blocker.unblock();
+    m_filterModel->setGroupFilter(m_groupFilter->currentData().toString());
+    updateGroupFilterVisibility();
+}
+
+void TabSearchPopup::updateGroupFilterVisibility()
+{
+    m_groupFilter->setVisible(m_mode != QuickSwitchMode && m_groupFilter->count() > 1);
 }
 
 void TabSearchPopup::updateEmptyState()
@@ -700,6 +761,9 @@ QString TabSearchPopup::createTabGroup(WebTab *tab)
     if (!groupId.isEmpty() && tab) {
         tabWidget->setTabGroup(tab, groupId);
     }
+    populateGroupFilter();
+    updateEmptyState();
+    selectFirstVisibleRow();
     return groupId;
 }
 
@@ -720,6 +784,7 @@ void TabSearchPopup::renameTabGroup(const QString &groupId)
                                                &ok);
     if (ok) {
         tabWidget->renameTabGroup(groupId, name);
+        populateGroupFilter();
     }
 }
 
@@ -732,6 +797,9 @@ void TabSearchPopup::toggleTabGroupCollapsed(const QString &groupId)
     TabWidget *tabWidget = m_window->tabWidget();
     TabGroupModel *groups = tabWidget->tabGroupModel();
     tabWidget->setTabGroupCollapsed(groupId, !groups->isGroupCollapsed(groupId));
+    populateGroupFilter();
+    updateEmptyState();
+    selectFirstVisibleRow();
 }
 
 void TabSearchPopup::moveTabToGroup(WebTab *tab, const QString &groupId)
@@ -740,6 +808,9 @@ void TabSearchPopup::moveTabToGroup(WebTab *tab, const QString &groupId)
         return;
     }
     m_window->tabWidget()->setTabGroup(tab, groupId);
+    populateGroupFilter();
+    updateEmptyState();
+    selectFirstVisibleRow();
 }
 
 void TabSearchPopup::closeTabGroup(const QString &groupId)
@@ -755,6 +826,7 @@ void TabSearchPopup::closeTabGroup(const QString &groupId)
                     tr("Close all tabs in this group? This can be undone from Recently Closed Tabs."),
                     stateSummary(tabs))) {
         tabWidget->closeTabGroup(groupId);
+        populateGroupFilter();
         updateEmptyState();
         selectFirstVisibleRow();
     }

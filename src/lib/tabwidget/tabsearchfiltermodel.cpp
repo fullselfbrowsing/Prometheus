@@ -23,6 +23,7 @@
 
 namespace {
 constexpr int MaxFilterLength = 256;
+const QString UngroupedFilter = QSL("__prometheus_ungrouped__");
 }
 
 TabSearchFilterModel::TabSearchFilterModel(QObject *parent)
@@ -46,7 +47,7 @@ void TabSearchFilterModel::setFilterText(const QString &text)
 
     m_filterText = normalized;
     m_filterTerms = m_filterText.split(QL1C(' '), Qt::SkipEmptyParts);
-    invalidateFilter();
+    invalidate();
 }
 
 QString TabSearchFilterModel::groupFilter() const
@@ -56,13 +57,58 @@ QString TabSearchFilterModel::groupFilter() const
 
 void TabSearchFilterModel::setGroupFilter(const QString &group)
 {
-    const QString normalized = normalizedFilterText(group);
+    const QString normalized = normalizedGroupFilter(group);
     if (m_groupFilter == normalized) {
         return;
     }
 
     m_groupFilter = normalized;
-    invalidateFilter();
+    invalidate();
+}
+
+QString TabSearchFilterModel::ungroupedGroupFilter()
+{
+    return UngroupedFilter;
+}
+
+void TabSearchFilterModel::setGroupSectionsEnabled(bool enabled)
+{
+    if (m_groupSectionsEnabled == enabled) {
+        return;
+    }
+
+    m_groupSectionsEnabled = enabled;
+    invalidate();
+    sort(0);
+}
+
+void TabSearchFilterModel::setMruModel(QAbstractItemModel *model)
+{
+    if (m_mruModel == model) {
+        return;
+    }
+
+    if (m_mruModel) {
+        disconnect(m_mruModel, nullptr, this, nullptr);
+    }
+
+    m_mruModel = model;
+
+    if (m_mruModel) {
+        const auto invalidateRows = [this]() {
+            invalidate();
+            sort(0);
+        };
+        connect(m_mruModel, &QAbstractItemModel::dataChanged, this, invalidateRows);
+        connect(m_mruModel, &QAbstractItemModel::layoutChanged, this, invalidateRows);
+        connect(m_mruModel, &QAbstractItemModel::modelReset, this, invalidateRows);
+        connect(m_mruModel, &QAbstractItemModel::rowsInserted, this, invalidateRows);
+        connect(m_mruModel, &QAbstractItemModel::rowsMoved, this, invalidateRows);
+        connect(m_mruModel, &QAbstractItemModel::rowsRemoved, this, invalidateRows);
+    }
+
+    invalidate();
+    sort(0);
 }
 
 WebTab *TabSearchFilterModel::tab(const QModelIndex &index) const
@@ -84,11 +130,20 @@ bool TabSearchFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex &so
         return false;
     }
 
-    if (!m_groupFilter.isEmpty()) {
-        const QString groupText = sourceIndex.data(Qt::UserRole + 15).toString().simplified().toCaseFolded();
-        if (groupText.isEmpty() || !groupText.contains(m_groupFilter)) {
+    const QString groupId = sourceIndex.data(TabModel::TabGroupIdRole).toString();
+    if (m_groupFilter == UngroupedFilter) {
+        if (!groupId.isEmpty()) {
             return false;
         }
+    } else if (!m_groupFilter.isEmpty()) {
+        if (groupId != m_groupFilter) {
+            return false;
+        }
+    }
+
+    if (!groupId.isEmpty() && sourceIndex.data(TabModel::TabGroupCollapsedRole).toBool()
+            && sourceRow != representativeSourceRowForGroup(groupId, sourceParent)) {
+        return false;
     }
 
     if (m_filterTerms.isEmpty()) {
@@ -107,6 +162,19 @@ bool TabSearchFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex &so
 
 bool TabSearchFilterModel::lessThan(const QModelIndex &sourceLeft, const QModelIndex &sourceRight) const
 {
+    if (m_groupSectionsEnabled) {
+        const QString leftGroup = sourceLeft.data(TabModel::TabGroupIdRole).toString();
+        const QString rightGroup = sourceRight.data(TabModel::TabGroupIdRole).toString();
+        if (leftGroup != rightGroup) {
+            const QModelIndex parent = sourceLeft.parent();
+            const int leftOrder = groupSectionOrder(leftGroup, parent);
+            const int rightOrder = groupSectionOrder(rightGroup, parent);
+            if (leftOrder != rightOrder) {
+                return leftOrder < rightOrder;
+            }
+        }
+    }
+
     return sourceLeft.row() < sourceRight.row();
 }
 
@@ -131,4 +199,122 @@ QString TabSearchFilterModel::searchableText(const QModelIndex &sourceIndex) con
 QString TabSearchFilterModel::normalizedFilterText(const QString &text) const
 {
     return text.left(MaxFilterLength).simplified().toCaseFolded();
+}
+
+QString TabSearchFilterModel::normalizedGroupFilter(const QString &group) const
+{
+    if (group == UngroupedFilter) {
+        return UngroupedFilter;
+    }
+    return group.left(MaxFilterLength).simplified();
+}
+
+int TabSearchFilterModel::representativeSourceRowForGroup(const QString &groupId, const QModelIndex &sourceParent) const
+{
+    int row = activeSourceRowForGroup(groupId, sourceParent);
+    if (row >= 0) {
+        return row;
+    }
+
+    row = mruSourceRowForGroup(groupId, sourceParent);
+    if (row >= 0) {
+        return row;
+    }
+
+    return firstSourceRowForGroup(groupId, sourceParent);
+}
+
+int TabSearchFilterModel::activeSourceRowForGroup(const QString &groupId, const QModelIndex &sourceParent) const
+{
+    if (!sourceModel() || groupId.isEmpty()) {
+        return -1;
+    }
+
+    const int rows = sourceModel()->rowCount(sourceParent);
+    for (int row = 0; row < rows; ++row) {
+        const QModelIndex index = sourceModel()->index(row, 0, sourceParent);
+        if (index.data(TabModel::TabGroupIdRole).toString() == groupId && index.data(TabModel::CurrentTabRole).toBool()) {
+            return row;
+        }
+    }
+
+    return -1;
+}
+
+int TabSearchFilterModel::mruSourceRowForGroup(const QString &groupId, const QModelIndex &sourceParent) const
+{
+    if (!sourceModel() || !m_mruModel || groupId.isEmpty()) {
+        return -1;
+    }
+
+    const int rows = m_mruModel->rowCount();
+    for (int row = 0; row < rows; ++row) {
+        const QModelIndex mruIndex = m_mruModel->index(row, 0);
+        if (mruIndex.data(TabModel::TabGroupIdRole).toString() != groupId) {
+            continue;
+        }
+
+        const int sourceRow = sourceRowForTabVariant(mruIndex.data(TabModel::WebTabRole), sourceParent);
+        if (sourceRow >= 0) {
+            return sourceRow;
+        }
+    }
+
+    return -1;
+}
+
+int TabSearchFilterModel::firstSourceRowForGroup(const QString &groupId, const QModelIndex &sourceParent) const
+{
+    if (!sourceModel() || groupId.isEmpty()) {
+        return -1;
+    }
+
+    const int rows = sourceModel()->rowCount(sourceParent);
+    for (int row = 0; row < rows; ++row) {
+        const QModelIndex index = sourceModel()->index(row, 0, sourceParent);
+        if (index.data(TabModel::TabGroupIdRole).toString() == groupId) {
+            return row;
+        }
+    }
+
+    return -1;
+}
+
+int TabSearchFilterModel::sourceRowForTabVariant(const QVariant &tabVariant, const QModelIndex &sourceParent) const
+{
+    if (!sourceModel()) {
+        return -1;
+    }
+
+    WebTab *tab = tabVariant.value<WebTab*>();
+    if (!tab) {
+        return -1;
+    }
+
+    const int rows = sourceModel()->rowCount(sourceParent);
+    for (int row = 0; row < rows; ++row) {
+        const QModelIndex index = sourceModel()->index(row, 0, sourceParent);
+        if (index.data(TabModel::WebTabRole).value<WebTab*>() == tab) {
+            return row;
+        }
+    }
+
+    return -1;
+}
+
+int TabSearchFilterModel::groupSectionOrder(const QString &groupId, const QModelIndex &sourceParent) const
+{
+    if (!sourceModel()) {
+        return 0;
+    }
+
+    const int rows = sourceModel()->rowCount(sourceParent);
+    for (int row = 0; row < rows; ++row) {
+        const QModelIndex index = sourceModel()->index(row, 0, sourceParent);
+        if (index.data(TabModel::TabGroupIdRole).toString() == groupId) {
+            return row;
+        }
+    }
+
+    return rows;
 }
