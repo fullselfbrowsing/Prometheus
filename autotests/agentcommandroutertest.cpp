@@ -20,7 +20,10 @@
 
 #include "autotests.h"
 
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonObject>
+#include <QStringList>
 
 void AgentCommandRouterTest::defaultTabChromeState()
 {
@@ -38,6 +41,61 @@ void AgentCommandRouterTest::defaultTabChromeState()
     QVERIFY(!state.contains(QSL("prompt")));
     QVERIFY(!state.contains(QSL("secret")));
     QVERIFY(!state.contains(QSL("password")));
+}
+
+void AgentCommandRouterTest::listTabsContractIncludesGroupAndStateFields()
+{
+    const QFileInfo testSource(QString::fromLocal8Bit(__FILE__));
+    QFile routerSource(testSource.dir().filePath(QSL("../src/lib/agent/agentcommandrouter.cpp")));
+    QVERIFY2(routerSource.open(QIODevice::ReadOnly | QIODevice::Text), qPrintable(routerSource.fileName()));
+
+    const QString source = QString::fromUtf8(routerSource.readAll());
+    const QStringList requiredTokens = {
+        QSL("TabGroupIdRole"),
+        QSL("TabGroupNameRole"),
+        QSL("TabGroupColorRole"),
+        QSL("TabGroupCollapsedRole"),
+        QSL("groupId"),
+        QSL("groupName"),
+        QSL("groupColor"),
+        QSL("groupCollapsed"),
+        QSL("owner"),
+        QSL("activeAutomation"),
+        QSL("supervisionActive"),
+        QSL("health")
+    };
+
+    for (const QString &token : requiredTokens) {
+        const QByteArray message = QByteArray("AgentCommandRouter::tabInfo must expose ") + token.toUtf8();
+        QVERIFY2(source.contains(token), message.constData());
+    }
+}
+
+void AgentCommandRouterTest::unsupportedGroupMutationToolsReturnCompatibilityError()
+{
+    AgentCommandRouter router;
+    const QStringList groupMutationTools = {
+        QSL("create_tab_group"),
+        QSL("rename_tab_group"),
+        QSL("move_tab_to_group"),
+        QSL("collapse_tab_group"),
+        QSL("expand_tab_group"),
+        QSL("close_tab_group")
+    };
+
+    for (const QString &tool : groupMutationTools) {
+        const QJsonObject response = router.route(QJsonObject{
+            {QSL("id"), tool},
+            {QSL("tool"), tool},
+            {QSL("params"), QJsonObject()}
+        });
+
+        const QJsonObject error = response.value(QSL("error")).toObject();
+        QCOMPARE(response.value(QSL("ok")).toBool(), false);
+        QCOMPARE(error.value(QSL("code")).toString(), QSL("unsupported_group_mutation"));
+        QVERIFY2(error.value(QSL("message")).toString().contains(QSL("list_tabs")),
+                 qPrintable(error.value(QSL("message")).toString()));
+    }
 }
 
 FALKONTEST_MAIN(AgentCommandRouterTest)
