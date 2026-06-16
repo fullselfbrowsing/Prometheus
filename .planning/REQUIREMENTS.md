@@ -77,7 +77,7 @@
 
 - [x] **UX-01**: Browser supports a compact chrome mode where tabs live in the toolbar and the active tab acts as the unified address/search field.
 - [x] **UX-02**: Browser keeps a separate tab layout option for users who prefer conventional toolbar plus tab bar behavior.
-- [ ] **UX-03**: Browser supports advanced tab management: tab groups, tab overview/search, reorder, duplicate, detach, close/restore, unload/suspend, and quick switch.
+- [x] **UX-03**: Browser supports advanced tab management: tab groups, tab overview/search, reorder, duplicate, detach, close/restore, unload/suspend, and quick switch.
 - [x] **UX-04**: Browser exposes tab group and tab state through native agent/MCP reads without letting agents bypass tab ownership or supervision boundaries.
 - [x] **UX-05**: Compact chrome preserves visible agent ownership, active automation state, supervision state, tab health, and secure-origin cues without overwhelming the browser chrome.
 - [ ] **UX-06**: Compact chrome and tab management pass visual checks across narrow, standard, and wide desktop window sizes with no text overlap or layout shift.
@@ -177,7 +177,7 @@
 | FSBP-06 | Phase 8 | Planned |
 | UX-01 | Phase 7 | Complete |
 | UX-02 | Phase 7 | Complete |
-| UX-03 | Phase 7 | Planned |
+| UX-03 | Phase 7 | Complete |
 | UX-04 | Phase 7 | Complete |
 | UX-05 | Phase 7 | Complete |
 | UX-06 | Phase 7 | Planned |
