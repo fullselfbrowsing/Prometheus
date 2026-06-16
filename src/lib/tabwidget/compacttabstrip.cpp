@@ -22,6 +22,7 @@
 #include "mainapplication.h"
 #include "tabcontextmenu.h"
 #include "tabmodel.h"
+#include "tabmrumodel.h"
 #include "tabwidget.h"
 #include "webtab.h"
 
@@ -38,6 +39,7 @@ CompactTabStrip::CompactTabStrip(BrowserWindow *window, QWidget *parent)
     setAccessibleName(tr("Compact Tabs"));
 
     m_filterModel->setSourceModel(m_window ? m_window->tabModel() : nullptr);
+    m_filterModel->setMruModel(m_window ? m_window->tabMruModel() : nullptr);
 
     setModel(m_filterModel);
     setItemDelegate(m_delegate);

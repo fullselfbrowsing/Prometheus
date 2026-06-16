@@ -20,8 +20,10 @@
 
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QFontMetrics>
 #include <QHelpEvent>
 #include <QPainter>
+#include <QPen>
 #include <QToolTip>
 
 namespace {
@@ -31,9 +33,48 @@ constexpr int DotSize = 8;
 constexpr int LabelHeight = 16;
 constexpr int LabelMinWidth = 20;
 constexpr int BadgeLabelSpace = 108;
+constexpr int GroupRailHeight = 2;
+constexpr int GroupLabelHeight = 24;
+constexpr int GroupLabelMinWidth = 32;
+constexpr int GroupLabelMaxWidth = 76;
+constexpr int GroupLabelMaxLength = 24;
 
 const QColor AccentColor(QSL("#ff6b35"));
 const QColor DestructiveColor(QSL("#ff6666"));
+const QColor DefaultGroupColor(QSL("#3a7bd5"));
+
+QList<QColor> approvedGroupColors()
+{
+    return {
+        QColor(QSL("#3a7bd5")),
+        QColor(QSL("#2f9e7e")),
+        QColor(QSL("#9b6ade")),
+        QColor(QSL("#d29b36")),
+        QColor(QSL("#a65b5b"))
+    };
+}
+
+bool sameColor(const QColor &left, const QColor &right)
+{
+    return left.isValid() && right.isValid() && left.rgb() == right.rgb();
+}
+
+QColor approvedGroupColor(const QVariant &value)
+{
+    QColor color = value.value<QColor>();
+    if (!color.isValid()) {
+        color = QColor(value.toString());
+    }
+
+    const QList<QColor> swatches = approvedGroupColors();
+    for (const QColor &swatch : swatches) {
+        if (sameColor(color, swatch)) {
+            return swatch;
+        }
+    }
+
+    return DefaultGroupColor;
+}
 
 bool isUnhealthy(const QString &health)
 {
@@ -48,6 +89,11 @@ QString boundedBadgeText(const QString &text, int maxLength)
         return normalized;
     }
     return normalized.left(qMax(0, maxLength - 3)) + QSL("...");
+}
+
+QString boundedGroupLabel(const QModelIndex &index)
+{
+    return boundedBadgeText(index.data(TabModel::TabGroupNameRole).toString(), GroupLabelMaxLength);
 }
 }
 
@@ -90,6 +136,17 @@ void CompactTabDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
     const int centerY = contentRect.center().y();
     int left = contentRect.left();
     int right = contentRect.right();
+    const QString groupId = index.data(TabModel::TabGroupIdRole).toString();
+    const bool grouped = !groupId.isEmpty();
+    const bool groupCollapsed = index.data(TabModel::TabGroupCollapsedRole).toBool();
+    const QString groupLabel = boundedGroupLabel(index);
+    const QColor groupColor = approvedGroupColor(index.data(TabModel::TabGroupColorRole));
+
+    if (grouped) {
+        painter->save();
+        painter->fillRect(QRect(opt.rect.left(), opt.rect.top(), opt.rect.width(), GroupRailHeight), groupColor);
+        painter->restore();
+    }
 
     const QList<Badge> badges = badgesForIndex(index);
     const bool labelBadges = m_tabDisplay == QzSettings::TabDisplay::TitleAndIcon
@@ -107,6 +164,16 @@ void CompactTabDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
     }
     painter->restore();
 
+    if (grouped && groupCollapsed && right > left) {
+        painter->save();
+        QColor chipFill = groupColor;
+        chipFill.setAlpha(36);
+        painter->setPen(QPen(groupColor, 1));
+        painter->setBrush(chipFill);
+        painter->drawRoundedRect(QRect(left, centerY - GroupLabelHeight / 2, right - left + 1, GroupLabelHeight), GroupLabelHeight / 2, GroupLabelHeight / 2);
+        painter->restore();
+    }
+
     const QRect iconRect(left, centerY - IconSize / 2, IconSize, IconSize);
     const QIcon icon = index.data(TabModel::IconRole).value<QIcon>();
     if (!icon.isNull()) {
@@ -115,8 +182,31 @@ void CompactTabDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
     left = iconRect.right() + Gap + 1;
 
     if (m_tabDisplay == QzSettings::TabDisplay::TitleAndIcon && right > left) {
+        QFont groupFont = opt.font;
+        groupFont.setWeight(QFont::DemiBold);
+        QFontMetrics groupMetrics(groupFont);
+        if (grouped && !groupCollapsed && !groupLabel.isEmpty()) {
+            const int available = right - left + 1;
+            const int labelWidth = qMin(qMin(GroupLabelMaxWidth, available), qMax(GroupLabelMinWidth, groupMetrics.horizontalAdvance(groupLabel) + Gap * 3));
+            if (labelWidth >= GroupLabelMinWidth && available >= labelWidth + Gap + LabelMinWidth) {
+                const QRect labelRect(left, centerY - GroupLabelHeight / 2, labelWidth, GroupLabelHeight);
+                painter->save();
+                QColor labelFill = groupColor;
+                labelFill.setAlpha(42);
+                painter->setPen(QPen(groupColor, 1));
+                painter->setBrush(labelFill);
+                painter->drawRoundedRect(labelRect, GroupLabelHeight / 2, GroupLabelHeight / 2);
+                painter->setFont(groupFont);
+                painter->setPen(opt.palette.color(QPalette::Text));
+                painter->drawText(labelRect.adjusted(Gap, 0, -Gap, 0), Qt::AlignCenter, groupMetrics.elidedText(groupLabel, Qt::ElideRight, labelRect.width() - Gap * 2));
+                painter->restore();
+                left = labelRect.right() + Gap + 1;
+            }
+        }
+
         const QRect titleRect(left, opt.rect.top(), right - left + 1, opt.rect.height());
-        const QString title = opt.fontMetrics.elidedText(index.data(TabModel::TitleRole).toString(), Qt::ElideRight, titleRect.width());
+        const QString sourceTitle = groupCollapsed && !groupLabel.isEmpty() ? groupLabel : index.data(TabModel::TitleRole).toString();
+        const QString title = opt.fontMetrics.elidedText(sourceTitle, Qt::ElideRight, titleRect.width());
         const QPalette::ColorRole colorRole = opt.state & QStyle::State_Selected ? QPalette::HighlightedText : QPalette::Text;
         style->drawItemText(painter, titleRect, Qt::AlignVCenter | Qt::AlignLeft, opt.palette, opt.state & QStyle::State_Enabled, title, colorRole);
     }
@@ -219,6 +309,15 @@ void CompactTabDelegate::paintBadge(QPainter *painter, const Badge &badge, const
 QString CompactTabDelegate::tooltipForIndex(const QModelIndex &index) const
 {
     QStringList parts;
+    const QString groupId = index.data(TabModel::TabGroupIdRole).toString();
+    if (!groupId.isEmpty()) {
+        const QString groupLabel = boundedGroupLabel(index);
+        if (!groupLabel.isEmpty()) {
+            parts.append(index.data(TabModel::TabGroupCollapsedRole).toBool()
+                    ? tr("Collapsed group: %1").arg(groupLabel)
+                    : tr("Group: %1").arg(groupLabel));
+        }
+    }
     for (const Badge &badge : badgesForIndex(index)) {
         if (!badge.tooltip.isEmpty()) {
             parts.append(badge.tooltip);

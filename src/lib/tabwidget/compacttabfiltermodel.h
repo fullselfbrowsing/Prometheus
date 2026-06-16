@@ -19,7 +19,10 @@
 
 #include "qzcommon.h"
 
+#include <QPointer>
 #include <QSortFilterProxyModel>
+
+class QAbstractItemModel;
 
 class FALKON_EXPORT CompactTabFilterModel : public QSortFilterProxyModel
 {
@@ -27,6 +30,8 @@ class FALKON_EXPORT CompactTabFilterModel : public QSortFilterProxyModel
 
 public:
     explicit CompactTabFilterModel(QObject *parent = nullptr);
+
+    void setMruModel(QAbstractItemModel *model);
 
     Qt::DropActions supportedDropActions() const override;
     QStringList mimeTypes() const override;
@@ -39,4 +44,11 @@ protected:
 
 private:
     int sourceDropRowForProxyRow(int row) const;
+    int representativeSourceRowForGroup(const QString &groupId, const QModelIndex &sourceParent) const;
+    int activeSourceRowForGroup(const QString &groupId, const QModelIndex &sourceParent) const;
+    int mruSourceRowForGroup(const QString &groupId, const QModelIndex &sourceParent) const;
+    int firstSourceRowForGroup(const QString &groupId, const QModelIndex &sourceParent) const;
+    int sourceRowForTabVariant(const QVariant &tabVariant, const QModelIndex &sourceParent) const;
+
+    QPointer<QAbstractItemModel> m_mruModel;
 };
