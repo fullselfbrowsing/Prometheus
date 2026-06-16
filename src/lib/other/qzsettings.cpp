@@ -23,6 +23,48 @@ QzSettings::QzSettings()
     loadSettings();
 }
 
+QzSettings::TabLayout QzSettings::tabLayoutFromString(const QString &value)
+{
+    if (value == QSL("Compact")) {
+        return TabLayout::Compact;
+    }
+
+    return TabLayout::Separate;
+}
+
+QString QzSettings::tabLayoutToString(TabLayout layout)
+{
+    switch (layout) {
+    case TabLayout::Compact:
+        return QSL("Compact");
+    case TabLayout::Separate:
+        return QSL("Separate");
+    }
+
+    return QSL("Separate");
+}
+
+QzSettings::TabDisplay QzSettings::tabDisplayFromString(const QString &value)
+{
+    if (value == QSL("FaviconOnly")) {
+        return TabDisplay::FaviconOnly;
+    }
+
+    return TabDisplay::TitleAndIcon;
+}
+
+QString QzSettings::tabDisplayToString(TabDisplay display)
+{
+    switch (display) {
+    case TabDisplay::TitleAndIcon:
+        return QSL("TitleAndIcon");
+    case TabDisplay::FaviconOnly:
+        return QSL("FaviconOnly");
+    }
+
+    return QSL("TitleAndIcon");
+}
+
 void QzSettings::loadSettings()
 {
     Settings settings;
@@ -65,6 +107,8 @@ void QzSettings::loadSettings()
     openPopupsInTabs = settings.value(QSL("OpenPopupsInTabs"), false).toBool();
     blockAutomaticPopups = settings.value(QSL("BlockAutomaticPopups"), false).toBool();
     alwaysSwitchTabsWithWheel = settings.value(QSL("AlwaysSwitchTabsWithWheel"), false).toBool();
+    tabLayout = tabLayoutFromString(settings.value(QSL("tabLayout"), QSL("Separate")).toString());
+    tabDisplay = tabDisplayFromString(settings.value(QSL("tabDisplay"), QSL("TitleAndIcon")).toString());
     settings.endGroup();
 
     settings.beginGroup(QSL("Browser-View-Settings"));
@@ -85,5 +129,7 @@ void QzSettings::saveSettings()
 
     settings.beginGroup(QSL("Browser-Tabs-Settings"));
     settings.setValue(QSL("TabsOnTop"), tabsOnTop);
+    settings.setValue(QSL("tabLayout"), tabLayoutToString(tabLayout));
+    settings.setValue(QSL("tabDisplay"), tabDisplayToString(tabDisplay));
     settings.endGroup();
 }

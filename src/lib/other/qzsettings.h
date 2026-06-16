@@ -21,16 +21,32 @@
 #include "qzcommon.h"
 #include "settings.h"
 
+#include <QString>
 #include <QStringList>
 #include <QColor>
 
 class FALKON_EXPORT QzSettings
 {
 public:
+    enum class TabLayout {
+        Compact,
+        Separate
+    };
+
+    enum class TabDisplay {
+        TitleAndIcon,
+        FaviconOnly
+    };
+
     QzSettings();
 
     void loadSettings();
     void saveSettings();
+
+    static TabLayout tabLayoutFromString(const QString &value);
+    static QString tabLayoutToString(TabLayout layout);
+    static TabDisplay tabDisplayFromString(const QString &value);
+    static QString tabDisplayToString(TabDisplay display);
 
     // AddressBar
     bool selectAllOnDoubleClick;
@@ -66,6 +82,8 @@ public:
     bool openPopupsInTabs;
     bool blockAutomaticPopups;
     bool alwaysSwitchTabsWithWheel;
+    TabLayout tabLayout;
+    TabDisplay tabDisplay;
 
     /* Browser-View-Settings */
     QColor backgroundColorLoading;
