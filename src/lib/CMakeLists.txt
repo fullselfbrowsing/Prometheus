@@ -226,6 +226,9 @@ set(SRCS ${SRCS}
     sidebar/bookmarkssidebar.cpp
     sidebar/historysidebar.cpp
     sidebar/sidebar.cpp
+    tabwidget/compacttabdelegate.cpp
+    tabwidget/compacttabfiltermodel.cpp
+    tabwidget/compacttabstrip.cpp
     tabwidget/combotabbar.cpp
     tabwidget/tabbar.cpp
     tabwidget/tabicon.cpp
@@ -464,6 +467,9 @@ set(SRCS ${SRCS}
     sidebar/bookmarkssidebar.h
     sidebar/historysidebar.h
     sidebar/sidebar.h
+    tabwidget/compacttabdelegate.h
+    tabwidget/compacttabfiltermodel.h
+    tabwidget/compacttabstrip.h
     tabwidget/combotabbar.h
     tabwidget/tabbar.h
     tabwidget/tabicon.h
