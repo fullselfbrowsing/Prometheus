@@ -32,6 +32,9 @@ private Q_SLOTS:
     void tabGroupRoleDefaultsTest();
     void tabGroupRoleMetadataTest();
     void tabGroupRoleMovePreservesMembershipTest();
+    void tabWidgetGroupOperationsTest();
+    void tabWidgetGroupDuplicateAndRestoreTest();
+    void tabWidgetGroupSessionRestoreTest();
     void pinTabTest();
     void treeModelTest();
     void resetTreeModelTest();

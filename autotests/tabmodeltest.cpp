@@ -206,6 +206,111 @@ void TabModelTest::tabGroupRoleMovePreservesMembershipTest()
     delete w;
 }
 
+void TabModelTest::tabWidgetGroupOperationsTest()
+{
+    BrowserWindow *w = mApp->createWindow(Qz::BW_NewWindow);
+
+    QTRY_COMPARE(w->tabModel()->rowCount(), 1);
+
+    WebTab *tab = w->tabWidget()->webTab(0);
+    const QString groupId = w->tabWidget()->createTabGroup(QSL("Research"), QSL("#3a7bd5"));
+    QVERIFY(!groupId.isEmpty());
+    QVERIFY(w->tabWidget()->setTabGroup(tab, groupId));
+
+    QCOMPARE(tab->sessionData().value(QSL("prometheusTabGroupId")).toString(), groupId);
+    QCOMPARE(w->tabModel()->index(0, 0).data(TabModel::TabGroupIdRole).toString(), groupId);
+    QCOMPARE(w->tabModel()->index(0, 0).data(TabModel::TabGroupNameRole).toString(), QSL("Research"));
+    QCOMPARE(w->tabModel()->index(0, 0).data(TabModel::TabGroupColorRole).toString(), QSL("#3a7bd5"));
+    QCOMPARE(w->tabModel()->index(0, 0).data(TabModel::TabGroupCollapsedRole).toBool(), false);
+
+    QVERIFY(w->tabWidget()->renameTabGroup(groupId, QSL("Focus Queue")));
+    QVERIFY(w->tabWidget()->setTabGroupColor(groupId, QSL("#2f9e7e")));
+    QVERIFY(w->tabWidget()->setTabGroupCollapsed(groupId, true));
+    QCOMPARE(w->tabModel()->index(0, 0).data(TabModel::TabGroupNameRole).toString(), QSL("Focus Queue"));
+    QCOMPARE(w->tabModel()->index(0, 0).data(TabModel::TabGroupColorRole).toString(), QSL("#2f9e7e"));
+    QCOMPARE(w->tabModel()->index(0, 0).data(TabModel::TabGroupCollapsedRole).toBool(), true);
+
+    QVERIFY(w->tabWidget()->setTabGroupColor(groupId, QSL("#ff6b35")));
+    QCOMPARE(w->tabModel()->index(0, 0).data(TabModel::TabGroupColorRole).toString(), QSL("#3a7bd5"));
+
+    delete w;
+}
+
+void TabModelTest::tabWidgetGroupDuplicateAndRestoreTest()
+{
+    BrowserWindow *w = mApp->createWindow(Qz::BW_NewWindow);
+
+    int groupedIndex = w->tabWidget()->addView(QUrl(QSL("http://grouped.test")), Qz::NT_SelectedTab);
+    QTRY_COMPARE(w->tabModel()->rowCount(), 2);
+
+    WebTab *groupedTab = w->tabWidget()->webTab(groupedIndex);
+    const QString groupId = w->tabWidget()->createTabGroup(QSL("Research"), QSL("#3a7bd5"));
+    QVERIFY(w->tabWidget()->setTabGroup(groupedTab, groupId));
+
+    const int duplicateIndex = w->tabWidget()->duplicateTab(groupedIndex);
+    QVERIFY(duplicateIndex >= 0);
+    QCOMPARE(w->tabWidget()->webTab(duplicateIndex)->sessionData().value(QSL("prometheusTabGroupId")).toString(), groupId);
+    QCOMPARE(w->tabModel()->index(duplicateIndex, 0).data(TabModel::TabGroupIdRole).toString(), groupId);
+
+    w->tabWidget()->closeTab(duplicateIndex);
+    QVERIFY(w->tabWidget()->canRestoreTab());
+    w->tabWidget()->restoreClosedTab();
+
+    bool restoredGroupedTabFound = false;
+    for (int i = 0; i < w->tabWidget()->count(); ++i) {
+        WebTab *tab = w->tabWidget()->webTab(i);
+        if (tab->sessionData().value(QSL("prometheusTabGroupId")).toString() == groupId) {
+            restoredGroupedTabFound = true;
+            QCOMPARE(w->tabModel()->index(i, 0).data(TabModel::TabGroupIdRole).toString(), groupId);
+        }
+    }
+    QVERIFY(restoredGroupedTabFound);
+
+    delete w;
+}
+
+void TabModelTest::tabWidgetGroupSessionRestoreTest()
+{
+    BrowserWindow *w = mApp->createWindow(Qz::BW_NewWindow);
+
+    const int groupedIndex = w->tabWidget()->addView(QUrl(QSL("http://session-group.test")), Qz::NT_SelectedTab);
+    QTRY_COMPARE(w->tabModel()->rowCount(), 2);
+
+    const QString groupId = w->tabWidget()->createTabGroup(QSL("Session Group"), QSL("#9b6ade"));
+    QVERIFY(w->tabWidget()->setTabGroup(w->tabWidget()->webTab(groupedIndex), groupId));
+    QVERIFY(w->tabWidget()->setTabGroupCollapsed(groupId, true));
+
+    BrowserWindow::SavedWindow savedWindow(w);
+    QVERIFY(savedWindow.windowUiState.contains(QSL("TabGroups")));
+
+    bool savedMembershipFound = false;
+    for (const WebTab::SavedTab &tab : std::as_const(savedWindow.tabs)) {
+        if (tab.sessionData.value(QSL("prometheusTabGroupId")).toString() == groupId) {
+            savedMembershipFound = true;
+        }
+    }
+    QVERIFY(savedMembershipFound);
+
+    BrowserWindow *restored = mApp->createWindow(Qz::BW_OtherRestoredWindow);
+    restored->restoreWindow(savedWindow);
+    QTRY_VERIFY(restored->tabWidget()->tabGroupModel()->containsGroup(groupId));
+
+    QCOMPARE(restored->tabWidget()->tabGroupModel()->groupName(groupId), QSL("Session Group"));
+    QCOMPARE(restored->tabWidget()->tabGroupModel()->groupColor(groupId), QSL("#9b6ade"));
+    QCOMPARE(restored->tabWidget()->tabGroupModel()->isGroupCollapsed(groupId), true);
+
+    bool restoredMembershipFound = false;
+    for (int i = 0; i < restored->tabWidget()->count(); ++i) {
+        if (restored->tabModel()->index(i, 0).data(TabModel::TabGroupIdRole).toString() == groupId) {
+            restoredMembershipFound = true;
+        }
+    }
+    QVERIFY(restoredMembershipFound);
+
+    delete restored;
+    delete w;
+}
+
 void TabModelTest::pinTabTest()
 {
     BrowserWindow *w = mApp->createWindow(Qz::BW_NewWindow);
