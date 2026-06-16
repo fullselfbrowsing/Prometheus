@@ -29,6 +29,7 @@
 #include "qzsettings.h"
 #include "qztools.h"
 #include "tabicon.h"
+#include "tabgroupmodel.h"
 #include "pluginproxy.h"
 
 #include <QFile>
@@ -38,6 +39,10 @@
 #include <QMouseEvent>
 #include <QWebEngineHistory>
 #include <QClipboard>
+
+namespace {
+const QString kTabGroupSessionKey = QSL("prometheusTabGroupId");
+}
 
 AddTabButton::AddTabButton(TabWidget* tabWidget, TabBar* tabBar)
     : ToolButton(tabBar)
@@ -86,6 +91,7 @@ TabWidget::TabWidget(BrowserWindow *window, QWidget *parent)
     , m_window(window)
     , m_locationBars(new QStackedWidget)
     , m_closedTabsManager(new ClosedTabsManager)
+    , m_tabGroupModel(new TabGroupModel(this))
 {
     setObjectName(QSL("tabwidget"));
 
@@ -198,6 +204,30 @@ bool TabWidget::validIndex(int index) const
 void TabWidget::updateClosedTabsButton()
 {
     m_buttonClosedTabs->setVisible(m_showClosedTabsButton && canRestoreTab());
+}
+
+bool TabWidget::applyStoredTabGroup(WebTab *tab)
+{
+    if (!tab) {
+        return false;
+    }
+
+    const QString groupId = tab->sessionData().value(kTabGroupSessionKey).toString().trimmed();
+    if (groupId.isEmpty()) {
+        return m_tabGroupModel->clearTabGroup(tab);
+    }
+    if (!m_tabGroupModel->containsGroup(groupId)) {
+        tab->setSessionData(kTabGroupSessionKey, QString());
+        return false;
+    }
+    return setTabGroup(tab, groupId);
+}
+
+void TabWidget::restoreClosedTabState(WebTab *tab, const WebTab::SavedTab &state)
+{
+    tab->setSessionData(kTabGroupSessionKey, state.sessionData.value(kTabGroupSessionKey).toString());
+    tab->p_restoreTab(state);
+    applyStoredTabGroup(tab);
 }
 
 void TabWidget::keyPressEvent(QKeyEvent *event)
@@ -589,9 +619,94 @@ TabBar* TabWidget::tabBar() const
     return m_tabBar;
 }
 
+TabGroupModel* TabWidget::tabGroupModel() const
+{
+    return m_tabGroupModel;
+}
+
 ClosedTabsManager* TabWidget::closedTabsManager() const
 {
     return m_closedTabsManager;
+}
+
+QString TabWidget::createTabGroup(const QString &name, const QString &color, bool collapsed)
+{
+    return m_tabGroupModel->createGroup(name, color, collapsed);
+}
+
+bool TabWidget::renameTabGroup(const QString &groupId, const QString &name)
+{
+    return m_tabGroupModel->renameGroup(groupId, name);
+}
+
+bool TabWidget::setTabGroupColor(const QString &groupId, const QString &color)
+{
+    return m_tabGroupModel->setGroupColor(groupId, color);
+}
+
+bool TabWidget::setTabGroupCollapsed(const QString &groupId, bool collapsed)
+{
+    return m_tabGroupModel->setGroupCollapsed(groupId, collapsed);
+}
+
+bool TabWidget::setTabGroup(WebTab *tab, const QString &groupId)
+{
+    if (!tab) {
+        return false;
+    }
+
+    const QString normalizedId = groupId.trimmed();
+    if (!normalizedId.isEmpty() && !m_tabGroupModel->containsGroup(normalizedId)) {
+        return false;
+    }
+
+    if (!m_tabGroupModel->setTabGroup(tab, normalizedId)) {
+        return false;
+    }
+
+    tab->setSessionData(kTabGroupSessionKey, normalizedId);
+    return true;
+}
+
+bool TabWidget::setTabGroup(int index, const QString &groupId)
+{
+    return setTabGroup(weTab(index), groupId);
+}
+
+QString TabWidget::tabGroupForTab(WebTab *tab) const
+{
+    return m_tabGroupModel->tabGroupId(tab);
+}
+
+QVariantList TabWidget::saveTabGroups() const
+{
+    QVariantList groups;
+    const QStringList groupIds = m_tabGroupModel->groupIds();
+    groups.reserve(groupIds.size());
+    for (const QString &groupId : groupIds) {
+        QVariantMap group;
+        group.insert(QSL("id"), groupId);
+        group.insert(QSL("name"), m_tabGroupModel->groupName(groupId));
+        group.insert(QSL("color"), m_tabGroupModel->groupColor(groupId));
+        group.insert(QSL("collapsed"), m_tabGroupModel->isGroupCollapsed(groupId));
+        groups.append(group);
+    }
+    return groups;
+}
+
+void TabWidget::restoreTabGroups(const QVariantList &groups)
+{
+    for (const QVariant &value : groups) {
+        const QVariantMap group = value.toMap();
+        const QString id = group.value(QSL("id")).toString();
+        if (!TabGroupModel::isValidGroupId(id) || m_tabGroupModel->containsGroup(id)) {
+            continue;
+        }
+        m_tabGroupModel->addGroup(id,
+                                  group.value(QSL("name")).toString(),
+                                  group.value(QSL("color")).toString(),
+                                  group.value(QSL("collapsed")).toBool());
+    }
 }
 
 void TabWidget::reloadAllTabs()
@@ -740,6 +855,7 @@ int TabWidget::duplicateTab(int index)
     int id = addView(QUrl(), webTab->title(), Qz::NT_CleanSelectedTab);
     weTab(id)->p_restoreTab(webTab->url(), webTab->historyData(), webTab->zoomLevel());
     weTab(id)->setParentTab(webTab);
+    setTabGroup(weTab(id), tabGroupForTab(webTab));
 
     return id;
 }
@@ -789,7 +905,7 @@ void TabWidget::restoreClosedTab(QObject* obj)
     int index = addView(QUrl(), tab.tabState.title, Qz::NT_CleanSelectedTab, false, tab.position);
     WebTab* webTab = weTab(index);
     webTab->setParentTab(tab.parentTab);
-    webTab->p_restoreTab(tab.tabState);
+    restoreClosedTabState(webTab, tab.tabState);
 
     updateClosedTabsButton();
 }
@@ -805,7 +921,7 @@ void TabWidget::restoreAllClosedTabs()
         int index = addView(QUrl(), tab.tabState.title, Qz::NT_CleanSelectedTab);
         WebTab* webTab = weTab(index);
         webTab->setParentTab(tab.parentTab);
-        webTab->p_restoreTab(tab.tabState);
+        restoreClosedTabState(webTab, tab.tabState);
     }
 
     clearClosedTabsList();
@@ -866,6 +982,7 @@ bool TabWidget::restoreState(const QVector<WebTab::SavedTab> &tabs, int currentT
         WebTab::SavedTab tab = tabs.at(i);
         WebTab *webTab = weTab(addView(QUrl(), Qz::NT_CleanSelectedTab, false, tab.isPinned));
         webTab->restoreTab(tab);
+        applyStoredTabGroup(webTab);
         if (!tab.childTabs.isEmpty()) {
             childTabs.append({webTab, tab.childTabs});
         }

@@ -251,20 +251,21 @@ void TabModelTest::tabWidgetGroupDuplicateAndRestoreTest()
     QVERIFY(duplicateIndex >= 0);
     QCOMPARE(w->tabWidget()->webTab(duplicateIndex)->sessionData().value(QSL("prometheusTabGroupId")).toString(), groupId);
     QCOMPARE(w->tabModel()->index(duplicateIndex, 0).data(TabModel::TabGroupIdRole).toString(), groupId);
+    QTRY_VERIFY(!w->tabWidget()->webTab(duplicateIndex)->url().isEmpty());
 
     w->tabWidget()->closeTab(duplicateIndex);
     QVERIFY(w->tabWidget()->canRestoreTab());
     w->tabWidget()->restoreClosedTab();
 
-    bool restoredGroupedTabFound = false;
+    int restoredGroupedTabs = 0;
     for (int i = 0; i < w->tabWidget()->count(); ++i) {
         WebTab *tab = w->tabWidget()->webTab(i);
         if (tab->sessionData().value(QSL("prometheusTabGroupId")).toString() == groupId) {
-            restoredGroupedTabFound = true;
+            ++restoredGroupedTabs;
             QCOMPARE(w->tabModel()->index(i, 0).data(TabModel::TabGroupIdRole).toString(), groupId);
         }
     }
-    QVERIFY(restoredGroupedTabFound);
+    QCOMPARE(restoredGroupedTabs, 2);
 
     delete w;
 }

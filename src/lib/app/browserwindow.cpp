@@ -397,6 +397,7 @@ void BrowserWindow::setupUi()
     m_bookmarksToolbar = new BookmarksToolbar(this);
 
     m_tabModel = new TabModel(this, this);
+    m_tabModel->setTabGroupModel(m_tabWidget->tabGroupModel());
     m_tabMruModel = new TabMruModel(this, this);
     m_tabMruModel->setSourceModel(m_tabModel);
 
@@ -572,11 +573,14 @@ QHash<QString, QVariant> BrowserWindow::saveUiState()
     state[QSL("SideBarWidth")] = m_sideBarWidth;
     state[QSL("WebViewWidth")] = m_webViewWidth;
     state[QSL("SideBar")] = m_sideBarManager->activeSideBar();
+    state[QSL("TabGroups")] = m_tabWidget->saveTabGroups();
     return state;
 }
 
 void BrowserWindow::restoreUiState(const QHash<QString, QVariant> &state)
 {
+    m_tabWidget->restoreTabGroups(state.value(QSL("TabGroups")).toList());
+
     const int locationBarWidth = state.value(QSL("LocationBarWidth"), 480).toInt();
     const int websearchBarWidth = state.value(QSL("WebSearchBarWidth"), 140).toInt();
     m_navigationToolbar->setSplitterSizes(locationBarWidth, websearchBarWidth);

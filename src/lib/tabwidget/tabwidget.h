@@ -20,6 +20,7 @@
 
 #include <QMenu>
 #include <QPointer>
+#include <QVariant>
 
 #include "tabstackedwidget.h"
 #include "toolbutton.h"
@@ -35,6 +36,7 @@ class TabWidget;
 class BrowserWindow;
 class TabbedWebView;
 class ClosedTabsManager;
+class TabGroupModel;
 
 class FALKON_EXPORT AddTabButton : public ToolButton
 {
@@ -86,6 +88,7 @@ public:
     WebTab *webTab(int index = -1) const;
 
     TabBar* tabBar() const;
+    TabGroupModel* tabGroupModel() const;
     ClosedTabsManager* closedTabsManager() const;
     QList<WebTab*> allTabs(bool withPinned = true);
     bool canRestoreTab() const;
@@ -101,6 +104,15 @@ public:
     int pinUnPinTab(int index, const QString &title = QString());
 
     void detachTab(WebTab* tab);
+    QString createTabGroup(const QString &name, const QString &color, bool collapsed = false);
+    bool renameTabGroup(const QString &groupId, const QString &name);
+    bool setTabGroupColor(const QString &groupId, const QString &color);
+    bool setTabGroupCollapsed(const QString &groupId, bool collapsed);
+    bool setTabGroup(WebTab *tab, const QString &groupId);
+    bool setTabGroup(int index, const QString &groupId);
+    QString tabGroupForTab(WebTab *tab) const;
+    QVariantList saveTabGroups() const;
+    void restoreTabGroups(const QVariantList &groups);
 
 public Q_SLOTS:
     int addView(const LoadRequest &req, const Qz::NewTabPositionFlags &openFlags, bool selectLine = false, bool pinned = false);
@@ -155,6 +167,8 @@ private:
 
     bool validIndex(int index) const;
     void updateClosedTabsButton();
+    bool applyStoredTabGroup(WebTab *tab);
+    void restoreClosedTabState(WebTab *tab, const WebTab::SavedTab &state);
 
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
@@ -163,6 +177,7 @@ private:
     TabBar* m_tabBar;
     QStackedWidget* m_locationBars;
     ClosedTabsManager* m_closedTabsManager;
+    TabGroupModel* m_tabGroupModel;
 
     MenuTabs* m_menuTabs;
     ToolButton* m_buttonListTabs;
