@@ -23,6 +23,7 @@
 #include "websearchbar.h"
 #include "reloadstopbutton.h"
 #include "enhancedmenu.h"
+#include "compacttabstrip.h"
 #include "tabwidget.h"
 #include "tabbedwebview.h"
 #include "webpage.h"
@@ -58,6 +59,13 @@ static QIcon iconForPage(const QUrl &url, const QIcon &sIcon)
     icon.addPixmap(IconProvider::iconForUrl(url).pixmap(16));
     icon.addPixmap(sIcon.pixmap(16), QIcon::Active);
     return icon;
+}
+
+namespace {
+constexpr int CompactRowMaximumHeight = 40;
+constexpr int CompactAddressMinimumWidth = 180;
+constexpr int CompactAddressPreferredWidth = 320;
+constexpr int CompactAddressMaximumWidth = 520;
 }
 
 NavigationBar::NavigationBar(BrowserWindow* window)
@@ -153,6 +161,7 @@ NavigationBar::NavigationBar(BrowserWindow* window)
     m_supMenu->setShowMenuInside(true);
 
     m_searchLine = new WebSearchBar(m_window);
+    m_compactTabStrip = new CompactTabStrip(m_window, this);
 
     m_navigationSplitter = new QSplitter(this);
     m_navigationSplitter->addWidget(m_window->tabWidget()->locationBars());
@@ -193,9 +202,12 @@ NavigationBar::NavigationBar(BrowserWindow* window)
     addWidget(m_reloadStop, QSL("button-reloadstop"), tr("Reload button"));
     addWidget(buttonHome, QSL("button-home"), tr("Home button"));
     addWidget(buttonAddTab, QSL("button-addtab"), tr("Add tab button"));
+    addWidget(m_compactTabStrip, QSL("compact-tabs"), tr("Compact tabs"));
     addWidget(m_navigationSplitter, QSL("locationbar"), tr("Address and Search bar"));
     addWidget(buttonTools, QSL("button-tools"), tr("Tools button"));
     addWidget(m_exitFullscreen, QSL("button-exitfullscreen"), tr("Exit Fullscreen button"));
+
+    connect(mApp, &MainApplication::settingsReloaded, this, &NavigationBar::loadSettings);
 
     loadSettings();
 }
@@ -529,6 +541,25 @@ void NavigationBar::toolActionActivated()
 
 void NavigationBar::loadSettings()
 {
+    m_compactLayout = qzSettings && qzSettings->tabLayout == QzSettings::TabLayout::Compact;
+    m_compactTabStrip->refreshDisplayMode();
+
+    applyCompactConstraints(m_compactLayout);
+
+    if (m_compactLayout) {
+        m_layoutIds = {
+            QSL("button-backforward"),
+            QSL("button-reloadstop"),
+            QSL("button-addtab"),
+            QSL("compact-tabs"),
+            QSL("locationbar"),
+            QSL("button-tools")
+        };
+        m_searchLine->setVisible(false);
+        reloadLayout();
+        return;
+    }
+
     const QStringList defaultIds = {
         QSL("button-backforward"),
         QSL("button-reloadstop"),
@@ -582,6 +613,10 @@ void NavigationBar::reloadLayout()
 
     // Add widgets to layout
     for (const QString &id : std::as_const(m_layoutIds)) {
+        if (m_compactLayout && id == QSL("button-tools")) {
+            m_layout->addWidget(m_supMenu);
+        }
+
         const WidgetData data = m_widgets.value(id);
         if (data.widget) {
             m_layout->addWidget(data.widget);
@@ -594,7 +629,9 @@ void NavigationBar::reloadLayout()
         }
     }
 
-    m_layout->addWidget(m_supMenu);
+    if (!m_compactLayout) {
+        m_layout->addWidget(m_supMenu);
+    }
 
     // Make sure search bar is visible
     if (m_searchLine->isVisible() && m_navigationSplitter->sizes().at(1) == 0) {
@@ -609,6 +646,33 @@ void NavigationBar::reloadLayout()
     }
 
     setUpdatesEnabled(true);
+}
+
+void NavigationBar::applyCompactConstraints(bool compactLayout)
+{
+    QWidget *locationBars = m_window->tabWidget()->locationBars();
+
+    if (compactLayout) {
+        setMaximumHeight(CompactRowMaximumHeight);
+        locationBars->setMinimumWidth(CompactAddressMinimumWidth);
+        locationBars->setMaximumWidth(CompactAddressMaximumWidth);
+        locationBars->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+
+        m_navigationSplitter->setMinimumWidth(CompactAddressMinimumWidth);
+        m_navigationSplitter->setMaximumWidth(CompactAddressMaximumWidth);
+        m_navigationSplitter->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        m_navigationSplitter->setSizes({CompactAddressPreferredWidth, 0});
+        return;
+    }
+
+    setMaximumHeight(QWIDGETSIZE_MAX);
+    locationBars->setMinimumWidth(0);
+    locationBars->setMaximumWidth(QWIDGETSIZE_MAX);
+    locationBars->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+
+    m_navigationSplitter->setMinimumWidth(0);
+    m_navigationSplitter->setMaximumWidth(QWIDGETSIZE_MAX);
+    m_navigationSplitter->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
 }
 
 void NavigationBar::loadHistoryIndex()

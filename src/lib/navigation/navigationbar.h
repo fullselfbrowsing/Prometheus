@@ -34,6 +34,7 @@ class ReloadStopButton;
 class Menu;
 class AbstractButtonInterface;
 class TabbedWebView;
+class CompactTabStrip;
 
 class FALKON_EXPORT NavigationBar : public QWidget
 {
@@ -96,6 +97,7 @@ private Q_SLOTS:
 private:
     void loadSettings();
     void reloadLayout();
+    void applyCompactConstraints(bool compactLayout);
     void loadHistoryItem(const QWebEngineHistoryItem &item);
     void loadHistoryItemInNewTab(const QWebEngineHistoryItem &item);
 
@@ -103,6 +105,7 @@ private:
     QHBoxLayout* m_layout;
     QSplitter* m_navigationSplitter;
     WebSearchBar* m_searchLine;
+    CompactTabStrip* m_compactTabStrip;
 
     Menu* m_menuBack;
     Menu* m_menuForward;
@@ -124,6 +127,7 @@ private:
 
     QStringList m_layoutIds;
     QHash<QString, WidgetData> m_widgets;
+    bool m_compactLayout = false;
 
     friend class NavigationBarConfigDialog;
 };
