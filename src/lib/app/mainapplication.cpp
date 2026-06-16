@@ -20,9 +20,13 @@
 #include "qztools.h"
 #include "updater.h"
 #include "autofill.h"
+#include "agentcommandrouter.h"
+#include "agentruntime.h"
+#include "agentruntimesidebar.h"
 #include "settings.h"
 #include "autosaver.h"
 #include "datapaths.h"
+#include "sidebar.h"
 #include "tabwidget.h"
 #include "cookiejar.h"
 #include "bookmarks.h"
@@ -107,20 +111,23 @@ MainApplication::MainApplication(int &argc, char** argv)
     , m_desktopNotifications(nullptr)
     , m_webProfile(nullptr)
     , m_autoSaver(nullptr)
+    , m_agentRuntime(nullptr)
+    , m_agentRuntimeSidebar(nullptr)
+    , m_agentCommandRouter(nullptr)
 #if defined(Q_OS_WIN) && !defined(Q_OS_OS2)
     , m_registerQAppAssociation(0)
 #endif
 {
     setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
 
-    setApplicationName(QStringLiteral("falkon"));
-    setOrganizationDomain(QStringLiteral("org.kde"));
+    setApplicationName(QStringLiteral("prometheus"));
+    setOrganizationDomain(QStringLiteral("full-selfbrowsing.com"));
 #if defined(Q_OS_WIN)
     QIcon::setFallbackThemeName(QStringLiteral("breeze"));
     setStyle(QStringLiteral("breeze"));
 #endif
-    setWindowIcon(QIcon::fromTheme(QSL("falkon"), QIcon(QSL(":icons/falkon.svg"))));
-    setDesktopFileName(QSL("org.kde.falkon"));
+    setWindowIcon(QIcon::fromTheme(QSL("prometheus"), QIcon(QSL(":icons/prometheus.svg"))));
+    setDesktopFileName(QSL("com.fullselfbrowsing.prometheus"));
 
 #ifdef GIT_REVISION
     setApplicationVersion(QSL("%1 (%2)").arg(QString::fromLatin1(Qz::VERSION), GIT_REVISION));
@@ -217,18 +224,22 @@ MainApplication::MainApplication(int &argc, char** argv)
     }
 
     if (!isPortable()) {
-        QSettings falkonConf(QSL("%1/falkon.conf").arg(applicationDirPath()), QSettings::IniFormat);
-        m_isPortable = falkonConf.value(QSL("Config/Portable")).toBool();
+        QSettings portableConf(QSL("%1/prometheus.conf").arg(applicationDirPath()), QSettings::IniFormat);
+        m_isPortable = portableConf.value(QSL("Config/Portable")).toBool();
+        if (!m_isPortable) {
+            QSettings legacyPortableConf(QSL("%1/falkon.conf").arg(applicationDirPath()), QSettings::IniFormat);
+            m_isPortable = legacyPortableConf.value(QSL("Config/Portable")).toBool();
+        }
     }
 
     if (isPortable()) {
-        std::cout << "Falkon: Running in Portable Mode." << std::endl;
+        std::cout << "Prometheus: Running in Portable Mode." << std::endl;
         DataPaths::setPortableVersion();
     }
 
     // Don't start single application in private browsing
     if (!isPrivate()) {
-        QString appId = QStringLiteral("org.kde.Falkon");
+        QString appId = QStringLiteral("com.fullselfbrowsing.Prometheus");
 
         if (isPortable()) {
             appId.append(QLatin1String(".Portable"));
@@ -290,6 +301,7 @@ MainApplication::MainApplication(int &argc, char** argv)
     profileManager.initCurrentProfile(startProfile);
 
     Settings::createSettings(DataPaths::currentProfilePath() + QLatin1String("/settings.ini"));
+    m_agentRuntime = new AgentRuntime(this);
 
     setChromiumFlags();
     NetworkManager::registerSchemes();
@@ -351,6 +363,9 @@ MainApplication::MainApplication(int &argc, char** argv)
     if (!noAddons)
         m_plugins->loadPlugins();
 
+    m_agentRuntimeSidebar = new AgentRuntimeSidebarController(this);
+    SideBarManager::addSidebar(QSL("PrometheusAgent"), m_agentRuntimeSidebar);
+
     BrowserWindow *window = createWindow(Qz::BW_FirstAppWindow, std::move(startUrls));
     connect(window, SIGNAL(startingCompleted()), this, SLOT(restoreOverrideCursor()));
 
@@ -384,6 +399,26 @@ MainApplication::MainApplication(int &argc, char** argv)
 
     connect(this, SIGNAL(messageReceived(QString)), this, SLOT(messageReceived(QString)));
     connect(this, &QCoreApplication::aboutToQuit, this, &MainApplication::saveSettings);
+
+    const QByteArray agentPortValue = qgetenv("PROMETHEUS_AGENT_PORT");
+    if (!agentPortValue.isEmpty()) {
+        bool ok = false;
+        const int requestedPort = agentPortValue.toInt(&ok);
+        if (ok && requestedPort >= 0 && requestedPort <= 65535) {
+            m_agentCommandRouter = new AgentCommandRouter(this);
+            if (m_agentCommandRouter->start(static_cast<quint16>(requestedPort))) {
+                qInfo() << "Prometheus agent command server listening on 127.0.0.1:" << m_agentCommandRouter->port();
+            }
+            else {
+                qWarning() << "Prometheus agent command server failed to listen on port" << requestedPort;
+                delete m_agentCommandRouter;
+                m_agentCommandRouter = nullptr;
+            }
+        }
+        else {
+            qWarning() << "Invalid PROMETHEUS_AGENT_PORT value" << agentPortValue;
+        }
+    }
 
     QTimer::singleShot(0, this, &MainApplication::postLaunch);
 }
@@ -701,6 +736,16 @@ DesktopNotificationsFactory* MainApplication::desktopNotifications()
         m_desktopNotifications = new DesktopNotificationsFactory(this);
     }
     return m_desktopNotifications;
+}
+
+AgentRuntime* MainApplication::agentRuntime() const
+{
+    return m_agentRuntime;
+}
+
+AgentCommandRouter* MainApplication::agentCommandRouter() const
+{
+    return m_agentCommandRouter;
 }
 
 QWebEngineProfile *MainApplication::webProfile() const
@@ -1154,8 +1199,8 @@ void MainApplication::checkDefaultWebBrowser()
     if (!associationManager()->isDefaultForAllCapabilities()) {
         CheckBoxDialog dialog(QMessageBox::Yes | QMessageBox::No, getWindow());
         dialog.setDefaultButton(QMessageBox::Yes);
-        dialog.setText(tr("Falkon is not currently your default browser. Would you like to make it your default browser?"));
-        dialog.setCheckBoxText(tr("Always perform this check when starting Falkon."));
+        dialog.setText(tr("Prometheus is not currently your default browser. Would you like to make it your default browser?"));
+        dialog.setCheckBoxText(tr("Always perform this check when starting Prometheus."));
         dialog.setDefaultCheckState(Qt::Checked);
         dialog.setWindowTitle(tr("Default Browser"));
         dialog.setIcon(QMessageBox::Warning);
@@ -1283,23 +1328,23 @@ void MainApplication::setUserStyleSheet(const QString &filePath)
 
 void MainApplication::initPulseSupport()
 {
-    qputenv("PULSE_PROP_OVERRIDE_application.name", "Falkon");
-    qputenv("PULSE_PROP_OVERRIDE_application.icon_name", "falkon");
-    qputenv("PULSE_PROP_OVERRIDE_media.icon_name", "falkon");
+    qputenv("PULSE_PROP_OVERRIDE_application.name", "Prometheus");
+    qputenv("PULSE_PROP_OVERRIDE_application.icon_name", "prometheus");
+    qputenv("PULSE_PROP_OVERRIDE_media.icon_name", "prometheus");
 }
 
 #if defined(Q_OS_WIN) && !defined(Q_OS_OS2)
 RegisterQAppAssociation* MainApplication::associationManager()
 {
     if (!m_registerQAppAssociation) {
-        QString desc = tr("Falkon is a new and very fast Qt web browser. Falkon is licensed under GPL version 3 or (at your option) any later version. It is based on QtWebEngine and Qt Framework.");
+        QString desc = tr("Prometheus is an agent-native QtWebEngine browser powered by FSB. It is licensed under GPL version 3 or (at your option) any later version.");
         QString fileIconPath = QApplication::applicationFilePath() + QSL(",1");
         QString appIconPath = QApplication::applicationFilePath() + QSL(",0");
-        m_registerQAppAssociation = new RegisterQAppAssociation(QSL("Falkon"), QApplication::applicationFilePath(), appIconPath, desc, this);
-        m_registerQAppAssociation->addCapability(QSL(".html"), QSL("FalkonHTML"), QSL("Falkon HTML Document"), fileIconPath, RegisterQAppAssociation::FileAssociation);
-        m_registerQAppAssociation->addCapability(QSL(".htm"), QSL("FalkonHTML"), QSL("Falkon HTML Document"), fileIconPath, RegisterQAppAssociation::FileAssociation);
-        m_registerQAppAssociation->addCapability(QSL("http"), QSL("FalkonURL"), QSL("Falkon URL"), appIconPath, RegisterQAppAssociation::UrlAssociation);
-        m_registerQAppAssociation->addCapability(QSL("https"), QSL("FalkonURL"), QSL("Falkon URL"), appIconPath, RegisterQAppAssociation::UrlAssociation);
+        m_registerQAppAssociation = new RegisterQAppAssociation(QSL("Prometheus"), QApplication::applicationFilePath(), appIconPath, desc, this);
+        m_registerQAppAssociation->addCapability(QSL(".html"), QSL("PrometheusHTML"), QSL("Prometheus HTML Document"), fileIconPath, RegisterQAppAssociation::FileAssociation);
+        m_registerQAppAssociation->addCapability(QSL(".htm"), QSL("PrometheusHTML"), QSL("Prometheus HTML Document"), fileIconPath, RegisterQAppAssociation::FileAssociation);
+        m_registerQAppAssociation->addCapability(QSL("http"), QSL("PrometheusURL"), QSL("Prometheus URL"), appIconPath, RegisterQAppAssociation::UrlAssociation);
+        m_registerQAppAssociation->addCapability(QSL("https"), QSL("PrometheusURL"), QSL("Prometheus URL"), appIconPath, RegisterQAppAssociation::UrlAssociation);
     }
     return m_registerQAppAssociation;
 }

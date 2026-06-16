@@ -39,6 +39,9 @@ class MainMenu;
 class Bookmarks;
 class CookieJar;
 class AutoSaver;
+class AgentCommandRouter;
+class AgentRuntime;
+class AgentRuntimeSidebarController;
 class PluginProxy;
 class BrowserWindow;
 class NetworkManager;
@@ -117,6 +120,8 @@ public:
     HTML5PermissionsManager* html5PermissionsManager();
     SiteSettingsManager* siteSettingsManager();
     DesktopNotificationsFactory* desktopNotifications();
+    AgentRuntime* agentRuntime() const;
+    AgentCommandRouter* agentCommandRouter() const;
     QWebEngineProfile* webProfile() const;
     QWebEngineSettings *webSettings() const;
 
@@ -199,6 +204,9 @@ private:
     QWebEngineProfile* m_webProfile;
 
     AutoSaver* m_autoSaver;
+    AgentRuntime* m_agentRuntime;
+    AgentRuntimeSidebarController* m_agentRuntimeSidebar;
+    AgentCommandRouter* m_agentCommandRouter;
     ProxyStyle *m_proxyStyle = nullptr;
 
     QByteArray m_wmClass;
