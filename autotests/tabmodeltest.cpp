@@ -113,6 +113,10 @@ void TabModelTest::dataTest()
     QCOMPARE(model.index(0, 0).data(TabModel::PinnedRole).toBool(), tab0->isPinned());
     QCOMPARE(model.index(0, 0).data(TabModel::RestoredRole).toBool(), tab0->isRestored());
     QCOMPARE(model.index(0, 0).data(TabModel::CurrentTabRole).toBool(), true);
+    QCOMPARE(model.index(0, 0).data(TabModel::TabOwnerRole).toString(), QString());
+    QCOMPARE(model.index(0, 0).data(TabModel::ActiveAutomationRole).toBool(), false);
+    QCOMPARE(model.index(0, 0).data(TabModel::SupervisionRole).toBool(), false);
+    QCOMPARE(model.index(0, 0).data(TabModel::TabHealthRole).toString(), QSL("ok"));
 
     w->tabWidget()->addView(QUrl(QSL("http://test.com")));
 
