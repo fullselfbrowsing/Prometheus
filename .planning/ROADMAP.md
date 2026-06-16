@@ -150,7 +150,7 @@ Plans:
 - [x] 07-04-PLAN.md — Integrate compact chrome into NavigationBar and preserve separate layout.
 - [x] 07-05-PLAN.md — Build the tab overview, search, and quick-switch popup foundation.
 - [x] 07-06-PLAN.md — Wire tab overview/search/quick-switch into chrome and menus.
-- [ ] 07-07-PLAN.md — Add persistent native tab group metadata and model roles.
+- [x] 07-07-PLAN.md — Add persistent native tab group metadata and model roles.
 - [ ] 07-08-PLAN.md — Complete group actions, advanced tab operations, and MCP/native tab reads.
 - [ ] 07-09-PLAN.md — Wire native tab group roles into compact chrome and grouped overview/search.
 - [ ] 07-10-PLAN.md — Add compact-tab smoke validation and visual verification checkpoint.
@@ -200,6 +200,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9
 | 4. MCP Compatibility and Multi-Agent Control | 5/5 | Complete | 2026-06-16 |
 | 5. FSB Runtime Parity Surfaces | 5/5 | Complete | 2026-06-16 |
 | 6. Supervision, Packaging, and Release Hardening | 4/4 | Complete | 2026-06-16 |
-| 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 5/10 | In Progress | - |
+| 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 7/10 | In Progress | - |
 | 8. Native FSB-Plus Settings Side Panel and Feature Parity Matrix | 0/0 | Not planned | - |
 | 9. Offline Font Awesome Free Icon System and Minimal Themes | 0/0 | Not planned | - |
