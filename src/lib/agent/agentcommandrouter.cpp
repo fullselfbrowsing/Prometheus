@@ -8,6 +8,7 @@
 #include "sidebar.h"
 #include "statusbar.h"
 #include "tabbedwebview.h"
+#include "tabmodel.h"
 #include "tabwidget.h"
 #include "webpage.h"
 #include "webtab.h"
@@ -26,6 +27,20 @@
 #include <QTcpSocket>
 #include <QUrl>
 #include <QUuid>
+
+namespace {
+
+bool isUnsupportedGroupMutationTool(const QString &tool)
+{
+    return tool == QL1S("create_tab_group")
+            || tool == QL1S("rename_tab_group")
+            || tool == QL1S("move_tab_to_group")
+            || tool == QL1S("collapse_tab_group")
+            || tool == QL1S("expand_tab_group")
+            || tool == QL1S("close_tab_group");
+}
+
+}
 
 AgentCommandRouter::AgentCommandRouter(QObject* parent)
     : QObject(parent)
@@ -87,6 +102,14 @@ QJsonObject AgentCommandRouter::route(const QJsonObject &request)
 
     if (tool == QL1S("start_visual_session") || tool == QL1S("end_visual_session")) {
         return routeLegacyVisualSession(id, tool, params, 0);
+    }
+    if (isUnsupportedGroupMutationTool(tool)) {
+        return failure(id,
+                       tool,
+                       QSL("unsupported_group_mutation"),
+                       QSL("Tab group mutation tools are not exposed through Prometheus agent routing. Use list_tabs for groupId, groupName, groupColor, groupCollapsed, owner, activeAutomation, supervisionActive, and health reads; use the native UI for group changes until an ownership-enforced mutation contract is added."),
+                       0,
+                       QJsonObject{{QSL("migration"), QSL("Read tab group state with list_tabs. Native group mutations remain UI-only in this release.")}});
     }
     if (tool == QL1S("diagnostics") || tool == QL1S("get_diagnostics")) {
         return routeDiagnostics(id, tool, params, 0);
@@ -445,6 +468,31 @@ QJsonObject AgentCommandRouter::tabInfo(BrowserWindow* window, int windowIndex, 
     for (auto it = chromeState.constBegin(); it != chromeState.constEnd(); ++it) {
         info.insert(it.key(), it.value());
     }
+
+    info.insert(QSL("groupId"), QString());
+    info.insert(QSL("groupName"), QString());
+    info.insert(QSL("groupColor"), QString());
+    info.insert(QSL("groupCollapsed"), false);
+
+    TabModel *model = window->tabModel();
+    if (!tab || !model) {
+        return info;
+    }
+
+    const QModelIndex modelIndex = model->tabIndex(tab);
+    if (!modelIndex.isValid()) {
+        return info;
+    }
+
+    info.insert(QSL("groupId"), modelIndex.data(TabModel::TabGroupIdRole).toString());
+    info.insert(QSL("groupName"), modelIndex.data(TabModel::TabGroupNameRole).toString());
+    info.insert(QSL("groupColor"), modelIndex.data(TabModel::TabGroupColorRole).toString());
+    info.insert(QSL("groupCollapsed"), modelIndex.data(TabModel::TabGroupCollapsedRole).toBool());
+    info.insert(QSL("owner"), modelIndex.data(TabModel::TabOwnerRole).toString());
+    info.insert(QSL("activeAutomation"), modelIndex.data(TabModel::ActiveAutomationRole).toBool());
+    info.insert(QSL("supervisionActive"), modelIndex.data(TabModel::SupervisionRole).toBool());
+    const QString health = modelIndex.data(TabModel::TabHealthRole).toString();
+    info.insert(QSL("health"), health.isEmpty() ? QSL("ok") : health);
     return info;
 }
 
