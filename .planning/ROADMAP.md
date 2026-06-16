@@ -145,7 +145,7 @@ Plans:
 
 Plans:
 - [x] 07-01-PLAN.md — Persist compact/separate layout and title/favicon tab display settings.
-- [ ] 07-02-PLAN.md — Expose agent-aware tab state through native reads and TabModel roles.
+- [x] 07-02-PLAN.md — Expose agent-aware tab state through native reads and TabModel roles.
 - [ ] 07-03-PLAN.md — Build the compact tab strip, filter model, and delegate primitives.
 - [ ] 07-04-PLAN.md — Integrate compact chrome into NavigationBar and preserve separate layout.
 - [ ] 07-05-PLAN.md — Build the tab overview, search, and quick-switch popup foundation.
@@ -200,6 +200,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9
 | 4. MCP Compatibility and Multi-Agent Control | 5/5 | Complete | 2026-06-16 |
 | 5. FSB Runtime Parity Surfaces | 5/5 | Complete | 2026-06-16 |
 | 6. Supervision, Packaging, and Release Hardening | 4/4 | Complete | 2026-06-16 |
-| 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 1/10 | In Progress | - |
+| 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 2/10 | In Progress | - |
 | 8. Native FSB-Plus Settings Side Panel and Feature Parity Matrix | 0/0 | Not planned | - |
 | 9. Offline Font Awesome Free Icon System and Minimal Themes | 0/0 | Not planned | - |
