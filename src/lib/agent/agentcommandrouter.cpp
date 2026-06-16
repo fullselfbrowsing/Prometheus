@@ -1485,16 +1485,13 @@ QUrl AgentCommandRouter::taskUrlFromPrompt(const QString &prompt) const
 
 QString AgentCommandRouter::agentIdForParams(const QJsonObject &params, QString* errorCode, QString* errorMessage)
 {
-    QString label = params.value(QSL("client")).toVariant().toString();
-    if (label.isEmpty()) {
-        label = params.value(QSL("clientLabel")).toVariant().toString();
-    }
-    if (label.isEmpty()) {
-        label = QSL("local-default");
+    QString sessionKey = params.value(QSL("_prometheusSessionKey")).toString();
+    if (sessionKey.isEmpty()) {
+        sessionKey = QSL("in-process");
     }
 
-    if (m_agentIds.contains(label)) {
-        return m_agentIds.value(label);
+    if (m_agentIds.contains(sessionKey)) {
+        return m_agentIds.value(sessionKey);
     }
 
     if (m_agentIds.size() >= m_agentCap) {
@@ -1504,7 +1501,7 @@ QString AgentCommandRouter::agentIdForParams(const QJsonObject &params, QString*
     }
 
     const QString agentId = QSL("agent-%1").arg(m_nextAgentNumber++);
-    m_agentIds.insert(label, agentId);
+    m_agentIds.insert(sessionKey, agentId);
     return agentId;
 }
 

@@ -26,6 +26,7 @@ class AgentCommandRouterTest : public QObject
 private Q_SLOTS:
     void defaultTabChromeState();
     void httpCommandRequiresAuthorizationToken();
+    void callerControlledClientLabelDoesNotGrantOwnership();
     void listTabsContractIncludesGroupAndStateFields();
     void unsupportedGroupMutationToolsReturnCompatibilityError();
 };

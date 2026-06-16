@@ -19,6 +19,9 @@
 #include "agentcommandrouter.h"
 
 #include "autotests.h"
+#include "browserwindow.h"
+#include "mainapplication.h"
+#include "tabwidget.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -60,6 +63,15 @@ QByteArray httpBody(const QByteArray &response)
         return {};
     }
     return response.mid(split + 4);
+}
+
+QJsonObject command(const QString &id, const QString &tool, const QJsonObject &params = {})
+{
+    return QJsonObject{
+        {QSL("id"), id},
+        {QSL("tool"), tool},
+        {QSL("params"), params}
+    };
 }
 
 } // namespace
@@ -124,6 +136,37 @@ void AgentCommandRouterTest::httpCommandRequiresAuthorizationToken()
     const QByteArray preflightResponse = httpExchange(router.port(), preflightRequest);
     QVERIFY2(preflightResponse.startsWith("HTTP/1.1 401"), preflightResponse.constData());
     QVERIFY(!preflightResponse.contains("Access-Control-Allow-Origin"));
+}
+
+void AgentCommandRouterTest::callerControlledClientLabelDoesNotGrantOwnership()
+{
+    BrowserWindow *window = mApp->createWindow(Qz::BW_NewWindow);
+    QTRY_VERIFY(window->tabWidget()->count() > 0);
+
+    AgentCommandRouter router;
+    const QJsonObject firstOwner = router.routeForSession(command(QSL("own"),
+                                                                  QSL("activate_tab"),
+                                                                  QJsonObject{{QSL("client"), QSL("shared-label")}, {QSL("tabIndex"), 0}}),
+                                                          QSL("session-one"));
+    QVERIFY2(firstOwner.value(QSL("ok")).toBool(), qPrintable(QString::fromUtf8(QJsonDocument(firstOwner).toJson(QJsonDocument::Compact))));
+    const QString agentId = firstOwner.value(QSL("result")).toObject().value(QSL("agentId")).toString();
+    QVERIFY(!agentId.isEmpty());
+
+    const QJsonObject sameSession = router.routeForSession(command(QSL("same-session"),
+                                                                   QSL("activate_tab"),
+                                                                   QJsonObject{{QSL("client"), QSL("different-display-label")}, {QSL("tabIndex"), 0}}),
+                                                           QSL("session-one"));
+    QVERIFY2(sameSession.value(QSL("ok")).toBool(), qPrintable(QString::fromUtf8(QJsonDocument(sameSession).toJson(QJsonDocument::Compact))));
+    QCOMPARE(sameSession.value(QSL("result")).toObject().value(QSL("agentId")).toString(), agentId);
+
+    const QJsonObject spoofedLabel = router.routeForSession(command(QSL("spoofed-label"),
+                                                                    QSL("activate_tab"),
+                                                                    QJsonObject{{QSL("client"), QSL("shared-label")}, {QSL("tabIndex"), 0}}),
+                                                            QSL("session-two"));
+    QCOMPARE(spoofedLabel.value(QSL("ok")).toBool(), false);
+    QCOMPARE(spoofedLabel.value(QSL("error")).toObject().value(QSL("code")).toString(), QSL("TAB_OWNED_BY_OTHER_AGENT"));
+
+    delete window;
 }
 
 void AgentCommandRouterTest::listTabsContractIncludesGroupAndStateFields()
