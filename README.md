@@ -235,7 +235,7 @@ Supervision reads require a session created through `create_supervision_pairing`
 | `falkon/tools/fsb-baseline/` | Build, smoke, packaging, release validation, and legal inventory scripts. |
 | `falkon/src/` | Qt and QtWebEngine browser shell. |
 | `falkon/COPYING` | GPLv3 license text. |
-| `.planning/` | Product planning, research, and phase records. |
+| `.planning/` | Product planning and phase records. |
 
 ---
 
