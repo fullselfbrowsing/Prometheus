@@ -168,6 +168,8 @@ void TabWidget::loadSettings()
     m_urlOnNewTab = settings.value(QSL("newTabUrl"), QSL("falkon:speeddial")).toUrl();
     settings.endGroup();
 
+    m_compactLayout = qzSettings && qzSettings->tabLayout == QzSettings::TabLayout::Compact;
+    m_tabBar->setForceHidden(m_compactLayout);
     m_tabBar->loadSettings();
 
     updateClosedTabsButton();
@@ -224,6 +226,11 @@ bool TabWidget::isCurrentTabFresh() const
 void TabWidget::setCurrentTabFresh(bool currentTabFresh)
 {
     m_currentTabFresh = currentTabFresh;
+}
+
+bool TabWidget::isCompactLayout() const
+{
+    return m_compactLayout;
 }
 
 void TabWidget::tabBarOverFlowChanged(bool overflowed)

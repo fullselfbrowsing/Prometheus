@@ -91,6 +91,7 @@ public:
     bool canRestoreTab() const;
     bool isCurrentTabFresh() const;
     void setCurrentTabFresh(bool currentTabFresh);
+    bool isCompactLayout() const;
 
     QStackedWidget* locationBars() const;
     ToolButton* buttonClosedTabs() const;
@@ -179,6 +180,7 @@ private:
     QUrl m_urlOnNewTab;
 
     bool m_currentTabFresh;
+    bool m_compactLayout = false;
     bool m_blockTabMovedSignal = false;
 };
 
