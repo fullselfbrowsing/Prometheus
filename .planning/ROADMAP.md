@@ -1,8 +1,8 @@
-# Roadmap: FSB Browser
+# Roadmap: Prometheus
 
 ## Overview
 
-FSB Browser starts by making the Falkon-derived browser buildable and legally understood, then replaces product-visible identity with FSB Browser, then builds the native agent control spine that makes this more than an extension port. Once the native spine exists, the roadmap restores FSB MCP compatibility, multi-agent execution, FSB runtime surfaces, PhantomStream supervision, and release packaging.
+Prometheus starts by making the Falkon-derived browser buildable and legally understood, then replaces product-visible identity with Prometheus and the "Powered by FSB" affiliation, then builds the native agent control spine that makes this more than an extension port. Once the native spine exists, the roadmap restores FSB MCP compatibility, multi-agent execution, FSB runtime surfaces, PhantomStream supervision, and release packaging.
 
 ## Phases
 
@@ -10,12 +10,15 @@ FSB Browser starts by making the Falkon-derived browser buildable and legally un
 - Integer phases (1, 2, 3): Planned milestone work
 - Decimal phases (2.1, 2.2): Urgent insertions
 
-- [ ] **Phase 1: Baseline and Legal Inventory** - Prove the fork builds and map inherited code, identity, and license obligations.
-- [ ] **Phase 2: FSB Product Identity Shell** - Rebrand primary product surfaces and establish the FSB Browser visual shell.
-- [ ] **Phase 3: Native Agent Control Spine** - Add the native command router, surface adapters, JS execution, page reads, and internal settings proof.
-- [ ] **Phase 4: MCP Compatibility and Multi-Agent Control** - Expose the FSB-compatible tool contract with ownership, action execution, visual sessions, and diagnostics.
-- [ ] **Phase 5: FSB Runtime Parity Surfaces** - Rebuild the user-facing FSB automation experience inside the browser.
-- [ ] **Phase 6: Supervision, Packaging, and Release Hardening** - Add PhantomStream-style supervision, safe pairing, release artifacts, and full validation.
+- [x] **Phase 1: Baseline and Legal Inventory** - Prove the fork builds and map inherited code, identity, and license obligations.
+- [x] **Phase 2: Prometheus Product Identity Shell** - Rebrand primary product surfaces and establish the Prometheus visual shell, with "Powered by FSB" as the affiliation/tagline.
+- [x] **Phase 3: Native Agent Control Spine** - Add the native command router, surface adapters, JS execution, page reads, and internal settings proof.
+- [x] **Phase 4: MCP Compatibility and Multi-Agent Control** - Expose the FSB-compatible tool contract with ownership, action execution, visual sessions, and diagnostics.
+- [x] **Phase 5: FSB Runtime Parity Surfaces** - Rebuild the user-facing FSB automation experience inside the browser.
+- [x] **Phase 6: Supervision, Packaging, and Release Hardening** - Add PhantomStream-style supervision, safe pairing, release artifacts, and full validation.
+- [ ] **Phase 7: Compact Safari-style Browser Chrome and Advanced Tab Management** - Make Prometheus feel like a minimal native browser with compact toolbar/tab chrome, tab groups, overview, and agent-aware tab state.
+- [ ] **Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix** - Turn the Prometheus side panel into a native control center that meets or exceeds FSB's extension-side feature set.
+- [ ] **Phase 9: Offline Font Awesome Free Icon System and Minimal Themes** - Bundle free offline icons natively and harden the theme system around a restrained, minimal Prometheus aesthetic.
 
 ## Phase Details
 
@@ -31,26 +34,26 @@ FSB Browser starts by making the Falkon-derived browser buildable and legally un
 **Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: Build and smoke baseline for the local Falkon fork.
-- [ ] 01-02: Product identity and packaging inventory.
-- [ ] 01-03: License/legal notice inventory and preservation checks.
+- [x] 01-01: Build and smoke baseline for the local Falkon fork.
+- [x] 01-02: Product identity and packaging inventory.
+- [x] 01-03: License/legal notice inventory and preservation checks.
 
-### Phase 2: FSB Product Identity Shell
-**Goal**: Make the primary app experience look and feel like FSB Browser without breaking the native browser build.
+### Phase 2: Prometheus Product Identity Shell
+**Goal**: Make the primary app experience look and feel like Prometheus, Powered by FSB, without breaking the native browser build.
 **Depends on**: Phase 1
 **Requirements**: BRAND-01, BRAND-02, BRAND-03, BRAND-04
 **Success Criteria** (what must be TRUE):
-  1. User sees FSB Browser branding in app name, window title, icons, first-run/about surfaces, and main browser chrome.
+  1. User sees Prometheus branding in app name, window title, icons, first-run/about surfaces, and main browser chrome, with "Powered by FSB" used as the affiliation/tagline where appropriate.
   2. User does not see Falkon/KDE product branding in primary browser UI, default bookmarks, desktop/bundle metadata, or product docs.
   3. Browser UI uses the FSB dark/orange operator visual language.
   4. The browser still builds and packages after each rebrand layer.
 **Plans**: 4 plans
 
 Plans:
-- [ ] 02-01: App metadata, bundle IDs, executable labels, and platform files.
-- [ ] 02-02: Icons, assets, default bookmarks, first-run/about surfaces.
-- [ ] 02-03: FSB dark/orange browser chrome and operator styling baseline.
-- [ ] 02-04: Product docs and rebrand verification pass.
+- [x] 02-01: App metadata, bundle IDs, executable labels, and platform files.
+- [x] 02-02: Icons, assets, default bookmarks, first-run/about surfaces.
+- [x] 02-03: FSB dark/orange browser chrome and operator styling baseline.
+- [x] 02-04: Product docs and rebrand verification pass.
 
 ### Phase 3: Native Agent Control Spine
 **Goal**: Create the browser-native control layer that can target web pages and browser-owned surfaces safely.
@@ -65,11 +68,11 @@ Plans:
 **Plans**: 5 plans
 
 Plans:
-- [ ] 03-01: Native tool router, result envelope, and audit log foundation.
-- [ ] 03-02: Tab/window/navigation commands.
-- [ ] 03-03: Page text, DOM snapshot, and compact page snapshot adapters.
-- [ ] 03-04: Permissioned JavaScript execution with read-back verification.
-- [ ] 03-05: Internal settings/native surface command proof.
+- [x] 03-01: Native tool router, result envelope, and audit log foundation.
+- [x] 03-02: Tab/window/navigation commands.
+- [x] 03-03: Page text, DOM snapshot, and compact page snapshot adapters.
+- [x] 03-04: Permissioned JavaScript execution with read-back verification.
+- [x] 03-05: Internal settings/native surface command proof.
 
 ### Phase 4: MCP Compatibility and Multi-Agent Control
 **Goal**: Let existing FSB-style MCP clients drive the native browser with safe action execution and multi-agent isolation.
@@ -84,18 +87,18 @@ Plans:
 **Plans**: 5 plans
 
 Plans:
-- [ ] 04-01: MCP server/bridge and canonical FSB tool schema adapter.
-- [ ] 04-02: Manual action tools, waits, change reports, and stuck detection.
-- [ ] 04-03: Read tools and diagnostics parity.
-- [ ] 04-04: Multi-agent identity, ownership, cap, reconnect, and background-tab behavior.
-- [ ] 04-05: Visual session compatibility and overlay/action feedback.
+- [x] 04-01: MCP server/bridge and canonical FSB tool schema adapter.
+- [x] 04-02: Manual action tools, waits, change reports, and stuck detection.
+- [x] 04-03: Read tools and diagnostics parity.
+- [x] 04-04: Multi-agent identity, ownership, cap, reconnect, and background-tab behavior.
+- [x] 04-05: Visual session compatibility and overlay/action feedback.
 
 ### Phase 5: FSB Runtime Parity Surfaces
 **Goal**: Rebuild the FSB automation product experience inside the browser.
 **Depends on**: Phase 4
 **Requirements**: FSB-01, FSB-02, FSB-03, FSB-04, FSB-05, FSB-06, SEC-01
 **Success Criteria** (what must be TRUE):
-  1. User can submit natural-language browser tasks from an FSB Browser side panel or equivalent surface.
+  1. User can submit natural-language browser tasks from a Prometheus side panel or equivalent surface.
   2. User can configure supported hosted, routed, local, and custom AI providers.
   3. Browser can run autopilot tasks with progress, cancellation, final result, and failure reporting.
   4. Browser stores and displays logs, diagnostics, action history, costs, memory/site guides, and task outcomes.
@@ -103,11 +106,11 @@ Plans:
 **Plans**: 5 plans
 
 Plans:
-- [ ] 05-01: Agent side panel and task submission UI.
-- [ ] 05-02: Provider configuration, model discovery, and secure key storage.
-- [ ] 05-03: Autopilot loop, progress, cancellation, and final results.
-- [ ] 05-04: Logs, diagnostics, analytics, costs, memory, and site guides.
-- [ ] 05-05: Vault flows and sensitive autofill boundaries.
+- [x] 05-01: Agent side panel and task submission UI.
+- [x] 05-02: Provider configuration, model discovery, and secure key storage.
+- [x] 05-03: Autopilot loop, progress, cancellation, and final results.
+- [x] 05-04: Logs, diagnostics, analytics, costs, memory, and site guides.
+- [x] 05-05: Vault flows and sensitive autofill boundaries.
 
 ### Phase 6: Supervision, Packaging, and Release Hardening
 **Goal**: Make the browser supervised, installable, and release-ready.
@@ -122,21 +125,80 @@ Plans:
 **Plans**: 4 plans
 
 Plans:
-- [ ] 06-01: PhantomStream-style DOM mirror and supervised viewer.
-- [ ] 06-02: Safe dashboard/sync pairing and remote-control session identity.
-- [ ] 06-03: Initial platform packaging and legal bundle.
-- [ ] 06-04: Release validation suite and final hardening.
+- [x] 06-01: PhantomStream-style DOM mirror and supervised viewer.
+- [x] 06-02: Safe dashboard/sync pairing and remote-control session identity.
+- [x] 06-03: Initial platform packaging and legal bundle.
+- [x] 06-04: Release validation suite and final hardening.
+
+### Phase 7: Compact Safari-style Browser Chrome and Advanced Tab Management
+**Goal**: Make Prometheus use a minimal compact browser chrome inspired by Safari's compact layout while preserving agent visibility and power-user tab workflows.
+**Depends on**: Phase 6
+**Requirements**: UX-01, UX-02, UX-03, UX-04, UX-05, UX-06
+**Success Criteria** (what must be TRUE):
+  1. Compact mode moves tabs into the toolbar, with the active tab acting as the unified address/search field.
+  2. Users can switch compact/separate layouts and keep titles or favicon-only tab display without layout instability.
+  3. Tab groups, tab overview/search, reorder, close/restore, unload, duplicate, detach, and quick-switch flows work from native UI.
+  4. Agent ownership, active automation, supervision, and tab health remain visible in compact chrome without visual clutter.
+  5. Keyboard shortcuts and mouse/trackpad interactions remain Mac-native and compatible with existing Falkon tab behavior.
+  6. Visual verification confirms compact chrome is minimal, readable, non-overlapping, and stable across narrow and wide windows.
+**Plans**: 9 plans
+
+Plans:
+- [ ] 07-01-PLAN.md — Persist compact/separate layout and title/favicon tab display settings.
+- [ ] 07-02-PLAN.md — Expose agent-aware tab state through native reads and TabModel roles.
+- [ ] 07-03-PLAN.md — Build the compact tab strip, filter model, and delegate primitives.
+- [ ] 07-04-PLAN.md — Integrate compact chrome into NavigationBar and preserve separate layout.
+- [ ] 07-05-PLAN.md — Build the tab overview, search, and quick-switch popup foundation.
+- [ ] 07-06-PLAN.md — Wire tab overview/search/quick-switch into chrome and menus.
+- [ ] 07-07-PLAN.md — Add persistent native tab group metadata and model roles.
+- [ ] 07-08-PLAN.md — Complete group actions, advanced tab operations, and MCP/native tab reads.
+- [ ] 07-09-PLAN.md — Add compact-tab smoke validation and visual verification checkpoint.
+
+### Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix
+**Goal**: Upgrade the Prometheus side panel and settings surfaces into a native FSB-plus control center with a verified parity matrix against FSB.
+**Depends on**: Phase 7
+**Requirements**: FSBP-01, FSBP-02, FSBP-03, FSBP-04, FSBP-05, FSBP-06
+**Success Criteria** (what must be TRUE):
+  1. A native Prometheus control center covers tasks, providers, model discovery/fallbacks, MCP, permissions, vault, memory, site guides, logs, diagnostics, supervision, and pairing.
+  2. The side panel can run real provider-backed tasks when configured, while preserving local/offline and MCP-driven workflows.
+  3. Every FSB feature category is represented in a maintained parity matrix with native status, improvement target, and validation command.
+  4. Settings for internal-surface permissions, agent caps, tab ownership, visual feedback, telemetry, and vault boundaries are visible and auditable.
+  5. Prometheus improves on FSB where native browser ownership helps: settings/internal page control, lower-latency tool routing, safer secrets, and richer tab/session state.
+  6. Verification exercises the native side panel, MCP bridge, browser-owned settings, provider config, memory/site guides, vault, diagnostics, and release validation.
+**Plans**: 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 8 to break down)
+
+### Phase 9: Offline Font Awesome Free Icon System and Minimal Themes
+**Goal**: Replace theme-dependent action icons with a bundled, free, offline icon system and reduce Prometheus themes to a minimal native aesthetic.
+**Depends on**: Phase 8
+**Requirements**: ICON-01, ICON-02, ICON-03, ICON-04, THEME-01, THEME-02
+**Success Criteria** (what must be TRUE):
+  1. A curated Font Awesome Free icon subset is bundled in Qt resources with license/attribution preserved and no network dependency.
+  2. Prometheus has a central native icon resolver that maps browser, agent, MCP, provider, vault, diagnostics, and tab-management actions to bundled SVG icons.
+  3. Existing `QIcon::fromTheme` call sites used by primary UI have deterministic Prometheus fallbacks.
+  4. Minimal themes remove heavy inherited chrome while preserving focus, hover, active, disabled, warning, and supervised-action states.
+  5. Release packaging includes icon/theme assets and Font Awesome license metadata.
+  6. Visual/resource validation fails if required icons are missing, remote-loaded, illegible, or inconsistent across light/dark/minimal modes.
+**Plans**: 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 9 to break down)
 
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Baseline and Legal Inventory | 0/3 | Not started | - |
-| 2. FSB Product Identity Shell | 0/4 | Not started | - |
-| 3. Native Agent Control Spine | 0/5 | Not started | - |
-| 4. MCP Compatibility and Multi-Agent Control | 0/5 | Not started | - |
-| 5. FSB Runtime Parity Surfaces | 0/5 | Not started | - |
-| 6. Supervision, Packaging, and Release Hardening | 0/4 | Not started | - |
+| 1. Baseline and Legal Inventory | 3/3 | Complete | 2026-06-16 |
+| 2. Prometheus Product Identity Shell | 4/4 | Complete | 2026-06-16 |
+| 3. Native Agent Control Spine | 5/5 | Complete | 2026-06-16 |
+| 4. MCP Compatibility and Multi-Agent Control | 5/5 | Complete | 2026-06-16 |
+| 5. FSB Runtime Parity Surfaces | 5/5 | Complete | 2026-06-16 |
+| 6. Supervision, Packaging, and Release Hardening | 4/4 | Complete | 2026-06-16 |
+| 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 0/0 | Not planned | - |
+| 8. Native FSB-Plus Settings Side Panel and Feature Parity Matrix | 0/0 | Not planned | - |
+| 9. Offline Font Awesome Free Icon System and Minimal Themes | 0/0 | Not planned | - |
