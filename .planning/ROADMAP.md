@@ -141,7 +141,7 @@ Plans:
   4. Agent ownership, active automation, supervision, and tab health remain visible in compact chrome without visual clutter.
   5. Keyboard shortcuts and mouse/trackpad interactions remain Mac-native and compatible with existing Falkon tab behavior.
   6. Visual verification confirms compact chrome is minimal, readable, non-overlapping, and stable across narrow and wide windows.
-**Plans**: 9 plans
+**Plans**: 10 plans
 
 Plans:
 - [ ] 07-01-PLAN.md — Persist compact/separate layout and title/favicon tab display settings.
@@ -152,7 +152,8 @@ Plans:
 - [ ] 07-06-PLAN.md — Wire tab overview/search/quick-switch into chrome and menus.
 - [ ] 07-07-PLAN.md — Add persistent native tab group metadata and model roles.
 - [ ] 07-08-PLAN.md — Complete group actions, advanced tab operations, and MCP/native tab reads.
-- [ ] 07-09-PLAN.md — Add compact-tab smoke validation and visual verification checkpoint.
+- [ ] 07-09-PLAN.md — Wire native tab group roles into compact chrome and grouped overview/search.
+- [ ] 07-10-PLAN.md — Add compact-tab smoke validation and visual verification checkpoint.
 
 ### Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix
 **Goal**: Upgrade the Prometheus side panel and settings surfaces into a native FSB-plus control center with a verified parity matrix against FSB.

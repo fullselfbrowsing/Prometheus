@@ -42,7 +42,9 @@ created: 2026-06-16
 | 07-02-01 | 02 | 2 | UX-01, UX-04 | T-07-02 | Agent/supervision indicators expose state without leaking secrets | static/build | `rg "agentId|Supervised session active|visual_reason|tabOwner" falkon/src/lib && git diff --check` | yes | pending |
 | 07-03-01 | 03 | 3 | UX-03, UX-05 | T-07-03 | Tab actions preserve ownership visibility before destructive operations | static/build | `rg "Search Tabs|Tab Overview|Duplicate Tab|Unload Tab|Detach Tab" falkon/src/lib falkon/src/plugins && git diff --check` | yes | pending |
 | 07-04-01 | 04 | 4 | UX-03 | T-07-04 | Group operations route through existing close/restore safeguards | static/build | `rg "New Tab Group|Close Tab Group|Close all tabs in this group" falkon/src/lib && git diff --check` | yes | pending |
-| 07-05-01 | 05 | 5 | UX-06 | T-07-05 | Visual/manual checklist records compact/separate pass/fail states | manual/static | `test -f .planning/phases/07-compact-safari-style-browser-chrome-and-advanced-tab-managem/07-VERIFICATION.md` | yes | pending |
+| 07-05-01 | 05 | 3 | UX-03, UX-05 | T-07-05 | Tab overview/search foundation filters text without mutating source/MRU order | static/build | `rg "TabSearchFilterModel|TabSearchDelegate|TabSearchPopup" falkon/src/lib/tabwidget falkon/src/lib/CMakeLists.txt && git diff --check` | yes | pending |
+| 07-09-01 | 09 | 7 | UX-03, UX-04, UX-05, UX-06 | T-07-09 | Group roles drive compact rails/chips and overview/search group filters | static/build | `rg "TabGroupIdRole|TabGroupCollapsedRole|setGroupFilter|Ungrouped" falkon/src/lib/tabwidget/compacttab* falkon/src/lib/tabwidget/tabsearch* && git diff --check` | yes | pending |
+| 07-10-01 | 10 | 8 | UX-06 | T-07-10 | Visual/manual checklist records compact/separate/grouped pass/fail states | manual/static | `test -f .planning/phases/07-compact-safari-style-browser-chrome-and-advanced-tab-managem/07-VERIFICATION.md` | yes | pending |
 
 ---
 
