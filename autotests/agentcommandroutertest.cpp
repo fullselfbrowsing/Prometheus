@@ -24,6 +24,9 @@
 #include "tabwidget.h"
 #include "webtab.h"
 
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -38,7 +41,12 @@ QByteArray httpExchange(quint16 port, const QByteArray &request)
 {
     QTcpSocket socket;
     socket.connectToHost(QHostAddress::LocalHost, port);
-    if (!socket.waitForConnected(1000)) {
+    QElapsedTimer timer;
+    timer.start();
+    while (socket.state() == QAbstractSocket::ConnectingState && timer.elapsed() < 1000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    }
+    if (socket.state() != QAbstractSocket::ConnectedState) {
         return {};
     }
 
@@ -46,11 +54,12 @@ QByteArray httpExchange(quint16 port, const QByteArray &request)
     socket.flush();
 
     QByteArray response;
-    while (socket.state() != QAbstractSocket::UnconnectedState) {
-        if (socket.waitForReadyRead(1000)) {
-            response.append(socket.readAll());
-        } else {
-            socket.disconnectFromHost();
+    timer.restart();
+    while (timer.elapsed() < 2000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        response.append(socket.readAll());
+        if (socket.state() == QAbstractSocket::UnconnectedState) {
+            break;
         }
     }
     response.append(socket.readAll());
