@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 07-05-PLAN.md
-last_updated: "2026-06-16T19:51:05.383Z"
+stopped_at: Completed 07-06-PLAN.md
+last_updated: "2026-06-16T20:02:47.554Z"
 last_activity: 2026-06-16
 progress:
   total_phases: 9
   completed_phases: 6
   total_plans: 36
-  completed_plans: 31
-  percent: 86
+  completed_plans: 32
+  percent: 89
 ---
 
 # Project State
@@ -26,17 +26,17 @@ See: .planning/PROJECT.md (updated 2026-06-16)
 ## Current Position
 
 Phase: 7 of 9 (Compact Safari-style Browser Chrome and Advanced Tab Management)
-Plan: 5 of 10 in current phase
+Plan: 6 of 10 in current phase
 Status: Ready to execute
 Last activity: 2026-06-16
 
-Progress: [█████████░] 86%
+Progress: [█████████░] 89%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 30
+- Total plans completed: 32
 - Average duration: 7min
 - Total execution time: 0.3 hours
 
@@ -61,6 +61,7 @@ Progress: [█████████░] 86%
 | Phase 07 P03 | 8min | 2 tasks | 7 files |
 | Phase 07 P04 | 5 min | 2 tasks | 5 files |
 | Phase 07 P05 | 8min | 2 tasks | 8 files |
+| Phase 07 P06 | 7min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -91,6 +92,9 @@ Recent decisions affecting current work:
 - [Phase 07]: Use a QSortFilterProxyModel over either BrowserWindow::tabModel() or BrowserWindow::tabMruModel() so overview/search and quick switch share rendering without changing source order.
 - [Phase 07]: Render only existing title, favicon, URL/domain, and sanitized TabModel state roles in the privileged popup.
 - [Phase 07]: Keep the group filter as a hidden populated control slot until Plan 07-07 adds real group roles.
+- [Phase 07]: Use BrowserWindow-owned one-shot TabSearchPopup instances with delete-on-close instead of long-lived shared popup state.
+- [Phase 07]: Expose quick switch through a native File menu action with unused Ctrl+Shift+A metadata while preserving existing tab and location shortcuts.
+- [Phase 07]: Place Tab Overview and Search Tabs after the active address/search field so compact tab overflow cannot hide Search Tabs.
 
 ### Roadmap Evolution
 
@@ -123,6 +127,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-16T19:51:05.380Z
-Stopped at: Completed 07-05-PLAN.md
+Last session: 2026-06-16T20:02:47.551Z
+Stopped at: Completed 07-06-PLAN.md
 Resume file: None

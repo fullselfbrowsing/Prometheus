@@ -149,7 +149,7 @@ Plans:
 - [x] 07-03-PLAN.md — Build the compact tab strip, filter model, and delegate primitives.
 - [x] 07-04-PLAN.md — Integrate compact chrome into NavigationBar and preserve separate layout.
 - [x] 07-05-PLAN.md — Build the tab overview, search, and quick-switch popup foundation.
-- [ ] 07-06-PLAN.md — Wire tab overview/search/quick-switch into chrome and menus.
+- [x] 07-06-PLAN.md — Wire tab overview/search/quick-switch into chrome and menus.
 - [ ] 07-07-PLAN.md — Add persistent native tab group metadata and model roles.
 - [ ] 07-08-PLAN.md — Complete group actions, advanced tab operations, and MCP/native tab reads.
 - [ ] 07-09-PLAN.md — Wire native tab group roles into compact chrome and grouped overview/search.
