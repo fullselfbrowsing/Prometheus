@@ -22,8 +22,47 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QHostAddress>
+#include <QJsonDocument>
 #include <QJsonObject>
+#include <QTcpSocket>
 #include <QStringList>
+
+namespace {
+
+QByteArray httpExchange(quint16 port, const QByteArray &request)
+{
+    QTcpSocket socket;
+    socket.connectToHost(QHostAddress::LocalHost, port);
+    if (!socket.waitForConnected(1000)) {
+        return {};
+    }
+
+    socket.write(request);
+    socket.flush();
+
+    QByteArray response;
+    while (socket.state() != QAbstractSocket::UnconnectedState) {
+        if (socket.waitForReadyRead(1000)) {
+            response.append(socket.readAll());
+        } else {
+            socket.disconnectFromHost();
+        }
+    }
+    response.append(socket.readAll());
+    return response;
+}
+
+QByteArray httpBody(const QByteArray &response)
+{
+    const int split = response.indexOf("\r\n\r\n");
+    if (split < 0) {
+        return {};
+    }
+    return response.mid(split + 4);
+}
+
+} // namespace
 
 void AgentCommandRouterTest::defaultTabChromeState()
 {
@@ -41,6 +80,50 @@ void AgentCommandRouterTest::defaultTabChromeState()
     QVERIFY(!state.contains(QSL("prompt")));
     QVERIFY(!state.contains(QSL("secret")));
     QVERIFY(!state.contains(QSL("password")));
+}
+
+void AgentCommandRouterTest::httpCommandRequiresAuthorizationToken()
+{
+    AgentCommandRouter router;
+    QVERIFY(router.start(0));
+
+    const QByteArray healthResponse = httpExchange(router.port(),
+        "GET /health HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Connection: close\r\n\r\n");
+    QVERIFY2(healthResponse.startsWith("HTTP/1.1 200"), healthResponse.constData());
+    QVERIFY(!healthResponse.contains("Access-Control-Allow-Origin"));
+
+    const QJsonObject health = QJsonDocument::fromJson(httpBody(healthResponse)).object();
+    const QString token = health.value(QSL("authorization")).toObject().value(QSL("token")).toString();
+    QVERIFY(!token.isEmpty());
+
+    const QByteArray commandBody = R"({"id":"auth","tool":"list_tabs"})";
+    QByteArray unauthenticatedRequest;
+    unauthenticatedRequest.append("POST /agent/command HTTP/1.1\r\n");
+    unauthenticatedRequest.append("Host: 127.0.0.1\r\n");
+    unauthenticatedRequest.append("Content-Type: application/json\r\n");
+    unauthenticatedRequest.append("Content-Length: ");
+    unauthenticatedRequest.append(QByteArray::number(commandBody.size()));
+    unauthenticatedRequest.append("\r\nConnection: close\r\n\r\n");
+    unauthenticatedRequest.append(commandBody);
+
+    const QByteArray unauthenticatedResponse = httpExchange(router.port(), unauthenticatedRequest);
+    QVERIFY2(unauthenticatedResponse.startsWith("HTTP/1.1 401"), unauthenticatedResponse.constData());
+    QVERIFY(!unauthenticatedResponse.contains("Access-Control-Allow-Origin"));
+    const QJsonObject unauthenticated = QJsonDocument::fromJson(httpBody(unauthenticatedResponse)).object();
+    QCOMPARE(unauthenticated.value(QSL("error")).toObject().value(QSL("code")).toString(), QSL("unauthorized"));
+
+    QByteArray preflightRequest;
+    preflightRequest.append("OPTIONS /agent/command HTTP/1.1\r\n");
+    preflightRequest.append("Host: 127.0.0.1\r\n");
+    preflightRequest.append("Access-Control-Request-Method: POST\r\n");
+    preflightRequest.append("Access-Control-Request-Headers: content-type, authorization\r\n");
+    preflightRequest.append("Connection: close\r\n\r\n");
+
+    const QByteArray preflightResponse = httpExchange(router.port(), preflightRequest);
+    QVERIFY2(preflightResponse.startsWith("HTTP/1.1 401"), preflightResponse.constData());
+    QVERIFY(!preflightResponse.contains("Access-Control-Allow-Origin"));
 }
 
 void AgentCommandRouterTest::listTabsContractIncludesGroupAndStateFields()

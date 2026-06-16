@@ -8,6 +8,7 @@ BINARY_PROVIDED="false"
 PORT="${PROMETHEUS_AGENT_PORT:-17887}"
 PROFILE="compact-tabs-smoke-$$"
 SMOKE_URL='data:text/html,<title>Compact%20Tabs%20Smoke</title><main><h1>Compact Tabs Smoke</h1></main>'
+AUTH_TOKEN=""
 
 usage() {
   cat <<'USAGE'
@@ -187,6 +188,7 @@ PY
 post_command() {
   curl -fsS \
     -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
     -X POST "http://127.0.0.1:${PORT}/agent/command" \
     --data "$1"
 }
@@ -233,6 +235,11 @@ if [ -z "$HEALTH" ]; then
 fi
 
 require_ok "$HEALTH"
+AUTH_TOKEN="$(json_field "$HEALTH" "authorization.token")"
+if [ -z "$AUTH_TOKEN" ]; then
+  printf 'Agent health did not include an authorization token.\n' >&2
+  exit 1
+fi
 
 LIST_RESPONSE="$(post_command '{"id":"compact-list-initial","tool":"list_tabs"}')"
 require_ok "$LIST_RESPONSE" "list_tabs"

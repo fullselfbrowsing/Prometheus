@@ -6,6 +6,7 @@
 #include <QJsonValue>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <QTcpServer>
 #include <QUrl>
 #include <QVariant>
@@ -26,6 +27,7 @@ public:
     bool start(quint16 port);
     quint16 port() const;
     QJsonObject route(const QJsonObject &request);
+    QJsonObject routeForSession(const QJsonObject &request, const QString &sessionKey);
     QJsonObject tabChromeState(int windowIndex, int tabIndex) const;
 
 Q_SIGNALS:
@@ -45,8 +47,10 @@ private:
     void handleSocketReady(QTcpSocket* socket);
     void handleHttpRequest(QTcpSocket* socket, const QByteArray &headers, const QByteArray &body);
     void sendJson(QTcpSocket* socket, const QJsonObject &payload, int statusCode = 200, const QByteArray &statusText = QByteArrayLiteral("OK"));
+    bool isAuthorizedAgentRequest(const QByteArray &headers, QString* sessionKey) const;
+    QString issueAuthorizationToken();
 
-    QJsonObject health() const;
+    QJsonObject health();
     QJsonObject success(const QString &id, const QString &tool, const QJsonObject &result, quint64 auditSequence);
     QJsonObject failure(const QString &id, const QString &tool, const QString &code, const QString &message, quint64 auditSequence, const QJsonObject &details = QJsonObject());
     quint64 writeAudit(const QString &id, const QString &tool, bool ok, const QString &errorCode, const QJsonObject &details);
@@ -104,6 +108,7 @@ private:
     QHash<QString, QString> m_tabOwners;
     QHash<QString, QJsonObject> m_tabChromeStates;
     QHash<QString, QJsonObject> m_supervisionSessions;
+    QSet<QString> m_authorizedSessions;
 };
 
 #endif // AGENTCOMMANDROUTER_H

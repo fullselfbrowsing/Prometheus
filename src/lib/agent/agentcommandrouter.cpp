@@ -40,6 +40,23 @@ bool isUnsupportedGroupMutationTool(const QString &tool)
             || tool == QL1S("close_tab_group");
 }
 
+QByteArray headerValue(const QByteArray &headers, const QByteArray &wantedName)
+{
+    const QList<QByteArray> lines = headers.split('\n');
+    for (QByteArray line : lines) {
+        line = line.trimmed();
+        const int colon = line.indexOf(':');
+        if (colon < 0) {
+            continue;
+        }
+        const QByteArray name = line.left(colon).trimmed().toLower();
+        if (name == wantedName) {
+            return line.mid(colon + 1).trimmed();
+        }
+    }
+    return {};
+}
+
 }
 
 AgentCommandRouter::AgentCommandRouter(QObject* parent)
@@ -92,9 +109,15 @@ QJsonObject AgentCommandRouter::tabChromeState(int windowIndex, int tabIndex) co
 
 QJsonObject AgentCommandRouter::route(const QJsonObject &request)
 {
+    return routeForSession(request, QSL("in-process"));
+}
+
+QJsonObject AgentCommandRouter::routeForSession(const QJsonObject &request, const QString &sessionKey)
+{
     const QString id = request.value(QSL("id")).toVariant().toString();
     const QString tool = request.value(QSL("tool")).toString();
-    const QJsonObject params = request.value(QSL("params")).toObject();
+    QJsonObject params = request.value(QSL("params")).toObject();
+    params.insert(QSL("_prometheusSessionKey"), sessionKey.isEmpty() ? QSL("in-process") : sessionKey);
 
     if (tool.isEmpty()) {
         return failure(id, tool, QSL("invalid_request"), QSL("Missing tool name."), 0);
@@ -247,7 +270,13 @@ void AgentCommandRouter::handleHttpRequest(QTcpSocket* socket, const QByteArray 
     const QByteArray path = parts.value(1);
 
     if (method == "OPTIONS") {
-        sendJson(socket, QJsonObject{{QSL("ok"), true}});
+        sendJson(socket, QJsonObject{
+            {QSL("ok"), false},
+            {QSL("error"), QJsonObject{
+                {QSL("code"), QSL("unauthorized")},
+                {QSL("message"), QSL("Agent command preflight requests are not authorized.")}
+            }}
+        }, 401, QByteArrayLiteral("Unauthorized"));
         return;
     }
 
@@ -257,6 +286,18 @@ void AgentCommandRouter::handleHttpRequest(QTcpSocket* socket, const QByteArray 
     }
 
     if (method == "POST" && path == "/agent/command") {
+        QString sessionKey;
+        if (!isAuthorizedAgentRequest(headers, &sessionKey)) {
+            sendJson(socket, QJsonObject{
+                {QSL("ok"), false},
+                {QSL("error"), QJsonObject{
+                    {QSL("code"), QSL("unauthorized")},
+                    {QSL("message"), QSL("Missing or invalid agent authorization.")}
+                }}
+            }, 401, QByteArrayLiteral("Unauthorized"));
+            return;
+        }
+
         QJsonParseError parseError;
         const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
         if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
@@ -270,7 +311,7 @@ void AgentCommandRouter::handleHttpRequest(QTcpSocket* socket, const QByteArray 
             return;
         }
 
-        sendJson(socket, route(document.object()));
+        sendJson(socket, routeForSession(document.object(), sessionKey));
         return;
     }
 
@@ -291,7 +332,7 @@ void AgentCommandRouter::sendJson(QTcpSocket* socket, const QJsonObject &payload
     response.append(QByteArray::number(statusCode));
     response.append(' ');
     response.append(statusText);
-    response.append("\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\nContent-Length: ");
+    response.append("\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: ");
     response.append(QByteArray::number(body.size()));
     response.append("\r\n\r\n");
     response.append(body);
@@ -299,14 +340,54 @@ void AgentCommandRouter::sendJson(QTcpSocket* socket, const QJsonObject &payload
     socket->disconnectFromHost();
 }
 
-QJsonObject AgentCommandRouter::health() const
+bool AgentCommandRouter::isAuthorizedAgentRequest(const QByteArray &headers, QString* sessionKey) const
 {
+    const QByteArray auth = headerValue(headers, QByteArrayLiteral("authorization"));
+    QByteArray token;
+    const QByteArray bearerPrefix = QByteArrayLiteral("Bearer ");
+    if (auth.startsWith(bearerPrefix)) {
+        token = auth.mid(bearerPrefix.size()).trimmed();
+    }
+    if (token.isEmpty()) {
+        token = headerValue(headers, QByteArrayLiteral("x-prometheus-agent-token"));
+    }
+
+    const QString candidate = QString::fromLatin1(token);
+    if (candidate.isEmpty() || !m_authorizedSessions.contains(candidate)) {
+        return false;
+    }
+
+    if (sessionKey) {
+        *sessionKey = candidate;
+    }
+    return true;
+}
+
+QString AgentCommandRouter::issueAuthorizationToken()
+{
+    QString token;
+    do {
+        token = QUuid::createUuid().toString(QUuid::Id128);
+    } while (token.isEmpty() || m_authorizedSessions.contains(token));
+
+    m_authorizedSessions.insert(token);
+    return token;
+}
+
+QJsonObject AgentCommandRouter::health()
+{
+    const QString authorizationToken = issueAuthorizationToken();
     return QJsonObject{
         {QSL("ok"), true},
         {QSL("name"), QSL("Prometheus")},
         {QSL("version"), QString::fromLatin1(Qz::VERSION)},
         {QSL("port"), port()},
         {QSL("auditPath"), auditPath()},
+        {QSL("authorization"), QJsonObject{
+            {QSL("type"), QSL("bearer")},
+            {QSL("header"), QSL("Authorization")},
+            {QSL("token"), authorizationToken}
+        }},
         {QSL("tools"), QJsonArray{
             QSL("list_tabs"),
             QSL("new_tab"),
