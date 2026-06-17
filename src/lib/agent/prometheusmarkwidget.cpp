@@ -61,8 +61,14 @@ void PrometheusMarkWidget::paintEvent(QPaintEvent* /*event*/)
 
     // --- Poppins Black 900 for "M" ---
     QFont fontM = QFontDatabase::font(QSL("Poppins"), QSL("Black"), 0);
-    if (fontM.family().isEmpty()) {
+    if (fontM.family().isEmpty() || fontM.family() != QSL("Poppins")) {
+        // QFontDatabase::font() returns a non-empty system fallback when the requested family is
+        // absent, so isEmpty() alone is insufficient. Retry with an explicit pixel size.
         fontM = QFontDatabase::font(QSL("Poppins"), QSL("Black"), px);
+        if (fontM.family() != QSL("Poppins")) {
+            qWarning("PrometheusMarkWidget: Poppins Black not found, falling back to %s",
+                     qPrintable(fontM.family()));
+        }
     }
     fontM.setPixelSize(px);
     fontM.setWeight(QFont::Black);  // Qt weight 900 mapping
@@ -87,8 +93,11 @@ void PrometheusMarkWidget::paintEvent(QPaintEvent* /*event*/)
     // Space Mono at max(8, px/4) pixels.
     const int tagPx = qMax(8, px / 4);
     QFont fontTag = QFontDatabase::font(QSL("Space Mono"), QSL("Regular"), 0);
-    if (fontTag.family().isEmpty()) {
-        fontTag.setFamily(QSL("Space Mono"));
+    if (fontTag.family().isEmpty() || fontTag.family() != QSL("Space Mono")) {
+        // QFontDatabase::font() returns a non-empty system fallback when the requested family is
+        // absent, so isEmpty() alone is insufficient. Fall back to generic monospace and warn.
+        qWarning("PrometheusMarkWidget: Space Mono not found, falling back to monospace");
+        fontTag.setFamily(QSL("monospace"));
     }
     fontTag.setPixelSize(tagPx);
 
