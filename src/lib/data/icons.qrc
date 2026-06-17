@@ -131,6 +131,9 @@
         <file>icons/fa/circle-half-stroke.svg</file>
         <file>icons/fa/bars.svg</file>
         <file>icons/fa/sidebar-flip.svg</file>
+        <file>icons/fa/inbox.svg</file>
+        <file>icons/fa/cart-shopping.svg</file>
+        <file>icons/fa/calendar-check.svg</file>
         <!-- FSB brand assets — for affiliation marks on dark/light surfaces -->
         <file>assets/fsb_logo_dark.png</file>
         <file>assets/fsb_logo_light.png</file>
