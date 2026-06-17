@@ -16,7 +16,7 @@ Prometheus starts by making the Falkon-derived browser buildable and legally und
 - [x] **Phase 4: MCP Compatibility and Multi-Agent Control** - Expose the FSB-compatible tool contract with ownership, action execution, visual sessions, and diagnostics.
 - [x] **Phase 5: FSB Runtime Parity Surfaces** - Rebuild the user-facing FSB automation experience inside the browser.
 - [x] **Phase 6: Supervision, Packaging, and Release Hardening** - Add PhantomStream-style supervision, safe pairing, release artifacts, and full validation.
-- [ ] **Phase 7: Compact Safari-style Browser Chrome and Advanced Tab Management** - Make Prometheus feel like a minimal native browser with compact toolbar/tab chrome, tab groups, overview, and agent-aware tab state.
+- [x] **Phase 7: Compact Safari-style Browser Chrome and Advanced Tab Management** - Make Prometheus feel like a minimal native browser with compact toolbar/tab chrome, tab groups, overview, and agent-aware tab state.
 - [ ] **Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix** - Turn the Prometheus side panel into a native control center that meets or exceeds FSB's extension-side feature set.
 - [ ] **Phase 9: Offline Font Awesome Free Icon System and Minimal Themes** - Bundle free offline icons natively and harden the theme system around a restrained, minimal Prometheus aesthetic.
 
@@ -153,7 +153,7 @@ Plans:
 - [x] 07-07-PLAN.md — Add persistent native tab group metadata and model roles.
 - [x] 07-08-PLAN.md — Complete group actions, advanced tab operations, and MCP/native tab reads.
 - [x] 07-09-PLAN.md — Wire native tab group roles into compact chrome and grouped overview/search.
-- [ ] 07-10-PLAN.md — Add compact-tab smoke validation and visual verification checkpoint.
+- [x] 07-10-PLAN.md — Add compact-tab smoke validation and visual verification checkpoint.
 
 ### Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix
 **Goal**: Upgrade the Prometheus side panel and settings surfaces into a native FSB-plus control center with a verified parity matrix against FSB.
@@ -200,6 +200,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9
 | 4. MCP Compatibility and Multi-Agent Control | 5/5 | Complete | 2026-06-16 |
 | 5. FSB Runtime Parity Surfaces | 5/5 | Complete | 2026-06-16 |
 | 6. Supervision, Packaging, and Release Hardening | 4/4 | Complete | 2026-06-16 |
-| 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 7/10 | In Progress | - |
+| 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 10/10 | Complete | 2026-06-16 |
 | 8. Native FSB-Plus Settings Side Panel and Feature Parity Matrix | 0/0 | Not planned | - |
 | 9. Offline Font Awesome Free Icon System and Minimal Themes | 0/0 | Not planned | - |

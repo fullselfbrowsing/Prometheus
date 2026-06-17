@@ -180,7 +180,7 @@
 | UX-03 | Phase 7 | Complete |
 | UX-04 | Phase 7 | Complete |
 | UX-05 | Phase 7 | Complete |
-| UX-06 | Phase 7 | Planned |
+| UX-06 | Phase 7 | Complete |
 | ICON-01 | Phase 9 | Planned |
 | ICON-02 | Phase 9 | Planned |
 | ICON-03 | Phase 9 | Planned |
