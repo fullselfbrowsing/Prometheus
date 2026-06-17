@@ -138,5 +138,8 @@
         <file>assets/fsb_logo_dark.png</file>
         <file>assets/fsb_logo_light.png</file>
         <file>assets/fsb_icon.png</file>
+        <!-- Prometheus PM monogram (brand sheet), theme-aware: white-on-ink / ink-on-paper -->
+        <file>assets/pm_dark.png</file>
+        <file>assets/pm_light.png</file>
     </qresource>
 </RCC>
