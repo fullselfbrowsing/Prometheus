@@ -19,7 +19,7 @@ Prometheus starts by making the Falkon-derived browser buildable and legally und
 - [x] **Phase 7: Compact Safari-style Browser Chrome and Advanced Tab Management** - Make Prometheus feel like a minimal native browser with compact toolbar/tab chrome, tab groups, overview, and agent-aware tab state.
 - [x] **Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix** - Build the four-mode side panel (FSB Agent, Explorer, Tabs, Tools) plus the FSB Control Panel operator page, settings, and parity matrix, skinned to the canonical Prometheus design. (completed 2026-06-17)
 - [x] **Phase 9: Offline Font Awesome Free Icon System and Minimal Themes** - Bundle Font Awesome icons and the Poppins/Space Mono brand fonts offline, complete the logo pass, and harden the warm minimal two-theme system. (completed 2026-06-17)
-- [ ] **Phase 10: New Tab Start Page** - Build the Prometheus start page: hero mark, omnibox with Ask FSB handoff, favorites grid, and FSB suggested automations.
+- [x] **Phase 10: New Tab Start Page** - Build the Prometheus start page: hero mark, omnibox with Ask FSB handoff, favorites grid, and FSB suggested automations. (completed 2026-06-17)
 
 ## Phase Details
 
@@ -220,7 +220,7 @@ Plans:
 - [x] 10-03-PLAN.md — Create PrometheusStartBridge C++ class, add seedPromptAndOpen to AgentRuntimeSidebarWidget, wire URL-guarded registration in ExternalJsObject.
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 10-04-PLAN.md — Build, launch, and visual/functional sign-off checkpoint for all five START requirements.
+- [x] 10-04-PLAN.md — Build, launch, and visual/functional sign-off checkpoint for all five START requirements.
 
 ## Progress
 
@@ -238,4 +238,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 10/10 | Complete | 2026-06-16 |
 | 8. Native FSB-Plus Settings Side Panel and Feature Parity Matrix | 5/5 | Complete   | 2026-06-17 |
 | 9. Offline Font Awesome Free Icon System and Minimal Themes | 6/6 | Complete   | 2026-06-17 |
-| 10. New Tab Start Page | 3/4 | In Progress|  |
+| 10. New Tab Start Page | 4/4 | Complete   | 2026-06-17 |
