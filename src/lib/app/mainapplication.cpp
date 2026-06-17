@@ -1045,13 +1045,16 @@ void MainApplication::loadSettings()
     QString activeTheme = settings.value(QSL("activeTheme"), DEFAULT_THEME_NAME).toString();
     settings.endGroup();
 
-    loadTheme(activeTheme);
-
-    // Prometheus theme: apply dynamic tokenized stylesheet immediately after static main.css load
     if (activeTheme == QLatin1String("prometheus")) {
-        Settings themeSettings;
-        const bool useDark = themeSettings.value(QSL("Interface/PrometheusThemeDark"), true).toBool();
+        // For the prometheus theme, skip loadTheme()/main.css entirely.
+        // loadTheme() applies the pre-baked dark main.css via setStyleSheet, which causes a
+        // one-frame dark flash for light-theme users before loadPrometheusVariant() replaces it.
+        // Instead, go directly to the correct tokenized variant so only one setStyleSheet is ever
+        // called on startup.
+        const bool useDark = settings.value(QSL("Interface/PrometheusThemeDark"), true).toBool();
         loadPrometheusVariant(useDark);
+    } else {
+        loadTheme(activeTheme);
     }
 
     QWebEngineSettings* webSettings = m_webProfile->settings();
