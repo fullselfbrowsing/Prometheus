@@ -541,8 +541,22 @@ function renderFavorites(items) {
     var html = '';
     for (var i = 0; i < items.length; i++) {
         var item = items[i];
-        var safeName = item.name ? item.name.replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
-        var safeMono = item.mono ? item.mono.replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
+        var safeName = item.name
+            ? item.name
+                  .replace(/&/g, '&amp;')
+                  .replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;')
+                  .replace(/"/g, '&quot;')
+                  .replace(/'/g, '&#39;')
+            : '';
+        var safeMono = item.mono
+            ? item.mono
+                  .replace(/&/g, '&amp;')
+                  .replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;')
+                  .replace(/"/g, '&quot;')
+                  .replace(/'/g, '&#39;')
+            : '';
         var safeUrl  = item.url  ? item.url.replace(/"/g, '&quot;')  : '';
         var safeColor = item.color ? item.color.replace(/"/g, '') : '#ff6b35';
         html +=
