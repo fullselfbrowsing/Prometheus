@@ -66,7 +66,7 @@
 
 ### Native FSB-Plus Control Center
 
-- [ ] **FSBP-01**: Prometheus has a native side panel/control center for tasks, providers, MCP status, permissions, vault, memory, site guides, logs, diagnostics, supervision, and dashboard pairing.
+- [x] **FSBP-01**: Prometheus has a native side panel/control center for tasks, providers, MCP status, permissions, vault, memory, site guides, logs, diagnostics, supervision, and dashboard pairing.
 - [x] **FSBP-02**: Prometheus maintains a feature parity matrix against FSB covering side panel, provider settings, model discovery, MCP tools, DOM snapshots, action tools, visual feedback, memory, vault, remote dashboard, tab management, and diagnostics.
 - [x] **FSBP-03**: Prometheus documents and verifies native improvements over FSB where browser ownership helps, including internal settings control, safer secret handling, richer tab/session state, lower-latency native routing, and offline-capable UI assets.
 - [x] **FSBP-04**: Side panel task execution can use configured provider-backed execution when available and local/MCP execution paths when provider-backed execution is unavailable.
