@@ -106,18 +106,20 @@ body {
 }
 
 .pm-hero-mark {
-    width: 64px;
-    height: 64px;
-    border-radius: 18px;
-    background: linear-gradient(135deg, #ff6b35, #ff8c42);
+    width: 116px;
+    height: 116px;
     display: grid;
     place-items: center;
-    box-shadow: var(--shadow-card);
-    color: #fff;
-    font-family: 'Poppins', sans-serif;
-    font-size: 26px;
-    line-height: 1;
 }
+.pm-hero-mark img {
+    width: 116px;
+    height: 116px;
+    object-fit: contain;
+    display: none;
+}
+[data-theme="dark"] .pm-hero-mark .fsb-logo-dark { display: block; }
+[data-theme="light"] .pm-hero-mark .fsb-logo-light { display: block; }
+html:not([data-theme="light"]) .pm-hero-mark .fsb-logo-dark { display: block; }
 
 .pm-hero-mark .lp {
     font-weight: 100;
@@ -483,7 +485,7 @@ html:not([data-theme="light"]) .pm-fsb-footer .fsb-logo-dark {
 <div class="pm-start">
   %PRIVATE-BROWSING%
   <div class="pm-hero">
-    <div class="pm-hero-mark"><span class="lp">P</span><span class="lm">M</span></div>
+    <div class="pm-hero-mark"><img class="fsb-logo-dark" src="qrc:assets/fsb_logo_dark.png" alt="FSB"><img class="fsb-logo-light" src="qrc:assets/fsb_logo_light.png" alt="FSB"></div>
     <h1>Prometheus<span class="dim">.</span></h1>
     <div class="pm-hero-sub">Search the web, or ask FSB to do it for you.</div>
 
