@@ -52,8 +52,8 @@ void PrometheusMarkWidget::paintEvent(QPaintEvent* /*event*/)
 
     // --- Poppins Thin 100 for "P" ---
     QFont fontP = QFontDatabase::font(QSL("Poppins"), QSL("Thin"), 0);
-    if (fontP.family().isEmpty() || fontP.family() == QSL("Poppins") == false) {
-        // Family not registered yet or lookup returned default — try again
+    if (fontP.family().isEmpty() || fontP.family() != QSL("Poppins")) {
+        // Family not registered yet or lookup returned a system fallback — try again
         fontP = QFontDatabase::font(QSL("Poppins"), QSL("Thin"), px);
     }
     fontP.setPixelSize(px);
