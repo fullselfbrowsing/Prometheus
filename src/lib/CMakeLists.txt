@@ -16,6 +16,7 @@ endif()
 include_directories(
     3rdparty
     adblock
+    agent
     app
     autofill
     bookmarks
@@ -61,6 +62,10 @@ set(SRCS ${SRCS}
     adblock/adblocktreemodel.cpp
     adblock/adblocktreewidget.cpp
     adblock/adblockplugin.cpp
+    agent/agentcommandrouter.cpp
+    agent/agentruntime.cpp
+    agent/agentruntimesidebar.cpp
+    agent/fsbcontrolpanel.cpp
     app/autosaver.cpp
     app/browserwindow.cpp
     app/commandlineoptions.cpp
@@ -306,6 +311,10 @@ set(SRCS ${SRCS}
     adblock/adblocktreemodel.h
     adblock/adblocktreewidget.h
     adblock/adblockplugin.h
+    agent/agentcommandrouter.h
+    agent/agentruntime.h
+    agent/agentruntimesidebar.h
+    agent/fsbcontrolpanel.h
     app/autosaver.h
     app/browserwindow.h
     app/commandlineoptions.h
@@ -627,6 +636,13 @@ target_link_libraries(FalkonPrivate
     KF6::Archive
     ${OPENSSL_CRYPTO_LIBRARY}
 )
+
+if (APPLE)
+    find_library(SECURITY_FRAMEWORK Security)
+    if (SECURITY_FRAMEWORK)
+        target_link_libraries(FalkonPrivate ${SECURITY_FRAMEWORK})
+    endif()
+endif()
 
 if (BUILD_TESTING)
     target_link_libraries(FalkonPrivate Qt6::Test)

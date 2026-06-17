@@ -3,6 +3,7 @@
 #include "agentruntime.h"
 #include "browserwindow.h"
 #include "datapaths.h"
+#include "fsbcontrolpanel.h"
 #include "mainapplication.h"
 #include "preferences.h"
 #include "settings.h"
@@ -921,8 +922,9 @@ QJsonObject AgentCommandRouter::routeOpenInternalSurface(const QString &id, cons
     const QString surface = params.value(QSL("surface")).toString(QSL("preferences"));
     const bool wantsPreferences = surface == QL1S("preferences");
     const bool wantsAgent = surface == QL1S("agent") || surface == QL1S("prometheus_agent") || surface == QL1S("runtime");
-    if (!wantsPreferences && !wantsAgent) {
-        return failure(id, tool, QSL("unsupported_surface"), QSL("Supported internal surfaces are preferences and prometheus_agent."), auditSequence);
+    const bool wantsControlPanel = surface == QL1S("control_panel");
+    if (!wantsPreferences && !wantsAgent && !wantsControlPanel) {
+        return failure(id, tool, QSL("unsupported_surface"), QSL("Supported internal surfaces are preferences, prometheus_agent, and control_panel."), auditSequence);
     }
 
     const QList<BrowserWindow*> windows = mApp->windows();
@@ -948,6 +950,14 @@ QJsonObject AgentCommandRouter::routeOpenInternalSurface(const QString &id, cons
         preferences->show();
         preferences->raise();
         preferences->activateWindow();
+    } else if (wantsControlPanel) {
+        auto* panel = new FsbControlPanelPage(windows.at(windowIndex));
+        panel->setWindowFlags(Qt::Window);
+        panel->setAttribute(Qt::WA_DeleteOnClose);
+        panel->setWindowTitle(tr("Prometheus Control Panel"));
+        panel->show();
+        panel->raise();
+        panel->activateWindow();
     } else {
         windows.at(windowIndex)->sideBarManager()->showSideBar(QSL("PrometheusAgent"), false);
     }
