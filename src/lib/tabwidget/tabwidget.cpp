@@ -173,7 +173,7 @@ void TabWidget::loadSettings()
     settings.endGroup();
 
     settings.beginGroup(QSL("Web-URL-Settings"));
-    m_urlOnNewTab = settings.value(QSL("newTabUrl"), QSL("falkon:speeddial")).toUrl();
+    m_urlOnNewTab = settings.value(QSL("newTabUrl"), QSL("falkon:start")).toUrl();
     settings.endGroup();
 
     m_compactLayout = qzSettings && qzSettings->tabLayout == QzSettings::TabLayout::Compact;
