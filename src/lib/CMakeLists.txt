@@ -67,6 +67,7 @@ set(SRCS ${SRCS}
     agent/agentruntimesidebar.cpp
     agent/fsbcontrolpanel.cpp
     agent/promethusfontloader.cpp
+    agent/prometheusiconresolver.cpp
     app/autosaver.cpp
     app/browserwindow.cpp
     app/commandlineoptions.cpp
@@ -317,6 +318,7 @@ set(SRCS ${SRCS}
     agent/agentruntimesidebar.h
     agent/fsbcontrolpanel.h
     agent/promethusfontloader.h
+    agent/prometheusiconresolver.h
     app/autosaver.h
     app/browserwindow.h
     app/commandlineoptions.h
