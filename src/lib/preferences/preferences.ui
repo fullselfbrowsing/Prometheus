@@ -127,6 +127,11 @@
        <string>Other</string>
       </property>
      </item>
+     <item>
+      <property name="text">
+       <string>Prometheus</string>
+      </property>
+     </item>
     </widget>
    </item>
    <item row="0" column="1">
@@ -3123,6 +3128,317 @@
               </spacer>
              </item>
             </layout>
+           </item>
+          </layout>
+         </widget>
+         <widget class="QWidget" name="prometheusPage">
+          <layout class="QVBoxLayout" name="verticalLayout_prometheus">
+           <property name="spacing">
+            <number>8</number>
+           </property>
+           <property name="leftMargin">
+            <number>8</number>
+           </property>
+           <property name="topMargin">
+            <number>8</number>
+           </property>
+           <property name="rightMargin">
+            <number>8</number>
+           </property>
+           <property name="bottomMargin">
+            <number>8</number>
+           </property>
+           <item>
+            <widget class="QLabel" name="prometheusHeading">
+             <property name="text">
+              <string>Prometheus Agent Policy</string>
+             </property>
+             <property name="font">
+              <font>
+               <bold>true</bold>
+               <pointsize>10</pointsize>
+              </font>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QFrame" name="prometheusFormFrame">
+             <property name="frameShape">
+              <enum>QFrame::Shape::NoFrame</enum>
+             </property>
+             <layout class="QFormLayout" name="formLayout_prometheus">
+              <property name="labelAlignment">
+               <set>Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignVCenter</set>
+              </property>
+              <property name="horizontalSpacing">
+               <number>16</number>
+              </property>
+              <property name="verticalSpacing">
+               <number>8</number>
+              </property>
+              <item row="0" column="0">
+               <widget class="QLabel" name="agentCapLabel">
+                <property name="text">
+                 <string>Agent cap</string>
+                </property>
+                <property name="minimumSize">
+                 <size>
+                  <width>180</width>
+                  <height>32</height>
+                 </size>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QSpinBox" name="agentCapSpin">
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>32</height>
+                 </size>
+                </property>
+                <property name="toolTip">
+                 <string>Maximum number of concurrent agents. Range 1 to 16.</string>
+                </property>
+                <property name="accessibleName">
+                 <string>Agent cap</string>
+                </property>
+                <property name="minimum">
+                 <number>1</number>
+                </property>
+                <property name="maximum">
+                 <number>16</number>
+                </property>
+                <property name="singleStep">
+                 <number>1</number>
+                </property>
+                <property name="value">
+                 <number>4</number>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="0" colspan="2">
+               <widget class="QCheckBox" name="internalSurfaceCheck">
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>32</height>
+                 </size>
+                </property>
+                <property name="text">
+                 <string>Internal surface control</string>
+                </property>
+                <property name="accessibleName">
+                 <string>Internal surface control</string>
+                </property>
+                <property name="checked">
+                 <bool>false</bool>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="0" colspan="2">
+               <widget class="QCheckBox" name="tabOwnershipCheck">
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>32</height>
+                 </size>
+                </property>
+                <property name="text">
+                 <string>Tab ownership enforcement</string>
+                </property>
+                <property name="accessibleName">
+                 <string>Tab ownership enforcement</string>
+                </property>
+                <property name="checked">
+                 <bool>true</bool>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="0" colspan="2">
+               <widget class="QCheckBox" name="bgTabActionsCheck">
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>32</height>
+                 </size>
+                </property>
+                <property name="text">
+                 <string>Background tab actions</string>
+                </property>
+                <property name="accessibleName">
+                 <string>Background tab actions</string>
+                </property>
+                <property name="checked">
+                 <bool>true</bool>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="0" colspan="2">
+               <widget class="QCheckBox" name="visualFeedbackCheck">
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>32</height>
+                 </size>
+                </property>
+                <property name="text">
+                 <string>Visual feedback</string>
+                </property>
+                <property name="accessibleName">
+                 <string>Visual feedback</string>
+                </property>
+                <property name="checked">
+                 <bool>true</bool>
+                </property>
+               </widget>
+              </item>
+              <item row="5" column="0" colspan="2">
+               <widget class="Line" name="prometheusSeparator">
+                <property name="orientation">
+                 <enum>Qt::Orientation::Horizontal</enum>
+                </property>
+               </widget>
+              </item>
+              <item row="6" column="0">
+               <widget class="QLabel" name="telemetryLabel">
+                <property name="text">
+                 <string>Telemetry</string>
+                </property>
+                <property name="minimumSize">
+                 <size>
+                  <width>180</width>
+                  <height>32</height>
+                 </size>
+                </property>
+               </widget>
+              </item>
+              <item row="6" column="1">
+               <widget class="QComboBox" name="telemetryCombo">
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>32</height>
+                 </size>
+                </property>
+                <property name="accessibleName">
+                 <string>Telemetry</string>
+                </property>
+                <item>
+                 <property name="text">
+                  <string>Local only</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Off</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="7" column="0" colspan="2">
+               <widget class="QCheckBox" name="vaultBoundaryCheck">
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>32</height>
+                 </size>
+                </property>
+                <property name="text">
+                 <string>Vault secret transport blocked</string>
+                </property>
+                <property name="toolTip">
+                 <string>Provider and vault secrets cannot cross MCP or remote transports. This is a security invariant.</string>
+                </property>
+                <property name="accessibleName">
+                 <string>Vault secret transport blocked</string>
+                </property>
+                <property name="checked">
+                 <bool>true</bool>
+                </property>
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+               </widget>
+              </item>
+              <item row="8" column="0" colspan="2">
+               <widget class="QCheckBox" name="vaultAutofillCheck">
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>32</height>
+                 </size>
+                </property>
+                <property name="text">
+                 <string>Vault autofill confirmation</string>
+                </property>
+                <property name="toolTip">
+                 <string>Vault autofill requires foreground confirmation. This is a security invariant.</string>
+                </property>
+                <property name="accessibleName">
+                 <string>Vault autofill confirmation</string>
+                </property>
+                <property name="checked">
+                 <bool>true</bool>
+                </property>
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+               </widget>
+              </item>
+              <item row="9" column="0" colspan="2">
+               <widget class="QCheckBox" name="supervisionPairingCheck">
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>32</height>
+                 </size>
+                </property>
+                <property name="text">
+                 <string>Supervision pairing</string>
+                </property>
+                <property name="accessibleName">
+                 <string>Supervision pairing</string>
+                </property>
+                <property name="checked">
+                 <bool>false</bool>
+                </property>
+               </widget>
+              </item>
+              <item row="10" column="0" colspan="2">
+               <widget class="QCheckBox" name="dashboardRemoteCheck">
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>32</height>
+                 </size>
+                </property>
+                <property name="text">
+                 <string>Dashboard remote control</string>
+                </property>
+                <property name="accessibleName">
+                 <string>Dashboard remote control</string>
+                </property>
+                <property name="checked">
+                 <bool>false</bool>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <spacer name="verticalSpacer_prometheus">
+             <property name="orientation">
+              <enum>Qt::Orientation::Vertical</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>20</width>
+               <height>40</height>
+              </size>
+             </property>
+            </spacer>
            </item>
           </layout>
          </widget>
