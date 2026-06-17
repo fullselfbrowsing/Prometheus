@@ -17,7 +17,7 @@ Prometheus starts by making the Falkon-derived browser buildable and legally und
 - [x] **Phase 5: FSB Runtime Parity Surfaces** - Rebuild the user-facing FSB automation experience inside the browser.
 - [x] **Phase 6: Supervision, Packaging, and Release Hardening** - Add PhantomStream-style supervision, safe pairing, release artifacts, and full validation.
 - [x] **Phase 7: Compact Safari-style Browser Chrome and Advanced Tab Management** - Make Prometheus feel like a minimal native browser with compact toolbar/tab chrome, tab groups, overview, and agent-aware tab state.
-- [ ] **Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix** - Build the four-mode side panel (FSB Agent, Explorer, Tabs, Tools) plus the FSB Control Panel operator page, settings, and parity matrix, skinned to the canonical Prometheus design.
+- [x] **Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix** - Build the four-mode side panel (FSB Agent, Explorer, Tabs, Tools) plus the FSB Control Panel operator page, settings, and parity matrix, skinned to the canonical Prometheus design. (completed 2026-06-17)
 - [ ] **Phase 9: Offline Font Awesome Free Icon System and Minimal Themes** - Bundle Font Awesome icons and the Poppins/Space Mono brand fonts offline, complete the logo pass, and harden the warm minimal two-theme system.
 - [ ] **Phase 10: New Tab Start Page** - Build the Prometheus start page: hero mark, omnibox with Ask FSB handoff, favorites grid, and FSB suggested automations.
 
@@ -223,6 +223,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 5. FSB Runtime Parity Surfaces | 5/5 | Complete | 2026-06-16 |
 | 6. Supervision, Packaging, and Release Hardening | 4/4 | Complete | 2026-06-16 |
 | 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 10/10 | Complete | 2026-06-16 |
-| 8. Native FSB-Plus Settings Side Panel and Feature Parity Matrix | 4/5 | In Progress|  |
+| 8. Native FSB-Plus Settings Side Panel and Feature Parity Matrix | 5/5 | Complete   | 2026-06-17 |
 | 9. Offline Font Awesome Free Icon System and Minimal Themes | 0/0 | Not planned | - |
 | 10. New Tab Start Page | 0/0 | Not planned | - |
