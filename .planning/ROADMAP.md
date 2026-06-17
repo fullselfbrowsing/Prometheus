@@ -209,10 +209,13 @@ Plans:
   3. The start page shows a favorites grid that navigates to the chosen entry on click.
   4. The start page shows FSB suggested automations that seed the agent panel when chosen.
   5. The start page uses the canonical Prometheus design system (warm tokens, Poppins, Space Mono, Font Awesome) and renders correctly in both themes.
-**Plans**: 0 plans
+**Plans**: 4 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 10 to break down)
+- [ ] 10-01-PLAN.md — Bundle 3 missing FA SVGs (inbox, cart-shopping, calendar-check) and repoint TabWidget new-tab default to `falkon:start`.
+- [ ] 10-02-PLAN.md — Write complete Prometheus start.html and update FalkonSchemeReply::startPage() two-stage cache.
+- [ ] 10-03-PLAN.md — Create PrometheusStartBridge C++ class, add seedPromptAndOpen to AgentRuntimeSidebarWidget, wire URL-guarded registration in ExternalJsObject.
+- [ ] 10-04-PLAN.md — Build, launch, and visual/functional sign-off checkpoint for all five START requirements.
 
 ## Progress
 
@@ -230,4 +233,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 10/10 | Complete | 2026-06-16 |
 | 8. Native FSB-Plus Settings Side Panel and Feature Parity Matrix | 5/5 | Complete   | 2026-06-17 |
 | 9. Offline Font Awesome Free Icon System and Minimal Themes | 6/6 | Complete   | 2026-06-17 |
-| 10. New Tab Start Page | 0/0 | Not planned | - |
+| 10. New Tab Start Page | 0/4 | In progress | - |
