@@ -1,0 +1,10 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/">
+        <file>fonts/poppins/Poppins-Thin.ttf</file>
+        <file>fonts/poppins/Poppins-Light.ttf</file>
+        <file>fonts/poppins/Poppins-ExtraBold.ttf</file>
+        <file>fonts/poppins/Poppins-Black.ttf</file>
+        <file>fonts/spacemono/SpaceMono-Regular.ttf</file>
+    </qresource>
+</RCC>

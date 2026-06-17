@@ -3,6 +3,7 @@
         <file>icons/falkon.svg</file>
         <file>icons/falkon-black.svg</file>
         <file>icons/falkon-white.svg</file>
+        <file>icons/prometheus.svg</file>
         <file>icons/menu/history.svg</file>
         <file>icons/menu/history_entry.svg</file>
         <file>icons/menu/tab-new.svg</file>
@@ -60,5 +61,75 @@
         <file>icons/preferences/spellcheck.svg</file>
         <file>icons/preferences/tabs.svg</file>
         <file>icons/menu/download.svg</file>
+        <!-- Font Awesome Free 6.x subset — CC BY 4.0 — offline only -->
+        <file>icons/fa/arrow-left.svg</file>
+        <file>icons/fa/arrow-right.svg</file>
+        <file>icons/fa/rotate-right.svg</file>
+        <file>icons/fa/rotate-left.svg</file>
+        <file>icons/fa/xmark.svg</file>
+        <file>icons/fa/house.svg</file>
+        <file>icons/fa/plus.svg</file>
+        <file>icons/fa/magnifying-glass.svg</file>
+        <file>icons/fa/lock.svg</file>
+        <file>icons/fa/lock-open.svg</file>
+        <file>icons/fa/arrow-up-from-bracket.svg</file>
+        <file>icons/fa/arrow-down-to-line.svg</file>
+        <file>icons/fa/star.svg</file>
+        <file>icons/fa/star-half-stroke.svg</file>
+        <file>icons/fa/bolt.svg</file>
+        <file>icons/fa/circle-check.svg</file>
+        <file>icons/fa/microphone.svg</file>
+        <file>icons/fa/arrow-up.svg</file>
+        <file>icons/fa/stop.svg</file>
+        <file>icons/fa/wand-magic-sparkles.svg</file>
+        <file>icons/fa/table.svg</file>
+        <file>icons/fa/language.svg</file>
+        <file>icons/fa/tag.svg</file>
+        <file>icons/fa/plug.svg</file>
+        <file>icons/fa/plug-circle-xmark.svg</file>
+        <file>icons/fa/wrench.svg</file>
+        <file>icons/fa/circle-xmark.svg</file>
+        <file>icons/fa/triangle-exclamation.svg</file>
+        <file>icons/fa/circle-plus.svg</file>
+        <file>icons/fa/circle-minus.svg</file>
+        <file>icons/fa/microchip.svg</file>
+        <file>icons/fa/key.svg</file>
+        <file>icons/fa/server.svg</file>
+        <file>icons/fa/vault.svg</file>
+        <file>icons/fa/user-secret.svg</file>
+        <file>icons/fa/scroll.svg</file>
+        <file>icons/fa/heart-pulse.svg</file>
+        <file>icons/fa/eye.svg</file>
+        <file>icons/fa/link.svg</file>
+        <file>icons/fa/link-slash.svg</file>
+        <file>icons/fa/table-cells-large.svg</file>
+        <file>icons/fa/layer-group.svg</file>
+        <file>icons/fa/thumbtack.svg</file>
+        <file>icons/fa/volume-xmark.svg</file>
+        <file>icons/fa/volume-high.svg</file>
+        <file>icons/fa/compass.svg</file>
+        <file>icons/fa/book-open.svg</file>
+        <file>icons/fa/highlighter.svg</file>
+        <file>icons/fa/moon.svg</file>
+        <file>icons/fa/pen.svg</file>
+        <file>icons/fa/note-sticky.svg</file>
+        <file>icons/fa/camera.svg</file>
+        <file>icons/fa/sliders.svg</file>
+        <file>icons/fa/palette.svg</file>
+        <file>icons/fa/shield.svg</file>
+        <file>icons/fa/circle-nodes.svg</file>
+        <file>icons/fa/keyboard.svg</file>
+        <file>icons/fa/puzzle-piece.svg</file>
+        <file>icons/fa/copy.svg</file>
+        <file>icons/fa/paste.svg</file>
+        <file>icons/fa/scissors.svg</file>
+        <file>icons/fa/trash.svg</file>
+        <file>icons/fa/check-double.svg</file>
+        <file>icons/fa/circle-info.svg</file>
+        <file>icons/fa/circle-question.svg</file>
+        <file>icons/fa/folder-plus.svg</file>
+        <file>icons/fa/circle-half-stroke.svg</file>
+        <file>icons/fa/bars.svg</file>
+        <file>icons/fa/sidebar-flip.svg</file>
     </qresource>
 </RCC>

@@ -614,6 +614,7 @@ qt_add_resources(SRCS
     data/data.qrc
     data/html.qrc
     data/icons.qrc
+    data/fonts.qrc
     data/breeze-fallback.qrc
     adblock/adblock.qrc
 )
