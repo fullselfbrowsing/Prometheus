@@ -6,5 +6,8 @@
         <file>fonts/poppins/Poppins-ExtraBold.ttf</file>
         <file>fonts/poppins/Poppins-Black.ttf</file>
         <file>fonts/spacemono/SpaceMono-Regular.ttf</file>
+        <!-- SIL Open Font License 1.1 texts — surfaced in legal/about -->
+        <file>fonts/poppins/OFL.txt</file>
+        <file>fonts/spacemono/OFL.txt</file>
     </qresource>
 </RCC>

@@ -27,6 +27,8 @@ namespace Ui
 class AboutDialog;
 }
 
+class PrometheusMarkWidget;
+
 class FALKON_EXPORT AboutDialog : public QDialog
 {
     Q_OBJECT
@@ -40,6 +42,7 @@ private Q_SLOTS:
 
 private:
     Ui::AboutDialog* ui;
+    PrometheusMarkWidget* m_markWidget;
 
     QString m_aboutHtml;
 };
