@@ -5,6 +5,7 @@
 #include "datapaths.h"
 #include "mainapplication.h"
 #include "preferences.h"
+#include "settings.h"
 #include "sidebar.h"
 #include "statusbar.h"
 #include "tabbedwebview.h"
@@ -68,10 +69,18 @@ AgentCommandRouter::AgentCommandRouter(QObject* parent)
     , m_nextAgentNumber(1)
     , m_agentCap(4)
 {
-    bool ok = false;
-    const int configuredCap = qgetenv("PROMETHEUS_AGENT_CAP").toInt(&ok);
-    if (ok && configuredCap > 0) {
-        m_agentCap = configuredCap;
+    // Read agent cap from persistent policy settings (PrometheusRuntime/Policy/agentCap),
+    // falling back to the PROMETHEUS_AGENT_CAP environment variable for test/bootstrap overrides.
+    Settings settings;
+    const int settingsCap = settings.value(QSL("PrometheusRuntime/Policy/agentCap"), 0).toInt();
+    if (settingsCap > 0) {
+        m_agentCap = settingsCap;
+    } else {
+        bool ok = false;
+        const int configuredCap = qgetenv("PROMETHEUS_AGENT_CAP").toInt(&ok);
+        if (ok && configuredCap > 0) {
+            m_agentCap = configuredCap;
+        }
     }
 
     connect(&m_server, &QTcpServer::newConnection, this, &AgentCommandRouter::handleNewConnection);
@@ -890,6 +899,17 @@ QJsonObject AgentCommandRouter::routeExecuteJs(const QString &id, const QString 
 
 QJsonObject AgentCommandRouter::routeOpenInternalSurface(const QString &id, const QString &tool, const QJsonObject &params, quint64 auditSequence)
 {
+    // PERMISSION_BLOCKED: internal surface control disabled by policy setting.
+    // The PrometheusRuntime/Policy/internalSurfaceControl key gates whether MCP/agent
+    // callers may open internal browser surfaces (preferences, agent panel, etc.).
+    Settings policySettings;
+    const bool internalSurfaceEnabled = policySettings.value(QSL("PrometheusRuntime/Policy/internalSurfaceControl"), true).toBool();
+    if (!internalSurfaceEnabled) {
+        return failure(id, tool, QSL("PERMISSION_BLOCKED"),
+                       QSL("Internal surface control is disabled by the Prometheus policy settings. Enable it from the native Preferences to allow agent access to browser-internal pages."),
+                       auditSequence);
+    }
+
     const QString surface = params.value(QSL("surface")).toString(QSL("preferences"));
     const bool wantsPreferences = surface == QL1S("preferences");
     const bool wantsAgent = surface == QL1S("agent") || surface == QL1S("prometheus_agent") || surface == QL1S("runtime");
@@ -1159,8 +1179,23 @@ QJsonObject AgentCommandRouter::routeTaskStatus(const QString &id, const QString
 
 QJsonObject AgentCommandRouter::routeProviderConfig(const QString &id, const QString &tool, const QJsonObject &params, quint64 auditSequence)
 {
+    const QJsonObject config = mApp->agentRuntime()->providerConfig();
+    // Surface PROVIDER_NOT_CONFIGURED when provider-backed execution is requested
+    // but no secret has been configured. Callers can check result.providerAvailable.
+    if (tool == QL1S("discover_models")) {
+        const QJsonArray providers = config.value(QSL("providers")).toArray();
+        const bool anyConfigured = std::any_of(providers.begin(), providers.end(), [](const QJsonValue &v) {
+            return v.toObject().value(QSL("secretConfigured")).toBool();
+        });
+        if (!anyConfigured) {
+            return failure(id, tool, QSL("PROVIDER_NOT_CONFIGURED"),
+                           QSL("No provider has been configured. Add a provider API key from the native Prometheus settings."),
+                           auditSequence,
+                           QJsonObject{{QSL("providerAvailable"), false}, {QSL("unavailableReason"), QSL("PROVIDER_NOT_CONFIGURED")}});
+        }
+    }
     Q_UNUSED(params)
-    return success(id, tool, mApp->agentRuntime()->providerConfig(), auditSequence);
+    return success(id, tool, config, auditSequence);
 }
 
 QJsonObject AgentCommandRouter::routeSetProviderConfig(const QString &id, const QString &tool, const QJsonObject &params, quint64 auditSequence)

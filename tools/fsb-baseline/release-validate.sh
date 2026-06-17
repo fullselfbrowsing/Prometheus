@@ -53,6 +53,7 @@ bash -n "${SOURCE_ROOT}/tools/fsb-baseline/smoke-agent-control.sh"
 bash -n "${SOURCE_ROOT}/tools/fsb-baseline/smoke-compact-tabs.sh"
 bash -n "${SOURCE_ROOT}/tools/fsb-baseline/smoke-mcp-bridge.sh"
 bash -n "${SOURCE_ROOT}/tools/fsb-baseline/smoke-browser.sh"
+bash -n "${SOURCE_ROOT}/tools/fsb-baseline/smoke-fsb-plus-parity.sh"
 bash -n "${SOURCE_ROOT}/tools/fsb-baseline/package-macos.sh"
 
 cmake --build "$BUILD_DIR"
@@ -64,6 +65,7 @@ if [ -x "$BINARY" ]; then
 else
   printf 'Skipping compact tab smoke; binary is unavailable at %s\n' "$BINARY" >&2
 fi
+"${SOURCE_ROOT}/tools/fsb-baseline/smoke-fsb-plus-parity.sh" --binary "$BINARY" --port 17888
 "${SOURCE_ROOT}/tools/fsb-baseline/smoke-browser.sh" --binary "$BINARY" --wait 1
 
 "${SOURCE_ROOT}/tools/fsb-baseline/package-macos.sh" --build-dir "$BUILD_DIR"
