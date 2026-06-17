@@ -233,7 +233,7 @@ require_ok "$LIST_RESPONSE" "list_tabs"
 
 # Verify health tools array includes required tool names
 TOOLS_JSON="$(json_field "$HEALTH" "tools")"
-for required_tool in diagnostics list_tabs new_tab dom_snapshot page_snapshot; do
+for required_tool in diagnostics list_tabs new_tab get_dom_snapshot get_page_snapshot; do
   if ! printf '%s' "$TOOLS_JSON" | python3 -c "
 import json, sys
 tools = json.loads(sys.stdin.read())
