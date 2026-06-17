@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Chromium Engine Migration
-status: Defining migration execution
-stopped_at: Milestone v2.0 started — Falkon v1 source preserved as bundle and patch series; Chromium migration requirements and roadmap created
-last_updated: "2026-06-17T18:20:00.000Z"
-last_activity: 2026-06-17 — Milestone v2.0 Chromium Engine Migration started
+status: Blocked on local Xcode license for Chromium GN generation
+stopped_at: Falkon active checkout removed; Chromium source fetched at 0e8499df5172f55d0d29e2b92ef7e6a704529578; GN generation blocked until Xcode license is accepted
+last_updated: "2026-06-17T18:45:00.000Z"
+last_activity: 2026-06-17 — Falkon retired from active workspace and Chromium source checkout completed
 progress:
   total_phases: 14
   completed_phases: 0
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-06-17)
 
 ## Current Position
 
-Phase: Phase 11 planned — Preservation Contract and Falkon Freeze
+Phase: Phase 12 in progress — Chromium Checkout, Build, and Patch Discipline
 Plan: —
-Status: Milestone v2.0 initialized; ready to execute Phase 11
-Last activity: 2026-06-17 — Falkon v1 bundle and patch series saved; preservation dossier, requirements, roadmap, project context, and milestone index updated
+Status: Chromium source fetched; GN/build blocked on unaccepted Xcode license
+Last activity: 2026-06-17 — verified Falkon bundle restore, removed active `falkon/`, installed depot_tools, fetched Chromium under `.context/chromium`, recorded checkout handoff
 
 ## Performance Metrics
 
@@ -137,6 +137,9 @@ Recent decisions affecting current work:
 - [Milestone v2.0]: The active Falkon checkout is nested, clean, and preserved at `b0521c9d37e7545c680b78dfcc24f777a984091c`; bundle path `.context/falkon-preservation/falkon-prometheus-v1.bundle`; patch series `.context/falkon-preservation/patches/`.
 - [Milestone v2.0]: Preserve product/design/behavior contracts, not GPL Falkon implementation code, unless license review explicitly permits copying.
 - [Milestone v2.0]: Chromium implementation should use browser-process services, WebContents/RenderFrameHost/page adapters, WebUI, Views, resource packs, and extension-system policy rather than Qt/QWebChannel/QSS/Falkon plugin APIs.
+- [Milestone v2.0]: Active `falkon/` checkout was removed after bundle restore verification. Root git status is clean after removal.
+- [Milestone v2.0]: depot_tools installed at `.context/depot_tools` (revision `c46c2e905`); Chromium fetched at `.context/chromium/src` (revision `0e8499df5172f55d0d29e2b92ef7e6a704529578`).
+- [Milestone v2.0]: GN generation is blocked because full Xcode exists but its license is not accepted. Do not accept the license silently as an agent; user must review/accept it in Terminal.
 
 ### Roadmap Evolution
 
@@ -151,8 +154,8 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- Execute Phase 11: finish preservation verification and freeze/remove active Falkon source only after confirming the bundle and patch series restore.
-- Execute Phase 12: install/locate `depot_tools`, fetch Chromium, generate GN build, build and launch unmodified Chromium.
+- User needs to accept the Xcode license in Terminal before GN generation can proceed.
+- After license acceptance, run the GN/build commands in `.planning/chromium/CHROMIUM-CHECKOUT.md`.
 
 ### Blockers/Concerns
 
@@ -162,7 +165,7 @@ Open items carried into v2.0 (formal list in Deferred Items below):
 - Internal Falkon → Prometheus namespace/class/library rename is obsolete as a direct task because the implementation is being replaced; de-Falkon validation moves to Phase 23.
 - The release artifact is a local macOS validation package, not a notarized public release.
 - Provider-backed hosted model execution remains partially deferred.
-- Chromium checkout/build will be large and slow; it needs isolated source/build directories and root git hygiene.
+- Chromium checkout completed under `.context/chromium`; build remains blocked on Xcode license.
 - License boundary is high-risk: do not copy Falkon GPL implementation into Chromium without review.
 
 ## Deferred Items
@@ -177,15 +180,16 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Because
 | migration | Internal Falkon → Prometheus namespace/class/library rename replaced by Chromium migration and de-Falkon gate | active_v2_replacement | v2.0 start 2026-06-17 |
 | release | Notarized, distributable macOS release (current is local validation package) | deferred | v1.0 close 2026-06-17 |
 | preservation | Falkon v1 source bundle and 81-patch series | saved | v2.0 start 2026-06-17 |
+| local_build | Chromium GN generation requires accepted Xcode license | blocked_user_action | v2.0 Phase 12 2026-06-17 |
 
 ## Session Continuity
 
-Last session: 2026-06-17T13:20:00.000-05:00
-Stopped at: Milestone v2.0 initialized — preservation dossier, requirements, roadmap, project context, state, and milestone index updated
+Last session: 2026-06-17T13:45:00.000-05:00
+Stopped at: Chromium source fetched; GN generation blocked on Xcode license
 Resume file: None
 
 ## Operator Next Steps
 
-- Execute Phase 11: Preservation Contract and Falkon Freeze.
-- Verify `.context/falkon-preservation/falkon-prometheus-v1.bundle` can restore before deleting `falkon/`.
-- Then execute Phase 12: Chromium Checkout, Build, and Patch Discipline.
+- In Terminal, review/accept Xcode license: `sudo xcodebuild -license`.
+- Resume Phase 12 with the commands in `.planning/chromium/CHROMIUM-CHECKOUT.md`.
+- Generate GN build files, build `chrome`, and launch the unmodified Chromium app before Prometheus patches begin.
