@@ -20,14 +20,19 @@
 
 #include "qzcommon.h"
 #include <QObject>
+#include <QPointer>
 
 class BrowserWindow;
+class WebPage;
 
 class FALKON_EXPORT PrometheusStartBridge : public QObject
 {
     Q_OBJECT
 public:
-    explicit PrometheusStartBridge(BrowserWindow* window, QObject* parent = nullptr);
+    // page is the owning WebPage; each privileged slot verifies page->url()
+    // == falkon:start at call time (the registration-time URL guard was always
+    // false because url() is empty during WebPage construction).
+    explicit PrometheusStartBridge(BrowserWindow* window, WebPage* page, QObject* parent = nullptr);
 
 public Q_SLOTS:
     void openAgentWithPrompt(const QString& prompt);
@@ -36,7 +41,13 @@ public Q_SLOTS:
     QString currentTheme() const;
 
 private:
-    BrowserWindow* m_window;
+    // QPointer zeroes itself when BrowserWindow is destroyed, making the
+    // existing null-guard safe against in-flight event-loop messages after
+    // window close (WR-02).
+    QPointer<BrowserWindow> m_window;
+    // Raw pointer is safe: bridge is owned by QWebChannel which is owned by
+    // WebPage — they are destroyed together, so m_page is never dangling.
+    WebPage* m_page;
 };
 
 #endif // PROMETHEUSSTARTBRIDGE_H

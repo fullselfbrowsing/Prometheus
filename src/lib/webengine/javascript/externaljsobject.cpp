@@ -46,16 +46,19 @@ void ExternalJsObject::setupWebChannel(QWebChannel *webChannel, WebPage *page)
 {
     webChannel->registerObject(QSL("qz_object"), new ExternalJsObject(page));
 
-    // Register start-page bridge only for falkon:start (security: URL guard).
-    // Both url() and requestedUrl() are checked because during page load url() may
-    // still reflect the previous URL — mirrors the speedDial() URL guard pattern.
-    if (page->url() == QUrl(QSL("falkon:start"))
-            || page->requestedUrl() == QUrl(QSL("falkon:start"))) {
+    // Register the start-page bridge unconditionally so it is available when
+    // falkon:start finishes loading (page->url() is empty at WebPage construction
+    // time — the constructor-time URL guard always evaluated false and made the
+    // feature inert). Security is preserved because each slot in PrometheusStartBridge
+    // verifies the owning page's CURRENT URL at call time rather than at registration
+    // time. Pages that are not falkon:start can see the object but every privileged
+    // call is a no-op.
+    {
         BrowserWindow* bw = qobject_cast<TabbedWebView*>(page->view())
                                 ? qobject_cast<TabbedWebView*>(page->view())->browserWindow()
                                 : nullptr;
         webChannel->registerObject(QSL("qz_prometheus_start"),
-                                   new PrometheusStartBridge(bw, webChannel));
+                                   new PrometheusStartBridge(bw, page, webChannel));
     }
 
     for (auto it = s_extraObjects.constBegin(); it != s_extraObjects.constEnd(); ++it) {

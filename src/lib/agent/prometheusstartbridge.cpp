@@ -24,6 +24,7 @@
 #include "settings.h"
 #include "sidebar.h"
 #include "tabbedwebview.h"
+#include "webpage.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -47,14 +48,22 @@ QString deterministicColor(const QString& host)
 
 } // namespace
 
-PrometheusStartBridge::PrometheusStartBridge(BrowserWindow* window, QObject* parent)
+PrometheusStartBridge::PrometheusStartBridge(BrowserWindow* window, WebPage* page, QObject* parent)
     : QObject(parent)
     , m_window(window)
+    , m_page(page)
 {
 }
 
 void PrometheusStartBridge::openAgentWithPrompt(const QString& prompt)
 {
+    // SECURITY: the bridge is registered for every WebPage (CR-01 fix), so
+    // enforce the falkon:start guard at call time instead of registration time.
+    // Pages that are not falkon:start see the bridge object but this guard
+    // makes every privileged call a no-op.
+    if (!m_page || m_page->url() != QUrl(QSL("falkon:start"))) {
+        return;
+    }
     if (!m_window) {
         return;
     }
@@ -94,6 +103,10 @@ void PrometheusStartBridge::openAgentWithPrompt(const QString& prompt)
 
 void PrometheusStartBridge::navigateTo(const QString& url)
 {
+    // SECURITY: per-slot falkon:start guard (see openAgentWithPrompt).
+    if (!m_page || m_page->url() != QUrl(QSL("falkon:start"))) {
+        return;
+    }
     // SECURITY: only allow http and https — reject javascript:, data:, falkon:, file:, etc.
     QUrl qurl(url);
     if (qurl.scheme() != QL1S("http") && qurl.scheme() != QL1S("https")) {
@@ -110,8 +123,14 @@ QString PrometheusStartBridge::bookmarkFavoritesJson() const
     BookmarkItem* root = mApp->bookmarks()->rootItem();
     QList<BookmarkItem*> queue = root->children();
     int count = 0;
-    while (!queue.isEmpty() && count < 8) {
+    int visited = 0;
+    // Cap visited nodes (WR-03): a pathological all-folders tree with no URL
+    // items at shallow depth would otherwise enqueue tens of thousands of
+    // children before the count < 8 guard triggers.
+    const int kMaxVisit = 500;
+    while (!queue.isEmpty() && count < 8 && visited < kMaxVisit) {
         BookmarkItem* item = queue.takeFirst();
+        ++visited;
         if (item->isUrl()) {
             const QString host = item->url().host();
             const QString mono = host.left(2).toUpper();
