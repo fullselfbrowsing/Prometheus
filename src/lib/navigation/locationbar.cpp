@@ -214,7 +214,7 @@ QString LocationBar::convertUrlToText(const QUrl &url)
 
     QString stringUrl = QzTools::urlEncodeQueryString(url);
 
-    if (stringUrl == QL1S("falkon:speeddial") || stringUrl == QL1S("about:blank")) {
+    if (stringUrl == QL1S("falkon:speeddial") || stringUrl == QL1S("falkon:start") || stringUrl == QL1S("about:blank")) {
         stringUrl.clear();
     }
 
