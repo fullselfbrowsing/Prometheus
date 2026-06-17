@@ -217,7 +217,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [x] 10-02-PLAN.md — Write complete Prometheus start.html and update FalkonSchemeReply::startPage() two-stage cache.
-- [ ] 10-03-PLAN.md — Create PrometheusStartBridge C++ class, add seedPromptAndOpen to AgentRuntimeSidebarWidget, wire URL-guarded registration in ExternalJsObject.
+- [x] 10-03-PLAN.md — Create PrometheusStartBridge C++ class, add seedPromptAndOpen to AgentRuntimeSidebarWidget, wire URL-guarded registration in ExternalJsObject.
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 10-04-PLAN.md — Build, launch, and visual/functional sign-off checkpoint for all five START requirements.
@@ -238,4 +238,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 10/10 | Complete | 2026-06-16 |
 | 8. Native FSB-Plus Settings Side Panel and Feature Parity Matrix | 5/5 | Complete   | 2026-06-17 |
 | 9. Offline Font Awesome Free Icon System and Minimal Themes | 6/6 | Complete   | 2026-06-17 |
-| 10. New Tab Start Page | 2/4 | In Progress|  |
+| 10. New Tab Start Page | 3/4 | In Progress|  |

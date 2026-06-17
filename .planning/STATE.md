@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: "Phase 10 Plan 01 complete — FA SVGs bundled and new-tab default repointed to falkon:start"
-last_updated: "2026-06-17T09:00:36.179Z"
+last_updated: "2026-06-17T09:16:24.191Z"
 last_activity: 2026-06-17
 progress:
   total_phases: 10
   completed_phases: 9
   total_plans: 51
-  completed_plans: 48
-  percent: 94
+  completed_plans: 50
+  percent: 98
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-06-16)
 ## Current Position
 
 Phase: 10 (New Tab Start Page) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-06-17
 
-Progress: [█████████░] 94%
+Progress: [██████████] 98%
 
 ## Performance Metrics
 
@@ -79,6 +79,7 @@ Progress: [█████████░] 94%
 | Phase 09 P05 | 4min | 2 tasks | 7 files |
 | Phase 09 P06 | 5min | 3 tasks | 6 files |
 | Phase 10 P01 | 3min | 2 tasks | 5 files |
+| Phase 10 P03 | 15min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -130,6 +131,7 @@ Recent decisions affecting current work:
 - [Phase ?]: PrometheusMarkWidget: use qzcommon.h not falkon_defs.h for FALKON_EXPORT
 - [Phase ?]: New FA SVGs appended after sidebar-flip.svg inside existing CC BY 4.0 block — no per-entry attribution comment needed
 - [Phase ?]: TabWidget new-tab default uses settings.value() fallback only; explicit user newTabUrl settings are untouched
+- [Phase ?]: SideBarManager is in sidebar.h; BrowserWindow obtained from WebPage via TabbedWebView cast
 
 ### Roadmap Evolution
 
@@ -165,6 +167,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-17T09:00:36.174Z
+Last session: 2026-06-17T09:16:18.538Z
 Stopped at: Phase 10 Plan 01 complete — FA SVGs bundled and new-tab default repointed to falkon:start
 Resume file: None
