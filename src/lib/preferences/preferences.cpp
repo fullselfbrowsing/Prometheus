@@ -591,12 +591,16 @@ Preferences::Preferences(BrowserWindow* window)
     //PROMETHEUS AGENT POLICY
     settings.beginGroup(QSL("PrometheusRuntime/Policy"));
     ui->agentCapSpin->setValue(settings.value(QSL("agentCap"), 4).toInt());
-    ui->internalSurfaceCheck->setChecked(settings.value(QSL("internalSurfaceControl"), false).toBool());
+    // Default true: must match AgentCommandRouter::routeOpenInternalSurface default (line ~915)
+    // so that opening Preferences and saving without changing the checkbox does not silently
+    // flip internalSurfaceControl from router-allowed to router-denied.
+    ui->internalSurfaceCheck->setChecked(settings.value(QSL("internalSurfaceControl"), true).toBool());
     ui->tabOwnershipCheck->setChecked(settings.value(QSL("tabOwnershipEnforcement"), true).toBool());
     ui->bgTabActionsCheck->setChecked(settings.value(QSL("backgroundTabActions"), true).toBool());
     ui->visualFeedbackCheck->setChecked(settings.value(QSL("visualFeedback"), true).toBool());
     ui->telemetryCombo->setCurrentIndex(settings.value(QSL("telemetry"), 0).toInt());
-    ui->supervisionPairingCheck->setChecked(settings.value(QSL("supervisionPairing"), false).toBool());
+    // Default true: must match AgentCommandRouter::routeGetAgentPolicy supervisionPairing default.
+    ui->supervisionPairingCheck->setChecked(settings.value(QSL("supervisionPairing"), true).toBool());
     ui->dashboardRemoteCheck->setChecked(settings.value(QSL("dashboardRemoteControl"), false).toBool());
     // vaultBoundaryCheck and vaultAutofillCheck are security invariants: always true, never read from Settings
     settings.endGroup();
