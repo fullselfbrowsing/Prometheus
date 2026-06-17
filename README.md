@@ -2,7 +2,10 @@
 
 <img src="assets/prometheus-icon.svg" alt="Prometheus icon" width="112" />
 
-<img src="assets/prometheus-wordmark.svg" alt="Prometheus" width="300" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/prometheus-wordmark.svg" />
+  <img src="assets/prometheus-wordmark-light.svg" alt="Prometheus" width="300" />
+</picture>
 
 **The agent native desktop browser. Full control of the whole browser through structure, not screenshots.**
 
