@@ -195,6 +195,17 @@ void AgentCommandRouterTest::callerControlledClientLabelDoesNotGrantOwnership()
     QCOMPARE(spoofedLabel.value(QSL("ok")).toBool(), false);
     QCOMPARE(spoofedLabel.value(QSL("error")).toObject().value(QSL("code")).toString(), QSL("TAB_OWNED_BY_OTHER_AGENT"));
 
+    const QJsonObject supervisionTakeover = router.routeForSession(command(QSL("supervision-takeover"),
+                                                                           QSL("start_supervision_session"),
+                                                                           QJsonObject{{QSL("client"), QSL("shared-label")}, {QSL("tabIndex"), 0}}),
+                                                                   QSL("session-two"));
+    QCOMPARE(supervisionTakeover.value(QSL("ok")).toBool(), false);
+    QCOMPARE(supervisionTakeover.value(QSL("error")).toObject().value(QSL("code")).toString(), QSL("TAB_OWNED_BY_OTHER_AGENT"));
+
+    const QJsonObject state = router.tabChromeState(0, 0);
+    QCOMPARE(state.value(QSL("owner")).toString(), agentId);
+    QCOMPARE(state.value(QSL("supervisionActive")).toBool(), false);
+
     delete window;
 }
 

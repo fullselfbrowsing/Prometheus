@@ -1266,11 +1266,15 @@ QJsonObject AgentCommandRouter::routeSupervision(const QString &id, const QStrin
     }
 
     if (tool == QL1S("create_supervision_pairing") || tool == QL1S("start_supervision_session")) {
-        QString agentErrorCode;
-        QString agentErrorMessage;
-        const QString agentId = agentIdForParams(params, &agentErrorCode, &agentErrorMessage);
-        if (agentId.isEmpty()) {
-            return failure(id, tool, agentErrorCode, agentErrorMessage, auditSequence);
+        QString agentId;
+        if (!enforceOwnership(params, target, &agentId, &errorCode, &errorMessage)) {
+            return failure(id,
+                           tool,
+                           errorCode,
+                           errorMessage,
+                           auditSequence,
+                           QJsonObject{{QSL("windowIndex"), target.windowIndex},
+                                       {QSL("tabIndex"), target.tabIndex}});
         }
 
         QString snapshotHash;
