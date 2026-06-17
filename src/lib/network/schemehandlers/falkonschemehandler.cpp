@@ -150,25 +150,21 @@ qint64 FalkonSchemeReply::writeData(const char *data, qint64 len)
 
 QString FalkonSchemeReply::startPage()
 {
-    static QString sPage;
-
-    if (!sPage.isEmpty()) {
-        return sPage;
+    // Stage 1: build the static template once.
+    static QString dPage;
+    if (dPage.isEmpty()) {
+        dPage.append(QzTools::readAllFileContents(QSL(":html/start.html")));
+        dPage.replace(QLatin1String("%TITLE%"), tr("New Tab"));
+        dPage = QzTools::applyDirectionToPage(dPage);
     }
 
-    sPage.append(QzTools::readAllFileContents(QSL(":html/start.html")));
-    sPage.replace(QLatin1String("%ABOUT-IMG%"), QSL("qrc:icons/other/startpage.svg"));
-    sPage.replace(QLatin1String("%ABOUT-IMG-DARK%"), QSL("qrc:icons/other/startpage-dark.svg"));
-
-    sPage.replace(QLatin1String("%TITLE%"), tr("Start Page"));
-    sPage.replace(QLatin1String("%BUTTON-LABEL%"), tr("Search on Web"));
-    sPage.replace(QLatin1String("%SEARCH-BY%"), tr("Search results provided by DuckDuckGo"));
-    sPage.replace(QLatin1String("%WWW%"), QString::fromLatin1(Qz::WIKIADDRESS));
-    sPage.replace(QLatin1String("%ABOUT-FALKON%"), tr("About Falkon"));
-    sPage.replace(QLatin1String("%PRIVATE-BROWSING%"), mApp->isPrivate() ? tr("<h1>Private Browsing</h1>") : QString());
-    sPage = QzTools::applyDirectionToPage(sPage);
-
-    return sPage;
+    // Stage 2: per-request copy with dynamic tokens.
+    QString page = dPage;
+    page.replace(QLatin1String("%PRIVATE-BROWSING%"),
+        mApp->isPrivate()
+            ? QSL("<div class=\"pm-private-notice\">%1</div>").arg(tr("Private Browsing"))
+            : QString());
+    return page;
 }
 
 QString FalkonSchemeReply::aboutPage()
@@ -177,12 +173,12 @@ QString FalkonSchemeReply::aboutPage()
 
     if (aPage.isEmpty()) {
         aPage.append(QzTools::readAllFileContents(QSL(":html/about.html")));
-        aPage.replace(QLatin1String("%ABOUT-IMG%"), QSL("qrc:icons/other/about.svg"));
-        aPage.replace(QLatin1String("%ABOUT-IMG-DARK%"), QSL("qrc:icons/other/about-dark.svg"));
+        aPage.replace(QLatin1String("%ABOUT-IMG%"), QSL("qrc:icons/prometheus.svg"));
+        aPage.replace(QLatin1String("%ABOUT-IMG-DARK%"), QSL("qrc:icons/prometheus.svg"));
         aPage.replace(QLatin1String("%COPYRIGHT-INCLUDE%"), QzTools::readAllFileContents(QSL(":html/copyright")).toHtmlEscaped());
 
-        aPage.replace(QLatin1String("%TITLE%"), tr("About Falkon"));
-        aPage.replace(QLatin1String("%ABOUT-FALKON%"), tr("About Falkon"));
+        aPage.replace(QLatin1String("%TITLE%"), tr("About Prometheus"));
+        aPage.replace(QLatin1String("%ABOUT-FALKON%"), tr("About Prometheus"));
         aPage.replace(QLatin1String("%INFORMATIONS-ABOUT-VERSION%"), tr("Information about version"));
         aPage.replace(QLatin1String("%COPYRIGHT%"), tr("Copyright"));
 
@@ -295,13 +291,13 @@ QString FalkonSchemeReply::configPage()
 
     if (cPage.isEmpty()) {
         cPage.append(QzTools::readAllFileContents(QSL(":html/config.html")));
-        cPage.replace(QLatin1String("%ABOUT-IMG%"), QSL("qrc:icons/other/about.svg"));
-        cPage.replace(QLatin1String("%ABOUT-IMG-DARK%"), QSL("qrc:icons/other/about-dark.svg"));
+        cPage.replace(QLatin1String("%ABOUT-IMG%"), QSL("qrc:icons/prometheus.svg"));
+        cPage.replace(QLatin1String("%ABOUT-IMG-DARK%"), QSL("qrc:icons/prometheus.svg"));
 
         cPage.replace(QLatin1String("%TITLE%"), tr("Configuration Information"));
         cPage.replace(QLatin1String("%CONFIG%"), tr("Configuration Information"));
         cPage.replace(QLatin1String("%INFORMATIONS-ABOUT-VERSION%"), tr("Information about version"));
-        cPage.replace(QLatin1String("%CONFIG-ABOUT%"), tr("This page contains information about Falkon's current configuration - relevant for troubleshooting. Please include this information when submitting bug reports."));
+        cPage.replace(QLatin1String("%CONFIG-ABOUT%"), tr("This page contains information about Prometheus' current configuration - relevant for troubleshooting. Please include this information when submitting bug reports."));
         cPage.replace(QLatin1String("%BROWSER-IDENTIFICATION%"), tr("Browser Identification"));
         cPage.replace(QLatin1String("%PATHS%"), tr("Paths"));
         cPage.replace(QLatin1String("%BUILD-CONFIG%"), tr("Build Configuration"));
