@@ -188,10 +188,15 @@ Plans:
   6. Minimal themes implement the canonical warm dark and warm light token sets (and the accent recolor option) as pure token swaps, removing heavy inherited chrome while preserving focus, hover, active, disabled, warning, and supervised-action states.
   7. Release packaging includes icon/font/theme assets and Font Awesome plus brand font license metadata.
   8. Visual/resource validation fails if required icons or fonts are missing, remote-loaded, illegible, or inconsistent across light/dark/minimal modes.
-**Plans**: 0 plans
+**Plans**: 6 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 9 to break down)
+- [ ] 09-01-PLAN.md — FA SVG resource subset (70 glyphs) + fonts.qrc + font TTF asset layout.
+- [ ] 09-02-PLAN.md — PromethusFontLoader C++ class and MainApplication startup hook.
+- [ ] 09-03-PLAN.md — PrometheusIconResolver service with 70+ action map and 3-step fallback.
+- [ ] 09-04-PLAN.md — Prometheus warm dark + light + common QSS theme files and runtime switch.
+- [ ] 09-05-PLAN.md — PrometheusMarkWidget (two-weight PM mark) and primary call site migration.
+- [ ] 09-06-PLAN.md — FSB asset bundle, about/first-run logo wiring, ICON-04 gate, and visual approval.
 
 ### Phase 10: New Tab Start Page
 **Goal**: Build the Prometheus New Tab start page — hero PM mark, omnibox with an Ask FSB handoff, favorites grid, and FSB suggested automations — skinned to the canonical Prometheus design.
@@ -224,5 +229,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 | 6. Supervision, Packaging, and Release Hardening | 4/4 | Complete | 2026-06-16 |
 | 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 10/10 | Complete | 2026-06-16 |
 | 8. Native FSB-Plus Settings Side Panel and Feature Parity Matrix | 5/5 | Complete   | 2026-06-17 |
-| 9. Offline Font Awesome Free Icon System and Minimal Themes | 0/0 | Not planned | - |
+| 9. Offline Font Awesome Free Icon System and Minimal Themes | 0/6 | In progress | - |
 | 10. New Tab Start Page | 0/0 | Not planned | - |
