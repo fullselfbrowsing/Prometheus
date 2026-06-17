@@ -403,7 +403,8 @@ void AgentRuntimeSidebarWidget::refreshFsbAgent()
         if (!progress.isEmpty()) {
             displayText += QSL("\n  %1").arg(progress);
         }
-        if (!executionChip.isEmpty() && (status == QSL("completed") || status == QSL("cancelled") || status == QSL("failed"))) {
+        // AgentRuntime::finishTask stores status "complete" (not "completed").
+        if (!executionChip.isEmpty() && (status == QSL("complete") || status == QSL("cancelled") || status == QSL("failed"))) {
             displayText += executionChip;
         }
 
