@@ -1252,9 +1252,9 @@ QJsonObject AgentCommandRouter::routeGetAgentPolicy(const QString &id, const QSt
     const bool visualFeedback = settings.value(QSL("visualFeedback"), true).toBool();
     const int telemetry = settings.value(QSL("telemetry"), 0).toInt();
     // vaultBoundary: "native_only" is the locked invariant default — never absent or empty.
-    const QString vaultBoundary = settings.value(QSL("vaultBoundary"), QSL("native_only")).toString().trimmed().isEmpty()
-                                   ? QSL("native_only")
-                                   : settings.value(QSL("vaultBoundary"), QSL("native_only")).toString();
+    // Read once; guard against empty string (e.g. someone wrote "" to Settings explicitly).
+    const QString rawVaultBoundary = settings.value(QSL("vaultBoundary"), QSL("native_only")).toString().trimmed();
+    const QString vaultBoundary = rawVaultBoundary.isEmpty() ? QSL("native_only") : rawVaultBoundary;
     const bool supervisionPairing = settings.value(QSL("supervisionPairing"), true).toBool();
     const bool vaultAutofillConfirmation = settings.value(QSL("vaultAutofillConfirmation"), true).toBool();
     settings.endGroup();
