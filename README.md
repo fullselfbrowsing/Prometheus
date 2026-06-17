@@ -24,9 +24,17 @@
 [![Issues](https://img.shields.io/github/issues/fullselfbrowsing/Prometheus?style=for-the-badge&logo=github&logoColor=white&color=555555)](https://github.com/fullselfbrowsing/Prometheus/issues)
 [![Last Commit](https://img.shields.io/github/last-commit/fullselfbrowsing/Prometheus?style=for-the-badge&logo=github&logoColor=white&color=555555)](https://github.com/fullselfbrowsing/Prometheus/commits/main)
 
-[Overview](#overview) · [Why DOM First](#why-dom-first) · [The Whole Browser](#the-whole-browser-not-just-the-page) · [Architecture](#architecture) · [Features](#features) · [Native Control Surface](#native-control-surface) · [MCP Bridge](#mcp-bridge) · [Quick Start](#quick-start) · [Repository Layout](#repository-layout) · [License](#license-and-attribution)
+[Why I Built This](#why-i-built-this) · [Overview](#overview) · [Why DOM First](#why-dom-first) · [The Whole Browser](#the-whole-browser-not-just-the-page) · [Architecture](#architecture) · [Features](#features) · [Native Control Surface](#native-control-surface) · [MCP Bridge](#mcp-bridge) · [Quick Start](#quick-start) · [Repository Layout](#repository-layout) · [License](#license-and-attribution)
 
 </div>
+
+---
+
+## Why I Built This
+
+While I have been developing FSB, there were a lot of issues with Chrome's policies and inability to access non web pages and JavaScript execution. At a point I was like, fuck it. I'm gonna do it myself, I'm gonna solve everything and create a fucking browser.
+
+And that's what this is.
 
 ---
 
