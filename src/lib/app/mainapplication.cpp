@@ -23,6 +23,7 @@
 #include "agentcommandrouter.h"
 #include "agentruntime.h"
 #include "agentruntimesidebar.h"
+#include "agent/promethusfontloader.h"
 #include "settings.h"
 #include "autosaver.h"
 #include "datapaths.h"
@@ -139,6 +140,8 @@ MainApplication::MainApplication(int &argc, char** argv)
     if (QIcon::fromTheme(QSL("view-refresh")).isNull()) {
         QIcon::setThemeName(QSL("breeze-fallback"));
     }
+
+    PromethusFontLoader::registerAll();
 
     // QSQLITE database plugin is required
     if (!QSqlDatabase::isDriverAvailable(QSL("QSQLITE"))) {
