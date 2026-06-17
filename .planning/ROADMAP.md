@@ -212,9 +212,14 @@ Plans:
 **Plans**: 4 plans
 
 Plans:
+**Wave 1**
 - [ ] 10-01-PLAN.md — Bundle 3 missing FA SVGs (inbox, cart-shopping, calendar-check) and repoint TabWidget new-tab default to `falkon:start`.
+
+**Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 10-02-PLAN.md — Write complete Prometheus start.html and update FalkonSchemeReply::startPage() two-stage cache.
 - [ ] 10-03-PLAN.md — Create PrometheusStartBridge C++ class, add seedPromptAndOpen to AgentRuntimeSidebarWidget, wire URL-guarded registration in ExternalJsObject.
+
+**Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 10-04-PLAN.md — Build, launch, and visual/functional sign-off checkpoint for all five START requirements.
 
 ## Progress
