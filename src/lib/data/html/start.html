@@ -445,6 +445,38 @@ h1 {
     color: var(--text-3);
     margin-top: 4px;
 }
+
+/* FSB affiliation footer */
+.pm-fsb-footer {
+    width: 100%;
+    max-width: 720px;
+    margin-top: 32px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    opacity: 0.55;
+}
+
+.pm-fsb-footer img {
+    height: 18px;
+    width: auto;
+    display: none;
+}
+
+[data-theme="dark"] .pm-fsb-footer .fsb-logo-dark {
+    display: block;
+}
+
+[data-theme="light"] .pm-fsb-footer .fsb-logo-light {
+    display: block;
+}
+
+/* When theme is dark (default) and no attribute set yet, show dark logo */
+html:not([data-theme="light"]) .pm-fsb-footer .fsb-logo-dark {
+    display: block;
+}
 </style>
 </head>
 <body>
@@ -486,6 +518,11 @@ h1 {
       <span class="ai-label">agent</span>
     </div>
     <div class="pm-fsb-cards" id="pm-fsb-cards"></div>
+  </div>
+
+  <div class="pm-fsb-footer" aria-label="Powered by FSB">
+    <img class="fsb-logo-dark"  src="qrc:assets/fsb_logo_dark.png"  alt="FSB">
+    <img class="fsb-logo-light" src="qrc:assets/fsb_logo_light.png" alt="FSB">
   </div>
 </div>
 

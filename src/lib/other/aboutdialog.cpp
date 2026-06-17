@@ -26,8 +26,11 @@
 #include "../config.h"
 
 #include <QFile>
+#include <QPixmap>
+#include <QSettings>
 #include <QTextStream>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QDialog>
@@ -63,6 +66,21 @@ AboutDialog::AboutDialog(QWidget* parent)
             delete labelItem;
         }
         vbox->insertWidget(0, m_markWidget, 0, Qt::AlignHCenter);
+
+        // FSB affiliation badge: theme-aware logo, ~28px tall, centred below the PM mark
+        QSettings fsbSettings;
+        const bool isDark = fsbSettings.value(QSL("Interface/PrometheusThemeDark"), true).toBool();
+        const QString fsbLogoPath = isDark
+            ? QSL(":/assets/fsb_logo_dark.png")
+            : QSL(":/assets/fsb_logo_light.png");
+        auto* fsbBadge = new QLabel(this);
+        fsbBadge->setObjectName(QSL("AboutFsbAffilBadge"));
+        QPixmap fsbPx(fsbLogoPath);
+        if (!fsbPx.isNull()) {
+            fsbBadge->setPixmap(fsbPx.scaledToHeight(28, Qt::SmoothTransformation));
+        }
+        fsbBadge->setToolTip(tr("Powered by FSB"));
+        vbox->insertWidget(1, fsbBadge, 0, Qt::AlignHCenter);
     } else {
         // Fallback: just hide the old label and let the mark widget appear at top.
         ui->label->hide();

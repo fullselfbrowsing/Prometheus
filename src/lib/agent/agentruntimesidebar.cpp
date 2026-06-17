@@ -28,8 +28,10 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSettings>
 #include <QShortcut>
 #include <QStackedWidget>
 #include <QTabBar>
@@ -126,12 +128,27 @@ AgentRuntimeSidebarWidget::AgentRuntimeSidebarWidget(BrowserWindow* window, QWid
     wordmarkLayout->addWidget(wPro);
     wordmarkLayout->addWidget(wMetheus);
 
+    // FSB affiliation badge: theme-aware logo, ~20px tall, blends with chrome bg
+    QSettings fsbSettings;
+    const bool isDark = fsbSettings.value(QSL("Interface/PrometheusThemeDark"), true).toBool();
+    const QString fsbLogoPath = isDark
+        ? QSL(":/assets/fsb_logo_dark.png")
+        : QSL(":/assets/fsb_logo_light.png");
+    auto* fsbBadge = new QLabel(this);
+    fsbBadge->setObjectName(QSL("FsbAffilBadge"));
+    QPixmap fsbPx(fsbLogoPath);
+    if (!fsbPx.isNull()) {
+        fsbBadge->setPixmap(fsbPx.scaledToHeight(20, Qt::SmoothTransformation));
+    }
+    fsbBadge->setToolTip(tr("Powered by FSB"));
+
     auto* headerRow = new QHBoxLayout();
     headerRow->setContentsMargins(0, 0, 0, 0);
     headerRow->setSpacing(8);
     headerRow->addWidget(markWidget);
     headerRow->addLayout(wordmarkLayout);
     headerRow->addStretch();
+    headerRow->addWidget(fsbBadge);
 
     auto* headerWidget = new QWidget(this);
     headerWidget->setObjectName(QSL("PrometheusHeader"));
