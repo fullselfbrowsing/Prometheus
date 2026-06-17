@@ -1326,8 +1326,8 @@ QJsonObject AgentCommandRouter::routeSetAgentPolicy(const QString &id, const QSt
     settings.endGroup();
     settings.sync();
 
-    writeAudit(id, tool, true, QString(), QJsonObject{{QSL("policyUpdated"), true}, {QSL("agentCap"), m_agentCap}});
-
+    // Do not call writeAudit here — success() calls it internally, so two calls would
+    // produce duplicate audit entries with diverging sequence numbers (WR-01).
     return success(id, tool, QJsonObject{{QSL("applied"), true}, {QSL("agentCap"), m_agentCap}}, auditSequence);
 }
 
