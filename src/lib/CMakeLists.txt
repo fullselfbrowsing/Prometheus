@@ -69,6 +69,7 @@ set(SRCS ${SRCS}
     agent/promethusfontloader.cpp
     agent/prometheusiconresolver.cpp
     agent/prometheusmarkwidget.cpp
+    agent/prometheusstartbridge.cpp
     app/autosaver.cpp
     app/browserwindow.cpp
     app/commandlineoptions.cpp
@@ -321,6 +322,7 @@ set(SRCS ${SRCS}
     agent/promethusfontloader.h
     agent/prometheusiconresolver.h
     agent/prometheusmarkwidget.h
+    agent/prometheusstartbridge.h
     app/autosaver.h
     app/browserwindow.h
     app/commandlineoptions.h

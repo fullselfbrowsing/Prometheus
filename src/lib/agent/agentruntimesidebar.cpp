@@ -179,6 +179,16 @@ AgentRuntimeSidebarWidget::AgentRuntimeSidebarWidget(BrowserWindow* window, QWid
     refreshAll();
 }
 
+void AgentRuntimeSidebarWidget::seedPromptAndOpen(const QString& prompt)
+{
+    if (m_taskPrompt) {
+        m_taskPrompt->setPlainText(prompt);
+    }
+    if (m_modeStack) {
+        m_modeStack->setCurrentIndex(0);
+    }
+}
+
 void AgentRuntimeSidebarWidget::buildFsbAgentPage(QWidget* page)
 {
     auto* layout = new QVBoxLayout(page);

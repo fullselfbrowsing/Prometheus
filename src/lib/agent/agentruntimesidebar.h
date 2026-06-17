@@ -34,6 +34,9 @@ class FALKON_EXPORT AgentRuntimeSidebarWidget : public QWidget
 public:
     explicit AgentRuntimeSidebarWidget(BrowserWindow* window, QWidget* parent = nullptr);
 
+public Q_SLOTS:
+    void seedPromptAndOpen(const QString& prompt);
+
 private:
     // Four mode builders
     void buildFsbAgentPage(QWidget* page);
