@@ -623,6 +623,7 @@ qt_add_resources(SRCS
     data/html.qrc
     data/icons.qrc
     data/fonts.qrc
+    ${CMAKE_SOURCE_DIR}/themes/prometheus.qrc
     data/breeze-fallback.qrc
     adblock/adblock.qrc
 )

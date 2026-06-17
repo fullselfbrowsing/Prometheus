@@ -1217,10 +1217,14 @@ void MainApplication::loadPrometheusVariant(bool useDark)
     const QString accent  = settings.value(QSL("PrometheusRuntime/Theme/accent"),  QSL("#ff6b35")).toString();
     const QString accent2 = settings.value(QSL("PrometheusRuntime/Theme/accent2"), QSL("#ff8c42")).toString();
 
-    const QString themePath = DataPaths::locate(DataPaths::Themes, QSL("prometheus"));
+    QString themePath = DataPaths::locate(DataPaths::Themes, QSL("prometheus"));
     if (themePath.isEmpty()) {
-        qWarning() << "loadPrometheusVariant: prometheus theme directory not found";
-        return;
+        // Fall back to the QSS bundled in Qt resources. Dev/uninstalled builds do
+        // not copy the themes directory into the app bundle, so the filesystem
+        // lookup above returns empty; the bundled copy guarantees the canonical
+        // warm theme always applies (otherwise the app falls back to the default
+        // Qt style and looks unthemed).
+        themePath = QSL(":/themes/prometheus");
     }
 
     QString qss = QzTools::readAllFileContents(themePath + QLatin1String("/prometheus-common.qss"));

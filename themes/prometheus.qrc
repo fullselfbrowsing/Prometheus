@@ -1,0 +1,14 @@
+<!--
+  Bundles the canonical Prometheus warm theme QSS into Qt resources so
+  loadPrometheusVariant() can always apply it via :/themes/prometheus/...,
+  even in dev/uninstalled builds where the themes directory is not copied
+  into the app bundle's Resources. main.css/metadata.desktop stay on the
+  filesystem path for installed builds and theme discovery.
+-->
+<RCC>
+    <qresource prefix="/themes/prometheus">
+        <file alias="prometheus-common.qss">prometheus/prometheus-common.qss</file>
+        <file alias="prometheus-dark.qss">prometheus/prometheus-dark.qss</file>
+        <file alias="prometheus-light.qss">prometheus/prometheus-light.qss</file>
+    </qresource>
+</RCC>
