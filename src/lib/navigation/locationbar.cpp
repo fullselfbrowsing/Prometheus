@@ -19,6 +19,7 @@
 #include "browserwindow.h"
 #include "tabbedwebview.h"
 #include "mainapplication.h"
+#include "agent/prometheusiconresolver.h"
 #include "webpage.h"
 #include "tabwidget.h"
 #include "bookmarksicon.h"
@@ -363,7 +364,7 @@ void LocationBar::textEdited(const QString &text)
 
     if (!text.isEmpty()) {
         m_completer->complete(text);
-        m_siteIcon->setIcon(QIcon::fromTheme(QSL("edit-find"), QIcon(QSL(":icons/menu/search-icon.svg"))));
+        m_siteIcon->setIcon(PrometheusIconResolver::icon(QSL("nav-search")));
     }
     else {
         m_completer->closePopup();
@@ -435,7 +436,7 @@ void LocationBar::loadRequest(const LoadRequest &request)
 void LocationBar::updateSiteIcon()
 {
     if (m_completer->isVisible()) {
-        m_siteIcon->setIcon(QIcon::fromTheme(QSL("edit-find"), QIcon(QSL(":icons/menu/search-icon.svg"))));
+        m_siteIcon->setIcon(PrometheusIconResolver::icon(QSL("nav-search")));
     } else {
         QIcon icon = IconProvider::emptyWebIcon();
         if (property("secured").toBool()) {
@@ -443,10 +444,10 @@ void LocationBar::updateSiteIcon()
             auto host = m_webView->url().host();
 
             if (nm->ignoredSslHosts().contains(host) || nm->ignoredSslErrors().contains(host)) {
-                icon = QIcon::fromTheme(QSL("security-medium"), icon);
+                icon = PrometheusIconResolver::icon(QSL("nav-lock-secure"));
             }
             else if (nm->rejectedSslErrors().contains(host)) {
-                icon = QIcon::fromTheme(QSL("security-low"), icon);
+                icon = PrometheusIconResolver::icon(QSL("nav-lock-insecure"));
             }
             else {
                 icon = QIcon::fromTheme(QSL("document-encrypted"), icon);

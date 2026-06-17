@@ -20,6 +20,7 @@
 #include "mainapplication.h"
 #include "qztools.h"
 #include "iconprovider.h"
+#include "agent/prometheusiconresolver.h"
 #include "history.h"
 #include "pluginproxy.h"
 #include "downloadmanager.h"
@@ -986,45 +987,45 @@ void WebView::initializeActions()
     undoAction->setText(tr("&Undo"));
     undoAction->setShortcut(QKeySequence(QSL("Ctrl+Z")));
     undoAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-    undoAction->setIcon(QIcon::fromTheme(QSL("edit-undo")));
+    undoAction->setIcon(PrometheusIconResolver::icon(QSL("utility-undo")));
 
     QAction* redoAction = pageAction(QWebEnginePage::Redo);
     redoAction->setText(tr("&Redo"));
     redoAction->setShortcut(QKeySequence(QSL("Ctrl+Shift+Z")));
     redoAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-    redoAction->setIcon(QIcon::fromTheme(QSL("edit-redo")));
+    redoAction->setIcon(PrometheusIconResolver::icon(QSL("utility-redo")));
 
     QAction* cutAction = pageAction(QWebEnginePage::Cut);
     cutAction->setText(tr("&Cut"));
     cutAction->setShortcut(QKeySequence(QSL("Ctrl+X")));
     cutAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-    cutAction->setIcon(QIcon::fromTheme(QSL("edit-cut")));
+    cutAction->setIcon(PrometheusIconResolver::icon(QSL("utility-cut")));
 
     QAction* copyAction = pageAction(QWebEnginePage::Copy);
     copyAction->setText(tr("&Copy"));
     copyAction->setShortcut(QKeySequence(QSL("Ctrl+C")));
     copyAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-    copyAction->setIcon(QIcon::fromTheme(QSL("edit-copy")));
+    copyAction->setIcon(PrometheusIconResolver::icon(QSL("utility-copy")));
 
     QAction* pasteAction = pageAction(QWebEnginePage::Paste);
     pasteAction->setText(tr("&Paste"));
     pasteAction->setShortcut(QKeySequence(QSL("Ctrl+V")));
     pasteAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-    pasteAction->setIcon(QIcon::fromTheme(QSL("edit-paste")));
+    pasteAction->setIcon(PrometheusIconResolver::icon(QSL("utility-paste")));
 
     QAction* selectAllAction = pageAction(QWebEnginePage::SelectAll);
     selectAllAction->setText(tr("Select All"));
     selectAllAction->setShortcut(QKeySequence(QSL("Ctrl+A")));
     selectAllAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-    selectAllAction->setIcon(QIcon::fromTheme(QSL("edit-select-all")));
+    selectAllAction->setIcon(PrometheusIconResolver::icon(QSL("utility-select-all")));
 
     QAction* reloadAction = pageAction(QWebEnginePage::Reload);
     reloadAction->setText(tr("&Reload"));
-    reloadAction->setIcon(QIcon::fromTheme(QSL("view-refresh")));
+    reloadAction->setIcon(PrometheusIconResolver::icon(QSL("nav-reload")));
 
     QAction* stopAction = pageAction(QWebEnginePage::Stop);
     stopAction->setText(tr("S&top"));
-    stopAction->setIcon(QIcon::fromTheme(QSL("process-stop")));
+    stopAction->setIcon(PrometheusIconResolver::icon(QSL("nav-stop")));
 
     // Make action shortcuts available for webview
     addAction(undoAction);

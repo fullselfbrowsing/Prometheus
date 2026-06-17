@@ -20,6 +20,7 @@
 #include "browserwindow.h"
 #include "mainapplication.h"
 #include "iconprovider.h"
+#include "agent/prometheusiconresolver.h"
 #include "websearchbar.h"
 #include "reloadstopbutton.h"
 #include "enhancedmenu.h"
@@ -130,7 +131,7 @@ NavigationBar::NavigationBar(BrowserWindow* window)
 
     m_buttonTabOverview = new ToolButton(this);
     m_buttonTabOverview->setObjectName(QSL("button-taboverview"));
-    m_buttonTabOverview->setIcon(QIcon::fromTheme(QSL("view-list-icons"), QIcon(QSL(":icons/menu/tab.svg"))));
+    m_buttonTabOverview->setIcon(PrometheusIconResolver::icon(QSL("tab-all")));
     m_buttonTabOverview->setToolTip(tr("Tab Overview"));
     m_buttonTabOverview->setAccessibleName(tr("Tab Overview"));
     m_buttonTabOverview->setToolButtonStyle(Qt::ToolButtonIconOnly);
@@ -140,7 +141,7 @@ NavigationBar::NavigationBar(BrowserWindow* window)
 
     m_buttonSearchTabs = new ToolButton(this);
     m_buttonSearchTabs->setObjectName(QSL("button-searchtabs"));
-    m_buttonSearchTabs->setIcon(QIcon::fromTheme(QSL("edit-find"), QIcon(QSL(":icons/menu/search-icon.svg"))));
+    m_buttonSearchTabs->setIcon(PrometheusIconResolver::icon(QSL("nav-search")));
     m_buttonSearchTabs->setToolTip(tr("Search Tabs"));
     m_buttonSearchTabs->setAccessibleName(tr("Search Tabs"));
     m_buttonSearchTabs->setToolButtonStyle(Qt::ToolButtonIconOnly);

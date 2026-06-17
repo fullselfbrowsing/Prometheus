@@ -1,6 +1,7 @@
 #include "agentruntimesidebar.h"
 
 #include "agentruntime.h"
+#include "prometheusmarkwidget.h"
 #include "bookmarkitem.h"
 #include "bookmarks.h"
 #include "browserwindow.h"
@@ -15,8 +16,9 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
-#include <QFormLayout>
 #include <QFont>
+#include <QFontDatabase>
+#include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -98,18 +100,43 @@ AgentRuntimeSidebarWidget::AgentRuntimeSidebarWidget(BrowserWindow* window, QWid
     root->setContentsMargins(8, 8, 8, 8);
     root->setSpacing(8);
 
-    // Header: PM mark + Prometheus wordmark + Powered by FSB tagline
-    auto* title = new QLabel(tr("Prometheus"), this);
-    QFont titleFont = title->font();
-    titleFont.setPointSize(titleFont.pointSize() + 3);
-    titleFont.setBold(true);
-    title->setFont(titleFont);
-    title->setObjectName(QSL("PrometheusTitle"));
-    root->addWidget(title);
+    // Header: PM mark (26x26 Compact) + Pro/metheus wordmark labels
+    auto* markWidget = new PrometheusMarkWidget(PrometheusMarkWidget::Compact, this);
+    markWidget->setObjectName(QSL("PrometheusMark"));
+    markWidget->setFixedSize(26, 26);
 
-    auto* poweredBy = new QLabel(tr("Powered by FSB"), this);
-    poweredBy->setObjectName(QSL("PrometheusPoweredBy"));
-    root->addWidget(poweredBy);
+    // Wordmark: "Pro" (Poppins Light 300) + "metheus" (Poppins ExtraBold 800, accent)
+    auto* wordmarkLayout = new QHBoxLayout();
+    wordmarkLayout->setSpacing(0);
+    wordmarkLayout->setContentsMargins(0, 0, 0, 0);
+
+    auto* wPro = new QLabel(tr("Pro"), this);
+    QFont lightFont = QFontDatabase::font(QSL("Poppins"), QSL("Light"), 0);
+    lightFont.setPixelSize(14);
+    wPro->setFont(lightFont);
+    wPro->setObjectName(QSL("PrometheusWordmarkPro"));
+
+    auto* wMetheus = new QLabel(tr("metheus"), this);
+    QFont boldFont = QFontDatabase::font(QSL("Poppins"), QSL("ExtraBold"), 0);
+    boldFont.setPixelSize(14);
+    wMetheus->setFont(boldFont);
+    wMetheus->setObjectName(QSL("PrometheusWordmarkMetheus"));
+    // --accent color applied via QSS: QLabel#PrometheusWordmarkMetheus { color: #ff6b35; }
+
+    wordmarkLayout->addWidget(wPro);
+    wordmarkLayout->addWidget(wMetheus);
+
+    auto* headerRow = new QHBoxLayout();
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    headerRow->setSpacing(8);
+    headerRow->addWidget(markWidget);
+    headerRow->addLayout(wordmarkLayout);
+    headerRow->addStretch();
+
+    auto* headerWidget = new QWidget(this);
+    headerWidget->setObjectName(QSL("PrometheusHeader"));
+    headerWidget->setLayout(headerRow);
+    root->addWidget(headerWidget);
 
     // Mode switcher: use QTabBar directly so no dummy QWidget content areas are
     // allocated (WR-05 — QTabWidget wastes ~20-30 px of sidebar height for the
