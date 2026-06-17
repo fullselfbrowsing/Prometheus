@@ -1286,7 +1286,14 @@ void FsbControlPanelPage::pairDashboard()
         {QSL("tool"), QSL("start_supervision_session")},
         {QSL("params"), QJsonObject{}}
     };
-    mApp->agentCommandRouter()->routeForSession(request, QSL("control_panel"));
+    const QJsonObject response = mApp->agentCommandRouter()->routeForSession(request, QSL("control_panel"));
+    // Capture session ID so endPairing() can reference it; without this the
+    // end_supervision_session call would always receive an empty sessionId and
+    // the router would return STALE_SUPERVISION_SESSION immediately (WR-02).
+    if (response.value(QSL("ok")).toBool()) {
+        m_activeSupervisionSessionId = response.value(QSL("result")).toObject()
+            .value(QSL("session")).toObject().value(QSL("sessionId")).toString();
+    }
     refreshAll();
 }
 
@@ -1303,9 +1310,12 @@ void FsbControlPanelPage::endPairing()
     }
     const QJsonObject request = QJsonObject{
         {QSL("tool"), QSL("end_supervision_session")},
-        {QSL("params"), QJsonObject{}}
+        // Pass the active session ID captured during pairDashboard(); empty string
+        // would cause routeSupervision to return STALE_SUPERVISION_SESSION (WR-02).
+        {QSL("params"), QJsonObject{{QSL("sessionId"), m_activeSupervisionSessionId}}}
     };
     mApp->agentCommandRouter()->routeForSession(request, QSL("control_panel"));
+    m_activeSupervisionSessionId.clear();
     refreshAll();
 }
 

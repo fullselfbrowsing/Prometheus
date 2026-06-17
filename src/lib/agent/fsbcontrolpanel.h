@@ -67,6 +67,7 @@ private:
 
     BrowserWindow* m_window;
     QString m_currentTaskId;
+    QString m_activeSupervisionSessionId;
 
     QStackedWidget* m_sectionStack;
     QListWidget* m_sectionRail;
