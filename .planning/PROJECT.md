@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Prometheus is an agent-native, lightweight desktop browser derived from the local Falkon/QtWebEngine codebase, branded as **Prometheus** with the affiliation/tagline **Powered by FSB**. It is intended to become a fully FSB-powered browser product rather than a visible Falkon variant. It brings Full Self-Browsing's DOM-first automation, MCP control surface, task execution, memory, vault, observability, and live supervision into the browser itself instead of depending on a Chrome extension.
+Prometheus is an agent-native desktop browser, branded as **Prometheus** with the affiliation/tagline **Powered by FSB**. v1.0 proved the product shape on a Falkon/QtWebEngine fork, but the project is now migrating to Chromium as the production browser base. The product goal is unchanged: bring Full Self-Browsing's DOM-first automation, MCP control surface, task execution, memory, vault, observability, extension ecosystem compatibility, and live supervision into the browser itself instead of depending on a Chrome extension.
 
 The browser is for AI agents and humans supervising them: agents should be able to inspect, script, click, type, navigate, configure, and recover across normal web pages, browser-owned pages, settings, tabs, extension surfaces, downloads, history, and other non-web UI through first-class native APIs.
 
@@ -12,20 +12,25 @@ Agents get fast, precise, auditable control of the whole browser through DOM/nat
 
 ## Current State
 
-**Shipped: v1.0 MVP (2026-06-17)** — all 10 phases, 51 plans complete.
+**Shipped: v1.0 MVP (2026-06-17)** — all 10 phases, 51 plans complete on the Falkon/QtWebEngine bootstrap implementation.
 
-Prometheus is a working agent-native desktop browser built on the Falkon/QtWebEngine fork. v1.0 delivered a buildable, legally-inventoried baseline; Prometheus product identity with the "Powered by FSB" affiliation; a native agent command router with surface adapters, permissioned JS execution, and DOM/page reads; FSB-compatible MCP tooling with multi-agent ownership, typed errors, and visual-session fields; native FSB runtime surfaces (side panel, providers, autopilot, logs, memory/site guides, secure vault); PhantomStream-style supervision, safe pairing, and a local macOS validation package; compact Safari-style chrome with advanced tab management; a native FSB-Plus control center with a release-gated feature parity matrix; an offline Font Awesome Free icon system with Poppins/Space Mono brand fonts and warm dark/light themes; and a Prometheus start page.
+v1.0 delivered the Prometheus product identity with the "Powered by FSB" affiliation; a native agent command router with surface adapters, permissioned JS execution, and DOM/page reads; FSB-compatible MCP tooling with multi-agent ownership, typed errors, and visual-session fields; native FSB runtime surfaces (side panel, providers, autopilot, logs, memory/site guides, secure vault); PhantomStream-style supervision, safe pairing, and a local macOS validation package; compact Safari-style chrome with advanced tab management; a native FSB-Plus control center with a release-gated feature parity matrix; an offline Font Awesome Free icon system with Poppins/Space Mono brand fonts and warm dark/light themes; and a Prometheus start page.
 
-v1.0 is code-complete and statically verified (177/177 build targets link, code review and parity gates pass). 26 human-visual verification items across phases 08/09/10 require a live binary run and are carried forward as deferred items (see STATE.md). The internal Falkon → Prometheus namespace/class rename and a notarized public macOS release also remain deferred.
+**Active: v2.0 Chromium Engine Migration (started 2026-06-17).** Falkon is now treated as a preserved reference, not the production base. The current milestone preserves every v1 decision and asset, retires the active Falkon tree, checks out and builds Chromium, and rebuilds Prometheus on Chromium-native primitives while keeping the product/design/agent-control contract intact.
 
-## Next Milestone Goals
+## Current Milestone: v2.0 Chromium Engine Migration
 
-- Run the deferred human-visual verification pass on a live build and close the 26 outstanding UAT items.
-- Complete the internal Falkon → Prometheus namespace/class/library rename (product-visible identity is done; internal symbols are not).
-- Produce a notarized, distributable macOS release beyond the current local validation package.
-- Ship polished Linux and Windows builds after macOS-first validation (V2-01).
-- Evaluate Lattice for provider routing, receipts, policy, or agent runtime (V2-02).
-- Add hosted/fleet control and advanced extension-ecosystem compatibility once local control is validated (V2-03, V2-04).
+**Goal:** Replace the Falkon/QtWebEngine implementation with a Chromium-based Prometheus browser while preserving the v1 product DNA, design language, MCP contract, native agent control, supervision, memory/vault/provider surfaces, compact browser chrome, start page, extension-ecosystem goal, and release validation.
+
+**Target features:**
+
+- Preserve the Falkon-based v1 source reference as a recoverable bundle and patch series before deleting the active `falkon/` tree.
+- Establish an upstream Chromium checkout/build baseline with clean patch discipline and documented macOS developer workflow.
+- Rebrand Chromium as Prometheus, Powered by FSB, with correct legal notices and no unwanted Falkon/KDE/Chrome-facing product identity.
+- Port the canonical warm design system, PM/FSB assets, Poppins/Space Mono fonts, Font Awesome Free icons, dark/light themes, and accent rules.
+- Rebuild compact browser chrome, advanced tab management, side panel, control panel, and start page using Chromium Views/WebUI primitives.
+- Rebuild native agent command routing, page adapters, MCP compatibility, multi-agent ownership, provider/vault/memory/log runtime, supervision, and extension policy on Chromium.
+- Validate v1/FSB parity, security, legal, extension behavior, visual quality, and release packaging before calling the migration complete.
 
 ## Requirements
 
@@ -52,27 +57,28 @@ v1.0 is code-complete and statically verified (177/177 build targets link, code 
 
 ### Active
 
-(Forward-looking candidates for the next milestone — define fresh requirements via `/gsd-new-milestone`.)
+(See `.planning/REQUIREMENTS.md` for the full v2.0 requirement set.)
 
-- [ ] Close the 26 deferred human-visual verification items on a live binary build.
-- [ ] Complete the internal Falkon → Prometheus namespace/class/library rename.
-- [ ] Produce a notarized, distributable macOS release beyond the local validation package.
-- [ ] Ship polished Linux and Windows builds (V2-01).
-- [ ] Evaluate Lattice for provider routing, receipts, policy, or agent runtime (V2-02).
-- [ ] Hosted/fleet control after local control is validated (V2-03).
-- [ ] Advanced extension-ecosystem compatibility where QtWebEngine/Falkon surfaces make it practical (V2-04).
+- [ ] Preserve v1 Falkon/Prometheus source, patch series, decisions, design system, assets, contracts, and legal boundaries.
+- [ ] Retire the active Falkon implementation and establish a Chromium checkout/build baseline.
+- [ ] Rebuild Prometheus product identity, design system, compact chrome, WebUI surfaces, native agent control, MCP bridge, runtime, supervision, extension policy, validation, and packaging on Chromium.
+- [ ] Prove parity or consciously retire each v1/FSB capability through a maintained matrix.
 
 ### Out of Scope
 
 - Deleting required license or copyright notices — the product is rebranded, but inherited GPL and third-party obligations must remain satisfied.
 - Stealth automation or account-abuse workflows — the browser remains a supervised, auditable automation product.
 - Pixel-first computer-use architecture as the primary strategy — screenshots are fallback diagnostics only; the core bet is DOM/native structure.
-- Hosted fleet control plane for v1 — local browser control, local MCP, and optional dashboard pairing came first (revisit next milestone, V2-03).
-- Rewriting the rendering engine from scratch — QtWebEngine/Falkon is the bootstrap path; replacement is about product architecture and surfaces, not a browser engine.
+- Keeping Falkon as the production browser base after the v2.0 pivot — Falkon is a preserved reference only.
+- Copying GPL Falkon implementation code into Chromium without explicit license review.
+- Rewriting the rendering engine from scratch — Chromium is the browser platform base.
+- Hosted fleet control plane for v2.0 — local Chromium browser control, local MCP, extension policy, and supervised pairing come first.
 
 ## Context
 
-**v1.0 codebase state (2026-06-17):** The browser is built on the Falkon/QtWebEngine fork, tracked as a separate `falkon/` checkout; this planning repo holds the GSD artifacts. The macOS build links 177/177 targets. Prometheus-specific work spans the native agent command router and adapters, the MCP bridge, the native side panel and FSB-Plus control center, compact chrome and tab management, the offline icon/font/theme system, and the start page. The output is a local macOS validation package, not yet a notarized public release.
+**v1.0 codebase state (2026-06-17):** The browser was built on the Falkon/QtWebEngine fork, tracked as a separate nested `falkon/` checkout. The macOS build linked 177/177 targets. Prometheus-specific work spans the native agent command router and adapters, the MCP bridge, the native side panel and FSB-Plus control center, compact chrome and tab management, the offline icon/font/theme system, and the start page. The output was a local macOS validation package, not a notarized public release.
+
+**v2.0 pivot state (2026-06-17):** The nested Falkon checkout is clean at `b0521c9d37e7545c680b78dfcc24f777a984091c`, 81 commits ahead of upstream Falkon `origin/master`. A recoverable bundle and patch series have been saved under `.context/falkon-preservation/`. The active milestone is to delete/retire the active `falkon/` source tree after preservation and rebuild Prometheus on Chromium.
 
 The Full Self Browsing GitHub organization currently has four public repositories:
 
@@ -103,8 +109,8 @@ FSB extension capabilities to preserve or improve include:
 
 ## Constraints
 
-- **Base architecture**: Start from Falkon/QtWebEngine - this gives a working browser, tabs, networking, downloads, settings, and packaging surface quickly.
-- **Licensing**: Falkon is GPLv3-or-later in the inspected source - redistributed modified versions must preserve license terms, source availability, and appropriate legal notices.
+- **Base architecture**: Migrate to Chromium. Falkon/QtWebEngine remains a v1 reference and preservation archive only.
+- **Licensing**: Falkon is GPLv3-or-later in the inspected source, while Chromium uses a different license structure. Preserve behavior/design/contracts, but do not copy Falkon implementation into Chromium without explicit license review.
 - **Branding**: Product-visible identity should become Prometheus-owned and FSB-powered - no Falkon/KDE-facing app identity in the final user experience except required legal attribution. The app name is `Prometheus`; the affiliation/tagline is `Powered by FSB`.
 - **Agent control**: Internal browser pages need native automation APIs - content-script-only approaches cannot satisfy settings, extension pages, and restricted surfaces.
 - **Compatibility**: Existing `fsb-mcp-server` clients should keep working where practical - optimize or replace the bridge internally without casually breaking tool names and contracts.
@@ -129,6 +135,9 @@ FSB extension capabilities to preserve or improve include:
 | Extend v1.0 beyond the initial release-hardening milestone for native UX polish | The first six phases produced a functional agent-native browser, but the product still needs explicit FSB-plus parity, compact chrome, native tab management, offline icons, and minimal themes before claiming the intended product bar. | - Accepted |
 | Use Safari compact mode as an interaction reference, not a visual clone | Compact tabs in the toolbar and active-tab address/search behavior are useful, but Prometheus should keep its own minimal native identity and agent/supervision affordances. | - Accepted |
 | Use Font Awesome Free as a curated offline icon source | Font Awesome Free is GPL-friendly when licenses and attribution are preserved; bundling a curated subset improves deterministic native icon rendering. | - Accepted |
+| Replace Falkon/QtWebEngine with Chromium as the production base | Falkon proved the product but lacks the extension/runtime ecosystem and long-term base we need; Chromium gives the native browser platform, WebUI, Views, WebContents, and extension system to rebuild Prometheus correctly. | v2.0 active |
+| Preserve Prometheus/FSB product DNA while replacing the implementation | The value is the agent-native browser, design language, MCP contract, and supervision model, not the Falkon codebase. | v2.0 active |
+| Treat Falkon source as reference, not copy-paste implementation | Falkon is GPL-derived and Chromium is not; behavior and design can be reimplemented, but source copying requires explicit license review. | v2.0 active |
 
 ## Evolution
 
@@ -148,4 +157,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-17 after v1.0 MVP milestone*
+*Last updated: 2026-06-17 after v2.0 Chromium Engine Migration milestone start*

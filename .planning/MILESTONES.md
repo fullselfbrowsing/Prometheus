@@ -1,5 +1,30 @@
 # Milestones
 
+## v2.0 Chromium Engine Migration (Active: started 2026-06-17)
+
+**Planned phases:** 14 phases (Phases 11-24)
+**Scope:** Preserve v1 Falkon/Prometheus source and product decisions, retire Falkon as the active implementation, check out/build Chromium, and rebuild Prometheus on Chromium-native UI, WebUI, agent-control, MCP, runtime, supervision, extension, validation, and packaging primitives.
+
+**Key objectives:**
+
+- Preserve the Falkon-based v1 source reference as a recoverable bundle and patch series before deleting the active `falkon/` tree.
+- Carry forward the Prometheus/FSB product DNA: Prometheus name, Powered by FSB affiliation, DOM/native control thesis, MCP compatibility, supervision, secure vault/provider runtime, memory/site guides, compact chrome, warm themes, PM mark, FSB assets, Poppins/Space Mono, and Font Awesome Free.
+- Establish a clean upstream Chromium checkout/build baseline and record the exact revision.
+- Rebuild product identity, design system, chrome, WebUI surfaces, native agent service, page adapters, MCP bridge, FSB runtime, supervision, and extension policy on Chromium.
+- Complete parity, security, legal, visual, and release validation before calling the migration complete.
+
+**Primary artifacts:**
+
+- `.planning/preservation/FALKON-TO-CHROMIUM-PRESERVATION.md`
+- `.planning/REQUIREMENTS.md`
+- `.planning/ROADMAP.md`
+- `.context/falkon-preservation/falkon-prometheus-v1.bundle`
+- `.context/falkon-preservation/patches/`
+
+**Status:** Phase 11 preservation artifacts started; implementation not yet migrated.
+
+---
+
 ## v1.0 MVP (Shipped: 2026-06-17)
 
 **Phases completed:** 10 phases, 51 plans, 42 tasks

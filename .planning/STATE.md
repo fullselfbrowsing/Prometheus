@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: Awaiting next milestone
-stopped_at: Phase 10 Plan 04 complete — build verified (177/177 targets), all static checks pass, visual checkpoint auto-approved
-last_updated: "2026-06-17T18:00:36.806Z"
-last_activity: 2026-06-17 — Milestone v1.0 completed and archived
+milestone: v2.0
+milestone_name: Chromium Engine Migration
+status: Defining migration execution
+stopped_at: Milestone v2.0 started — Falkon v1 source preserved as bundle and patch series; Chromium migration requirements and roadmap created
+last_updated: "2026-06-17T18:20:00.000Z"
+last_activity: 2026-06-17 — Milestone v2.0 Chromium Engine Migration started
 progress:
-  total_phases: 10
-  completed_phases: 10
-  total_plans: 51
-  completed_plans: 51
-  percent: 100
+  total_phases: 14
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-17)
 
 **Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** v1.0 MVP shipped — planning next milestone (`/gsd-new-milestone`)
+**Current focus:** v2.0 Chromium Engine Migration — preserve v1 Falkon reference, retire Falkon as active source, and rebuild Prometheus on Chromium.
 
 ## Current Position
 
-Phase: Milestone v1.0 complete
+Phase: Phase 11 planned — Preservation Contract and Falkon Freeze
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-06-17 — Milestone v1.0 completed and archived
+Status: Milestone v2.0 initialized; ready to execute Phase 11
+Last activity: 2026-06-17 — Falkon v1 bundle and patch series saved; preservation dossier, requirements, roadmap, project context, and milestone index updated
 
 ## Performance Metrics
 
@@ -133,6 +133,10 @@ Recent decisions affecting current work:
 - [Phase ?]: TabWidget new-tab default uses settings.value() fallback only; explicit user newTabUrl settings are untouched
 - [Phase ?]: SideBarManager is in sidebar.h; BrowserWindow obtained from WebPage via TabbedWebView cast
 - [Phase ?]: Human-verify checkpoint auto-approved under auto-mode; 26 visual checks deferred to final binary run
+- [Milestone v2.0]: Falkon/QtWebEngine is no longer the production base. Preserve it as a recoverable reference, then migrate to Chromium.
+- [Milestone v2.0]: The active Falkon checkout is nested, clean, and preserved at `b0521c9d37e7545c680b78dfcc24f777a984091c`; bundle path `.context/falkon-preservation/falkon-prometheus-v1.bundle`; patch series `.context/falkon-preservation/patches/`.
+- [Milestone v2.0]: Preserve product/design/behavior contracts, not GPL Falkon implementation code, unless license review explicitly permits copying.
+- [Milestone v2.0]: Chromium implementation should use browser-process services, WebContents/RenderFrameHost/page adapters, WebUI, Views, resource packs, and extension-system policy rather than Qt/QWebChannel/QSS/Falkon plugin APIs.
 
 ### Roadmap Evolution
 
@@ -142,38 +146,46 @@ Recent decisions affecting current work:
 - Phase 8 edited: revised to side-panel four modes + FSB Control Panel page split per canonical design
 - Phase 9 edited: added Poppins/Space Mono fonts, logo pass, warm two-theme tokens
 - Phase 10 added: New Tab Start Page (design-driven new scope)
+- Milestone v2.0 started: Chromium Engine Migration.
+- Phases 11-24 added: preservation, Chromium checkout/build, branding/legal, design-system port, compact chrome, WebUI, native agent service, page adapters, MCP, FSB runtime, supervision, extensions, parity/security, packaging.
 
 ### Pending Todos
 
-None yet.
+- Execute Phase 11: finish preservation verification and freeze/remove active Falkon source only after confirming the bundle and patch series restore.
+- Execute Phase 12: install/locate `depot_tools`, fetch Chromium, generate GN build, build and launch unmodified Chromium.
 
 ### Blockers/Concerns
 
-Open items carried into the next milestone (formal list in Deferred Items below):
+Open items carried into v2.0 (formal list in Deferred Items below):
 
-- 26 human-visual UAT checks across phases 08/09/10 have not been run on a live binary.
-- Internal Falkon → Prometheus namespace/class/library rename is deferred (product-visible identity is complete).
+- 26 human-visual UAT checks across phases 08/09/10 were never run on a live Falkon binary; in v2.0 they should become Chromium-equivalent visual checks or be retired with rationale.
+- Internal Falkon → Prometheus namespace/class/library rename is obsolete as a direct task because the implementation is being replaced; de-Falkon validation moves to Phase 23.
 - The release artifact is a local macOS validation package, not a notarized public release.
 - Provider-backed hosted model execution remains partially deferred.
+- Chromium checkout/build will be large and slow; it needs isolated source/build directories and root git hygiene.
+- License boundary is high-risk: do not copy Falkon GPL implementation into Chromium without review.
 
 ## Deferred Items
 
-Acknowledged at v1.0 milestone close (2026-06-17) and carried forward to the next milestone. These are human-visual UAT items that require launching the built Prometheus binary; they were not run before archiving. Resume with `/gsd-verify-work <phase>`.
+Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Because Falkon is being retired, these should be converted into Chromium-equivalent visual checks where the surface still exists, or explicitly retired with rationale in Phase 11/23.
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
 | verification | 08-VERIFICATION.md — 10 control-panel/side-panel visual checks | human_needed | v1.0 close 2026-06-17 |
 | verification | 09-VERIFICATION.md — 8 icon/font/theme rendering checks | human_needed | v1.0 close 2026-06-17 |
 | verification | 10-VERIFICATION.md — 8 start-page visual checks | human_needed | v1.0 close 2026-06-17 |
-| rename | Internal Falkon → Prometheus namespace/class/library rename | deferred | v1.0 close 2026-06-17 |
+| migration | Internal Falkon → Prometheus namespace/class/library rename replaced by Chromium migration and de-Falkon gate | active_v2_replacement | v2.0 start 2026-06-17 |
 | release | Notarized, distributable macOS release (current is local validation package) | deferred | v1.0 close 2026-06-17 |
+| preservation | Falkon v1 source bundle and 81-patch series | saved | v2.0 start 2026-06-17 |
 
 ## Session Continuity
 
-Last session: 2026-06-17T09:19:48.357Z
-Stopped at: Phase 10 Plan 04 complete — build verified (177/177 targets), all static checks pass, visual checkpoint auto-approved
+Last session: 2026-06-17T13:20:00.000-05:00
+Stopped at: Milestone v2.0 initialized — preservation dossier, requirements, roadmap, project context, state, and milestone index updated
 Resume file: None
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- Execute Phase 11: Preservation Contract and Falkon Freeze.
+- Verify `.context/falkon-preservation/falkon-prometheus-v1.bundle` can restore before deleting `falkon/`.
+- Then execute Phase 12: Chromium Checkout, Build, and Patch Discipline.
