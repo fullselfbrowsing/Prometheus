@@ -2,7 +2,7 @@
 
 **Created:** 2026-06-17
 **Milestone:** v2.0 Chromium Engine Migration
-**Status:** Chromium source checkout complete; GN generation blocked by unaccepted Xcode license.
+**Status:** Chromium source checkout complete; Xcode/Metal toolchain fixed; GN generation complete; first `chrome` build running in detached `screen` session.
 
 ## Local Paths
 
@@ -65,7 +65,7 @@ Approximate local sizes after checkout:
 .context/falkon-preservation 41M
 ```
 
-## Local Build Blocker
+## Local Build Status
 
 Full Xcode is installed:
 
@@ -75,25 +75,35 @@ Xcode 26.5
 Build version 17F42
 ```
 
-But the active developer directory is Command Line Tools:
+The active developer directory is now full Xcode:
 
 ```text
-/Library/Developer/CommandLineTools
+/Applications/Xcode.app/Contents/Developer
 ```
 
-GN generation with the active Command Line Tools path fails because Chromium's macOS SDK script calls `xcodebuild -version`, and `xcodebuild` requires full Xcode.
+The original blocker was fixed by switching `xcode-select` to full Xcode and accepting the Xcode license from Terminal. `xcodebuild -runFirstLaunch` also installed first-launch components.
 
-GN generation with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` fails because the Xcode license has not been accepted:
+The next build attempt found the Metal compiler wrapper but failed because the Metal Toolchain asset was not installed:
 
 ```text
-You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license' from within a Terminal window to review and agree to the Xcode and Apple SDKs license.
+error: cannot execute tool 'metal' due to missing Metal Toolchain; use: xcodebuild -downloadComponent MetalToolchain
 ```
 
-Do not have an agent accept this legal agreement silently. The user should review/accept it from Terminal.
+That blocker was fixed with:
 
-## Resume Commands After Xcode License Acceptance
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -runFirstLaunch
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -downloadComponent MetalToolchain
+```
 
-After the user accepts the Xcode license, resume with:
+Verification:
+
+```text
+xcodebuild -version -> Xcode 26.5 / Build version 17F42
+xcrun metal -v -> Apple metal version 32023.883
+```
+
+GN generation now succeeds:
 
 ```sh
 cd /Users/lakshman/conductor/workspaces/prometheus/puebla/.context/chromium/src
@@ -103,11 +113,50 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 ./buildtools/mac/gn gen out/Default --args='is_debug=false is_component_build=true symbol_level=0'
 ```
 
-Then build:
+Result:
+
+```text
+Done. Made 31437 targets from 4783 files
+```
+
+## First Build Handoff
+
+The first `chrome` build is long-running for a clean Chromium checkout. It was started with the faster non-TTY Siso settings that Chromium's `depot_tools/siso.py` applies when `AI_AGENT=1` is present:
 
 ```sh
 cd /Users/lakshman/conductor/workspaces/prometheus/puebla/.context/chromium/src
 
+AI_AGENT=1 \
+PATH="/Users/lakshman/conductor/workspaces/prometheus/puebla/.context/depot_tools:$PATH" \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+autoninja -C out/Default chrome
+```
+
+The active detached build handoff is:
+
+```text
+screen session: prometheus-chromium-build
+Log file: .context/chromium-build-screen.log
+Exit status file: .context/chromium-build-screen.status
+Working directory: .context/chromium/src
+Expected Siso flags: --quiet --batch=false --heartbeat_period=30s --offline
+```
+
+Monitor it with:
+
+```sh
+cd /Users/lakshman/conductor/workspaces/prometheus/puebla
+screen -ls
+tail -f .context/chromium-build-screen.log
+test -f .context/chromium-build-screen.status && cat .context/chromium-build-screen.status
+```
+
+If the `screen` session has exited and the Chromium binary is still missing, resume with:
+
+```sh
+cd /Users/lakshman/conductor/workspaces/prometheus/puebla/.context/chromium/src
+
+AI_AGENT=1 \
 PATH="/Users/lakshman/conductor/workspaces/prometheus/puebla/.context/depot_tools:$PATH" \
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 autoninja -C out/Default chrome

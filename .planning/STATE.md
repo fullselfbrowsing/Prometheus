@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Chromium Engine Migration
-status: Blocked on local Xcode license for Chromium GN generation
-stopped_at: Falkon active checkout removed; Chromium source fetched at 0e8499df5172f55d0d29e2b92ef7e6a704529578; GN generation blocked until Xcode license is accepted
-last_updated: "2026-06-17T18:45:00.000Z"
-last_activity: 2026-06-17 — Falkon retired from active workspace and Chromium source checkout completed
+status: Chromium first build running in detached screen session after Xcode and Metal toolchain fixes
+stopped_at: Xcode selected and licensed; Metal Toolchain installed; GN generation succeeded; first Chromium `chrome` build running in detached `screen` session from `.context/chromium/src`
+last_updated: "2026-06-17T19:58:15.000Z"
+last_activity: 2026-06-17 — fixed local Xcode/Metal blockers, generated Chromium build files, and started first `chrome` build in detached `screen`
 progress:
   total_phases: 14
   completed_phases: 0
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-06-17)
 
 Phase: Phase 12 in progress — Chromium Checkout, Build, and Patch Discipline
 Plan: —
-Status: Chromium source fetched; GN/build blocked on unaccepted Xcode license
-Last activity: 2026-06-17 — verified Falkon bundle restore, removed active `falkon/`, installed depot_tools, fetched Chromium under `.context/chromium`, recorded checkout handoff
+Status: Chromium source fetched; Xcode/Metal toolchain fixed; GN generation succeeded; first `chrome` build running in detached `screen`
+Last activity: 2026-06-17 — verified Falkon bundle restore, removed active `falkon/`, installed depot_tools, fetched Chromium under `.context/chromium`, fixed local Xcode/Metal blockers, generated GN files, and started first build in detached `screen`
 
 ## Performance Metrics
 
@@ -139,7 +139,10 @@ Recent decisions affecting current work:
 - [Milestone v2.0]: Chromium implementation should use browser-process services, WebContents/RenderFrameHost/page adapters, WebUI, Views, resource packs, and extension-system policy rather than Qt/QWebChannel/QSS/Falkon plugin APIs.
 - [Milestone v2.0]: Active `falkon/` checkout was removed after bundle restore verification. Root git status is clean after removal.
 - [Milestone v2.0]: depot_tools installed at `.context/depot_tools` (revision `c46c2e905`); Chromium fetched at `.context/chromium/src` (revision `0e8499df5172f55d0d29e2b92ef7e6a704529578`).
-- [Milestone v2.0]: GN generation is blocked because full Xcode exists but its license is not accepted. Do not accept the license silently as an agent; user must review/accept it in Terminal.
+- [Milestone v2.0]: The local Xcode blocker is resolved. Active developer directory is `/Applications/Xcode.app/Contents/Developer`; `xcodebuild -version` reports Xcode 26.5 build 17F42.
+- [Milestone v2.0]: The Metal Toolchain blocker is resolved with `xcodebuild -runFirstLaunch` and `xcodebuild -downloadComponent MetalToolchain`; `xcrun metal -v` now succeeds.
+- [Milestone v2.0]: GN generation for `.context/chromium/src/out/Default` succeeds with `is_debug=false is_component_build=true symbol_level=0`.
+- [Milestone v2.0]: First Chromium `chrome` build is running in detached `screen` session `prometheus-chromium-build`; log `.context/chromium-build-screen.log`, status file `.context/chromium-build-screen.status`, working directory `.context/chromium/src`.
 
 ### Roadmap Evolution
 
@@ -154,8 +157,11 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- User needs to accept the Xcode license in Terminal before GN generation can proceed.
-- After license acceptance, run the GN/build commands in `.planning/chromium/CHROMIUM-CHECKOUT.md`.
+- Monitor the detached first Chromium build from the root checkout:
+  `screen -ls`
+- Watch build output:
+  `tail -f .context/chromium-build-screen.log`
+- After the build exits, launch `.context/chromium/src/out/Default/Chromium.app/Contents/MacOS/Chromium` if the binary exists.
 
 ### Blockers/Concerns
 
@@ -165,7 +171,7 @@ Open items carried into v2.0 (formal list in Deferred Items below):
 - Internal Falkon → Prometheus namespace/class/library rename is obsolete as a direct task because the implementation is being replaced; de-Falkon validation moves to Phase 23.
 - The release artifact is a local macOS validation package, not a notarized public release.
 - Provider-backed hosted model execution remains partially deferred.
-- Chromium checkout completed under `.context/chromium`; build remains blocked on Xcode license.
+- Chromium checkout completed under `.context/chromium`; local Xcode and Metal blockers are resolved; first `chrome` build is still in progress and not yet verified by launching Chromium.
 - License boundary is high-risk: do not copy Falkon GPL implementation into Chromium without review.
 
 ## Deferred Items
@@ -180,16 +186,18 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Because
 | migration | Internal Falkon → Prometheus namespace/class/library rename replaced by Chromium migration and de-Falkon gate | active_v2_replacement | v2.0 start 2026-06-17 |
 | release | Notarized, distributable macOS release (current is local validation package) | deferred | v1.0 close 2026-06-17 |
 | preservation | Falkon v1 source bundle and 81-patch series | saved | v2.0 start 2026-06-17 |
-| local_build | Chromium GN generation requires accepted Xcode license | blocked_user_action | v2.0 Phase 12 2026-06-17 |
+| local_build | Chromium GN generation required accepted Xcode license | fixed | v2.0 Phase 12 2026-06-17 |
+| local_build | Chromium Metal Toolchain asset required for ANGLE Metal shader compilation | fixed | v2.0 Phase 12 2026-06-17 |
+| local_build | First Chromium `chrome` build must finish and launch before Prometheus patches begin | running | v2.0 Phase 12 2026-06-17 |
 
 ## Session Continuity
 
-Last session: 2026-06-17T13:45:00.000-05:00
-Stopped at: Chromium source fetched; GN generation blocked on Xcode license
+Last session: 2026-06-17T14:58:15.000-05:00
+Stopped at: First Chromium `chrome` build running in detached `screen`
 Resume file: None
 
 ## Operator Next Steps
 
-- In Terminal, review/accept Xcode license: `sudo xcodebuild -license`.
-- Resume Phase 12 with the commands in `.planning/chromium/CHROMIUM-CHECKOUT.md`.
-- Generate GN build files, build `chrome`, and launch the unmodified Chromium app before Prometheus patches begin.
+- Monitor the detached build using `screen -ls` and `.context/chromium-build-screen.log`.
+- If the build fails, inspect `.context/chromium/src/out/Default/siso_output` and rerun the command in `.planning/chromium/CHROMIUM-CHECKOUT.md`.
+- If the build succeeds, launch the unmodified Chromium app before Prometheus patches begin.
