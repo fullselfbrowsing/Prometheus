@@ -1,0 +1,8 @@
+<!-- Font Awesome Free 6.x — https://fontawesome.com — CC BY 4.0 -->
+<!-- sidebar-flip: placeholder (Pro-only in FA 6.x; represents sidebar-toggle action) -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Two vertical panel rectangles separated by a divider, representing a flipped sidebar -->
+  <rect x="32" y="64" width="148" height="384" rx="24" ry="24"/>
+  <rect x="200" y="64" width="8" height="384"/>
+  <rect x="228" y="64" width="252" height="384" rx="24" ry="24"/>
+</svg>
