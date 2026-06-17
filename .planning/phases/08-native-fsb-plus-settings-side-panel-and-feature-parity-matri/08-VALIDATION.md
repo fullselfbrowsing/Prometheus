@@ -11,6 +11,8 @@ created: 2026-06-17
 
 > Per-phase validation contract for the native FSB-plus control center, settings surface, provider execution metadata, and parity release gate.
 
+**Revision note (2026-06-16):** This strategy predates the canonical design split. The nine operator sections and settings now live on the FSB Control Panel page; the side panel exposes the four modes (FSB Agent, Explorer, Tabs, Tools). Per-task source-file targets below are starting points; confirm exact files (side panel vs control panel page) when Phase 8 is planned. See `08-UI-SPEC.md` and `.planning/design/DESIGN-REFERENCE.md`.
+
 ---
 
 ## Test Infrastructure
@@ -42,7 +44,7 @@ created: 2026-06-17
 | 08-01-01 | 01 | 1 | FSBP-02, FSBP-03, FSBP-06 | T-08-01 | Release validation fails on missing matrix rows, source evidence, or validation commands. | release/static | `rg "smoke-fsb-plus-parity.sh" falkon/tools/fsb-baseline/release-validate.sh && falkon/tools/fsb-baseline/smoke-fsb-plus-parity.sh --matrix-only` | partial - release script exists, parity files missing | pending |
 | 08-02-01 | 02 | 2 | FSBP-04 | T-08-02 | Provider-backed execution is represented with explicit mode/fallback metadata; unavailable providers cannot be misreported as hosted execution. | Qt/router | `ctest --test-dir falkon/build/fsb-baseline -R 'agentcommandroutertest' --output-on-failure` | partial - router tests exist but execution-mode coverage is missing | pending |
 | 08-03-01 | 03 | 2 | FSBP-01, FSBP-05 | T-08-03 | Settings persist agent policy without exposing raw secrets or weakening tab ownership and internal-surface safeguards. | Qt/static | `rg "agentCap|tabOwnership|telemetry|vault|supervision|visualFeedback" falkon/src/lib/preferences falkon/src/lib/agent && ctest --test-dir falkon/build/fsb-baseline -R 'agentcommandroutertest' --output-on-failure` | partial - preferences exist but Phase 8 controls are missing | pending |
-| 08-04-01 | 04 | 3 | FSBP-01, FSBP-03, FSBP-05 | T-08-04 | Native control center renders FSB-plus state from runtime/router APIs and does not duplicate sensitive state in widgets. | static/build | `rg "MCP|Permissions|Diagnostics|Supervision|Pairing|Parity" falkon/src/lib/agent/agentruntimesidebar.cpp && cmake --build falkon/build/fsb-baseline --target FalkonPrivate agentcommandroutertest tabmodeltest -j2` | partial - sidebar exists but required sections are missing | pending |
+| 08-04-01 | 04 | 3 | FSBP-01, FSBP-03, FSBP-05 | T-08-04 | Native control center renders FSB-plus state from runtime/router APIs and does not duplicate sensitive state in widgets. | static/build | `rg "MCP|Permissions|Diagnostics|Supervision|Pairing|Parity" falkon/src/lib/agent && cmake --build falkon/build/fsb-baseline --target FalkonPrivate agentcommandroutertest tabmodeltest -j2` | partial - control panel page sections to be built; side panel hosts the four modes | pending |
 | 08-05-01 | 05 | 4 | FSBP-01, FSBP-02, FSBP-06 | T-08-05 | MCP bridge, diagnostics, memory, site guides, vault, supervision, and pairing remain observable through native and MCP validation paths. | smoke/release | `node --check falkon/tools/prometheus-mcp/server.mjs && falkon/tools/fsb-baseline/release-validate.sh --build-dir falkon/build/fsb-baseline` | partial - MCP and release scripts exist, parity gate missing | pending |
 
 ---
@@ -61,7 +63,7 @@ created: 2026-06-17
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
-| Native side panel/control center section density and scanning | FSBP-01 | Requires rendered Qt widget inspection | Launch Prometheus, open the agent runtime side panel, verify Tasks, Providers & Models, MCP Status, Permissions & Agents, Vault, Memory & Site Guides, Logs & Diagnostics, Supervision & Pairing, and Parity Matrix are reachable without clipped text at 320px, 384px, and 720px widths. |
+| Side panel modes and control panel section density | FSBP-01 | Requires rendered Qt widget inspection | Launch Prometheus, open the side panel and verify the four modes (FSB Agent, Explorer, Tabs, Tools); open the FSB Control Panel page (pinned FSB tab) and verify Tasks, Providers & Models, MCP Status, Permissions & Agents, Vault, Memory & Site Guides, Logs & Diagnostics, Supervision & Pairing, and Parity Matrix are reachable without clipped text at 320px, 384px, and 720px widths. |
 | Settings surface copy and destructive/security states | FSBP-05 | Requires rendered Preferences dialog inspection | Open Preferences, find Phase 8 agent policy settings, verify labels and state copy match `08-UI-SPEC.md`, and confirm secret/vault controls do not display raw secrets. |
 | Provider configured vs unavailable task route | FSBP-04 | Live provider credentials should not be required for automated release validation | Configure a provider with no secret, submit a side-panel task, and verify task details show local fallback plus `provider_not_configured` or equivalent unavailable reason instead of claiming hosted execution. |
 | Parity matrix reviewability | FSBP-02, FSBP-03 | Human judgment confirms "better than FSB" claims are concrete | Open `falkon/tools/fsb-baseline/FSB-PARITY.md` and verify each `Native-improved` row names a specific browser-owned improvement and a validation command. |

@@ -90,6 +90,17 @@
 - [ ] **ICON-04**: Release validation fails when required bundled icons are missing, network-loaded, legally unattributed, or unreadable at intended sizes.
 - [ ] **THEME-01**: Prometheus themes are minimal and native-feeling, with restrained surfaces, clear focus/hover/active states, and no decorative visual noise.
 - [ ] **THEME-02**: Minimal themes support normal, private, supervised, warning, disabled, and active-agent states without relying on heavy gradients or one-note color treatment.
+- [ ] **THEME-03**: Prometheus implements the canonical warm dark and warm light token sets and an accent recolor option as pure token swaps, per the design reference.
+- [ ] **FONT-01**: Prometheus bundles the Poppins (display) and Space Mono (mono) brand fonts offline as Qt resources with required license and attribution, with no network font loading.
+- [ ] **LOGO-01**: Prometheus uses the real PM brand mark and the "Prometheus" / "Powered by FSB" wordmark per the brand sheet across app icon, side panel header, start page, and about/first-run surfaces, retiring placeholder marks with correct clear-space and minimum-size rules.
+
+### New Tab Start Page
+
+- [ ] **START-01**: Opening a New Tab shows the Prometheus start page with the hero PM mark, the Prometheus wordmark, and an omnibox.
+- [ ] **START-02**: The start page omnibox accepts a search or address and offers an Ask FSB action that hands a natural-language prompt to the FSB Agent side panel.
+- [ ] **START-03**: The start page shows a favorites grid that navigates to the chosen entry.
+- [ ] **START-04**: The start page shows FSB suggested automations that seed the agent panel when chosen.
+- [ ] **START-05**: The start page uses the canonical Prometheus design system (warm tokens, Poppins, Space Mono, Font Awesome) and renders correctly in both themes.
 
 ### Supervision and Remote View
 
@@ -187,6 +198,14 @@
 | ICON-04 | Phase 9 | Planned |
 | THEME-01 | Phase 9 | Planned |
 | THEME-02 | Phase 9 | Planned |
+| THEME-03 | Phase 9 | Planned |
+| FONT-01 | Phase 9 | Planned |
+| LOGO-01 | Phase 9 | Planned |
+| START-01 | Phase 10 | Planned |
+| START-02 | Phase 10 | Planned |
+| START-03 | Phase 10 | Planned |
+| START-04 | Phase 10 | Planned |
+| START-05 | Phase 10 | Planned |
 | SUP-01 | Phase 4 | Complete |
 | SUP-02 | Phase 4 | Complete |
 | SUP-03 | Phase 6 | Complete |
@@ -200,10 +219,10 @@
 | REL-03 | Phase 6 | Complete |
 
 **Coverage:**
-- v1 requirements: 67 total
-- Mapped to phases: 67
+- v1 requirements: 75 total
+- Mapped to phases: 75
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-06-16*
-*Last updated: 2026-06-16 after milestone extension through Phase 9*
+*Last updated: 2026-06-16 after milestone extension through Phase 10 with Prometheus design integration*

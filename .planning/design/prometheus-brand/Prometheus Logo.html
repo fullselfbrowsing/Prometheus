@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Prometheus — Logo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@100;200;300;400;500;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+<style>
+:root{
+  --accent:#ff6b35;
+  --accent-2:#ff8c42;
+  --ink:#141110;
+  --ink-2:#0d0a09;
+  --paper:#f3ede6;
+  --paper-2:#fffdfb;
+  --text:#f6efe9;
+  --text-dim:#a99283;
+  --border:rgba(255,241,232,0.10);
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;}
+body{
+  font-family:"Poppins",system-ui,sans-serif;
+  background:
+    radial-gradient(1100px 600px at 20% -10%, color-mix(in srgb,var(--accent) 9%,transparent), transparent 60%),
+    var(--ink-2);
+  color:var(--text);
+  -webkit-font-smoothing:antialiased;
+  padding:64px 48px 96px;
+}
+.wrap{max-width:1080px;margin:0 auto;}
+
+/* page header */
+.page-head{display:flex;align-items:baseline;gap:14px;margin-bottom:8px;}
+.page-head h1{font-weight:600;font-size:22px;letter-spacing:-.02em;}
+.page-head .tag{
+  font-family:"Space Mono",monospace;font-size:11px;color:var(--text-dim);
+  border:1px solid var(--border);border-radius:999px;padding:4px 10px;letter-spacing:.04em;
+}
+.page-sub{color:var(--text-dim);font-size:13px;font-weight:400;margin-bottom:48px;max-width:560px;line-height:1.5;}
+
+/* ============ THE MARK ============
+   weight-contrast wordmark: hairline first letter + black geometric rest,
+   mono version tag beneath — same construction as FSB. */
+.mark{display:inline-flex;flex-direction:column;align-items:center;line-height:1;}
+.mark .letters{display:flex;align-items:baseline;letter-spacing:-.01em;}
+.mark .thin{font-weight:100;}
+.mark .heavy{font-weight:900;}
+.mark .ver{
+  font-family:"Space Mono",monospace;font-weight:400;
+  letter-spacing:.45em;margin-top:.18em;opacity:.85;text-indent:.45em;
+}
+/* size driven by --s (font-size of the letters) */
+.mark{font-size:var(--s,160px);}
+.mark .ver{font-size:calc(var(--s,160px)*.12);}
+
+/* hero panel */
+.hero{
+  background:var(--ink);
+  border:1px solid var(--border);
+  border-radius:28px;
+  padding:90px 40px 78px;
+  display:flex;justify-content:center;
+  margin-bottom:18px;
+  position:relative;overflow:hidden;
+}
+.hero::after{
+  content:"";position:absolute;inset:0;
+  background:radial-gradient(600px 300px at 50% 120%, color-mix(in srgb,var(--accent) 12%,transparent), transparent 70%);
+  pointer-events:none;
+}
+.hero .mark{color:var(--text);position:relative;}
+
+/* lockup grid */
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;margin-bottom:18px;}
+.cell{
+  border-radius:22px;border:1px solid var(--border);
+  min-height:230px;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:0;
+  position:relative;overflow:hidden;
+}
+.cell .cap{
+  position:absolute;left:16px;bottom:14px;
+  font-family:"Space Mono",monospace;font-size:10px;letter-spacing:.05em;
+  text-transform:uppercase;opacity:.6;
+}
+.on-dark{background:var(--ink);} .on-dark .mark,.on-dark .cap{color:var(--text);}
+.on-light{background:var(--paper);} .on-light .mark{color:var(--ink);} .on-light .cap{color:#6a584d;}
+.on-accent{background:linear-gradient(135deg,var(--accent),var(--accent-2));}
+.on-accent .mark{color:#fff;} .on-accent .cap{color:rgba(255,255,255,.85);}
+
+/* app icon row */
+.row2{display:grid;grid-template-columns:1.3fr 1fr;gap:18px;margin-bottom:18px;}
+.iconcard,.lockcard{
+  background:var(--ink);border:1px solid var(--border);border-radius:22px;
+  padding:34px;display:flex;align-items:center;gap:34px;
+}
+.iconcard{justify-content:space-around;}
+/* rounded-square app icon */
+.appicon{
+  border-radius:24%;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:var(--ink);box-shadow:0 18px 40px -16px rgba(0,0,0,.7),inset 0 0 0 1px rgba(255,255,255,.05);
+}
+.appicon.lg{width:128px;height:128px;}
+.appicon.md{width:80px;height:80px;}
+.appicon.sm{width:48px;height:48px;}
+.appicon .mark{transform:translateY(-2%);}
+.appicon.orange{background:linear-gradient(135deg,var(--accent),var(--accent-2));}
+.appicon.orange .mark{color:#fff;}
+.appicon.white{background:#fff;}
+.appicon.white .mark{color:var(--ink);}
+
+/* horizontal lockup: icon + full name */
+.lockcard{flex-direction:column;align-items:flex-start;gap:22px;}
+.namelock{display:flex;align-items:center;gap:18px;}
+.namelock .appicon{box-shadow:none;border:1px solid var(--border);}
+.namelock .word{font-weight:600;font-size:34px;letter-spacing:-.03em;}
+.namelock .word b{font-weight:800;}
+  .namelock .word .pro{color:var(--text);font-weight:300;}
+  .namelock .word .rest{color:var(--accent);font-weight:800;}
+.namelock .word .pm{color:var(--accent);}
+.stack{display:flex;flex-direction:column;}
+.stack small{font-family:"Space Mono",monospace;font-size:11px;color:var(--text-dim);letter-spacing:.06em;margin-top:2px;}
+
+/* spec sheet */
+.spec{
+  background:var(--ink);border:1px solid var(--border);border-radius:22px;
+  padding:30px 34px;display:grid;grid-template-columns:repeat(2,1fr);gap:26px 44px;
+}
+.spec h3{grid-column:1/-1;font-weight:600;font-size:15px;letter-spacing:-.01em;margin-bottom:-6px;}
+.spec .item .k{font-family:"Space Mono",monospace;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim);margin-bottom:6px;}
+.spec .item .v{font-size:14px;line-height:1.5;}
+.spec .swatches{display:flex;gap:10px;margin-top:8px;}
+.spec .sw{width:38px;height:38px;border-radius:10px;border:1px solid var(--border);position:relative;}
+.spec .sw span{position:absolute;left:0;right:0;bottom:-18px;font-family:"Space Mono",monospace;font-size:8px;text-align:center;color:var(--text-dim);}
+.spec .weights{display:flex;align-items:baseline;gap:18px;}
+.spec .weights b{font-size:30px;line-height:1;}
+.spec .weights .w1{font-weight:100;} .spec .weights .w9{font-weight:900;}
+.spec .weights small{font-family:"Space Mono",monospace;font-size:9px;color:var(--text-dim);display:block;margin-top:6px;letter-spacing:.05em;}
+
+.section-label{
+  font-family:"Space Mono",monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--text-dim);margin:34px 4px 12px;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="page-head">
+    <h1>Prometheus — Logo</h1>
+    <span class="tag">brand sheet</span>
+  </div>
+  <p class="page-sub">Built on the FSB construction: a hairline first letter set against a heavy, round geometric second letter, with a monospaced version tag beneath. Typeface is Poppins (Thin 100 / Black 900); tag is Space Mono.</p>
+
+  <!-- PRIMARY -->
+  <div class="section-label">Primary mark</div>
+  <div class="hero">
+    <div class="mark" style="--s:180px;">
+      <div class="letters"><span class="thin">P</span><span class="heavy">M</span></div>
+      <div class="ver">▽0.1</div>
+    </div>
+  </div>
+
+  <!-- COLOR TREATMENTS -->
+  <div class="grid">
+    <div class="cell on-dark">
+      <div class="mark" style="--s:96px;"><div class="letters"><span class="thin">P</span><span class="heavy">M</span></div><div class="ver">▽0.1</div></div>
+      <div class="cap">on ink</div>
+    </div>
+    <div class="cell on-light">
+      <div class="mark" style="--s:96px;"><div class="letters"><span class="thin">P</span><span class="heavy">M</span></div><div class="ver">▽0.1</div></div>
+      <div class="cap">on paper</div>
+    </div>
+  </div>
+
+  <!-- APP ICON + LOCKUP -->
+  <div class="section-label">App icon &amp; lockup</div>
+  <div class="row2">
+    <div class="iconcard">
+      <div class="appicon lg"><div class="mark" style="--s:52px;"><div class="letters"><span class="thin">P</span><span class="heavy">M</span></div><div class="ver">▽0.1</div></div></div>
+      <div class="appicon md"><div class="mark" style="--s:33px;"><div class="letters"><span class="thin">P</span><span class="heavy">M</span></div></div></div>
+      <div class="appicon sm"><div class="mark" style="--s:20px;"><div class="letters"><span class="thin">P</span><span class="heavy">M</span></div></div></div>
+    </div>
+    <div class="lockcard">
+      <div class="namelock">
+        <div class="appicon md white"><div class="mark" style="--s:33px;"><div class="letters"><span class="thin">P</span><span class="heavy">M</span></div></div></div>
+        <div class="stack">
+          <span class="word"><span class="pro">Pro</span><span class="rest">metheus</span></span>
+          <small>agentic browser · by FSB</small>
+        </div>
+      </div>
+      <div class="namelock">
+        <div class="word" style="font-size:26px;"><span class="pro">Pro</span><span class="rest">metheus</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SPEC -->
+  <div class="section-label">Construction</div>
+  <div class="spec">
+    <h3>Specification</h3>
+    <div class="item">
+      <div class="k">Weight contrast</div>
+      <div class="weights">
+        <b class="w1">P</b><b class="w9">M</b>
+        <small>Poppins Thin 100<br/>Poppins Black 900</small>
+      </div>
+    </div>
+    <div class="item">
+      <div class="k">Version tag</div>
+      <div class="v" style="font-family:'Space Mono',monospace;letter-spacing:.3em;">▽0.1</div>
+      <div class="v" style="color:var(--text-dim);font-size:12px;margin-top:6px;">Space Mono · ▽ (U+25BD) replaces the “v” · 0.45em tracking</div>
+    </div>
+    <div class="item">
+      <div class="k">Palette</div>
+      <div class="swatches">
+        <div class="sw" style="background:#ff6b35;"><span>#FF6B35</span></div>
+        <div class="sw" style="background:#141110;"><span>#141110</span></div>
+        <div class="sw" style="background:#f3ede6;"><span>#F3EDE6</span></div>
+      </div>
+    </div>
+    <div class="item">
+      <div class="k">Clear space &amp; min size</div>
+      <div class="v">Keep clear space of one “M” height on all sides. Drop the version tag below ~28px lockup height; below 24px use the “M” counter only.</div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

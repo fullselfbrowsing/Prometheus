@@ -17,8 +17,9 @@ Prometheus starts by making the Falkon-derived browser buildable and legally und
 - [x] **Phase 5: FSB Runtime Parity Surfaces** - Rebuild the user-facing FSB automation experience inside the browser.
 - [x] **Phase 6: Supervision, Packaging, and Release Hardening** - Add PhantomStream-style supervision, safe pairing, release artifacts, and full validation.
 - [x] **Phase 7: Compact Safari-style Browser Chrome and Advanced Tab Management** - Make Prometheus feel like a minimal native browser with compact toolbar/tab chrome, tab groups, overview, and agent-aware tab state.
-- [ ] **Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix** - Turn the Prometheus side panel into a native control center that meets or exceeds FSB's extension-side feature set.
-- [ ] **Phase 9: Offline Font Awesome Free Icon System and Minimal Themes** - Bundle free offline icons natively and harden the theme system around a restrained, minimal Prometheus aesthetic.
+- [ ] **Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix** - Build the four-mode side panel (FSB Agent, Explorer, Tabs, Tools) plus the FSB Control Panel operator page, settings, and parity matrix, skinned to the canonical Prometheus design.
+- [ ] **Phase 9: Offline Font Awesome Free Icon System and Minimal Themes** - Bundle Font Awesome icons and the Poppins/Space Mono brand fonts offline, complete the logo pass, and harden the warm minimal two-theme system.
+- [ ] **Phase 10: New Tab Start Page** - Build the Prometheus start page: hero mark, omnibox with Ask FSB handoff, favorites grid, and FSB suggested automations.
 
 ## Phase Details
 
@@ -156,41 +157,62 @@ Plans:
 - [x] 07-10-PLAN.md — Add compact-tab smoke validation and visual verification checkpoint.
 
 ### Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix
-**Goal**: Upgrade the Prometheus side panel and settings surfaces into a native FSB-plus control center with a verified parity matrix against FSB.
+**Goal**: Build the four-mode Prometheus side panel (FSB Agent, Explorer, Tabs, Tools) as the fast everyday surface and the dense FSB Control Panel page as the operator center, both skinned to the canonical Prometheus design, with settings and a verified parity matrix against FSB.
 **Depends on**: Phase 7
 **Requirements**: FSBP-01, FSBP-02, FSBP-03, FSBP-04, FSBP-05, FSBP-06
+**Design reference**: `.planning/design/DESIGN-REFERENCE.md` (side panel four modes, control panel split, warm tokens)
 **Success Criteria** (what must be TRUE):
-  1. A native Prometheus control center covers tasks, providers, model discovery/fallbacks, MCP, permissions, vault, memory, site guides, logs, diagnostics, supervision, and pairing.
-  2. The side panel can run real provider-backed tasks when configured, while preserving local/offline and MCP-driven workflows.
+  1. The native side panel provides the four modes (FSB Agent, Explorer, Tabs, Tools) per the canonical design, while the dense operator control center (tasks, providers, model discovery/fallbacks, MCP, permissions, vault, memory, site guides, logs, diagnostics, supervision, pairing) lives on the FSB Control Panel page.
+  2. The FSB Agent mode and control panel can run real provider-backed tasks when configured, while preserving local/offline and MCP-driven workflows.
   3. Every FSB feature category is represented in a maintained parity matrix with native status, improvement target, and validation command.
-  4. Settings for internal-surface permissions, agent caps, tab ownership, visual feedback, telemetry, and vault boundaries are visible and auditable.
+  4. Settings for internal-surface permissions, agent caps, tab ownership, visual feedback, telemetry, and vault boundaries are visible and auditable on the control panel.
   5. Prometheus improves on FSB where native browser ownership helps: settings/internal page control, lower-latency tool routing, safer secrets, and richer tab/session state.
-  6. Verification exercises the native side panel, MCP bridge, browser-owned settings, provider config, memory/site guides, vault, diagnostics, and release validation.
+  6. The side panel, control panel, and settings adopt the canonical Prometheus design system (warm dark and light tokens, Poppins plus Space Mono, FSB orange accent) per the design reference.
+  7. Verification exercises the four-mode side panel, the control panel sections, MCP bridge, browser-owned settings, provider config, memory/site guides, vault, diagnostics, and release validation.
 **Plans**: 0 plans
 
 Plans:
 - [ ] TBD (run /gsd-plan-phase 8 to break down)
 
 ### Phase 9: Offline Font Awesome Free Icon System and Minimal Themes
-**Goal**: Replace theme-dependent action icons with a bundled, free, offline icon system and reduce Prometheus themes to a minimal native aesthetic.
+**Goal**: Bundle a free offline Font Awesome icon system and the Poppins and Space Mono brand fonts, complete the logo pass to the real Prometheus mark and wordmark, and reduce Prometheus themes to the canonical warm minimal aesthetic (dark and light token sets).
 **Depends on**: Phase 8
-**Requirements**: ICON-01, ICON-02, ICON-03, ICON-04, THEME-01, THEME-02
+**Requirements**: ICON-01, ICON-02, ICON-03, ICON-04, THEME-01, THEME-02, THEME-03, FONT-01, LOGO-01
+**Design reference**: `.planning/design/DESIGN-REFERENCE.md` (typography, logo and brand mark, palette, theme tokens)
 **Success Criteria** (what must be TRUE):
   1. A curated Font Awesome Free icon subset is bundled in Qt resources with license/attribution preserved and no network dependency.
   2. Prometheus has a central native icon resolver that maps browser, agent, MCP, provider, vault, diagnostics, and tab-management actions to bundled SVG icons.
   3. Existing `QIcon::fromTheme` call sites used by primary UI have deterministic Prometheus fallbacks.
-  4. Minimal themes remove heavy inherited chrome while preserving focus, hover, active, disabled, warning, and supervised-action states.
-  5. Release packaging includes icon/theme assets and Font Awesome license metadata.
-  6. Visual/resource validation fails if required icons are missing, remote-loaded, illegible, or inconsistent across light/dark/minimal modes.
+  4. The Poppins (display) and Space Mono (mono) brand fonts are bundled offline as Qt resources with license/attribution and no network font loading.
+  5. The logo pass wires the real Prometheus PM mark and the "Prometheus" / "Powered by FSB" wordmark per the brand sheet across app icon, side panel header, start page, and about/first-run surfaces, retiring placeholder marks with correct clear-space and minimum-size behavior.
+  6. Minimal themes implement the canonical warm dark and warm light token sets (and the accent recolor option) as pure token swaps, removing heavy inherited chrome while preserving focus, hover, active, disabled, warning, and supervised-action states.
+  7. Release packaging includes icon/font/theme assets and Font Awesome plus brand font license metadata.
+  8. Visual/resource validation fails if required icons or fonts are missing, remote-loaded, illegible, or inconsistent across light/dark/minimal modes.
 **Plans**: 0 plans
 
 Plans:
 - [ ] TBD (run /gsd-plan-phase 9 to break down)
 
+### Phase 10: New Tab Start Page
+**Goal**: Build the Prometheus New Tab start page — hero PM mark, omnibox with an Ask FSB handoff, favorites grid, and FSB suggested automations — skinned to the canonical Prometheus design.
+**Depends on**: Phase 8, Phase 9
+**Requirements**: START-01, START-02, START-03, START-04, START-05
+**Design reference**: `.planning/design/DESIGN-REFERENCE.md` (start page) and `.planning/design/prometheus-browser/prometheus/StartPage.jsx`
+**Success Criteria** (what must be TRUE):
+  1. Opening a New Tab shows the Prometheus start page with the hero PM mark, the Prometheus wordmark, and an omnibox.
+  2. The omnibox accepts a search or address, and an Ask FSB action hands a natural-language prompt to the FSB Agent side panel.
+  3. The start page shows a favorites grid that navigates to the chosen entry on click.
+  4. The start page shows FSB suggested automations that seed the agent panel when chosen.
+  5. The start page uses the canonical Prometheus design system (warm tokens, Poppins, Space Mono, Font Awesome) and renders correctly in both themes.
+**Plans**: 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 10 to break down)
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -203,3 +225,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9
 | 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 10/10 | Complete | 2026-06-16 |
 | 8. Native FSB-Plus Settings Side Panel and Feature Parity Matrix | 0/0 | Not planned | - |
 | 9. Offline Font Awesome Free Icon System and Minimal Themes | 0/0 | Not planned | - |
+| 10. New Tab Start Page | 0/0 | Not planned | - |
