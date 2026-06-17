@@ -1,26 +1,40 @@
 ---
 phase: 07-compact-safari-style-browser-chrome-and-advanced-tab-managem
-fixed_at: 2026-06-16T21:33:03Z
+fixed_at: 2026-06-17T00:45:24Z
 review_path: .planning/phases/07-compact-safari-style-browser-chrome-and-advanced-tab-managem/07-REVIEW.md
-iteration: 1
-findings_in_scope: 5
-fixed: 5
+iteration: 2
+findings_in_scope: 1
+fixed: 1
 skipped: 0
 status: all_fixed
 ---
 
 # Phase 07: Code Review Fix Report
 
-**Fixed at:** 2026-06-16T21:33:03Z
+**Fixed at:** 2026-06-17T00:45:24Z
 **Source review:** `.planning/phases/07-compact-safari-style-browser-chrome-and-advanced-tab-managem/07-REVIEW.md`
-**Iteration:** 1
+**Iteration:** 2
 
 **Summary:**
-- Findings in scope: 5
-- Fixed: 5
+- Findings in scope: 1
+- Fixed: 1
 - Skipped: 0
 
 ## Fixed Issues
+
+### CR-01: Supervision Start Can Take Ownership Of Another Agent's Tab
+
+**Status:** fixed: requires human verification
+**Files modified:** `falkon/src/lib/agent/agentcommandrouter.cpp`, `falkon/autotests/agentcommandroutertest.cpp`
+**Commit:** `fb9c74358`
+**Applied fix:** Routed `create_supervision_pairing` and `start_supervision_session` through `enforceOwnership()` before creating supervision state or showing action status, and used the ownership-gated `agentId` for the session. Extended QTest coverage so a second authenticated session receives `TAB_OWNED_BY_OTHER_AGENT` when starting supervision on a tab owned by session one, while `tabChromeState(...).owner` remains session one's owner.
+**Verification:** `git diff --check`; `git -C falkon diff --check`; `cmake --build falkon/build/fsb-baseline --target FalkonPrivate agentcommandroutertest tabmodeltest -j2`; `ctest --test-dir falkon/build/fsb-baseline -R 'agentcommandroutertest|tabmodeltest' --output-on-failure`.
+
+## Skipped Issues
+
+None.
+
+## Iteration 1 Fix History
 
 ### CR-01: Local Agent Endpoint Accepts Unauthenticated Commands
 
@@ -59,6 +73,6 @@ status: all_fixed
 
 ---
 
-_Fixed: 2026-06-16T21:33:03Z_
+_Fixed: 2026-06-17T00:45:24Z_
 _Fixer: Claude (gsd-code-fixer)_
-_Iteration: 1_
+_Iteration: 2_
