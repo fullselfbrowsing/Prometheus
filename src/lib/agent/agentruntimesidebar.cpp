@@ -30,6 +30,7 @@
 #include <QPushButton>
 #include <QShortcut>
 #include <QStackedWidget>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -110,8 +111,10 @@ AgentRuntimeSidebarWidget::AgentRuntimeSidebarWidget(BrowserWindow* window, QWid
     poweredBy->setObjectName(QSL("PrometheusPoweredBy"));
     root->addWidget(poweredBy);
 
-    // Mode switcher: segmented QTabWidget over QStackedWidget
-    auto* modeSwitcher = new QTabWidget(this);
+    // Mode switcher: use QTabBar directly so no dummy QWidget content areas are
+    // allocated (WR-05 — QTabWidget wastes ~20-30 px of sidebar height for the
+    // empty tab content region even with setMaximumHeight(36)).
+    auto* modeSwitcher = new QTabBar(this);
     modeSwitcher->setDocumentMode(true);
     modeSwitcher->setMaximumHeight(36);
 
@@ -134,13 +137,13 @@ AgentRuntimeSidebarWidget::AgentRuntimeSidebarWidget(BrowserWindow* window, QWid
     buildToolsPage(toolsPage);
     m_modeStack->addWidget(toolsPage);
 
-    // Add four tab labels to the switcher (content lives in m_modeStack)
-    modeSwitcher->addTab(new QWidget(modeSwitcher), tr("FSB Agent"));
-    modeSwitcher->addTab(new QWidget(modeSwitcher), tr("Explorer"));
-    modeSwitcher->addTab(new QWidget(modeSwitcher), tr("Tabs"));
-    modeSwitcher->addTab(new QWidget(modeSwitcher), tr("Tools"));
+    // Add four tab labels; content is managed by m_modeStack, not the bar itself.
+    modeSwitcher->addTab(tr("FSB Agent"));
+    modeSwitcher->addTab(tr("Explorer"));
+    modeSwitcher->addTab(tr("Tabs"));
+    modeSwitcher->addTab(tr("Tools"));
 
-    connect(modeSwitcher, &QTabWidget::currentChanged, m_modeStack, &QStackedWidget::setCurrentIndex);
+    connect(modeSwitcher, &QTabBar::currentChanged, m_modeStack, &QStackedWidget::setCurrentIndex);
 
     root->addWidget(modeSwitcher);
     root->addWidget(m_modeStack, 1);
