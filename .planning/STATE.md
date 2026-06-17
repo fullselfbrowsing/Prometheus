@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Phase 09 Plan 01 complete — FA SVG subset + brand fonts vendored offline
-last_updated: "2026-06-17T07:51:21.821Z"
+last_updated: "2026-06-17T07:58:53.105Z"
 last_activity: 2026-06-17
 progress:
   total_phases: 10
   completed_phases: 8
   total_plans: 47
-  completed_plans: 45
-  percent: 96
+  completed_plans: 46
+  percent: 98
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-06-16)
 ## Current Position
 
 Phase: 09 (Offline Font Awesome Free Icon System and Minimal Themes) — EXECUTING
-Plan: 5 of 6
+Plan: 6 of 6
 Status: Ready to execute
 Last activity: 2026-06-17
 
-Progress: [██████████] 96%
+Progress: [██████████] 98%
 
 ## Performance Metrics
 
@@ -75,6 +75,7 @@ Progress: [██████████] 96%
 | Phase 09 P02 | 2min | 1 tasks | 4 files |
 | Phase 09 P03 | 8min | 1 tasks | 3 files |
 | Phase 09 P04 | 5min | 2 tasks | 10 files |
+| Phase 09 P05 | 4min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -123,6 +124,7 @@ Recent decisions affecting current work:
 - [Phase ?]: [09-01] arrow-down-to-line substituted with arrow-down: FA Free 6.x solid missing this glyph
 - [Phase ?]: [09-01] sidebar-flip placeholder SVG created: Pro-only icon not in FA Free 6.x; minimal valid SVG with two-panel geometry and CC BY 4.0 attribution
 - [Phase ?]: [09-01] 69 glyphs vendored offline (plan prose said 70 but enumerated list has 69 unique names)
+- [Phase ?]: PrometheusMarkWidget: use qzcommon.h not falkon_defs.h for FALKON_EXPORT
 
 ### Roadmap Evolution
 
@@ -158,6 +160,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-17T07:51:21.816Z
+Last session: 2026-06-17T07:58:49.023Z
 Stopped at: Phase 09 Plan 01 complete — FA SVG subset + brand fonts vendored offline
 Resume file: None

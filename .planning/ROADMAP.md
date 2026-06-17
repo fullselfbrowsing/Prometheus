@@ -195,7 +195,7 @@ Plans:
 - [x] 09-02-PLAN.md — PromethusFontLoader C++ class and MainApplication startup hook.
 - [x] 09-03-PLAN.md — PrometheusIconResolver service with 70+ action map and 3-step fallback.
 - [x] 09-04-PLAN.md — Prometheus warm dark + light + common QSS theme files and runtime switch.
-- [ ] 09-05-PLAN.md — PrometheusMarkWidget (two-weight PM mark) and primary call site migration.
+- [x] 09-05-PLAN.md — PrometheusMarkWidget (two-weight PM mark) and primary call site migration.
 - [ ] 09-06-PLAN.md — FSB asset bundle, about/first-run logo wiring, ICON-04 gate, and visual approval.
 
 ### Phase 10: New Tab Start Page
