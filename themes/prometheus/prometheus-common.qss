@@ -1,0 +1,126 @@
+/* prometheus-common.qss — Prometheus shared structural rules */
+/* Accent-colored rules use @@ACCENT@@, @@ACCENT2@@, @@ACCENT_SOFT2@@ tokens. */
+/* NO literal accent hex in this file. Substitution is done at runtime by */
+/* MainApplication::setPrometheusAccent() before setStyleSheet is called. */
+
+/* Border radius tokens: r-sm=8px r-md=12px r-lg=18px r-pill=9999px */
+/* Chrome height: 50px, Panel width: 320px */
+
+/* Toolbar icon buttons — 30x30 clickable area with 16px icon */
+QToolButton[toolbar-look="true"]
+{
+    qproperty-iconSize: 16px 16px;
+    min-width: 30px;
+    max-width: 30px;
+    min-height: 30px;
+    max-height: 30px;
+    border-radius: 8px;
+    border: none;
+}
+
+/* Side panel (sidebar) */
+#PrometheusAgentSidebar
+{
+    min-width: 320px;
+    max-width: 320px;
+}
+
+/* Side panel mode tab bar */
+#PrometheusAgentSidebar QTabBar::tab
+{
+    min-height: 30px;
+    border-radius: 8px;
+    padding: 0px 8px;
+    font-size: 13px;
+}
+
+/* Status pill */
+#agentStatusPill
+{
+    border-radius: 9999px;
+    padding: 0px 8px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+/* Chips (annotate chips, FSB chip row) */
+QPushButton[pm-chip="true"]
+{
+    border-radius: 9999px;
+    padding: 6px 11px;
+    font-size: 12px;
+}
+
+/* Primary CTA buttons (accent property) — color from @@ACCENT@@ token */
+QPushButton[accent="true"]
+{
+    background-color: @@ACCENT@@;
+    color: #ffffff;
+    border-radius: 9999px;
+    border: none;
+}
+
+/* Destructive buttons — fixed red; NOT accent-swappable */
+QPushButton[destructive="true"]
+{
+    background-color: #ff5f57;
+    color: #ffffff;
+    border-radius: 9999px;
+    border: none;
+}
+
+/* Disabled state */
+QWidget:disabled
+{
+    opacity: 0.35;
+}
+
+/* Focus ring — accent-soft-2 (4px ring at 18% opacity) — color from @@ACCENT_SOFT2@@ token */
+QWidget:focus
+{
+    outline: 4px solid @@ACCENT_SOFT2@@;
+    outline-offset: 0px;
+}
+
+/* Warning color for non-critical indicators — fixed yellow; NOT accent-swappable */
+QLabel[pm-warning="true"]
+{
+    color: #febc2e;
+}
+
+/* Supervised action pill — accent from @@ACCENT@@ token */
+QLabel[pm-supervised="true"]
+{
+    background-color: @@ACCENT@@;
+    color: #ffffff;
+    border-radius: 9999px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+/* Private browsing chrome */
+QMainWindow[pm-private="true"] QToolBar
+{
+    border-style: dashed;
+}
+
+/* Panel rows */
+QWidget[pm-row="true"]
+{
+    border-radius: 12px;
+    padding: 9px 8px;
+}
+
+/* Large cards and tiles */
+QWidget[pm-card-lg="true"]
+{
+    border-radius: 18px;
+}
+
+/* Navigation bar height */
+#navigationbar
+{
+    min-height: 50px;
+    max-height: 50px;
+}

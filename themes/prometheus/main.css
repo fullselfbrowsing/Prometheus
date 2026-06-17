@@ -1,0 +1,318 @@
+/* prometheus-common.qss — Prometheus shared structural rules */
+/* Accent-colored rules use #ff6b35, #ff8c42, rgba(255,107,53,0.18) tokens. */
+/* NO literal accent hex in this file. Substitution is done at runtime by */
+/* MainApplication::setPrometheusAccent() before setStyleSheet is called. */
+
+/* Border radius tokens: r-sm=8px r-md=12px r-lg=18px r-pill=9999px */
+/* Chrome height: 50px, Panel width: 320px */
+
+/* Toolbar icon buttons — 30x30 clickable area with 16px icon */
+QToolButton[toolbar-look="true"]
+{
+    qproperty-iconSize: 16px 16px;
+    min-width: 30px;
+    max-width: 30px;
+    min-height: 30px;
+    max-height: 30px;
+    border-radius: 8px;
+    border: none;
+}
+
+/* Side panel (sidebar) */
+#PrometheusAgentSidebar
+{
+    min-width: 320px;
+    max-width: 320px;
+}
+
+/* Side panel mode tab bar */
+#PrometheusAgentSidebar QTabBar::tab
+{
+    min-height: 30px;
+    border-radius: 8px;
+    padding: 0px 8px;
+    font-size: 13px;
+}
+
+/* Status pill */
+#agentStatusPill
+{
+    border-radius: 9999px;
+    padding: 0px 8px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+/* Chips (annotate chips, FSB chip row) */
+QPushButton[pm-chip="true"]
+{
+    border-radius: 9999px;
+    padding: 6px 11px;
+    font-size: 12px;
+}
+
+/* Primary CTA buttons (accent property) — color from #ff6b35 token */
+QPushButton[accent="true"]
+{
+    background-color: #ff6b35;
+    color: #ffffff;
+    border-radius: 9999px;
+    border: none;
+}
+
+/* Destructive buttons — fixed red; NOT accent-swappable */
+QPushButton[destructive="true"]
+{
+    background-color: #ff5f57;
+    color: #ffffff;
+    border-radius: 9999px;
+    border: none;
+}
+
+/* Disabled state */
+QWidget:disabled
+{
+    opacity: 0.35;
+}
+
+/* Focus ring — accent-soft-2 (4px ring at 18% opacity) — color from rgba(255,107,53,0.18) token */
+QWidget:focus
+{
+    outline: 4px solid rgba(255,107,53,0.18);
+    outline-offset: 0px;
+}
+
+/* Warning color for non-critical indicators — fixed yellow; NOT accent-swappable */
+QLabel[pm-warning="true"]
+{
+    color: #febc2e;
+}
+
+/* Supervised action pill — accent from #ff6b35 token */
+QLabel[pm-supervised="true"]
+{
+    background-color: #ff6b35;
+    color: #ffffff;
+    border-radius: 9999px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+/* Private browsing chrome */
+QMainWindow[pm-private="true"] QToolBar
+{
+    border-style: dashed;
+}
+
+/* Panel rows */
+QWidget[pm-row="true"]
+{
+    border-radius: 12px;
+    padding: 9px 8px;
+}
+
+/* Large cards and tiles */
+QWidget[pm-card-lg="true"]
+{
+    border-radius: 18px;
+}
+
+/* Navigation bar height */
+#navigationbar
+{
+    min-height: 50px;
+    max-height: 50px;
+}
+
+/* prometheus-dark.qss — Prometheus warm dark theme */
+/* Token source: 09-UI-SPEC.md "Color — Warm Dark Theme" */
+/* Surface: #141110  Chrome: #1d1816  Bg-app: #0d0a09 */
+/* Accent uses #ff6b35/#ff8c42 tokens; substituted at runtime */
+
+QMainWindow
+{
+    background-color: #0d0a09;
+}
+
+QToolBar, #navigationbar
+{
+    background-color: #1d1816;
+    color: #f6efe9;
+    border-bottom: 1px solid rgba(255,241,232,0.10);
+}
+
+#PrometheusAgentSidebar
+{
+    background-color: #1d1816;
+    color: #f6efe9;
+    border-right: 1px solid rgba(255,241,232,0.10);
+}
+
+/* Tab strip */
+#tabbar
+{
+    qproperty-baseColor: #141110;
+    qproperty-textColor: #d2c1b4;
+    qproperty-selectedTextColor: #ff6b35;
+}
+
+/* Location bar / search bar */
+#locationbar, #websearchbar
+{
+    background-color: #1d1816;
+    color: #f6efe9;
+    border: 1px solid rgba(255,241,232,0.18);
+    selection-background-color: rgba(255,107,53,0.18);
+}
+
+/* Tool buttons in toolbar */
+QToolButton[toolbar-look="true"]
+{
+    background-color: transparent;
+    color: #d2c1b4;
+}
+
+QToolButton[toolbar-look="true"]:hover
+{
+    background-color: rgba(255,241,232,0.06);
+    color: #f6efe9;
+}
+
+QToolButton[toolbar-look="true"]:pressed
+{
+    background-color: rgba(255,241,232,0.06);
+}
+
+/* Side panel mode tab bar */
+#PrometheusAgentSidebar QTabBar::tab
+{
+    background-color: transparent;
+    color: #a99283;
+}
+
+#PrometheusAgentSidebar QTabBar::tab:selected
+{
+    background-color: rgba(255,107,53,0.18);
+    color: #ff6b35;
+}
+
+#PrometheusAgentSidebar QTabBar::tab:hover:!selected
+{
+    background-color: rgba(255,241,232,0.06);
+    color: #d2c1b4;
+}
+
+/* Status pill */
+#agentStatusPill
+{
+    background-color: rgba(255,107,53,0.12);
+    color: #ff6b35;
+}
+
+/* Section labels */
+QLabel[pm-section-label="true"]
+{
+    color: #a99283;
+    font-size: 10px;
+    font-family: "Space Mono";
+}
+
+/* Panel rows */
+QWidget[pm-row="true"]
+{
+    background-color: #1d1816;
+    color: #f6efe9;
+}
+
+QWidget[pm-row="true"]:hover
+{
+    background-color: rgba(255,241,232,0.06);
+}
+
+/* Card / elevated surface */
+QWidget[pm-card="true"]
+{
+    background-color: #1d1816;
+    border: 1px solid rgba(255,241,232,0.10);
+}
+
+/* Primary text */
+QLabel
+{
+    color: #f6efe9;
+}
+
+/* Secondary text */
+QLabel[pm-secondary="true"]
+{
+    color: #d2c1b4;
+}
+
+/* Tertiary text */
+QLabel[pm-tertiary="true"]
+{
+    color: #a99283;
+}
+
+/* Separator / divider */
+QFrame[frameShape="4"], QFrame[frameShape="5"]
+{
+    color: rgba(255,241,232,0.06);
+}
+
+/* Composer / text input */
+QTextEdit, QPlainTextEdit
+{
+    background-color: #1d1816;
+    color: #f6efe9;
+    border: 1px solid rgba(255,241,232,0.10);
+    border-radius: 12px;
+}
+
+QTextEdit:focus, QPlainTextEdit:focus
+{
+    border: 1px solid rgba(255,241,232,0.18);
+    outline: 4px solid rgba(255,107,53,0.18);
+}
+
+/* Menus */
+QMenu
+{
+    background-color: #1d1816;
+    color: #f6efe9;
+    border: 1px solid rgba(255,241,232,0.18);
+    border-radius: 8px;
+}
+
+QMenu::item:selected
+{
+    background-color: rgba(255,241,232,0.06);
+}
+
+/* FSB Control Panel page */
+#FsbControlPanelPage
+{
+    background-color: #141110;
+    color: #f6efe9;
+}
+
+/* Scroll bars — minimal */
+QScrollBar:vertical, QScrollBar:horizontal
+{
+    background-color: #141110;
+    width: 6px;
+    height: 6px;
+}
+
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal
+{
+    background-color: rgba(255,241,232,0.18);
+    border-radius: 3px;
+}
+
+QScrollBar::add-line, QScrollBar::sub-line
+{
+    background: none;
+    border: none;
+}

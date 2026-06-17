@@ -1,0 +1,175 @@
+/* prometheus-light.qss — Prometheus warm light theme */
+/* Token source: 09-UI-SPEC.md "Color — Warm Light Theme" */
+/* Surface: #fffdfb  Chrome: #f3ede6  Bg-app: #e9e2da */
+/* Accent uses @@ACCENT@@/@@ACCENT2@@ tokens; substituted at runtime */
+
+QMainWindow
+{
+    background-color: #e9e2da;
+}
+
+QToolBar, #navigationbar
+{
+    background-color: #f3ede6;
+    color: #1f1a17;
+    border-bottom: 1px solid rgba(41,29,20,0.10);
+}
+
+#PrometheusAgentSidebar
+{
+    background-color: #ece4db;
+    color: #1f1a17;
+    border-right: 1px solid rgba(41,29,20,0.10);
+}
+
+#tabbar
+{
+    qproperty-baseColor: #fffdfb;
+    qproperty-textColor: #6a584d;
+    qproperty-selectedTextColor: @@ACCENT@@;
+}
+
+#locationbar, #websearchbar
+{
+    background-color: #f3ede6;
+    color: #1f1a17;
+    border: 1px solid rgba(41,29,20,0.16);
+    selection-background-color: @@ACCENT_SOFT2@@;
+}
+
+QToolButton[toolbar-look="true"]
+{
+    background-color: transparent;
+    color: #6a584d;
+}
+
+QToolButton[toolbar-look="true"]:hover
+{
+    background-color: rgba(41,29,20,0.05);
+    color: #1f1a17;
+}
+
+QToolButton[toolbar-look="true"]:pressed
+{
+    background-color: rgba(41,29,20,0.05);
+}
+
+#PrometheusAgentSidebar QTabBar::tab
+{
+    background-color: transparent;
+    color: #8d7a6e;
+}
+
+#PrometheusAgentSidebar QTabBar::tab:selected
+{
+    background-color: @@ACCENT_SOFT2@@;
+    color: @@ACCENT@@;
+}
+
+#PrometheusAgentSidebar QTabBar::tab:hover:!selected
+{
+    background-color: rgba(41,29,20,0.05);
+    color: #6a584d;
+}
+
+#agentStatusPill
+{
+    background-color: rgba(255,107,53,0.12);
+    color: @@ACCENT@@;
+}
+
+QLabel[pm-section-label="true"]
+{
+    color: #8d7a6e;
+    font-size: 10px;
+    font-family: "Space Mono";
+}
+
+QWidget[pm-row="true"]
+{
+    background-color: #f3ede6;
+    color: #1f1a17;
+}
+
+QWidget[pm-row="true"]:hover
+{
+    background-color: rgba(41,29,20,0.05);
+}
+
+QWidget[pm-card="true"]
+{
+    background-color: #f8f4ef;
+    border: 1px solid rgba(41,29,20,0.10);
+}
+
+QLabel
+{
+    color: #1f1a17;
+}
+
+QLabel[pm-secondary="true"]
+{
+    color: #6a584d;
+}
+
+QLabel[pm-tertiary="true"]
+{
+    color: #8d7a6e;
+}
+
+QFrame[frameShape="4"], QFrame[frameShape="5"]
+{
+    color: rgba(41,29,20,0.08);
+}
+
+QTextEdit, QPlainTextEdit
+{
+    background-color: #f3ede6;
+    color: #1f1a17;
+    border: 1px solid rgba(41,29,20,0.10);
+    border-radius: 12px;
+}
+
+QTextEdit:focus, QPlainTextEdit:focus
+{
+    border: 1px solid rgba(41,29,20,0.16);
+    outline: 4px solid @@ACCENT_SOFT2@@;
+}
+
+QMenu
+{
+    background-color: #f3ede6;
+    color: #1f1a17;
+    border: 1px solid rgba(41,29,20,0.16);
+    border-radius: 8px;
+}
+
+QMenu::item:selected
+{
+    background-color: rgba(41,29,20,0.05);
+}
+
+#FsbControlPanelPage
+{
+    background-color: #fffdfb;
+    color: #1f1a17;
+}
+
+QScrollBar:vertical, QScrollBar:horizontal
+{
+    background-color: #f3ede6;
+    width: 6px;
+    height: 6px;
+}
+
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal
+{
+    background-color: rgba(41,29,20,0.16);
+    border-radius: 3px;
+}
+
+QScrollBar::add-line, QScrollBar::sub-line
+{
+    background: none;
+    border: none;
+}

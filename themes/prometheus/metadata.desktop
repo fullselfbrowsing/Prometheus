@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Prometheus
+Comment=Warm minimal dark/light theme for Prometheus browser
+X-Falkon-Author=FSB
+X-Falkon-License=license.txt
+Icon=theme.png
+Type=Service
+X-Falkon-Type=Theme
