@@ -2,35 +2,33 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: milestone_complete
+status: Awaiting next milestone
 stopped_at: Phase 10 Plan 04 complete — build verified (177/177 targets), all static checks pass, visual checkpoint auto-approved
-last_updated: "2026-06-17T09:19:48.361Z"
-last_activity: 2026-06-17
+last_updated: "2026-06-17T18:00:36.806Z"
+last_activity: 2026-06-17 — Milestone v1.0 completed and archived
 progress:
   total_phases: 10
-  completed_phases: 11
+  completed_phases: 10
   total_plans: 51
   completed_plans: 51
-  percent: 110
+  percent: 100
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-06-16)
+See: .planning/PROJECT.md (updated 2026-06-17)
 
 **Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** Phase 10 — New Tab Start Page
+**Current focus:** v1.0 MVP shipped — planning next milestone (`/gsd-new-milestone`)
 
 ## Current Position
 
-Phase: 10
-Plan: Not started
-Status: Milestone complete
-Last activity: 2026-06-17
-
-Progress: [██████████] 100%
+Phase: Milestone v1.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-06-17 — Milestone v1.0 completed and archived
 
 ## Performance Metrics
 
@@ -151,25 +149,31 @@ None yet.
 
 ### Blockers/Concerns
 
-- Full internal namespace/class/library rename from Falkon to Prometheus is deferred; Phase 2 rebranded primary product-visible surfaces and preserved legal attribution.
-- Phase 4 added a local stdio MCP bridge over the native JSON spine plus manual tools, ownership, diagnostics, and visual-session field handling.
-- Phase 5 added local runtime surfaces and native-only secure secret storage. Provider-backed hosted model execution is still deferred.
-- Phase 6 added PhantomStream-style supervision primitives, safe pairing, packaging, legal bundle validation, and full release validation.
-- The generated artifact is a local validation package, not a notarized public macOS release.
-- The first six phases include a basic native Prometheus side panel, but Phase 8 must turn it into a comprehensive control center and verify FSB-plus parity.
-- Primary UI still uses many platform theme icons and inherited theme assets; Phase 9 must make primary icons deterministic, offline, and legally attributed.
-- Phase 7 completed compact minimal chrome and advanced tab management. Phase 8 must upgrade the side panel/settings surface into a comprehensive FSB-plus control center with a verified parity matrix.
+Open items carried into the next milestone (formal list in Deferred Items below):
+
+- 26 human-visual UAT checks across phases 08/09/10 have not been run on a live binary.
+- Internal Falkon → Prometheus namespace/class/library rename is deferred (product-visible identity is complete).
+- The release artifact is a local macOS validation package, not a notarized public release.
+- Provider-backed hosted model execution remains partially deferred.
 
 ## Deferred Items
 
-Items acknowledged and carried forward from previous milestone close:
+Acknowledged at v1.0 milestone close (2026-06-17) and carried forward to the next milestone. These are human-visual UAT items that require launching the built Prometheus binary; they were not run before archiving. Resume with `/gsd-verify-work <phase>`.
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| *(none)* | | | |
+| verification | 08-VERIFICATION.md — 10 control-panel/side-panel visual checks | human_needed | v1.0 close 2026-06-17 |
+| verification | 09-VERIFICATION.md — 8 icon/font/theme rendering checks | human_needed | v1.0 close 2026-06-17 |
+| verification | 10-VERIFICATION.md — 8 start-page visual checks | human_needed | v1.0 close 2026-06-17 |
+| rename | Internal Falkon → Prometheus namespace/class/library rename | deferred | v1.0 close 2026-06-17 |
+| release | Notarized, distributable macOS release (current is local validation package) | deferred | v1.0 close 2026-06-17 |
 
 ## Session Continuity
 
 Last session: 2026-06-17T09:19:48.357Z
 Stopped at: Phase 10 Plan 04 complete — build verified (177/177 targets), all static checks pass, visual checkpoint auto-approved
 Resume file: None
+
+## Operator Next Steps
+
+- Start the next milestone with /gsd-new-milestone

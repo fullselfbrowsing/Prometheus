@@ -12,43 +12,67 @@ Agents get fast, precise, auditable control of the whole browser through DOM/nat
 
 ## Current State
 
-Phase 7 is complete. Prometheus now has optional compact Safari-style browser chrome, native tab groups, tab overview/search, quick switch, advanced tab operations, and agent-aware tab state with ownership/supervision safeguards verified by smoke tests, focused Qt tests, code review, and human visual approval.
+**Shipped: v1.0 MVP (2026-06-17)** — all 10 phases, 51 plans complete.
+
+Prometheus is a working agent-native desktop browser built on the Falkon/QtWebEngine fork. v1.0 delivered a buildable, legally-inventoried baseline; Prometheus product identity with the "Powered by FSB" affiliation; a native agent command router with surface adapters, permissioned JS execution, and DOM/page reads; FSB-compatible MCP tooling with multi-agent ownership, typed errors, and visual-session fields; native FSB runtime surfaces (side panel, providers, autopilot, logs, memory/site guides, secure vault); PhantomStream-style supervision, safe pairing, and a local macOS validation package; compact Safari-style chrome with advanced tab management; a native FSB-Plus control center with a release-gated feature parity matrix; an offline Font Awesome Free icon system with Poppins/Space Mono brand fonts and warm dark/light themes; and a Prometheus start page.
+
+v1.0 is code-complete and statically verified (177/177 build targets link, code review and parity gates pass). 26 human-visual verification items across phases 08/09/10 require a live binary run and are carried forward as deferred items (see STATE.md). The internal Falkon → Prometheus namespace/class rename and a notarized public macOS release also remain deferred.
+
+## Next Milestone Goals
+
+- Run the deferred human-visual verification pass on a live build and close the 26 outstanding UAT items.
+- Complete the internal Falkon → Prometheus namespace/class/library rename (product-visible identity is done; internal symbols are not).
+- Produce a notarized, distributable macOS release beyond the current local validation package.
+- Ship polished Linux and Windows builds after macOS-first validation (V2-01).
+- Evaluate Lattice for provider routing, receipts, policy, or agent runtime (V2-02).
+- Add hosted/fleet control and advanced extension-ecosystem compatibility once local control is validated (V2-03, V2-04).
 
 ## Requirements
 
 ### Validated
 
-- [x] Validated in Phase 7: Provide compact native browser chrome similar in spirit to Safari's compact layout: tabs share the toolbar, the active tab becomes the address/search field, and the layout remains optional for users who prefer separate tabs.
-- [x] Validated in Phase 7: Provide advanced native tab management for humans and agents: tab groups, overview/search, quick switch, close/restore, unload/suspend, duplicate, detach, ownership, health, and supervision state.
+- ✓ Build on the local Falkon fork as the bootstrap engine while progressively replacing product identity, app shell, and agent architecture with Prometheus-owned, FSB-powered implementation — v1.0
+- ✓ Preserve and improve FSB's MCP-compatible browser control surface: manual action tools, read tools, autopilot, observability, vault flows, session lifecycle, typed recovery errors — v1.0
+- ✓ Native direct JavaScript execution for web pages with verification and read-back through DOM/page snapshots — v1.0
+- ✓ Agent control over browser-owned and restricted surfaces Chrome extensions cannot reach: settings, tabs, internal pages — v1.0
+- ✓ Full tab and window control for multiple concurrent agents: ownership, isolation, background-tab execution, reconnect recovery, concurrency caps — v1.0
+- ✓ FSB's DOM-first page understanding: element refs, selectors, forms, ARIA labels, smart waiting, action verification, stuck detection, change reports — v1.0
+- ✓ Native MCP bridge compatible with existing FSB MCP client expectations while removing extension-specific latency and failure modes — v1.0
+- ✓ FSB user-facing surfaces inside the browser: agent side panel, settings/control panel, diagnostics, logs, memory/site guides, vault, provider configuration — v1.0
+- ✓ Native FSB-plus control center matching or improving every FSB feature category through a maintained, release-gated parity matrix — v1.0
+- ✓ PhantomStream-style DOM-native live supervision for supervised sessions and remote preview — v1.0
+- ✓ Provider flexibility: xAI, Gemini, OpenAI, Anthropic, OpenRouter, LM Studio, and custom OpenAI-compatible endpoints — v1.0
+- ✓ Minimal Prometheus identity: restrained native surfaces, sparse FSB orange accents, clear supervised/action states, warm dark/light themes — v1.0
+- ✓ Bundled offline Font Awesome Free icons plus Poppins/Space Mono brand fonts, with attribution and release validation — v1.0
+- ✓ Product-visible Falkon identity removed: app name, titles, icons, bookmarks, settings labels, user-facing strings are Prometheus-owned, "Powered by FSB" as affiliation — v1.0 (internal symbol rename deferred)
+- ✓ Required third-party, GPL, Qt, KDE, and Falkon copyright/license notices and source-availability obligations kept intact — v1.0
+- ✓ Lightweight architecture: no Electron, no screenshot-heavy control loops, native Qt/QtWebEngine plus small local agent services — v1.0
+- ✓ Compact Safari-style chrome: tabs share the toolbar, active tab becomes the address/search field, separate layout stays optional — v1.0 (Phase 7)
+- ✓ Advanced native tab management: groups, overview/search, quick switch, close/restore, unload/suspend, duplicate, detach, ownership, health, supervision — v1.0 (Phase 7)
 
 ### Active
 
-- [ ] Build on the local Falkon fork as the bootstrap browser engine while progressively replacing product identity, app shell, and agent-specific architecture with Prometheus-owned, FSB-powered implementation.
-- [ ] Preserve and improve FSB's existing MCP-compatible browser control surface, including manual action tools, read tools, autopilot, observability, vault flows, session lifecycle, and typed recovery errors.
-- [ ] Provide native direct JavaScript execution for web pages where the browser can execute page scripts safely, with verification and read-back through DOM snapshots/page snapshots.
-- [ ] Provide agent control over browser-owned and restricted surfaces that Chrome extensions cannot normally control, including settings, tabs, downloads, history, extension management surfaces if supported, and internal pages.
-- [ ] Support full tab and window control for multiple concurrent agents, including ownership, isolation, background-tab execution where possible, reconnect recovery, and explicit concurrency limits.
-- [ ] Port or reimplement FSB's DOM-first page understanding: element refs, selectors, forms, ARIA labels, hidden/structural controls, smart waiting, action verification, stuck detection, and change reports.
-- [ ] Integrate a native MCP server or optimized bridge that remains compatible with existing FSB MCP client expectations where practical while removing extension-specific latency and failure modes.
-- [ ] Rebuild FSB user-facing surfaces inside the browser: agent side panel, settings/control panel, diagnostics, logs, analytics, memory/site guides, vault, sync/dashboard entry points, and provider configuration.
-- [ ] Upgrade the Prometheus side panel into a native FSB-plus control center that explicitly matches or improves every FSB feature category through a maintained parity matrix.
-- [ ] Use PhantomStream-style DOM-native live mirroring for supervised sessions and remote dashboard preview instead of pixel/video streaming as the primary architecture.
-- [ ] Keep FSB's provider flexibility: xAI, Gemini, OpenAI, Anthropic, OpenRouter, LM Studio, and custom OpenAI-compatible endpoints, with live model discovery where supported.
-- [ ] Theme the browser around a minimal Prometheus identity: restrained native surfaces, sparse FSB orange action accents, clear supervised/action states, and no decorative visual noise.
-- [ ] Use bundled offline Font Awesome Free assets for common native UI icons where licensing permits, with attribution and release validation, instead of relying on network or platform theme availability.
-- [ ] Remove product-visible Falkon identity by the end state: app name, bundle IDs, desktop files, icons, default bookmarks, settings labels, docs, package names, window titles, and user-facing strings should be Prometheus-owned, with "Powered by FSB" used as the explicit affiliation/tagline where appropriate.
-- [ ] Keep legally required third-party, GPL, Qt, KDE, and Falkon copyright/license notices and source-availability obligations intact.
-- [ ] Keep the browser lightweight: avoid Electron, avoid screenshot-heavy control loops, minimize bundled services, and prefer native Qt/QtWebEngine integration plus small local agent services.
+(Forward-looking candidates for the next milestone — define fresh requirements via `/gsd-new-milestone`.)
+
+- [ ] Close the 26 deferred human-visual verification items on a live binary build.
+- [ ] Complete the internal Falkon → Prometheus namespace/class/library rename.
+- [ ] Produce a notarized, distributable macOS release beyond the local validation package.
+- [ ] Ship polished Linux and Windows builds (V2-01).
+- [ ] Evaluate Lattice for provider routing, receipts, policy, or agent runtime (V2-02).
+- [ ] Hosted/fleet control after local control is validated (V2-03).
+- [ ] Advanced extension-ecosystem compatibility where QtWebEngine/Falkon surfaces make it practical (V2-04).
 
 ### Out of Scope
 
-- Deleting required license or copyright notices - the product should be rebranded, but the inherited GPL and third-party obligations must remain satisfied.
-- Stealth automation or account-abuse workflows - the browser should remain a supervised, auditable automation product.
-- Pixel-first computer-use architecture as the primary strategy - screenshots can be fallback diagnostics, but the core bet is DOM/native structure.
-- Hosted fleet control plane for v1 - local browser control, local MCP, and optional dashboard pairing come first.
-- Rewriting the rendering engine from scratch - QtWebEngine/Falkon is the bootstrap path; replacement is about product architecture and surfaces, not implementing a browser engine.
+- Deleting required license or copyright notices — the product is rebranded, but inherited GPL and third-party obligations must remain satisfied.
+- Stealth automation or account-abuse workflows — the browser remains a supervised, auditable automation product.
+- Pixel-first computer-use architecture as the primary strategy — screenshots are fallback diagnostics only; the core bet is DOM/native structure.
+- Hosted fleet control plane for v1 — local browser control, local MCP, and optional dashboard pairing came first (revisit next milestone, V2-03).
+- Rewriting the rendering engine from scratch — QtWebEngine/Falkon is the bootstrap path; replacement is about product architecture and surfaces, not a browser engine.
 
 ## Context
+
+**v1.0 codebase state (2026-06-17):** The browser is built on the Falkon/QtWebEngine fork, tracked as a separate `falkon/` checkout; this planning repo holds the GSD artifacts. The macOS build links 177/177 targets. Prometheus-specific work spans the native agent command router and adapters, the MCP bridge, the native side panel and FSB-Plus control center, compact chrome and tab management, the offline icon/font/theme system, and the start page. The output is a local macOS validation package, not yet a notarized public release.
 
 The Full Self Browsing GitHub organization currently has four public repositories:
 
@@ -93,15 +117,15 @@ FSB extension capabilities to preserve or improve include:
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Use `Prometheus` as the product name with `Powered by FSB` as the affiliation/tagline | Creates a distinct browser product identity while preserving the FSB brand connection. | - Accepted |
-| Start from the local Falkon fork | It provides a lightweight QtWebEngine browser foundation immediately. | - Pending |
-| Rebrand product-visible Falkon identity but preserve legal notices | The desired end state is not visibly Falkon, but GPL/copyleft obligations still apply. | - Pending |
-| Make agent-native browser control the first product wedge | This is the main advantage over the Chrome extension and solves restricted/internal page control. | - Pending |
-| Preserve FSB MCP compatibility while moving the implementation native | Existing FSB users and agents should not lose the tool contract, but the browser can remove extension bridge limitations. | - Pending |
+| Start from the local Falkon fork | It provides a lightweight QtWebEngine browser foundation immediately. | ✓ Good — fork built and shipped v1.0 (177/177 targets link) |
+| Rebrand product-visible Falkon identity but preserve legal notices | The desired end state is not visibly Falkon, but GPL/copyleft obligations still apply. | ✓ Good — Phase 2 rebranded product surfaces; legal notices preserved (internal symbol rename deferred) |
+| Make agent-native browser control the first product wedge | This is the main advantage over the Chrome extension and solves restricted/internal page control. | ✓ Good — Phase 3 native command spine + Phase 4 MCP shipped |
+| Preserve FSB MCP compatibility while moving the implementation native | Existing FSB users and agents should not lose the tool contract, but the browser can remove extension bridge limitations. | ✓ Good — Phase 4 native MCP bridge with compatible tools and typed errors |
 | Use a native Prometheus sidebar plus `AgentRuntime` for FSB runtime parity | Native UI keeps provider/vault secrets out of MCP/agent transports while sharing task/log/provider state with the router and MCP bridge. | - Accepted |
 | Use PhantomStream as the live supervision reference architecture | DOM-native mirroring matches FSB's structural-intelligence philosophy and avoids video-stream cost/latency. | - Accepted |
 | Ship a local validation artifact before notarized public release work | A repeatable macOS tarball with legal/source notices gives a concrete release candidate while notarization and polished distribution stay separate. | - Accepted |
-| Treat Lattice as optional architecture leverage | Lattice may help provider routing, policy, receipts, and agent runtime, but browser v1 should not depend on completing Lattice integration. | - Pending |
-| Prioritize agent core before full FSB parity | A usable native agent browser should land before every extension dashboard and analytics surface is rebuilt. | - Pending |
+| Treat Lattice as optional architecture leverage | Lattice may help provider routing, policy, receipts, and agent runtime, but browser v1 should not depend on completing Lattice integration. | — Deferred to v2 — v1.0 shipped without Lattice (V2-02) |
+| Prioritize agent core before full FSB parity | A usable native agent browser should land before every extension dashboard and analytics surface is rebuilt. | ✓ Good — agent core landed Phases 3-4; FSB-plus parity completed Phase 8 |
 | Extend v1.0 beyond the initial release-hardening milestone for native UX polish | The first six phases produced a functional agent-native browser, but the product still needs explicit FSB-plus parity, compact chrome, native tab management, offline icons, and minimal themes before claiming the intended product bar. | - Accepted |
 | Use Safari compact mode as an interaction reference, not a visual clone | Compact tabs in the toolbar and active-tab address/search behavior are useful, but Prometheus should keep its own minimal native identity and agent/supervision affordances. | - Accepted |
 | Use Font Awesome Free as a curated offline icon source | Font Awesome Free is GPL-friendly when licenses and attribution are preserved; bundling a curated subset improves deterministic native icon rendering. | - Accepted |
@@ -124,4 +148,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-16 after Phase 7 verification*
+*Last updated: 2026-06-17 after v1.0 MVP milestone*
