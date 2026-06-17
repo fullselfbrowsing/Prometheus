@@ -361,4 +361,52 @@ void AgentCommandRouterTest::unsupportedGroupMutationToolsReturnCompatibilityErr
     }
 }
 
+void AgentCommandRouterTest::testGetAgentPolicy()
+{
+    AgentCommandRouter router;
+    QVERIFY(router.start(0));
+
+    const QJsonObject response = router.routeForSession(command(QSL("get-policy"), QSL("get_agent_policy")), QSL("policy-session"));
+    QVERIFY2(response.value(QSL("ok")).toBool(), qPrintable(QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Compact))));
+    const QJsonObject result = response.value(QSL("result")).toObject();
+    QVERIFY2(result.contains(QSL("agentCap")), qPrintable(QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact))));
+    QVERIFY(result.value(QSL("agentCap")).isDouble());
+}
+
+void AgentCommandRouterTest::testSetAgentPolicyPersists()
+{
+    AgentCommandRouter router;
+    QVERIFY(router.start(0));
+
+    // Set agentCap to 2 via set_agent_policy
+    const QJsonObject setResponse = router.routeForSession(
+        command(QSL("set-policy"), QSL("set_agent_policy"), QJsonObject{{QSL("agentCap"), 2}}),
+        QSL("policy-set-session"));
+    QVERIFY2(setResponse.value(QSL("ok")).toBool(), qPrintable(QString::fromUtf8(QJsonDocument(setResponse).toJson(QJsonDocument::Compact))));
+
+    // Read back via get_agent_policy
+    const QJsonObject getResponse = router.routeForSession(command(QSL("get-policy-after-set"), QSL("get_agent_policy")), QSL("policy-set-session"));
+    QVERIFY2(getResponse.value(QSL("ok")).toBool(), qPrintable(QString::fromUtf8(QJsonDocument(getResponse).toJson(QJsonDocument::Compact))));
+    const QJsonObject result = getResponse.value(QSL("result")).toObject();
+    QCOMPARE(result.value(QSL("agentCap")).toInt(), 2);
+}
+
+void AgentCommandRouterTest::testExecutionModeLocalFallback()
+{
+    AgentCommandRouter router;
+    QVERIFY(router.start(0));
+
+    // Submit a task with no provider configured; autoRun via router results in local execution mode
+    const QJsonObject submitResponse = router.routeForSession(
+        command(QSL("exec-mode-task"), QSL("submit_task"), QJsonObject{{QSL("prompt"), QSL("test execution mode")}, {QSL("run"), true}}),
+        QSL("exec-mode-session"));
+    QVERIFY2(submitResponse.value(QSL("ok")).toBool(), qPrintable(QString::fromUtf8(QJsonDocument(submitResponse).toJson(QJsonDocument::Compact))));
+
+    // The task object in the result should contain execution-mode metrics
+    const QJsonObject taskObj = submitResponse.value(QSL("result")).toObject().value(QSL("task")).toObject();
+    const QJsonObject metrics = taskObj.value(QSL("metrics")).toObject();
+    QCOMPARE(metrics.value(QSL("executionMode")).toString(), QSL("local"));
+    QCOMPARE(metrics.value(QSL("providerAvailable")).toBool(), false);
+}
+
 FALKONTEST_MAIN(AgentCommandRouterTest)

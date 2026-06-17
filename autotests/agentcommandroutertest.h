@@ -31,4 +31,7 @@ private Q_SLOTS:
     void successfulActionDoesNotLeaveActiveAutomation();
     void listTabsContractIncludesGroupAndStateFields();
     void unsupportedGroupMutationToolsReturnCompatibilityError();
+    void testGetAgentPolicy();
+    void testSetAgentPolicyPersists();
+    void testExecutionModeLocalFallback();
 };
