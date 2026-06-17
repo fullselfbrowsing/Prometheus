@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 09 Plan 01 complete — FA SVG subset + brand fonts vendored offline
-last_updated: "2026-06-17T08:57:39.820Z"
-last_activity: 2026-06-17 -- Phase 10 planning complete
+stopped_at: "Phase 10 Plan 01 complete — FA SVGs bundled and new-tab default repointed to falkon:start"
+last_updated: "2026-06-17T09:00:36.179Z"
+last_activity: 2026-06-17
 progress:
   total_phases: 10
   completed_phases: 9
   total_plans: 51
-  completed_plans: 47
-  percent: 92
+  completed_plans: 48
+  percent: 94
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-16)
 
 **Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** Phase 09 — Offline Font Awesome Free Icon System and Minimal Themes
+**Current focus:** Phase 10 — New Tab Start Page
 
 ## Current Position
 
-Phase: 10
-Plan: Not started
+Phase: 10 (New Tab Start Page) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
-Last activity: 2026-06-17 -- Phase 10 planning complete
+Last activity: 2026-06-17
 
-Progress: [██████████] 100%
+Progress: [█████████░] 94%
 
 ## Performance Metrics
 
@@ -78,6 +78,7 @@ Progress: [██████████] 100%
 | Phase 09 P04 | 5min | 2 tasks | 10 files |
 | Phase 09 P05 | 4min | 2 tasks | 7 files |
 | Phase 09 P06 | 5min | 3 tasks | 6 files |
+| Phase 10 P01 | 3min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -127,6 +128,8 @@ Recent decisions affecting current work:
 - [Phase ?]: [09-01] sidebar-flip placeholder SVG created: Pro-only icon not in FA Free 6.x; minimal valid SVG with two-panel geometry and CC BY 4.0 attribution
 - [Phase ?]: [09-01] 69 glyphs vendored offline (plan prose said 70 but enumerated list has 69 unique names)
 - [Phase ?]: PrometheusMarkWidget: use qzcommon.h not falkon_defs.h for FALKON_EXPORT
+- [Phase ?]: New FA SVGs appended after sidebar-flip.svg inside existing CC BY 4.0 block — no per-entry attribution comment needed
+- [Phase ?]: TabWidget new-tab default uses settings.value() fallback only; explicit user newTabUrl settings are untouched
 
 ### Roadmap Evolution
 
@@ -162,6 +165,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-17T08:08:26.526Z
-Stopped at: Phase 09 Plan 01 complete — FA SVG subset + brand fonts vendored offline
+Last session: 2026-06-17T09:00:36.174Z
+Stopped at: Phase 10 Plan 01 complete — FA SVGs bundled and new-tab default repointed to falkon:start
 Resume file: None

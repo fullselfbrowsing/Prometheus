@@ -96,10 +96,10 @@
 
 ### New Tab Start Page
 
-- [ ] **START-01**: Opening a New Tab shows the Prometheus start page with the hero PM mark, the Prometheus wordmark, and an omnibox.
+- [x] **START-01**: Opening a New Tab shows the Prometheus start page with the hero PM mark, the Prometheus wordmark, and an omnibox.
 - [ ] **START-02**: The start page omnibox accepts a search or address and offers an Ask FSB action that hands a natural-language prompt to the FSB Agent side panel.
 - [ ] **START-03**: The start page shows a favorites grid that navigates to the chosen entry.
-- [ ] **START-04**: The start page shows FSB suggested automations that seed the agent panel when chosen.
+- [x] **START-04**: The start page shows FSB suggested automations that seed the agent panel when chosen.
 - [ ] **START-05**: The start page uses the canonical Prometheus design system (warm tokens, Poppins, Space Mono, Font Awesome) and renders correctly in both themes.
 
 ### Supervision and Remote View
