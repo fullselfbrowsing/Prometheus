@@ -136,6 +136,7 @@ Preferences::Preferences(BrowserWindow* window)
     setCategoryIcon(10, QIcon(QStringLiteral(":/icons/preferences/extensions.svg")));
     setCategoryIcon(11, QIcon(QStringLiteral(":/icons/preferences/spellcheck.svg")));
     setCategoryIcon(12, QIcon(QStringLiteral(":/icons/preferences/other.svg")));
+    setCategoryIcon(13, QIcon::fromTheme(QSL("system-run")));
 
     Settings settings;
     //GENERAL URLs
@@ -586,6 +587,19 @@ Preferences::Preferences(BrowserWindow* window)
 
     setManualProxyConfigurationEnabled(ui->manualProxy->isChecked());
     connect(ui->manualProxy, &QAbstractButton::toggled, this, &Preferences::setManualProxyConfigurationEnabled);
+
+    //PROMETHEUS AGENT POLICY
+    settings.beginGroup(QSL("PrometheusRuntime/Policy"));
+    ui->agentCapSpin->setValue(settings.value(QSL("agentCap"), 4).toInt());
+    ui->internalSurfaceCheck->setChecked(settings.value(QSL("internalSurfaceControl"), false).toBool());
+    ui->tabOwnershipCheck->setChecked(settings.value(QSL("tabOwnershipEnforcement"), true).toBool());
+    ui->bgTabActionsCheck->setChecked(settings.value(QSL("backgroundTabActions"), true).toBool());
+    ui->visualFeedbackCheck->setChecked(settings.value(QSL("visualFeedback"), true).toBool());
+    ui->telemetryCombo->setCurrentIndex(settings.value(QSL("telemetry"), 0).toInt());
+    ui->supervisionPairingCheck->setChecked(settings.value(QSL("supervisionPairing"), false).toBool());
+    ui->dashboardRemoteCheck->setChecked(settings.value(QSL("dashboardRemoteControl"), false).toBool());
+    // vaultBoundaryCheck and vaultAutofillCheck are security invariants: always true, never read from Settings
+    settings.endGroup();
 
     //CONNECTS
     connect(ui->buttonBox, &QDialogButtonBox::clicked, this, &Preferences::buttonClicked);
@@ -1178,6 +1192,20 @@ void Preferences::saveSettings()
         auto *item = static_cast<SiteSettingsHtml5Item*>(ui->siteSettingsHtml5List->itemWidget(ui->siteSettingsHtml5List->item(i)));
         settings.setValue(mApp->siteSettingsManager()->featureToSqlColumn(item->feature()), item->permission());
     }
+    settings.endGroup();
+
+    //PROMETHEUS AGENT POLICY
+    // Do NOT call settings.sync() here; AgentRuntime.saveProviderConfig handles sync for the runtime group
+    settings.beginGroup(QSL("PrometheusRuntime/Policy"));
+    settings.setValue(QSL("agentCap"),                   ui->agentCapSpin->value());
+    settings.setValue(QSL("internalSurfaceControl"),      ui->internalSurfaceCheck->isChecked());
+    settings.setValue(QSL("tabOwnershipEnforcement"),     ui->tabOwnershipCheck->isChecked());
+    settings.setValue(QSL("backgroundTabActions"),        ui->bgTabActionsCheck->isChecked());
+    settings.setValue(QSL("visualFeedback"),              ui->visualFeedbackCheck->isChecked());
+    settings.setValue(QSL("telemetry"),                   ui->telemetryCombo->currentIndex());
+    settings.setValue(QSL("supervisionPairing"),          ui->supervisionPairingCheck->isChecked());
+    settings.setValue(QSL("dashboardRemoteControl"),      ui->dashboardRemoteCheck->isChecked());
+    // vaultBoundaryCheck and vaultAutofillCheck are security invariants: always true, not written to Settings
     settings.endGroup();
 
     ProfileManager::setStartingProfile(ui->startProfile->currentText());
