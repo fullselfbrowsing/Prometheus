@@ -18,7 +18,9 @@
 #include "externaljsobject.h"
 #include "mainapplication.h"
 #include "pluginproxy.h"
+#include "prometheusstartbridge.h"
 #include "speeddial.h"
+#include "tabbedwebview.h"
 #include "webpage.h"
 #include "autofilljsobject.h"
 #include "restoremanager.h"
@@ -43,6 +45,18 @@ WebPage *ExternalJsObject::page() const
 void ExternalJsObject::setupWebChannel(QWebChannel *webChannel, WebPage *page)
 {
     webChannel->registerObject(QSL("qz_object"), new ExternalJsObject(page));
+
+    // Register start-page bridge only for falkon:start (security: URL guard).
+    // Both url() and requestedUrl() are checked because during page load url() may
+    // still reflect the previous URL — mirrors the speedDial() URL guard pattern.
+    if (page->url() == QUrl(QSL("falkon:start"))
+            || page->requestedUrl() == QUrl(QSL("falkon:start"))) {
+        BrowserWindow* bw = qobject_cast<TabbedWebView*>(page->view())
+                                ? qobject_cast<TabbedWebView*>(page->view())->browserWindow()
+                                : nullptr;
+        webChannel->registerObject(QSL("qz_prometheus_start"),
+                                   new PrometheusStartBridge(bw, webChannel));
+    }
 
     for (auto it = s_extraObjects.constBegin(); it != s_extraObjects.constEnd(); ++it) {
         webChannel->registerObject(QSL("qz_") + it.key(), it.value());

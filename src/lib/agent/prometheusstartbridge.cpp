@@ -23,7 +23,6 @@
 #include "mainapplication.h"
 #include "settings.h"
 #include "sidebar.h"
-#include "sidebarmanager.h"
 #include "tabbedwebview.h"
 
 #include <QJsonArray>
