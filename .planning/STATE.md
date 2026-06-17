@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 8 design integrated; milestone extended to Phase 10
-last_updated: "2026-06-17T07:23:15.745Z"
-last_activity: 2026-06-17 -- Phase 09 planning complete
+stopped_at: Phase 09 Plan 01 complete — FA SVG subset + brand fonts vendored offline
+last_updated: "2026-06-17T07:30:54.231Z"
+last_activity: 2026-06-17
 progress:
   total_phases: 10
   completed_phases: 8
   total_plans: 47
-  completed_plans: 41
-  percent: 87
+  completed_plans: 42
+  percent: 89
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-16)
 
 **Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** Phase 08 — Native FSB-Plus Settings Side Panel and Feature Parity Matrix
+**Current focus:** Phase 09 — Offline Font Awesome Free Icon System and Minimal Themes
 
 ## Current Position
 
-Phase: 09
-Plan: Not started
+Phase: 09 (Offline Font Awesome Free Icon System and Minimal Themes) — EXECUTING
+Plan: 2 of 6
 Status: Ready to execute
-Last activity: 2026-06-17 -- Phase 09 planning complete
+Last activity: 2026-06-17
 
-Progress: [██████████] 100%
+Progress: [█████████░] 89%
 
 ## Performance Metrics
 
@@ -71,6 +71,7 @@ Progress: [██████████] 100%
 | Phase 08 P03 | 3min | 2 tasks | 2 files |
 | Phase 08 P04 | 8min | 2 tasks | 2 files |
 | Phase 08 P05 | 12min | 1 tasks | 4 files |
+| Phase 09 P01 | 3 | 2 tasks | 78 files |
 
 ## Accumulated Context
 
@@ -116,6 +117,9 @@ Recent decisions affecting current work:
 - [Phase 07]: Require health-issued bearer authorization for native agent commands and bind tab ownership to authenticated sessions, not caller-controlled client labels.
 - [Phase 07]: Key agent tab ownership, supervision, and chrome state by stable tab IDs instead of mutable tab indices.
 - [Phase ?]: FsbControlPanelPage uses QWidget with floating Window flags; routeForSession(request, control_panel) is the internal surface session key for native policy calls
+- [Phase ?]: [09-01] arrow-down-to-line substituted with arrow-down: FA Free 6.x solid missing this glyph
+- [Phase ?]: [09-01] sidebar-flip placeholder SVG created: Pro-only icon not in FA Free 6.x; minimal valid SVG with two-panel geometry and CC BY 4.0 attribution
+- [Phase ?]: [09-01] 69 glyphs vendored offline (plan prose said 70 but enumerated list has 69 unique names)
 
 ### Roadmap Evolution
 
@@ -151,6 +155,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-17T04:36:41.919Z
-Stopped at: Phase 8 design integrated; milestone extended to Phase 10
+Last session: 2026-06-17T07:30:54.226Z
+Stopped at: Phase 09 Plan 01 complete — FA SVG subset + brand fonts vendored offline
 Resume file: None

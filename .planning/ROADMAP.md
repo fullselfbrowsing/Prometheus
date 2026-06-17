@@ -191,7 +191,7 @@ Plans:
 **Plans**: 6 plans
 
 Plans:
-- [ ] 09-01-PLAN.md — FA SVG resource subset (70 glyphs) + fonts.qrc + font TTF asset layout.
+- [x] 09-01-PLAN.md — FA SVG resource subset (70 glyphs) + fonts.qrc + font TTF asset layout.
 - [ ] 09-02-PLAN.md — PromethusFontLoader C++ class and MainApplication startup hook.
 - [ ] 09-03-PLAN.md — PrometheusIconResolver service with 70+ action map and 3-step fallback.
 - [ ] 09-04-PLAN.md — Prometheus warm dark + light + common QSS theme files and runtime switch.
