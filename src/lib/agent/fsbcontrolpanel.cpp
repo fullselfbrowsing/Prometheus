@@ -1086,7 +1086,8 @@ void FsbControlPanelPage::runTask()
         return;
     }
     const QJsonObject result = mApp->agentRuntime()->submitTask(prompt, QJsonObject(), QSL("control_panel"), false);
-    m_currentTaskId = result.value(QSL("taskId")).toString();
+    // submitTask returns {ok, task:{id, ...}}; "taskId" at top level does not exist.
+    m_currentTaskId = result.value(QSL("task")).toObject().value(QSL("id")).toString();
     m_taskPrompt->clear();
     refreshAll();
 }
