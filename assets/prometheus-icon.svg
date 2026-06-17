@@ -6,7 +6,7 @@
     </filter>
   </defs>
   <g filter="url(#softShadow)">
-    <rect width="256" height="256" rx="61" fill="#141110"/>
+    <rect width="256" height="256" rx="61" fill="#000000"/>
     <rect x="1" y="1" width="254" height="254" rx="60" fill="none" stroke="#ffffff" stroke-opacity="0.06"/>
     <text x="128" y="120" text-anchor="middle" dominant-baseline="middle" fill="#f6efe9" font-family="Poppins, Inter, 'Avenir Next', Arial, sans-serif" font-size="96" letter-spacing="-5">
       <tspan font-weight="100">P</tspan><tspan font-weight="900">M</tspan>
