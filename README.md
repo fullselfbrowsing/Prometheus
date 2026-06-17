@@ -2,6 +2,8 @@
 
 <img src="assets/prometheus-icon.svg" alt="Prometheus icon" width="112" />
 
+<br />
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/prometheus-wordmark.svg" />
   <img src="assets/prometheus-wordmark-light.svg" alt="Prometheus" width="300" />
