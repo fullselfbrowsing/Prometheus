@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 240" role="img" aria-labelledby="title desc">
-  <title id="title">Prometheus logo</title>
-  <desc id="desc">Prometheus PM monogram and wordmark from the brand sheet.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Prometheus icon</title>
+  <desc id="desc">Prometheus PM app icon from the brand sheet.</desc>
   <defs>
     <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#ff6b35"/>
@@ -10,19 +10,12 @@
       <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.30"/>
     </filter>
   </defs>
-  <rect width="960" height="240" rx="34" fill="#141110"/>
-  <circle cx="135" cy="120" r="82" fill="url(#accent)" opacity="0.13"/>
+  <rect width="256" height="256" rx="61" fill="#141110"/>
+  <circle cx="128" cy="128" r="88" fill="url(#accent)" opacity="0.12"/>
   <g filter="url(#softShadow)">
-    <rect x="44" y="40" width="160" height="160" rx="38" fill="#0d0a09" stroke="#f6efe9" stroke-opacity="0.12"/>
-    <text x="124" y="126" text-anchor="middle" dominant-baseline="middle" fill="#f6efe9" font-family="Poppins, Inter, Avenir Next, Arial, sans-serif" font-size="72" letter-spacing="-5">
+    <text x="128" y="122" text-anchor="middle" dominant-baseline="middle" fill="#f6efe9" font-family="Poppins, Inter, Avenir Next, Arial, sans-serif" font-size="84" letter-spacing="-6">
       <tspan font-weight="100">P</tspan><tspan font-weight="900">M</tspan>
     </text>
-    <text x="124" y="164" text-anchor="middle" fill="#d2c1b4" font-family="Space Mono, SFMono-Regular, Menlo, monospace" font-size="14" letter-spacing="6">▽0.1</text>
-  </g>
-  <g>
-    <text x="250" y="115" dominant-baseline="middle" font-family="Poppins, Inter, Avenir Next, Arial, sans-serif" font-size="68" letter-spacing="-3">
-      <tspan fill="#f6efe9" font-weight="300">Pro</tspan><tspan fill="#ff6b35" font-weight="800">metheus</tspan>
-    </text>
-    <text x="254" y="158" fill="#a99283" font-family="Space Mono, SFMono-Regular, Menlo, monospace" font-size="17" letter-spacing="1.4">agent native browser</text>
+    <text x="128" y="172" text-anchor="middle" fill="#d2c1b4" font-family="Space Mono, SFMono-Regular, Menlo, monospace" font-size="17" letter-spacing="7">▽0.1</text>
   </g>
 </svg>

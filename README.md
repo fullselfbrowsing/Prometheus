@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/prometheus.svg" alt="Prometheus logo" width="520" />
+<img src="assets/prometheus.svg" alt="Prometheus icon" width="112" />
 
 # Prometheus
 
@@ -20,7 +20,7 @@
 [![Issues](https://img.shields.io/github/issues/fullselfbrowsing/Prometheus?style=for-the-badge&logo=github&logoColor=white&color=555555)](https://github.com/fullselfbrowsing/Prometheus/issues)
 [![Last Commit](https://img.shields.io/github/last-commit/fullselfbrowsing/Prometheus?style=for-the-badge&logo=github&logoColor=white&color=555555)](https://github.com/fullselfbrowsing/Prometheus/commits/main)
 
-[Why I Built This](#why-i-built-this) · [Overview](#overview) · [Branding](#branding) · [Why DOM First](#why-dom-first) · [The Whole Browser](#the-whole-browser-not-just-the-page) · [Architecture](#architecture) · [Features](#features) · [Native Control Surface](#native-control-surface) · [MCP Bridge](#mcp-bridge) · [Quick Start](#quick-start) · [Repository Layout](#repository-layout) · [License](#license-and-attribution)
+[Why I Built This](#why-i-built-this) · [Overview](#overview) · [Why DOM First](#why-dom-first) · [The Whole Browser](#the-whole-browser-not-just-the-page) · [Architecture](#architecture) · [Features](#features) · [Native Control Surface](#native-control-surface) · [MCP Bridge](#mcp-bridge) · [Quick Start](#quick-start) · [Repository Layout](#repository-layout) · [License](#license-and-attribution)
 
 </div>
 
@@ -51,27 +51,6 @@ Where a Chrome extension can only reach the page, Prometheus owns the browser. A
 * Ships a native sidebar with Task, Providers, Logs, Memory, and Vault panels, keeping provider and vault secrets off the agent transports.
 * Mirrors supervised sessions as structured DOM snapshots and hash diffs rather than pixel or video streaming.
 * Keeps provider flexibility: xAI, Gemini, OpenAI, Anthropic, OpenRouter, LM Studio, and custom OpenAI compatible endpoints.
-
----
-
-## Branding
-
-Prometheus is the product visible identity in the app, installer, and README. The README logo follows the canonical brand sheet in `.planning/design/prometheus-brand/Prometheus Logo.html`: a PM monogram, version tag, warm ink surface, and orange Prometheus wordmark.
-
-<div align="center">
-
-<img src="assets/prometheus.svg" alt="Prometheus logo" width="420" />
-
-</div>
-
-| Asset | Source | Use |
-|-------|--------|-----|
-| Prometheus README logo | `assets/prometheus.svg` | PM monogram and wordmark derived from the brand sheet. |
-| Brand sheet | `.planning/design/prometheus-brand/Prometheus Logo.html` | Canonical logo construction, palette, type, icon treatments, and clear-space guidance. |
-
-Inherited Falkon, KDE, Qt, and QtWebEngine attribution remains preserved under the license and legal inventory.
-
----
 
 ## Why DOM First
 
@@ -256,7 +235,6 @@ Supervision reads require a session created through `create_supervision_pairing`
 | `falkon/src/lib/agent/agentruntimesidebar.*` | Native sidebar with Task, Providers, Logs, Memory, and Vault panels. |
 | `falkon/tools/prometheus-mcp/server.mjs` | Dependency free Node stdio MCP bridge that forwards tool calls to the native router. |
 | `falkon/tools/fsb-baseline/` | Build, smoke, packaging, release validation, and legal inventory scripts. |
-| `assets/prometheus.svg` | Prometheus product logo used by this README. |
 | `falkon/src/` | Qt and QtWebEngine browser shell. |
 | `falkon/COPYING` | GPLv3 license text. |
 | `.planning/` | Product planning and phase records. |
