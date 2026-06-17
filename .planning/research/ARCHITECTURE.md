@@ -9,7 +9,7 @@
 ### System Overview
 
 ```text
-FSB Browser App (Qt/C++)
+Prometheus App (Qt/C++)
   Browser chrome
     Tabs, windows, address bar, downloads, history, settings
   Web engine
@@ -172,5 +172,5 @@ Page/internal state
 - Lattice agent/provider design as optional reference.
 
 ---
-*Architecture research for: FSB Browser*
+*Architecture research for: Prometheus*
 *Researched: 2026-06-16*

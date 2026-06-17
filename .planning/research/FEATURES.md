@@ -70,7 +70,7 @@ Vault/security boundaries
 
 ### Launch With (v1)
 
-- [ ] Browser builds and runs locally under FSB Browser identity.
+- [ ] Browser builds and runs locally under Prometheus identity, with "Powered by FSB" as the affiliation/tagline.
 - [ ] Native MCP server exposes the core FSB manual/read tool contract.
 - [ ] Agents can navigate, list/switch/open/close tabs, read pages, get DOM snapshots, execute JS, click, type, scroll, press keys, and verify changes.
 - [ ] Agents can control at least one browser-owned settings/internal surface through native structured commands.
@@ -112,5 +112,5 @@ Vault/security boundaries
 - Local Falkon tree for browser baseline and rebrand scope.
 
 ---
-*Feature research for: FSB Browser*
+*Feature research for: Prometheus*
 *Researched: 2026-06-16*

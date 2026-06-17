@@ -1,13 +1,13 @@
 # Project Research Summary
 
-**Project:** FSB Browser
+**Project:** Prometheus
 **Domain:** Agent-native desktop browser
 **Researched:** 2026-06-16
 **Confidence:** MEDIUM
 
 ## Executive Summary
 
-FSB Browser should be treated as a browser-native implementation of FSB, not merely a Chrome-extension port. The local Falkon fork gives a working QtWebEngine browser foundation, but the product value comes from a native agent control layer that can operate on both web pages and browser-owned surfaces such as settings, tabs, history, downloads, and extension management if supported.
+Prometheus should be treated as a browser-native implementation of FSB, not merely a Chrome-extension port. The local Falkon fork gives a working QtWebEngine browser foundation, but the product value comes from a native agent control layer that can operate on both web pages and browser-owned surfaces such as settings, tabs, history, downloads, and extension management if supported.
 
 The safest strategy is phased: first prove the Falkon build and establish legal/rebrand boundaries, then replace product-visible identity, then build the native agent control core, then restore FSB MCP compatibility and FSB feature parity on top. PhantomStream is the strongest live-supervision reference because it matches FSB's DOM-first philosophy and avoids screenshot/video weaknesses.
 
@@ -125,7 +125,7 @@ Create a native command router that validates tools, enforces permissions and ta
 
 ### Gaps to Address
 
-- Exact product name may change; currently using `FSB Browser`.
+- Product name is `Prometheus`; affiliation/tagline is `Powered by FSB`.
 - Target platform beyond macOS-first is assumed but not confirmed.
 - QtWebEngine support for desired extension-management surfaces needs validation.
 - Legal/compliance should be treated as engineering constraints, not final legal advice.

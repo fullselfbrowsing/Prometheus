@@ -160,5 +160,5 @@ Phase 4.
 - FSB project history around service-worker eviction, ownership, visual-session contract, and dashboard streaming.
 
 ---
-*Pitfalls research for: FSB Browser*
+*Pitfalls research for: Prometheus*
 *Researched: 2026-06-16*
