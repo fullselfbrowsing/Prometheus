@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/prometheus.svg" alt="Prometheus icon" width="112" />
+<img src="assets/prometheus-icon.svg" alt="Prometheus icon" width="112" />
 
 <img src="assets/prometheus-wordmark.svg" alt="Prometheus" width="300" />
 
