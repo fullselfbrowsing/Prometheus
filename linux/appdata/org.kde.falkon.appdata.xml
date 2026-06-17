@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <component type="desktop-application">
-  <id>org.kde.falkon.desktop</id>
+  <id>com.fullselfbrowsing.prometheus.desktop</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0+</project_license>
-  <developer id="org.kde">
-    <name translate="no">KDE</name>
+  <developer id="com.fullselfbrowsing">
+    <name translate="no">Full Self Browsing</name>
   </developer>
-  <launchable type="desktop-id">org.kde.falkon.desktop</launchable>
-  <name>Falkon</name>
+  <launchable type="desktop-id">com.fullselfbrowsing.prometheus.desktop</launchable>
+  <name>Prometheus</name>
   <name xml:lang="ar">فالكون</name>
   <name xml:lang="ast">Falkon</name>
   <name xml:lang="az">Falkon</name>
@@ -54,7 +54,7 @@
   <name xml:lang="uk">Falkon</name>
   <name xml:lang="zh-CN">Falkon 浏览器</name>
   <name xml:lang="zh-TW">Falkon</name>
-  <summary>Web Browser</summary>
+  <summary>Agent-native browser control. Powered by FSB.</summary>
   <summary xml:lang="ar">متصفّح الوبّ</summary>
   <summary xml:lang="ast">Restolador web</summary>
   <summary xml:lang="az">Veb Bələdçi</summary>
@@ -103,7 +103,7 @@
   <summary xml:lang="zh-TW">網路瀏覽器</summary>
   <description>
     <p>
-    Falkon is a new and very fast Qt web browser. It aims to be a lightweight web browser available through all major platforms. This project has been originally started only for educational purposes. But from its start, Falkon has grown into a feature-rich browser.
+    Prometheus is an agent-native desktop browser powered by FSB. It is derived from a lightweight QtWebEngine browser foundation and keeps inherited legal notices available while replacing product-visible identity with Prometheus.
   </p>
     <p xml:lang="ar">فالكون هو متصفّح وبّ جديد وسريع للغاية مبنيّ على «كيوت». يهدف التطبيق ليكون متصفّح وبّ خفيف ومتوفّر لأغلب المنصّات الرئيسيّة. بدأ هذا المشروع أساسًا لأغراض تعليميّة، ولكن ومنذ بدايته، نمى فالكون حتّى أصبح متصفّحًا بمزايا كاملة.</p>
     <p xml:lang="az">Falkon yeni və çox sürətli Qt veb bələdçisidir. Falkonun hədəfi - bütün platformalar üçün yüngül veb bələdçi olmaq idi. Bu layihə ilk öncə yalnız təhsil məqsədi ilə buraxılmışdır. Lakin lap əvvəldən Falkon çoxfunksiyalı veb bələdçiyə çevrilmişdir.</p>
@@ -197,14 +197,14 @@
   </description>
   <screenshots>
     <screenshot type="default">
-      <image>https://cdn.kde.org/screenshots/falkon/falkon.png</image>
+      <image>https://www.full-selfbrowsing.com/prometheus.png</image>
     </screenshot>
   </screenshots>
-  <url type="homepage">https://falkon.org</url>
-  <url type="bugtracker">https://bugs.kde.org/enter_bug.cgi?format=guided&amp;product=falkon</url>
-  <project_group>KDE</project_group>
+  <url type="homepage">https://www.full-selfbrowsing.com</url>
+  <url type="bugtracker">https://www.full-selfbrowsing.com</url>
+  <project_group>Full Self Browsing</project_group>
   <provides>
-    <binary>falkon</binary>
+    <binary>prometheus</binary>
   </provides>
   <content_rating type="oars-1.1"/>
   <releases>

@@ -6,6 +6,10 @@ include_directories(
   ../lib/webtab
 )
 set(SRCS main.cpp)
+if (APPLE)
+    list(APPEND SRCS ../lib/data/icons/exeicons/prometheus.icns)
+    set_source_files_properties(../lib/data/icons/exeicons/prometheus.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+endif()
 if (WIN32)
     set(SRCS ${SRCS} version.rc)
     configure_file(falkonversion.h.cmake ${CMAKE_CURRENT_BINARY_DIR}/falkonversion.h)
@@ -14,15 +18,17 @@ ecm_create_qm_loader(SRCS falkon_qt)
 add_executable(falkon ${SRCS})
 
 target_link_libraries(falkon FalkonPrivate)
+set_target_properties(falkon PROPERTIES OUTPUT_NAME "prometheus")
 
 if (APPLE)
     set_target_properties(falkon PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist)
-    set_target_properties(falkon PROPERTIES MACOSX_BUNDLE_GUI_IDENTIFIER "org.kde.falkon")
-    set_target_properties(falkon PROPERTIES MACOSX_BUNDLE_BUNDLE_NAME "Falkon")
-    install(FILES lib/data/icons/exeicons/falkon.icns DESTINATION ${BUNDLE_INSTALL_DIR}/falkon.app/Contents/Resources)
-    #install(DIRECTORY ${CMAKE_BINARY_DIR}/bin/locale DESTINATION ${BUNDLE_INSTALL_DIR}/falkon.app/Contents/Resources)
-    install(DIRECTORY ${CMAKE_SOURCE_DIR}/themes DESTINATION ${BUNDLE_INSTALL_DIR}/falkon.app/Contents/Resources)
-    install(DIRECTORY ${CMAKE_BINARY_DIR}/bin/plugins DESTINATION ${BUNDLE_INSTALL_DIR}/falkon.app/Contents/Resources)
+    set_target_properties(falkon PROPERTIES MACOSX_BUNDLE_GUI_IDENTIFIER "com.fullselfbrowsing.prometheus")
+    set_target_properties(falkon PROPERTIES MACOSX_BUNDLE_BUNDLE_NAME "Prometheus")
+    set_target_properties(falkon PROPERTIES MACOSX_BUNDLE_ICON_FILE "prometheus.icns")
+    install(FILES ../lib/data/icons/exeicons/prometheus.icns DESTINATION ${BUNDLE_INSTALL_DIR}/prometheus.app/Contents/Resources)
+    #install(DIRECTORY ${CMAKE_BINARY_DIR}/bin/locale DESTINATION ${BUNDLE_INSTALL_DIR}/prometheus.app/Contents/Resources)
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/themes DESTINATION ${BUNDLE_INSTALL_DIR}/prometheus.app/Contents/Resources)
+    install(DIRECTORY ${CMAKE_BINARY_DIR}/bin/plugins DESTINATION ${BUNDLE_INSTALL_DIR}/prometheus.app/Contents/Resources)
 endif ()
 
 if (CMAKE_SYSTEM_NAME MATCHES FreeBSD OR CMAKE_SYSTEM_NAME MATCHES OpenBSD)
@@ -31,13 +37,13 @@ endif()
 
 if (UNIX AND NOT APPLE)
     install(TARGETS falkon ${KDE_INSTALL_TARGETS_DEFAULT_ARGS})
-    install(DIRECTORY ${CMAKE_SOURCE_DIR}/themes DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/falkon)
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/themes DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/prometheus)
     if (KF6I18n_FOUND)
         ki18n_install(${CMAKE_SOURCE_DIR}/po)
     endif()
     ecm_install_po_files_as_qm(${CMAKE_SOURCE_DIR}/poqm)
 
-    install(PROGRAMS ../../linux/applications/org.kde.falkon.desktop DESTINATION ${KDE_INSTALL_APPDIR})
+    install(PROGRAMS ../../linux/applications/org.kde.falkon.desktop DESTINATION ${KDE_INSTALL_APPDIR} RENAME com.fullselfbrowsing.prometheus.desktop)
 
     ecm_install_icons(ICONS
         ../../linux/hicolor/16-apps-falkon.png
@@ -47,13 +53,14 @@ if (UNIX AND NOT APPLE)
         ../../linux/hicolor/128-apps-falkon.png
         ../../linux/hicolor/256-apps-falkon.png
         ../../linux/hicolor/sc-apps-falkon.svg
+        ../../linux/hicolor/sc-apps-prometheus.svg
         DESTINATION ${KDE_INSTALL_ICONDIR} THEME hicolor)
 
     install(FILES ../../linux/completion/falkon DESTINATION ${KDE_INSTALL_DATADIR}/bash-completion/completions)
-    install(FILES ../../linux/appdata/org.kde.falkon.appdata.xml DESTINATION ${KDE_INSTALL_METAINFODIR})
+    install(FILES ../../linux/appdata/org.kde.falkon.appdata.xml DESTINATION ${KDE_INSTALL_METAINFODIR} RENAME com.fullselfbrowsing.prometheus.appdata.xml)
 elseif (WIN32)
     install(TARGETS falkon ${KDE_INSTALL_TARGETS_DEFAULT_ARGS})
-    install(DIRECTORY ${CMAKE_SOURCE_DIR}/themes DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/falkon)
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/themes DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/prometheus)
     if (KF6I18n_FOUND)
         ki18n_install(${CMAKE_SOURCE_DIR}/po)
     endif()
@@ -67,5 +74,6 @@ elseif (WIN32)
         ../../linux/hicolor/128-apps-falkon.png
         ../../linux/hicolor/256-apps-falkon.png
         ../../linux/hicolor/sc-apps-falkon.svg
+        ../../linux/hicolor/sc-apps-prometheus.svg
         DESTINATION ${KDE_INSTALL_ICONDIR} THEME hicolor)
 endif()

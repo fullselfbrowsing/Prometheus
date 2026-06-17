@@ -108,7 +108,7 @@ void CommandLineOptions::parseActions()
     }
 
     if (parser.isSet(QSL("help-all"))) {
-        parser.process({QSL("falkon"), QSL("--help-all")});
+        parser.process({QSL("prometheus"), QSL("--help-all")});
     }
 
     if (parser.isSet(versionOption)) {
@@ -135,7 +135,7 @@ void CommandLineOptions::parseActions()
 
     if (parser.isSet(profileOption)) {
         const QString profileName = parser.value(profileOption);
-        std::cout << "Falkon: Starting with profile '" << profileName.toUtf8().data() << "'" << std::endl;
+        std::cout << "Prometheus: Starting with profile '" << profileName.toUtf8().data() << "'" << std::endl;
 
         ActionPair pair;
         pair.action = Qz::CL_StartWithProfile;

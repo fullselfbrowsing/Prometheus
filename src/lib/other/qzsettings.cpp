@@ -18,6 +18,27 @@
 #include "qzsettings.h"
 #include "webview.h"
 
+namespace {
+constexpr int PrometheusChromeDefaultsVersion = 2;
+
+void migratePrometheusChromeDefaults()
+{
+    Settings settings;
+    const QString versionKey = QSL("PrometheusRuntime/UI/chromeDefaultsVersion");
+    if (settings.value(versionKey, 0).toInt() >= PrometheusChromeDefaultsVersion) {
+        return;
+    }
+
+    settings.setValue(QSL("Browser-Tabs-Settings/TabsOnTop"), false);
+    settings.setValue(QSL("Browser-Tabs-Settings/tabLayout"), QSL("Compact"));
+    settings.setValue(QSL("Browser-Tabs-Settings/tabDisplay"), QSL("TitleAndIcon"));
+    settings.setValue(QSL("Browser-View-Settings/showStatusBar"), false);
+    settings.setValue(QSL("Browser-View-Settings/showNavigationToolbar"), true);
+    settings.setValue(QSL("Browser-View-Settings/DefaultSideBarWidth"), 320);
+    settings.setValue(versionKey, PrometheusChromeDefaultsVersion);
+}
+}
+
 QzSettings::QzSettings()
 {
     loadSettings();
@@ -67,6 +88,8 @@ QString QzSettings::tabDisplayToString(TabDisplay display)
 
 void QzSettings::loadSettings()
 {
+    migratePrometheusChromeDefaults();
+
     Settings settings;
     settings.beginGroup(QSL("AddressBar"));
     selectAllOnDoubleClick = settings.value(QSL("SelectAllTextOnDoubleClick"), true).toBool();
@@ -103,11 +126,11 @@ void QzSettings::loadSettings()
 
     settings.beginGroup(QSL("Browser-Tabs-Settings"));
     newTabPosition = settings.value(QSL("OpenNewTabsSelected"), false).toBool() ? Qz::NT_CleanSelectedTab : Qz::NT_CleanNotSelectedTab;
-    tabsOnTop = settings.value(QSL("TabsOnTop"), true).toBool();
+    tabsOnTop = settings.value(QSL("TabsOnTop"), false).toBool();
     openPopupsInTabs = settings.value(QSL("OpenPopupsInTabs"), false).toBool();
     blockAutomaticPopups = settings.value(QSL("BlockAutomaticPopups"), false).toBool();
     alwaysSwitchTabsWithWheel = settings.value(QSL("AlwaysSwitchTabsWithWheel"), false).toBool();
-    tabLayout = tabLayoutFromString(settings.value(QSL("tabLayout"), QSL("Separate")).toString());
+    tabLayout = tabLayoutFromString(settings.value(QSL("tabLayout"), QSL("Compact")).toString());
     tabDisplay = tabDisplayFromString(settings.value(QSL("tabDisplay"), QSL("TitleAndIcon")).toString());
     settings.endGroup();
 

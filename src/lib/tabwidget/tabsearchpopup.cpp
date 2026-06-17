@@ -27,6 +27,7 @@
 #include "mainapplication.h"
 #include "settings.h"
 #include "tabgroupmodel.h"
+#include "agent/prometheusiconresolver.h"
 
 #include <QAbstractItemModel>
 #include <QAction>
@@ -45,6 +46,7 @@
 #include <QPersistentModelIndex>
 #include <QPointer>
 #include <QSet>
+#include <QSize>
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStyle>
@@ -113,6 +115,8 @@ TabSearchPopup::TabSearchPopup(BrowserWindow *window, QWidget *parent)
 
     auto *groupActionsMenu = new QMenu(m_groupActions);
     m_groupActions->setText(tr("New Tab Group"));
+    m_groupActions->setIcon(PrometheusIconResolver::icon(QSL("tab-group")));
+    m_groupActions->setIconSize(QSize(14, 14));
     m_groupActions->setToolTip(tr("New Tab Group"));
     m_groupActions->setAccessibleName(tr("New Tab Group"));
     m_groupActions->setPopupMode(QToolButton::InstantPopup);

@@ -25,6 +25,8 @@
 #include "reloadstopbutton.h"
 #include "enhancedmenu.h"
 #include "compacttabstrip.h"
+#include "settings.h"
+#include "sidebar.h"
 #include "tabwidget.h"
 #include "tabbedwebview.h"
 #include "webpage.h"
@@ -36,6 +38,8 @@
 #include "statusbar.h"
 
 #include <QTimer>
+#include <QApplication>
+#include <QClipboard>
 #include <QSplitter>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -68,6 +72,9 @@ constexpr int CompactRowMaximumHeight = 40;
 constexpr int CompactAddressMinimumWidth = 180;
 constexpr int CompactAddressPreferredWidth = 320;
 constexpr int CompactAddressMaximumWidth = 520;
+#ifdef Q_OS_MACOS
+constexpr int MacUnifiedTitlebarLeftInset = 76;
+#endif
 }
 
 NavigationBar::NavigationBar(BrowserWindow* window)
@@ -79,12 +86,17 @@ NavigationBar::NavigationBar(BrowserWindow* window)
     m_layout = new QHBoxLayout(this);
     auto contentsMargin = style()->pixelMetric(QStyle::PM_ToolBarItemMargin, nullptr, this)
                         + style()->pixelMetric(QStyle::PM_ToolBarFrameWidth, nullptr, this);
+#ifdef Q_OS_MACOS
+    m_layout->setContentsMargins(MacUnifiedTitlebarLeftInset, contentsMargin, contentsMargin, contentsMargin);
+#else
     m_layout->setContentsMargins(contentsMargin, contentsMargin, contentsMargin, contentsMargin);
+#endif
     m_layout->setSpacing(style()->pixelMetric(QStyle::PM_ToolBarItemSpacing, nullptr, this));
     setLayout(m_layout);
 
     m_buttonBack = new ToolButton(this);
     m_buttonBack->setObjectName("navigation-button-back");
+    m_buttonBack->setIcon(PrometheusIconResolver::icon(QSL("nav-back")));
     m_buttonBack->setToolTip(tr("Back"));
     m_buttonBack->setToolButtonStyle(Qt::ToolButtonIconOnly);
     m_buttonBack->setToolbarButtonLook(true);
@@ -95,6 +107,7 @@ NavigationBar::NavigationBar(BrowserWindow* window)
 
     m_buttonForward = new ToolButton(this);
     m_buttonForward->setObjectName("navigation-button-next");
+    m_buttonForward->setIcon(PrometheusIconResolver::icon(QSL("nav-forward")));
     m_buttonForward->setToolTip(tr("Forward"));
     m_buttonForward->setToolButtonStyle(Qt::ToolButtonIconOnly);
     m_buttonForward->setToolbarButtonLook(true);
@@ -113,8 +126,19 @@ NavigationBar::NavigationBar(BrowserWindow* window)
 
     m_reloadStop = new ReloadStopButton(this);
 
+    auto *buttonSidebar = new ToolButton(this);
+    buttonSidebar->setObjectName(QSL("navigation-button-prometheus-sidebar"));
+    buttonSidebar->setIcon(PrometheusIconResolver::icon(QSL("utility-sidebar-toggle")));
+    buttonSidebar->setToolTip(tr("Toggle Prometheus Sidebar"));
+    buttonSidebar->setAccessibleName(tr("Toggle Prometheus Sidebar"));
+    buttonSidebar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    buttonSidebar->setToolbarButtonLook(true);
+    buttonSidebar->setAutoRaise(true);
+    buttonSidebar->setFocusPolicy(Qt::NoFocus);
+
     auto *buttonHome = new ToolButton(this);
     buttonHome->setObjectName("navigation-button-home");
+    buttonHome->setIcon(PrometheusIconResolver::icon(QSL("nav-home")));
     buttonHome->setToolTip(tr("Home"));
     buttonHome->setToolButtonStyle(Qt::ToolButtonIconOnly);
     buttonHome->setToolbarButtonLook(true);
@@ -123,6 +147,7 @@ NavigationBar::NavigationBar(BrowserWindow* window)
 
     auto *buttonAddTab = new ToolButton(this);
     buttonAddTab->setObjectName("navigation-button-addtab");
+    buttonAddTab->setIcon(PrometheusIconResolver::icon(QSL("nav-new-tab")));
     buttonAddTab->setToolTip(tr("New Tab"));
     buttonAddTab->setToolButtonStyle(Qt::ToolButtonIconOnly);
     buttonAddTab->setToolbarButtonLook(true);
@@ -161,6 +186,7 @@ NavigationBar::NavigationBar(BrowserWindow* window)
 
     auto *buttonTools = new ToolButton(this);
     buttonTools->setObjectName("navigation-button-tools");
+    buttonTools->setIcon(PrometheusIconResolver::icon(QSL("mcp-tool")));
     buttonTools->setPopupMode(QToolButton::InstantPopup);
     buttonTools->setToolbarButtonLook(true);
     buttonTools->setToolTip(tr("Tools"));
@@ -174,6 +200,7 @@ NavigationBar::NavigationBar(BrowserWindow* window)
 
     m_supMenu = new ToolButton(this);
     m_supMenu->setObjectName("navigation-button-supermenu");
+    m_supMenu->setIcon(PrometheusIconResolver::icon(QSL("utility-menu")));
     m_supMenu->setPopupMode(QToolButton::InstantPopup);
     m_supMenu->setToolbarButtonLook(true);
     m_supMenu->setToolTip(tr("Main Menu"));
@@ -185,6 +212,36 @@ NavigationBar::NavigationBar(BrowserWindow* window)
     m_searchLine = new WebSearchBar(m_window);
     m_compactTabStrip = new CompactTabStrip(m_window, this);
 
+    auto *buttonShare = new ToolButton(this);
+    buttonShare->setObjectName(QSL("navigation-button-share"));
+    buttonShare->setIcon(PrometheusIconResolver::icon(QSL("nav-share")));
+    buttonShare->setToolTip(tr("Copy Page Link"));
+    buttonShare->setAccessibleName(tr("Copy Page Link"));
+    buttonShare->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    buttonShare->setToolbarButtonLook(true);
+    buttonShare->setAutoRaise(true);
+    buttonShare->setFocusPolicy(Qt::NoFocus);
+
+    auto *buttonFsbAgent = new ToolButton(this);
+    buttonFsbAgent->setObjectName(QSL("navigation-button-fsb-agent"));
+    buttonFsbAgent->setIcon(PrometheusIconResolver::icon(QSL("agent-fsb")));
+    buttonFsbAgent->setToolTip(tr("FSB Agent"));
+    buttonFsbAgent->setAccessibleName(tr("FSB Agent"));
+    buttonFsbAgent->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    buttonFsbAgent->setToolbarButtonLook(true);
+    buttonFsbAgent->setAutoRaise(true);
+    buttonFsbAgent->setFocusPolicy(Qt::NoFocus);
+
+    auto *buttonTheme = new ToolButton(this);
+    buttonTheme->setObjectName(QSL("navigation-button-theme"));
+    buttonTheme->setIcon(PrometheusIconResolver::icon(QSL("utility-theme-toggle")));
+    buttonTheme->setToolTip(tr("Toggle Theme"));
+    buttonTheme->setAccessibleName(tr("Toggle Theme"));
+    buttonTheme->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    buttonTheme->setToolbarButtonLook(true);
+    buttonTheme->setAutoRaise(true);
+    buttonTheme->setFocusPolicy(Qt::NoFocus);
+
     m_navigationSplitter = new QSplitter(this);
     m_navigationSplitter->addWidget(m_window->tabWidget()->locationBars());
     m_navigationSplitter->addWidget(m_searchLine);
@@ -194,6 +251,7 @@ NavigationBar::NavigationBar(BrowserWindow* window)
 
     m_exitFullscreen = new ToolButton(this);
     m_exitFullscreen->setObjectName("navigation-button-exitfullscreen");
+    m_exitFullscreen->setIcon(PrometheusIconResolver::icon(QSL("utility-close")));
     m_exitFullscreen->setToolTip(tr("Exit Fullscreen"));
     m_exitFullscreen->setToolButtonStyle(Qt::ToolButtonIconOnly);
     m_exitFullscreen->setToolbarButtonLook(true);
@@ -211,6 +269,11 @@ NavigationBar::NavigationBar(BrowserWindow* window)
     connect(m_buttonForward, &ToolButton::middleMouseClicked, this, &NavigationBar::goForwardInNewTab);
     connect(m_buttonForward, &ToolButton::controlClicked, this, &NavigationBar::goForwardInNewTab);
 
+    connect(buttonSidebar, &QAbstractButton::clicked, this, [this]() {
+        if (m_window && m_window->sideBarManager()) {
+            m_window->sideBarManager()->showSideBar(QSL("PrometheusAgent"), true);
+        }
+    });
     connect(m_reloadStop, &ReloadStopButton::stopClicked, this, &NavigationBar::stop);
     connect(m_reloadStop, &ReloadStopButton::reloadClicked, this, &NavigationBar::reload);
     connect(buttonHome, &QAbstractButton::clicked, m_window, &BrowserWindow::goHome);
@@ -220,16 +283,39 @@ NavigationBar::NavigationBar(BrowserWindow* window)
     connect(buttonAddTab, &ToolButton::middleMouseClicked, m_window->tabWidget(), &TabWidget::addTabFromClipboard);
     connect(m_buttonTabOverview, &QAbstractButton::clicked, m_window, &BrowserWindow::showTabOverview);
     connect(m_buttonSearchTabs, &QAbstractButton::clicked, m_window, &BrowserWindow::showTabSearch);
+    connect(buttonShare, &QAbstractButton::clicked, this, [this]() {
+        if (!m_window || !m_window->weView()) {
+            return;
+        }
+        QApplication::clipboard()->setText(m_window->weView()->url().toString());
+        if (m_window->statusBar()) {
+            m_window->statusBar()->showMessage(tr("Page link copied"));
+        }
+    });
+    connect(buttonFsbAgent, &QAbstractButton::clicked, this, [this]() {
+        if (m_window && m_window->sideBarManager()) {
+            m_window->sideBarManager()->showSideBar(QSL("PrometheusAgent"), false);
+        }
+    });
+    connect(buttonTheme, &QAbstractButton::clicked, this, []() {
+        Settings settings;
+        const bool useDark = settings.value(QSL("Interface/PrometheusThemeDark"), true).toBool();
+        mApp->loadPrometheusVariant(!useDark);
+    });
     connect(m_exitFullscreen, &QAbstractButton::clicked, m_window, &BrowserWindow::toggleFullScreen);
 
     addWidget(backNextWidget, QSL("button-backforward"), tr("Back and Forward buttons"));
+    addWidget(buttonSidebar, QSL("button-prometheus-sidebar"), tr("Prometheus Sidebar button"));
     addWidget(m_reloadStop, QSL("button-reloadstop"), tr("Reload button"));
     addWidget(buttonHome, QSL("button-home"), tr("Home button"));
     addWidget(buttonAddTab, QSL("button-addtab"), tr("Add tab button"));
     addWidget(m_compactTabStrip, QSL("compact-tabs"), tr("Compact tabs"));
     addWidget(m_navigationSplitter, QSL("locationbar"), tr("Address and Search bar"));
+    addWidget(buttonShare, QSL("button-share"), tr("Share button"));
+    addWidget(buttonFsbAgent, QSL("button-fsb-agent"), tr("FSB Agent button"));
     addWidget(m_buttonTabOverview, QSL("button-taboverview"), tr("Tab Overview"));
     addWidget(m_buttonSearchTabs, QSL("button-searchtabs"), tr("Search Tabs"));
+    addWidget(buttonTheme, QSL("button-theme"), tr("Theme button"));
     addWidget(buttonTools, QSL("button-tools"), tr("Tools button"));
     addWidget(m_exitFullscreen, QSL("button-exitfullscreen"), tr("Exit Fullscreen button"));
 
@@ -321,13 +407,16 @@ void NavigationBar::setSuperMenuVisible(bool visible)
 
 int NavigationBar::layoutMargin() const
 {
-    // NOTE: This assumes margins are always the same.
-    return m_layout->contentsMargins().left();
+    return m_layout->contentsMargins().top();
 }
 
 void NavigationBar::setLayoutMargin(int margin)
 {
+#ifdef Q_OS_MACOS
+    m_layout->setContentsMargins(qMax(MacUnifiedTitlebarLeftInset, margin), margin, margin, margin);
+#else
     m_layout->setContentsMargins(margin, margin, margin, margin);
+#endif
 }
 
 int NavigationBar::layoutSpacing() const
@@ -575,12 +664,16 @@ void NavigationBar::loadSettings()
     if (m_compactLayout) {
         m_layoutIds = {
             QSL("button-backforward"),
+            QSL("button-prometheus-sidebar"),
             QSL("button-reloadstop"),
             QSL("button-addtab"),
             QSL("compact-tabs"),
             QSL("locationbar"),
+            QSL("button-share"),
+            QSL("button-fsb-agent"),
             QSL("button-taboverview"),
             QSL("button-searchtabs"),
+            QSL("button-theme"),
             QSL("button-tools")
         };
         m_searchLine->setVisible(false);
@@ -590,11 +683,15 @@ void NavigationBar::loadSettings()
 
     const QStringList defaultIds = {
         QSL("button-backforward"),
+        QSL("button-prometheus-sidebar"),
         QSL("button-reloadstop"),
         QSL("button-home"),
         QSL("locationbar"),
+        QSL("button-share"),
+        QSL("button-fsb-agent"),
         QSL("button-taboverview"),
         QSL("button-searchtabs"),
+        QSL("button-theme"),
         QSL("button-downloads"),
         QSL("adblock-icon"),
         QSL("button-tools")

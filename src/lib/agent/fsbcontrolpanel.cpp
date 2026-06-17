@@ -4,6 +4,8 @@
 #include "agentruntime.h"
 #include "browserwindow.h"
 #include "mainapplication.h"
+#include "prometheusiconresolver.h"
+#include "qzsettings.h"
 #include "settings.h"
 #include "tabbedwebview.h"
 
@@ -34,6 +36,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QVector>
 
 namespace {
 
@@ -71,6 +74,35 @@ QString smokeScriptPath()
     return sourceRoot() + QSL("/tools/fsb-baseline/smoke-fsb-plus-parity.sh");
 }
 
+QGroupBox* makeControlCard(const QString &title, QWidget* parent)
+{
+    auto* group = new QGroupBox(title, parent);
+    group->setProperty("pm-control-card", true);
+    return group;
+}
+
+QLabel* makeHelpText(const QString &text, QWidget* parent)
+{
+    auto* label = new QLabel(text, parent);
+    label->setObjectName(QSL("controlHelpText"));
+    label->setWordWrap(true);
+    return label;
+}
+
+QPushButton* makeActionButton(const QString &actionId, const QString &text, QWidget* parent)
+{
+    auto* button = new QPushButton(PrometheusIconResolver::icon(actionId), text, parent);
+    button->setMinimumHeight(32);
+    button->setIconSize(QSize(14, 14));
+    return button;
+}
+
+void setComboToData(QComboBox* combo, const QString &value)
+{
+    const int index = combo->findData(value);
+    combo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
 } // namespace
 
 FsbControlPanelPage::FsbControlPanelPage(BrowserWindow* window, QWidget* parent)
@@ -96,6 +128,13 @@ FsbControlPanelPage::FsbControlPanelPage(BrowserWindow* window, QWidget* parent)
     , m_mcpEmptyState(nullptr)
     , m_permissionsTable(nullptr)
     , m_agentCapSpin(nullptr)
+    , m_internalSurfaceCheck(nullptr)
+    , m_tabOwnershipCheck(nullptr)
+    , m_backgroundTabActionsCheck(nullptr)
+    , m_visualFeedbackCheck(nullptr)
+    , m_supervisionPairingCheck(nullptr)
+    , m_dashboardRemoteCheck(nullptr)
+    , m_telemetryCombo(nullptr)
     , m_vaultList(nullptr)
     , m_vaultOrigin(nullptr)
     , m_vaultLabel(nullptr)
@@ -122,12 +161,13 @@ FsbControlPanelPage::FsbControlPanelPage(BrowserWindow* window, QWidget* parent)
     setMinimumSize(320, 400);
 
     auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(8, 8, 8, 8);
-    root->setSpacing(8);
+    root->setContentsMargins(12, 12, 12, 12);
+    root->setSpacing(12);
 
     // Header: 48px band
     auto* headerWidget = new QWidget(this);
-    headerWidget->setFixedHeight(48);
+    headerWidget->setObjectName(QSL("FsbControlPanelHeader"));
+    headerWidget->setFixedHeight(56);
     auto* headerLayout = new QHBoxLayout(headerWidget);
     headerLayout->setContentsMargins(0, 0, 0, 0);
     headerLayout->setSpacing(8);
@@ -164,28 +204,34 @@ FsbControlPanelPage::FsbControlPanelPage(BrowserWindow* window, QWidget* parent)
 
     // Main content: section rail + stacked pages
     auto* contentLayout = new QHBoxLayout;
-    contentLayout->setSpacing(8);
+    contentLayout->setSpacing(12);
     contentLayout->setContentsMargins(0, 0, 0, 0);
 
-    // Section selector rail (130px fixed, shows at >=420px — always visible for simplicity)
+    // Section selector rail.
     m_sectionRail = new QListWidget(this);
-    m_sectionRail->setFixedWidth(130);
+    m_sectionRail->setFixedWidth(188);
     m_sectionRail->setObjectName(QSL("sectionRail"));
 
-    const QStringList sectionNames = {
-        tr("Tasks"),
-        tr("Providers & Models"),
-        tr("MCP Status"),
-        tr("Permissions & Agents"),
-        tr("Vault"),
-        tr("Memory & Site Guides"),
-        tr("Logs & Diagnostics"),
-        tr("Supervision & Pairing"),
-        tr("Parity Matrix"),
-        tr("Appearance")
+    struct SectionDef {
+        QString title;
+        QString icon;
     };
-    for (const QString &name : sectionNames) {
-        m_sectionRail->addItem(name);
+    const QVector<SectionDef> sections = {
+        { tr("Dashboard"), QSL("agent-fsb") },
+        { tr("Providers & Models"), QSL("provider-model") },
+        { tr("MCP Status"), QSL("mcp-connected") },
+        { tr("Permissions & Agents"), QSL("settings-permissions") },
+        { tr("Vault"), QSL("vault-open") },
+        { tr("Memory & Site Guides"), QSL("tool-reader") },
+        { tr("Logs & Diagnostics"), QSL("diag-log") },
+        { tr("Supervision & Pairing"), QSL("supervision-pair") },
+        { tr("Parity Matrix"), QSL("tab-overview") },
+        { tr("Browser Settings"), QSL("settings-appearance") }
+    };
+    for (const SectionDef &section : sections) {
+        auto* item = new QListWidgetItem(PrometheusIconResolver::icon(section.icon), section.title);
+        item->setSizeHint(QSize(item->sizeHint().width(), 38));
+        m_sectionRail->addItem(item);
     }
 
     m_sectionStack = new QStackedWidget(this);
@@ -247,6 +293,13 @@ FsbControlPanelPage::FsbControlPanelPage(BrowserWindow* window, QWidget* parent)
     QTimer::singleShot(0, this, &FsbControlPanelPage::refreshAll);
 }
 
+void FsbControlPanelPage::showSettingsSection()
+{
+    if (m_sectionRail) {
+        m_sectionRail->setCurrentRow(9);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Section builders
 // ---------------------------------------------------------------------------
@@ -257,7 +310,7 @@ void FsbControlPanelPage::buildTasksSection(QWidget* page)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(8);
 
-    auto* sectionTitle = new QLabel(tr("Tasks"), page);
+    auto* sectionTitle = new QLabel(tr("Dashboard"), page);
     sectionTitle->setObjectName(QSL("sectionHeading"));
     layout->addWidget(sectionTitle);
 
@@ -271,13 +324,11 @@ void FsbControlPanelPage::buildTasksSection(QWidget* page)
     auto* actionRow = new QHBoxLayout;
     actionRow->setSpacing(8);
 
-    auto* runBtn = new QPushButton(tr("Run Task"), page);
-    runBtn->setMinimumHeight(32);
+    auto* runBtn = makeActionButton(QSL("agent-send"), tr("Run Task"), page);
     runBtn->setProperty("accent", true);
     connect(runBtn, &QPushButton::clicked, this, &FsbControlPanelPage::runTask);
 
-    auto* cancelBtn = new QPushButton(tr("Cancel Task"), page);
-    cancelBtn->setMinimumHeight(32);
+    auto* cancelBtn = makeActionButton(QSL("agent-stop-task"), tr("Cancel Task"), page);
     cancelBtn->setProperty("destructive", true);
     connect(cancelBtn, &QPushButton::clicked, this, &FsbControlPanelPage::cancelTask);
 
@@ -346,12 +397,10 @@ void FsbControlPanelPage::buildProvidersSection(QWidget* page)
     auto* btnRow = new QHBoxLayout;
     btnRow->setSpacing(8);
 
-    auto* saveBtn = new QPushButton(tr("Save Provider"), page);
-    saveBtn->setMinimumHeight(32);
+    auto* saveBtn = makeActionButton(QSL("provider-key"), tr("Save Provider"), page);
     connect(saveBtn, &QPushButton::clicked, this, &FsbControlPanelPage::saveProvider);
 
-    auto* discoverBtn = new QPushButton(tr("Discover Models"), page);
-    discoverBtn->setMinimumHeight(32);
+    auto* discoverBtn = makeActionButton(QSL("provider-model"), tr("Discover Models"), page);
     discoverBtn->setProperty("accent", true);
     connect(discoverBtn, &QPushButton::clicked, this, &FsbControlPanelPage::discoverModels);
 
@@ -375,8 +424,7 @@ void FsbControlPanelPage::buildProvidersSection(QWidget* page)
     m_fallbackOrderList = new QListWidget(page);
     layout->addWidget(m_fallbackOrderList, 1);
 
-    auto* saveFallbacks = new QPushButton(tr("Save Fallbacks"), page);
-    saveFallbacks->setMinimumHeight(32);
+    auto* saveFallbacks = makeActionButton(QSL("settings-general"), tr("Save Fallbacks"), page);
     layout->addWidget(saveFallbacks);
 }
 
@@ -403,8 +451,7 @@ void FsbControlPanelPage::buildMcpStatusSection(QWidget* page)
     m_mcpTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     layout->addWidget(m_mcpTable, 1);
 
-    auto* refreshBtn = new QPushButton(tr("Refresh Diagnostics"), page);
-    refreshBtn->setMinimumHeight(32);
+    auto* refreshBtn = makeActionButton(QSL("diag-health"), tr("Refresh Diagnostics"), page);
     connect(refreshBtn, &QPushButton::clicked, this, &FsbControlPanelPage::refreshDiagnostics);
     layout->addWidget(refreshBtn);
 }
@@ -413,15 +460,63 @@ void FsbControlPanelPage::buildPermissionsSection(QWidget* page)
 {
     auto* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(8);
+    layout->setSpacing(12);
 
     auto* sectionTitle = new QLabel(tr("Permissions & Agents"), page);
     sectionTitle->setObjectName(QSL("sectionHeading"));
     layout->addWidget(sectionTitle);
 
-    // Permission matrix
+    auto* policyCard = makeControlCard(tr("Agent Policy"), page);
+    auto* policyLayout = new QVBoxLayout(policyCard);
+    policyLayout->setContentsMargins(14, 18, 14, 14);
+    policyLayout->setSpacing(8);
+
+    policyLayout->addWidget(makeHelpText(
+        tr("These controls are part of the Prometheus control panel so agent permissions, browser UI, and FSB operation stay in one surface."),
+        policyCard));
+
+    m_internalSurfaceCheck = new QCheckBox(tr("Allow agents to open internal Prometheus surfaces"), policyCard);
+    m_tabOwnershipCheck = new QCheckBox(tr("Enforce tab ownership before agent actions"), policyCard);
+    m_backgroundTabActionsCheck = new QCheckBox(tr("Allow background-tab actions"), policyCard);
+    m_visualFeedbackCheck = new QCheckBox(tr("Show visual feedback during agent actions"), policyCard);
+    m_supervisionPairingCheck = new QCheckBox(tr("Allow supervision pairing"), policyCard);
+    m_dashboardRemoteCheck = new QCheckBox(tr("Allow dashboard remote control"), policyCard);
+
+    Settings policySettings;
+    policySettings.beginGroup(QSL("PrometheusRuntime/Policy"));
+    m_internalSurfaceCheck->setChecked(policySettings.value(QSL("internalSurfaceControl"), true).toBool());
+    m_tabOwnershipCheck->setChecked(policySettings.value(QSL("tabOwnershipEnforcement"), true).toBool());
+    m_backgroundTabActionsCheck->setChecked(policySettings.value(QSL("backgroundTabActions"), true).toBool());
+    m_visualFeedbackCheck->setChecked(policySettings.value(QSL("visualFeedback"), true).toBool());
+    m_supervisionPairingCheck->setChecked(policySettings.value(QSL("supervisionPairing"), true).toBool());
+    m_dashboardRemoteCheck->setChecked(policySettings.value(QSL("dashboardRemoteControl"), false).toBool());
+
+    policyLayout->addWidget(m_internalSurfaceCheck);
+    policyLayout->addWidget(m_tabOwnershipCheck);
+    policyLayout->addWidget(m_backgroundTabActionsCheck);
+    policyLayout->addWidget(m_visualFeedbackCheck);
+    policyLayout->addWidget(m_supervisionPairingCheck);
+    policyLayout->addWidget(m_dashboardRemoteCheck);
+
+    auto* telemetryRow = new QHBoxLayout;
+    telemetryRow->setSpacing(8);
+    auto* telemetryLabel = new QLabel(tr("Telemetry"), policyCard);
+    m_telemetryCombo = new QComboBox(policyCard);
+    m_telemetryCombo->addItems({tr("Local diagnostics only"), tr("Usage summary"), tr("Verbose debugging")});
+    m_telemetryCombo->setCurrentIndex(qBound(0, policySettings.value(QSL("telemetry"), 0).toInt(), m_telemetryCombo->count() - 1));
+    telemetryRow->addWidget(telemetryLabel);
+    telemetryRow->addWidget(m_telemetryCombo, 1);
+    policyLayout->addLayout(telemetryRow);
+    policySettings.endGroup();
+
+    auto* invariantLabel = makeHelpText(tr("Vault boundary is locked to native-only storage. Vault autofill confirmation remains required."), policyCard);
+    invariantLabel->setProperty("pm-warning", true);
+    policyLayout->addWidget(invariantLabel);
+
+    layout->addWidget(policyCard);
+
     const QStringList surfaces = {
-        tr("Preferences"),
+        tr("Browser Settings"),
         tr("Prometheus control center"),
         tr("Downloads"),
         tr("History"),
@@ -455,7 +550,6 @@ void FsbControlPanelPage::buildPermissionsSection(QWidget* page)
 
     layout->addWidget(m_permissionsTable, 1);
 
-    // Agent cap
     auto* capRow = new QHBoxLayout;
     capRow->setSpacing(8);
     auto* capLabel = new QLabel(tr("Agent cap (1–16):"), page);
@@ -464,9 +558,7 @@ void FsbControlPanelPage::buildPermissionsSection(QWidget* page)
     m_agentCapSpin->setValue(4);
     m_agentCapSpin->setMinimumHeight(32);
 
-    // Read persisted cap if available
-    Settings policySettings;
-    const int savedCap = policySettings.value(QSL("PrometheusRuntime/Policy/agentCap"), 4).toInt();
+    const int savedCap = Settings().value(QSL("PrometheusRuntime/Policy/agentCap"), 4).toInt();
     m_agentCapSpin->setValue(qBound(1, savedCap, 16));
 
     capRow->addWidget(capLabel);
@@ -474,8 +566,8 @@ void FsbControlPanelPage::buildPermissionsSection(QWidget* page)
     capRow->addStretch();
     layout->addLayout(capRow);
 
-    auto* saveBtn = new QPushButton(tr("Save Permissions"), page);
-    saveBtn->setMinimumHeight(32);
+    auto* saveBtn = makeActionButton(QSL("settings-permissions"), tr("Save Permissions"), page);
+    saveBtn->setProperty("accent", true);
     connect(saveBtn, &QPushButton::clicked, this, &FsbControlPanelPage::savePermissions);
     layout->addWidget(saveBtn);
 }
@@ -519,8 +611,7 @@ void FsbControlPanelPage::buildVaultSection(QWidget* page)
 
     layout->addWidget(formWidget);
 
-    auto* saveBtn = new QPushButton(tr("Save Vault Entry"), page);
-    saveBtn->setMinimumHeight(32);
+    auto* saveBtn = makeActionButton(QSL("vault-secret-add"), tr("Save Vault Entry"), page);
     connect(saveBtn, &QPushButton::clicked, this, &FsbControlPanelPage::saveVaultEntry);
     layout->addWidget(saveBtn);
 }
@@ -536,7 +627,7 @@ void FsbControlPanelPage::buildMemorySiteGuidesSection(QWidget* page)
     layout->addWidget(sectionTitle);
 
     // Memory group
-    auto* memGroup = new QGroupBox(tr("Memory"), page);
+    auto* memGroup = makeControlCard(tr("Memory"), page);
     auto* memLayout = new QVBoxLayout(memGroup);
     memLayout->setSpacing(4);
 
@@ -557,15 +648,14 @@ void FsbControlPanelPage::buildMemorySiteGuidesSection(QWidget* page)
 
     memLayout->addLayout(memForm);
 
-    auto* saveMemoryBtn = new QPushButton(tr("Save Memory"), memGroup);
-    saveMemoryBtn->setMinimumHeight(32);
+    auto* saveMemoryBtn = makeActionButton(QSL("tool-reader"), tr("Save Memory"), memGroup);
     connect(saveMemoryBtn, &QPushButton::clicked, this, &FsbControlPanelPage::saveMemory);
     memLayout->addWidget(saveMemoryBtn);
 
     layout->addWidget(memGroup);
 
     // Site Guides group
-    auto* siteGroup = new QGroupBox(tr("Site Guides"), page);
+    auto* siteGroup = makeControlCard(tr("Site Guides"), page);
     auto* siteLayout = new QVBoxLayout(siteGroup);
     siteLayout->setSpacing(4);
 
@@ -586,8 +676,7 @@ void FsbControlPanelPage::buildMemorySiteGuidesSection(QWidget* page)
 
     siteLayout->addLayout(siteForm);
 
-    auto* saveSiteBtn = new QPushButton(tr("Save Site Guide"), siteGroup);
-    saveSiteBtn->setMinimumHeight(32);
+    auto* saveSiteBtn = makeActionButton(QSL("nav-lock-secure"), tr("Save Site Guide"), siteGroup);
     connect(saveSiteBtn, &QPushButton::clicked, this, &FsbControlPanelPage::saveSiteGuide);
     siteLayout->addWidget(saveSiteBtn);
 
@@ -647,13 +736,11 @@ void FsbControlPanelPage::buildLogsDiagnosticsSection(QWidget* page)
     auto* btnRow = new QHBoxLayout;
     btnRow->setSpacing(8);
 
-    auto* refreshBtn = new QPushButton(tr("Refresh Diagnostics"), page);
-    refreshBtn->setMinimumHeight(32);
+    auto* refreshBtn = makeActionButton(QSL("diag-health"), tr("Refresh Diagnostics"), page);
     connect(refreshBtn, &QPushButton::clicked, this, &FsbControlPanelPage::refreshDiagnostics);
 
-    auto* exportBtn = new QPushButton(tr("Export Diagnostics"), page);
-    exportBtn->setMinimumHeight(32);
-    connect(exportBtn, &QPushButton::clicked, this, [this]() {
+    auto* exportBtn = makeActionButton(QSL("nav-share"), tr("Export Diagnostics"), page);
+    connect(exportBtn, &QPushButton::clicked, this, []() {
         if (!mApp || !mApp->agentRuntime()) {
             return;
         }
@@ -731,18 +818,15 @@ void FsbControlPanelPage::buildSupervisionSection(QWidget* page)
     auto* btnRow = new QHBoxLayout;
     btnRow->setSpacing(8);
 
-    auto* pairBtn = new QPushButton(tr("Pair Dashboard"), page);
-    pairBtn->setMinimumHeight(32);
+    auto* pairBtn = makeActionButton(QSL("supervision-pair"), tr("Pair Dashboard"), page);
     pairBtn->setProperty("accent", true);
     connect(pairBtn, &QPushButton::clicked, this, &FsbControlPanelPage::pairDashboard);
 
-    auto* endBtn = new QPushButton(tr("End Pairing"), page);
-    endBtn->setMinimumHeight(32);
+    auto* endBtn = makeActionButton(QSL("supervision-unpair"), tr("End Pairing"), page);
     endBtn->setProperty("destructive", true);
     connect(endBtn, &QPushButton::clicked, this, &FsbControlPanelPage::endPairing);
 
-    auto* unpairBtn = new QPushButton(tr("Unpair Dashboard"), page);
-    unpairBtn->setMinimumHeight(32);
+    auto* unpairBtn = makeActionButton(QSL("utility-delete"), tr("Unpair Dashboard"), page);
     unpairBtn->setProperty("destructive", true);
     connect(unpairBtn, &QPushButton::clicked, this, [this]() {
         const int r = QMessageBox::question(this, tr("Unpair Dashboard"),
@@ -770,8 +854,7 @@ void FsbControlPanelPage::buildParityMatrixSection(QWidget* page)
     layout->addWidget(sectionTitle);
 
     // Open Parity Matrix button
-    auto* openBtn = new QPushButton(tr("Open Parity Matrix"), page);
-    openBtn->setMinimumHeight(32);
+    auto* openBtn = makeActionButton(QSL("tab-overview"), tr("Open Parity Matrix"), page);
     connect(openBtn, &QPushButton::clicked, this, &FsbControlPanelPage::openParityMatrix);
     layout->addWidget(openBtn);
 
@@ -829,8 +912,7 @@ void FsbControlPanelPage::buildParityMatrixSection(QWidget* page)
     layout->addWidget(m_parityTable, 1);
 
     // Run Parity Check button
-    auto* runParityBtn = new QPushButton(tr("Run Parity Check"), page);
-    runParityBtn->setMinimumHeight(32);
+    auto* runParityBtn = makeActionButton(QSL("diag-health"), tr("Run Parity Check"), page);
     runParityBtn->setProperty("accent", true);
     connect(runParityBtn, &QPushButton::clicked, this, &FsbControlPanelPage::runParityCheck);
     layout->addWidget(runParityBtn);
@@ -850,19 +932,23 @@ void FsbControlPanelPage::buildAppearanceSection(QWidget* page)
 {
     auto* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(8);
+    layout->setSpacing(12);
 
-    auto* sectionTitle = new QLabel(tr("Appearance"), page);
+    auto* sectionTitle = new QLabel(tr("Browser Settings"), page);
     sectionTitle->setObjectName(QSL("sectionHeading"));
     layout->addWidget(sectionTitle);
 
-    // Theme variant toggle: Dark / Light
+    auto* themeCard = makeControlCard(tr("Theme & Accent"), page);
+    auto* themeLayout = new QVBoxLayout(themeCard);
+    themeLayout->setContentsMargins(14, 18, 14, 14);
+    themeLayout->setSpacing(10);
+
     auto* variantRow = new QHBoxLayout;
     variantRow->setSpacing(8);
-    auto* darkBtn = new QPushButton(tr("Dark"), page);
+    auto* darkBtn = new QPushButton(PrometheusIconResolver::icon(QSL("tool-force-dark")), tr("Dark"), themeCard);
     darkBtn->setMinimumHeight(32);
     darkBtn->setToolTip(tr("Switch to dark theme"));
-    auto* lightBtn = new QPushButton(tr("Light"), page);
+    auto* lightBtn = new QPushButton(PrometheusIconResolver::icon(QSL("utility-theme-toggle")), tr("Light"), themeCard);
     lightBtn->setMinimumHeight(32);
     lightBtn->setToolTip(tr("Switch to light theme"));
 
@@ -872,17 +958,12 @@ void FsbControlPanelPage::buildAppearanceSection(QWidget* page)
     variantRow->addWidget(darkBtn);
     variantRow->addWidget(lightBtn);
     variantRow->addStretch();
-    layout->addLayout(variantRow);
+    themeLayout->addLayout(variantRow);
 
-    // Accent color label
-    auto* accentLabel = new QLabel(tr("Accent color"), page);
-    layout->addWidget(accentLabel);
+    auto* accentLabel = new QLabel(tr("Accent color"), themeCard);
+    accentLabel->setObjectName(QSL("sectionLabel"));
+    themeLayout->addWidget(accentLabel);
 
-    // Four curated accent swatches
-    // FSB Orange (default): #ff6b35 / #ff8c42
-    // Indigo:               #6366f1 / #818cf8
-    // Teal:                 #14b8a6 / #2dd4bf
-    // Rose:                 #f43f5e / #fb7185
     struct SwatchDef { const char* label; const char* accent; const char* accent2; };
     static const SwatchDef swatches[] = {
         { "FSB Orange", "#ff6b35", "#ff8c42" },
@@ -894,9 +975,9 @@ void FsbControlPanelPage::buildAppearanceSection(QWidget* page)
     auto* swatchRow = new QHBoxLayout;
     swatchRow->setSpacing(8);
     for (const auto &sw : swatches) {
-        auto* btn = new QPushButton(page);
+        auto* btn = new QPushButton(themeCard);
         btn->setToolTip(tr(sw.label));
-        btn->setFixedSize(28, 28);
+        btn->setFixedSize(30, 30);
         btn->setStyleSheet(QStringLiteral(
             "QPushButton { background-color: %1; border-radius: 9999px; border: 2px solid transparent; }"
             "QPushButton:hover { border-color: rgba(255,255,255,0.4); }"
@@ -910,7 +991,90 @@ void FsbControlPanelPage::buildAppearanceSection(QWidget* page)
         swatchRow->addWidget(btn);
     }
     swatchRow->addStretch();
-    layout->addLayout(swatchRow);
+    themeLayout->addLayout(swatchRow);
+    layout->addWidget(themeCard);
+
+    auto* chromeCard = makeControlCard(tr("Chrome & Tabs"), page);
+    auto* chromeLayout = new QFormLayout(chromeCard);
+    chromeLayout->setContentsMargins(14, 18, 14, 14);
+    chromeLayout->setSpacing(8);
+
+    Settings settings;
+
+    settings.beginGroup(QSL("Browser-Tabs-Settings"));
+    const QString currentTabLayout = settings.value(QSL("tabLayout"), QSL("Compact")).toString();
+    const QString currentTabDisplay = settings.value(QSL("tabDisplay"), QSL("TitleAndIcon")).toString();
+    const bool currentTabsOnTop = settings.value(QSL("TabsOnTop"), false).toBool();
+    settings.endGroup();
+
+    auto* tabLayoutCombo = new QComboBox(chromeCard);
+    tabLayoutCombo->addItem(tr("Compact unified chrome"), QSL("Compact"));
+    tabLayoutCombo->addItem(tr("Separate tab strip"), QSL("Separate"));
+    setComboToData(tabLayoutCombo, currentTabLayout);
+    chromeLayout->addRow(tr("Tab layout"), tabLayoutCombo);
+
+    auto* tabDisplayCombo = new QComboBox(chromeCard);
+    tabDisplayCombo->addItem(tr("Title and favicon"), QSL("TitleAndIcon"));
+    tabDisplayCombo->addItem(tr("Favicon-only pills"), QSL("FaviconOnly"));
+    setComboToData(tabDisplayCombo, currentTabDisplay);
+    chromeLayout->addRow(tr("Tab labels"), tabDisplayCombo);
+
+    auto* tabsOnTopCheck = new QCheckBox(tr("Place legacy tab strip above the toolbar"), chromeCard);
+    tabsOnTopCheck->setChecked(currentTabsOnTop);
+    chromeLayout->addRow(tr("Legacy tabs"), tabsOnTopCheck);
+
+    settings.beginGroup(QSL("Browser-View-Settings"));
+    const bool currentStatusBar = settings.value(QSL("showStatusBar"), false).toBool();
+    const bool currentNavigationToolbar = settings.value(QSL("showNavigationToolbar"), true).toBool();
+    const int currentSidebarWidth = settings.value(QSL("DefaultSideBarWidth"), qzSettings ? qzSettings->defaultSideBarWidth : 320).toInt();
+    settings.endGroup();
+
+    auto* navigationToolbarCheck = new QCheckBox(tr("Show navigation toolbar"), chromeCard);
+    navigationToolbarCheck->setChecked(currentNavigationToolbar);
+    chromeLayout->addRow(tr("Toolbar"), navigationToolbarCheck);
+
+    auto* statusBarCheck = new QCheckBox(tr("Show status bar"), chromeCard);
+    statusBarCheck->setChecked(currentStatusBar);
+    chromeLayout->addRow(tr("Status bar"), statusBarCheck);
+
+    auto* sidebarWidthSpin = new QSpinBox(chromeCard);
+    sidebarWidthSpin->setRange(280, 520);
+    sidebarWidthSpin->setSingleStep(20);
+    sidebarWidthSpin->setValue(qBound(280, currentSidebarWidth, 520));
+    chromeLayout->addRow(tr("Side panel width"), sidebarWidthSpin);
+
+    auto* saveChromeBtn = makeActionButton(QSL("settings-general"), tr("Save Browser Settings"), chromeCard);
+    saveChromeBtn->setProperty("accent", true);
+    chromeLayout->addRow(QString(), saveChromeBtn);
+
+    connect(saveChromeBtn, &QPushButton::clicked, this, [tabLayoutCombo, tabDisplayCombo, tabsOnTopCheck, navigationToolbarCheck, statusBarCheck, sidebarWidthSpin]() {
+        Settings saveSettings;
+        saveSettings.beginGroup(QSL("Browser-Tabs-Settings"));
+        saveSettings.setValue(QSL("tabLayout"), tabLayoutCombo->currentData().toString());
+        saveSettings.setValue(QSL("tabDisplay"), tabDisplayCombo->currentData().toString());
+        saveSettings.setValue(QSL("TabsOnTop"), tabsOnTopCheck->isChecked());
+        saveSettings.endGroup();
+
+        saveSettings.beginGroup(QSL("Browser-View-Settings"));
+        saveSettings.setValue(QSL("showNavigationToolbar"), navigationToolbarCheck->isChecked());
+        saveSettings.setValue(QSL("showStatusBar"), statusBarCheck->isChecked());
+        saveSettings.setValue(QSL("DefaultSideBarWidth"), sidebarWidthSpin->value());
+        saveSettings.endGroup();
+
+        if (qzSettings) {
+            qzSettings->loadSettings();
+        }
+        if (mApp) {
+            for (BrowserWindow* window : mApp->windows()) {
+                if (window) {
+                    window->toggleTabsOnTop(tabsOnTopCheck->isChecked());
+                }
+            }
+            mApp->reloadSettings();
+        }
+    });
+
+    layout->addWidget(chromeCard);
 
     layout->addStretch();
 }
@@ -936,6 +1100,30 @@ void FsbControlPanelPage::refreshAll()
     if (m_agentCapSpin && !m_agentCapSpin->hasFocus()) {
         m_agentCapSpin->setValue(qBound(1, cap, 16));
     }
+    Settings policySettings;
+    policySettings.beginGroup(QSL("PrometheusRuntime/Policy"));
+    if (m_internalSurfaceCheck) {
+        m_internalSurfaceCheck->setChecked(policySettings.value(QSL("internalSurfaceControl"), true).toBool());
+    }
+    if (m_tabOwnershipCheck) {
+        m_tabOwnershipCheck->setChecked(policySettings.value(QSL("tabOwnershipEnforcement"), true).toBool());
+    }
+    if (m_backgroundTabActionsCheck) {
+        m_backgroundTabActionsCheck->setChecked(policySettings.value(QSL("backgroundTabActions"), true).toBool());
+    }
+    if (m_visualFeedbackCheck) {
+        m_visualFeedbackCheck->setChecked(policySettings.value(QSL("visualFeedback"), true).toBool());
+    }
+    if (m_supervisionPairingCheck) {
+        m_supervisionPairingCheck->setChecked(policySettings.value(QSL("supervisionPairing"), true).toBool());
+    }
+    if (m_dashboardRemoteCheck) {
+        m_dashboardRemoteCheck->setChecked(policySettings.value(QSL("dashboardRemoteControl"), false).toBool());
+    }
+    if (m_telemetryCombo) {
+        m_telemetryCombo->setCurrentIndex(qBound(0, policySettings.value(QSL("telemetry"), 0).toInt(), m_telemetryCombo->count() - 1));
+    }
+    policySettings.endGroup();
 
     const QJsonObject mcpInfo = diag.value(QSL("mcp")).toObject();
     const QString mcpHealth = mcpInfo.value(QSL("health")).toString(tr("—"));
@@ -1335,20 +1523,37 @@ void FsbControlPanelPage::savePermissions()
         return;
     }
     const int newCap = m_agentCapSpin->value();
+    const bool internalSurface = !m_internalSurfaceCheck || m_internalSurfaceCheck->isChecked();
+    const bool tabOwnership = !m_tabOwnershipCheck || m_tabOwnershipCheck->isChecked();
+    const bool visualFeedback = !m_visualFeedbackCheck || m_visualFeedbackCheck->isChecked();
+    const bool supervisionPairing = !m_supervisionPairingCheck || m_supervisionPairingCheck->isChecked();
+    const int telemetry = m_telemetryCombo ? m_telemetryCombo->currentIndex() : 0;
 
-    // Use routeForSession with sessionKey "control_panel" (internal surface key — bypasses remote transport checks)
-    // Do NOT call a direct route() method; routeForSession is the correct API.
     const QJsonObject request = QJsonObject{
         {QSL("tool"), QSL("set_agent_policy")},
         {QSL("params"), QJsonObject{
-            {QSL("agentCap"), newCap}
+            {QSL("agentCap"), newCap},
+            {QSL("internalSurfaceControl"), internalSurface},
+            {QSL("tabOwnershipEnforcement"), tabOwnership},
+            {QSL("visualFeedback"), visualFeedback},
+            {QSL("telemetry"), telemetry},
+            {QSL("supervisionPairing"), supervisionPairing}
         }}
     };
     mApp->agentCommandRouter()->routeForSession(request, QSL("control_panel"));
 
-    // Persist agent cap via Settings as backup
     Settings policySettings;
-    policySettings.setValue(QSL("PrometheusRuntime/Policy/agentCap"), newCap);
+    policySettings.beginGroup(QSL("PrometheusRuntime/Policy"));
+    policySettings.setValue(QSL("agentCap"), newCap);
+    policySettings.setValue(QSL("internalSurfaceControl"), internalSurface);
+    policySettings.setValue(QSL("tabOwnershipEnforcement"), tabOwnership);
+    policySettings.setValue(QSL("backgroundTabActions"), !m_backgroundTabActionsCheck || m_backgroundTabActionsCheck->isChecked());
+    policySettings.setValue(QSL("visualFeedback"), visualFeedback);
+    policySettings.setValue(QSL("telemetry"), telemetry);
+    policySettings.setValue(QSL("supervisionPairing"), supervisionPairing);
+    policySettings.setValue(QSL("dashboardRemoteControl"), m_dashboardRemoteCheck && m_dashboardRemoteCheck->isChecked());
+    policySettings.endGroup();
+    refreshAll();
 }
 
 void FsbControlPanelPage::pairDashboard()

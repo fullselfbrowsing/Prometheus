@@ -245,7 +245,7 @@ void Plugins::loadPlugins()
 
     refreshLoadedPlugins();
 
-    std::cout << "Falkon: " << m_loadedPlugins.count() << " extensions loaded"  << std::endl;
+    std::cout << "Prometheus: " << m_loadedPlugins.count() << " extensions loaded"  << std::endl;
 }
 
 void Plugins::loadAvailablePlugins()
@@ -329,7 +329,7 @@ void Plugins::loadPythonSupport()
                 delete m_pythonPlugin;
                 m_pythonPlugin = nullptr;
             } else {
-                std::cout << "Falkon: Python plugin support initialized" << std::endl;
+                std::cout << "Prometheus: Python plugin support initialized" << std::endl;
                 return;
             }
         }

@@ -49,7 +49,7 @@ void ProfileManager::initConfigDir()
         return;
     }
 
-    std::cout << "Falkon: Creating new profile directory" << std::endl;
+    std::cout << "Prometheus: Creating new profile directory" << std::endl;
 
     if (!dir.exists()) {
         dir.mkpath(dir.absolutePath());
@@ -217,7 +217,7 @@ void ProfileManager::updateProfile(const QString &current, const QString &profil
     }
 
     if (prof < Updater::Version(QStringLiteral("1.9.0"))) {
-        std::cout << "Falkon: Using profile from QupZilla " << qPrintable(profile) << " is not supported!" << std::endl;
+        std::cout << "Prometheus: Using profile from QupZilla " << qPrintable(profile) << " is not supported!" << std::endl;
         return;
     }
 
@@ -303,7 +303,7 @@ void ProfileManager::copyDataToProfile()
 
         const QString text = QSL("Incompatible profile version has been detected. To avoid losing your profile data, they were "
                              "backed up in following file:<br/><br/><b>") + browseDataBackup + QSL("<br/></b>");
-        QMessageBox::warning(nullptr, QStringLiteral("Falkon: Incompatible profile version"), text);
+        QMessageBox::warning(nullptr, QStringLiteral("Prometheus: Incompatible profile version"), text);
     }
 }
 
@@ -325,7 +325,7 @@ void ProfileManager::migrateFromQupZilla()
         return;
     }
 
-    std::cout << "Falkon: Migrating config from QupZilla..." << std::endl;
+    std::cout << "Prometheus: Migrating config from QupZilla..." << std::endl;
 
     QzTools::copyRecursively(qzConfig, DataPaths::path(DataPaths::Config));
 }
@@ -391,13 +391,13 @@ void ProfileManager::updateDatabase()
 
     /* Do not try to update database of too old profile */
     if (prof < Updater::Version(QStringLiteral("1.9.0"))) {
-        std::cout << "Falkon: Using profile from QupZilla " << qPrintable(profileVersion) << " is not supported!" << std::endl;
+        std::cout << "Prometheus: Using profile from QupZilla " << qPrintable(profileVersion) << " is not supported!" << std::endl;
         return;
     }
 
     /* Update in 24.08.00 */
     if (prof < Updater::Version(QStringLiteral("24.07.70"))) {
-        std::cout << "Falkon: Updating database to version " << qPrintable(QString::fromLatin1(Qz::VERSION)) << std::endl;
+        std::cout << "Prometheus: Updating database to version " << qPrintable(QString::fromLatin1(Qz::VERSION)) << std::endl;
 
         SqlDatabase::instance()->database().transaction();
 

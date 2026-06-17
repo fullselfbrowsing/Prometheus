@@ -11,35 +11,27 @@
   "bookmark_menu": {
    "children": [
     {
-     "description": "",
-     "keyword": "falkon",
-     "name": "Falkon",
+     "description": "Prometheus product home",
+     "keyword": "prometheus",
+     "name": "Prometheus",
      "type": "url",
-     "url": "https://www.falkon.org/",
+     "url": "https://www.full-selfbrowsing.com/",
      "visit_count": 0
     },
     {
-     "description": "",
-     "keyword": "",
-     "name": "Falkon Store",
+     "description": "FSB project organization",
+     "keyword": "fsb",
+     "name": "Powered by FSB",
      "type": "url",
-     "url": "https://store.falkon.org/",
+     "url": "https://github.com/fullselfbrowsing",
      "visit_count": 0
     },
     {
-     "description": "",
-     "keyword": "kde",
-     "name": "KDE Community",
+     "description": "DOM-native live supervision reference",
+     "keyword": "phantomstream",
+     "name": "PhantomStream",
      "type": "url",
-     "url": "https://www.kde.org/",
-     "visit_count": 0
-    },
-    {
-     "description": "",
-     "keyword": "",
-     "name": "KDE Planet",
-     "type": "url",
-     "url": "https://planet.kde.org/",
+     "url": "https://github.com/fullselfbrowsing/PhantomStream",
      "visit_count": 0
     }
    ],

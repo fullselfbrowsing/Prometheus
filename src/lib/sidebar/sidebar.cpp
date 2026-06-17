@@ -57,8 +57,12 @@ void SideBar::setWidget(QWidget* widget)
         delete m_layout->itemAt(1)->widget();
     }
 
-    if (widget)
+    if (widget) {
+        m_titleBar->setVisible(widget->objectName() != QL1S("PrometheusAgentSidebar"));
         m_layout->addWidget(widget);
+    } else {
+        m_titleBar->setVisible(true);
+    }
 }
 
 void SideBar::showBookmarks()

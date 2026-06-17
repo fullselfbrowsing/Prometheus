@@ -11,9 +11,26 @@
 }
 
 /*MainWindow*/
+#mainwindow
+{
+    background-color: #090909;
+}
+
+#mainwindow-statusbar
+{
+    background-color: #141414;
+    color: #f2f2f2;
+}
+
 #statusbar-ip-label
 {
     padding-right: 5px;
+}
+
+#locationbar, #websearchbar
+{
+    border-color: #ff6b35;
+    selection-background-color: #ff6b35;
 }
 
 /*NavigationBar*/
@@ -81,7 +98,9 @@ ToolButton[button-id="button-downloads"]
 #tabbar
 {
     qproperty-tabPadding: -1;
-    qproperty-baseColor: 0;
+    qproperty-baseColor: #141414;
+    qproperty-textColor: #f2f2f2;
+    qproperty-selectedTextColor: #ff8c42;
 }
 
 #tabbar-button-right

@@ -20,7 +20,7 @@
 #include "tabwidget.h"
 #include "historymenu.h"
 #include "aboutdialog.h"
-#include "preferences.h"
+#include "fsbcontrolpanel.h"
 #include "iconprovider.h"
 #include "cookiemanager.h"
 #include "bookmarksmenu.h"
@@ -40,10 +40,6 @@
 #include <QWebEnginePage>
 #include <QMenuBar>
 #include <QDesktopServices>
-
-#ifdef Q_OS_MACOS
-extern void qt_mac_set_dock_menu(QMenu* menu);
-#endif
 
 MainMenu::MainMenu(BrowserWindow* window, QWidget* parent)
     : QMenu(parent)
@@ -128,9 +124,15 @@ void MainMenu::showAboutDialog()
 
 void MainMenu::showPreferences()
 {
-    if (!m_preferences)
-        m_preferences = new Preferences(m_window);
+    if (!m_preferences) {
+        m_preferences = new FsbControlPanelPage(m_window);
+        m_preferences->setWindowFlags(Qt::Window);
+        m_preferences->setAttribute(Qt::WA_DeleteOnClose);
+        m_preferences->setWindowTitle(tr("Prometheus Control Panel"));
+        m_preferences->resize(1080, 720);
+    }
 
+    m_preferences->showSettingsSection();
     m_preferences->show();
     m_preferences->raise();
     m_preferences->activateWindow();
@@ -486,12 +488,12 @@ void MainMenu::init()
     m_actions[QSL(name)] = action
 
     // Standard actions - needed on Mac to be placed correctly in "application" menu
-    auto* action = new QAction(QIcon::fromTheme(QSL("help-about")), tr("&About Falkon"), this);
+    auto* action = new QAction(QIcon::fromTheme(QSL("help-about")), tr("&About Prometheus"), this);
     action->setMenuRole(QAction::AboutRole);
     connect(action, &QAction::triggered, this, &MainMenu::showAboutDialog);
     m_actions[QSL("Standard/About")] = action;
 
-    action = new QAction(IconProvider::settingsIcon(), tr("Pr&eferences"), this);
+    action = new QAction(IconProvider::settingsIcon(), tr("Prometheus &Control Panel"), this);
     action->setMenuRole(QAction::PreferencesRole);
     action->setShortcut(QKeySequence(QKeySequence::Preferences));
     connect(action, &QAction::triggered, this, &MainMenu::showPreferences);
@@ -649,12 +651,6 @@ void MainMenu::init()
     // Prevent ConfigInfo action to be detected as "Preferences..." action in Mac menubar
     m_actions[QSL("Help/ConfigInfo")]->setMenuRole(QAction::NoRole);
 
-    // Create Dock menu
-    QMenu* dockMenu = new QMenu(0);
-    dockMenu->addAction(m_actions[QSL("File/NewTab")]);
-    dockMenu->addAction(m_actions[QSL("File/NewWindow")]);
-    dockMenu->addAction(m_actions[QSL("File/NewPrivateWindow")]);
-    qt_mac_set_dock_menu(dockMenu);
 #endif
 
 #if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)

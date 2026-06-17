@@ -87,7 +87,7 @@ void DesktopNotificationsFactory::showNotification(const QPixmap &icon, const QS
     case DesktopNative:
 #if defined(Q_OS_UNIX) && !defined(DISABLE_DBUS)
         QString iconFileName = QL1S("");
-        QFile tmp(DataPaths::path(DataPaths::Temp) + QLatin1String("/falkon_notif.png"));
+        QFile tmp(DataPaths::path(DataPaths::Temp) + QLatin1String("/prometheus_notif.png"));
         if (tmp.open(QFile::WriteOnly)) {
             if (icon.save(tmp.fileName())) {
                 iconFileName = tmp.fileName();
@@ -101,7 +101,7 @@ void DesktopNotificationsFactory::showNotification(const QPixmap &icon, const QS
 
         QDBusInterface dbus(QSL("org.freedesktop.Notifications"), QSL("/org/freedesktop/Notifications"), QSL("org.freedesktop.Notifications"), QDBusConnection::sessionBus());
         QVariantList args;
-        args.append(QLatin1String("Falkon"));
+        args.append(QLatin1String("Prometheus"));
         args.append(m_uint);
         args.append(iconFileName);
         args.append(heading);

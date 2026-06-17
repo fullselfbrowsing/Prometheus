@@ -1,6 +1,8 @@
 #include "prometheusiconresolver.h"
+#include <QPainter>
 #include <QPixmap>
 #include <QGlobalStatic>
+#include <QSettings>
 
 // ---- static member definitions ----
 QHash<QString, QPair<QString, QString>> PrometheusIconResolver::s_actionMap;
@@ -8,6 +10,54 @@ bool PrometheusIconResolver::s_mapInitialized = false;
 
 // ---- singleton storage ----
 Q_GLOBAL_STATIC(PrometheusIconResolver, s_instance)
+
+namespace {
+
+QColor prometheusIconColor()
+{
+    QSettings settings;
+    const bool useDark = settings.value(QSL("Interface/PrometheusThemeDark"), true).toBool();
+    return useDark ? QColor(QSL("#d2c1b4")) : QColor(QSL("#6a584d"));
+}
+
+QIcon tintedIcon(const QIcon &source)
+{
+    if (source.isNull()) {
+        return source;
+    }
+
+    const QColor normalColor = prometheusIconColor();
+    QColor disabledColor = normalColor;
+    disabledColor.setAlphaF(0.35);
+
+    QIcon result;
+    const QList<int> sizes = {11, 14, 16, 18, 22, 24, 32, 48, 64};
+    for (int size : sizes) {
+        const QPixmap base = source.pixmap(size, size);
+        if (base.isNull()) {
+            continue;
+        }
+
+        auto tintPixmap = [&base](const QColor &color) {
+            QPixmap tinted(base.size());
+            tinted.setDevicePixelRatio(base.devicePixelRatio());
+            tinted.fill(Qt::transparent);
+
+            QPainter painter(&tinted);
+            painter.drawPixmap(0, 0, base);
+            painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+            painter.fillRect(tinted.rect(), color);
+            return tinted;
+        };
+
+        result.addPixmap(tintPixmap(normalColor), QIcon::Normal);
+        result.addPixmap(tintPixmap(disabledColor), QIcon::Disabled);
+    }
+
+    return result.isNull() ? source : result;
+}
+
+} // namespace
 
 PrometheusIconResolver::PrometheusIconResolver(QObject* parent)
     : QObject(parent)
@@ -91,6 +141,9 @@ void PrometheusIconResolver::initActionMap()
     // ---- Tab actions ----
     s_actionMap.insert(QSL("tab-all"),              qMakePair(QSL(":/icons/fa/table-cells-large.svg"),    QSL("view-list-icons")));
     s_actionMap.insert(QSL("tab-overview"),         qMakePair(QSL(":/icons/fa/layer-group.svg"),          QSL("view-list-icons")));
+    s_actionMap.insert(QSL("tab-closed"),           qMakePair(QSL(":/icons/fa/rotate-left.svg"),          QSL("edit-undo")));
+    s_actionMap.insert(QSL("tab-scroll-left"),      qMakePair(QSL(":/icons/fa/arrow-left.svg"),           QSL("go-previous")));
+    s_actionMap.insert(QSL("tab-scroll-right"),     qMakePair(QSL(":/icons/fa/arrow-right.svg"),          QSL("go-next")));
     s_actionMap.insert(QSL("tab-pin"),              qMakePair(QSL(":/icons/fa/thumbtack.svg"),            QSL("")));
     s_actionMap.insert(QSL("tab-mute"),             qMakePair(QSL(":/icons/fa/volume-xmark.svg"),         QSL("audio-volume-muted")));
     s_actionMap.insert(QSL("tab-unmute"),           qMakePair(QSL(":/icons/fa/volume-high.svg"),          QSL("audio-volume-high")));
@@ -127,6 +180,7 @@ void PrometheusIconResolver::initActionMap()
     s_actionMap.insert(QSL("utility-info"),         qMakePair(QSL(":/icons/fa/circle-info.svg"),          QSL("dialog-information")));
     s_actionMap.insert(QSL("utility-question"),     qMakePair(QSL(":/icons/fa/circle-question.svg"),      QSL("dialog-question")));
     s_actionMap.insert(QSL("utility-close"),        qMakePair(QSL(":/icons/fa/xmark.svg"),                QSL("dialog-close")));
+    s_actionMap.insert(QSL("utility-match-case"),   qMakePair(QSL(":/icons/fa/language.svg"),             QSL("format-text-uppercase")));
     s_actionMap.insert(QSL("utility-new-folder"),   qMakePair(QSL(":/icons/fa/folder-plus.svg"),          QSL("folder-new")));
     s_actionMap.insert(QSL("utility-theme-toggle"), qMakePair(QSL(":/icons/fa/circle-half-stroke.svg"),   QSL("")));
     s_actionMap.insert(QSL("utility-menu"),         qMakePair(QSL(":/icons/fa/bars.svg"),                 QSL("")));
@@ -155,14 +209,14 @@ QIcon PrometheusIconResolver::icon(const QString &actionId)
     // Step 1: bundled SVG resource
     const QIcon bundled(it->first);
     if (!bundled.isNull()) {
-        return bundled;
+        return tintedIcon(bundled);
     }
 
     // Step 2: QIcon::fromTheme fallback
     if (!it->second.isEmpty()) {
         const QIcon themed = QIcon::fromTheme(it->second, QIcon());
         if (!themed.isNull()) {
-            return themed;
+            return tintedIcon(themed);
         }
     }
 

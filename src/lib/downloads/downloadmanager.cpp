@@ -379,7 +379,7 @@ void DownloadManager::downloadFinished(bool success)
 
     if (downloadingAllFilesFinished) {
         if (success && qApp->activeWindow() != this) {
-            mApp->desktopNotifications()->showNotification(QIcon::fromTheme(QSL("download"), QIcon(QSL(":icons/other/download.svg"))).pixmap(48), tr("Falkon: Download Finished"), tr("All files have been successfully downloaded."));
+            mApp->desktopNotifications()->showNotification(QIcon::fromTheme(QSL("download"), QIcon(QSL(":icons/other/download.svg"))).pixmap(48), tr("Prometheus: Download Finished"), tr("All files have been successfully downloaded."));
             if (!m_closeOnFinish) {
                 raise();
                 activateWindow();
@@ -440,4 +440,3 @@ DownloadManager::~DownloadManager()
 {
     delete ui;
 }
-

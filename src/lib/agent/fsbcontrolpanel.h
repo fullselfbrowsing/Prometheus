@@ -23,6 +23,7 @@ class FALKON_EXPORT FsbControlPanelPage : public QWidget
 
 public:
     explicit FsbControlPanelPage(BrowserWindow* window, QWidget* parent = nullptr);
+    void showSettingsSection();
 
 private:
     void buildTasksSection(QWidget* page);
@@ -100,6 +101,13 @@ private:
     // Permissions section widgets
     QTableWidget* m_permissionsTable;
     QSpinBox* m_agentCapSpin;
+    QCheckBox* m_internalSurfaceCheck;
+    QCheckBox* m_tabOwnershipCheck;
+    QCheckBox* m_backgroundTabActionsCheck;
+    QCheckBox* m_visualFeedbackCheck;
+    QCheckBox* m_supervisionPairingCheck;
+    QCheckBox* m_dashboardRemoteCheck;
+    QComboBox* m_telemetryCombo;
 
     // Vault section widgets
     QListWidget* m_vaultList;

@@ -1,46 +1,35 @@
-# Falkon
+# Prometheus
 
-Falkon is a KDE web browser. It uses QtWebEngine rendering engine.
+Prometheus is an agent-native desktop browser powered by FSB. It is derived from the Falkon/QtWebEngine codebase and preserves inherited legal notices while replacing product-visible identity with Prometheus.
 
-![image](https://www.falkon.org/images/screenshot.png)
-
-## Downloads
-
-Falkon downloads are available from [homepage](https://www.falkon.org/download/).
-
-## Building
+## Baseline Build
 
 ```sh
-mkdir build && cd build
-cmake ..
-make && make install
+./tools/fsb-baseline/preflight.sh
+cmake -S . -B build/fsb-baseline -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build/fsb-baseline
 ```
 
-### Install to custom prefix
-
-When installing Falkon to custom prefix, you may need to adjust `XDG_DATA_DIRS` environment variable.
+The macOS baseline binary is:
 
 ```sh
-# Build
-cmake -DCMAKE_INSTALL_PREFIX=$HOME/falkon
-
-# Run
-export XDG_DATA_DIRS="$HOME/falkon/share:$XDG_DATA_DIRS"
-$HOME/falkon/bin/falkon
+build/fsb-baseline/bin/prometheus.app/Contents/MacOS/prometheus
 ```
 
-## Contributing
+## Smoke Test
 
-Want to contribute? Great!
+```sh
+./tools/fsb-baseline/smoke-browser.sh --binary build/fsb-baseline/bin/prometheus.app/Contents/MacOS/prometheus --wait 1
+```
 
-[KDE Community Wiki](https://community.kde.org/Get_Involved)
+## Legal Notices
 
-Code review is done on [Phabricator](https://community.kde.org/Infrastructure/Phabricator). When sending patches, add Falkon project (`#Falkon`) as a reviewer.
+Prometheus is built from GPL-licensed Falkon/KDE/Qt source. Required inherited copyright and license notices must remain available in source and release artifacts. See:
 
-#### Reporting bugs
+- `COPYING`
+- `tools/fsb-baseline/legal-notice-inventory.md`
+- in-app About/Licenses surfaces
 
-You can report any bugs or feature request in KDE [bugzilla](https://bugs.kde.org/enter_bug.cgi?product=Falkon). Before reporting, please make sure your issue isn’t already reported ([open issues](https://bugs.kde.org/buglist.cgi?bug_status=UNCONFIRMED&bug_status=CONFIRMED&bug_status=ASSIGNED&bug_status=REOPENED&component=extensions&component=general&list_id=1597725&product=Falkon)).
+## Upstream Attribution
 
-#### Contact
-
-You can get in contact with developers using [mailing list](https://mail.kde.org/mailman/listinfo/falkon) or __IRC__ `#falkon` at `irc.libera.chat`.
+The bootstrap browser foundation comes from Falkon, a KDE QtWebEngine browser. Product-visible identity is Prometheus; inherited legal attribution remains preserved.

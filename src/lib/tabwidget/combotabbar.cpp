@@ -23,6 +23,7 @@
 #include "proxystyle.h"
 #include "qzsettings.h"
 #include "qztools.h"
+#include "agent/prometheusiconresolver.h"
 
 #include <QIcon>
 #include <QHBoxLayout>
@@ -35,6 +36,7 @@
 #include <QMouseEvent>
 #include <QApplication>
 #include <QToolTip>
+#include <QSize>
 #include <QtGuiVersion>
 
 class QMovableTabWidget : public QWidget
@@ -1550,6 +1552,8 @@ TabBarScrollWidget::TabBarScrollWidget(QTabBar* tabBar, QWidget* parent)
     m_scrollArea->setWidget(m_tabBar);
 
     m_leftScrollButton = new ToolButton(this);
+    m_leftScrollButton->setIcon(PrometheusIconResolver::icon(QSL("tab-scroll-left")));
+    m_leftScrollButton->setIconSize(QSize(14, 14));
     m_leftScrollButton->setFocusPolicy(Qt::NoFocus);
     m_leftScrollButton->setAutoRaise(true);
     m_leftScrollButton->setObjectName("tabbar-button-left");
@@ -1561,6 +1565,8 @@ TabBarScrollWidget::TabBarScrollWidget(QTabBar* tabBar, QWidget* parent)
     connect(m_leftScrollButton, SIGNAL(middleMouseClicked()), this, SLOT(ensureVisible()));
 
     m_rightScrollButton = new ToolButton(this);
+    m_rightScrollButton->setIcon(PrometheusIconResolver::icon(QSL("tab-scroll-right")));
+    m_rightScrollButton->setIconSize(QSize(14, 14));
     m_rightScrollButton->setFocusPolicy(Qt::NoFocus);
     m_rightScrollButton->setAutoRaise(true);
     m_rightScrollButton->setObjectName("tabbar-button-right");
@@ -1832,6 +1838,7 @@ void CloseButton::leaveEvent(QEvent* event)
 void CloseButton::paintEvent(QPaintEvent*)
 {
     QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
     QStyleOption opt;
     opt.initFrom(this);
     opt.state |= QStyle::State_AutoRaise;
@@ -1857,5 +1864,14 @@ void CloseButton::paintEvent(QPaintEvent*)
         }
     }
 
-    style()->drawPrimitive(QStyle::PE_IndicatorTabClose, &opt, &p, this);
+    if (isUnderMouse || isDown() || isChecked()) {
+        QColor fill = palette().color(QPalette::Text);
+        fill.setAlpha(isDown() || isChecked() ? 36 : 18);
+        p.setPen(Qt::NoPen);
+        p.setBrush(fill);
+        p.drawRoundedRect(rect().adjusted(2, 2, -2, -2), 8, 8);
+    }
+
+    const QIcon icon = PrometheusIconResolver::icon(QSL("nav-close-tab"));
+    icon.paint(&p, rect().adjusted(7, 7, -7, -7), Qt::AlignCenter, isEnabled() ? QIcon::Normal : QIcon::Disabled);
 }

@@ -1,5 +1,5 @@
 [Desktop Entry]
-Name=Falkon
+Name=Prometheus
 Name[ar]=فالكون
 Name[ast]=Falkon
 Name[az]=Falkon
@@ -47,9 +47,9 @@ Name[uk]=Falkon
 Name[zh_CN]=Falkon 浏览器
 Name[zh_TW]=Falkon
 Type=Application
-Icon=falkon
+Icon=prometheus
 Categories=Network;WebBrowser;
-Comment=A fast and secure web browser
+Comment=Agent-native browser control. Powered by FSB.
 Comment[ar]=متصفّح وبّ سريع وآمن
 Comment[az]=Sürətli və təhlükəsiz veb bələdçi
 Comment[bg]=Бърз и сигурен уеб браузър
@@ -140,8 +140,8 @@ GenericName[ug]=توركۆرگۈ
 GenericName[uk]=Переглядач інтернету
 GenericName[zh_CN]=网页浏览器
 GenericName[zh_TW]=網路瀏覽器
-Exec=falkon %u
-StartupWMClass=Falkon
+Exec=prometheus %u
+StartupWMClass=Prometheus
 MimeType=text/html;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;application/x-mimearchive;
 Terminal=false
 Actions=NewTab;NewWindow;PrivateBrowsing;
@@ -194,7 +194,7 @@ Name[uk]=Відкрити нову вкладку
 Name[zh_CN]=新建标签页
 Name[zh_TW]=開啟新分頁
 Icon=tab-new
-Exec=falkon --new-tab
+Exec=prometheus --new-tab
 
 [Desktop Action NewWindow]
 Name=Open new window
@@ -244,7 +244,7 @@ Name[uk]=Відкрити нове вікно
 Name[zh_CN]=打开新窗口
 Name[zh_TW]=開啟新視窗
 Icon=window-new
-Exec=falkon --new-window
+Exec=prometheus --new-window
 
 [Desktop Action PrivateBrowsing]
 Name=Start private browsing
@@ -293,4 +293,4 @@ Name[uk]=Конфіденційний перегляд
 Name[zh_CN]=启动隐身浏览
 Name[zh_TW]=開始隱私瀏覽
 Icon=view-private
-Exec=falkon --private-browsing
+Exec=prometheus --private-browsing

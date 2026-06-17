@@ -23,13 +23,13 @@ namespace Qz
 {
 const int sessionVersion = 0x0004;
 
-FALKON_EXPORT const char *APPNAME = "Falkon";
+FALKON_EXPORT const char *APPNAME = "Prometheus";
 FALKON_EXPORT const char *VERSION = FALKON_VERSION;
 FALKON_EXPORT const char *AUTHOR = "Juraj Oravec";
 FALKON_EXPORT const char *COPYRIGHT = "2020-2025";
-FALKON_EXPORT const char *WWWADDRESS = "https://falkon.org";
-FALKON_EXPORT const char *BUGSADDRESS = "https://bugs.kde.org/describecomponents.cgi?product=Falkon";
-FALKON_EXPORT const char *WIKIADDRESS = "https://userbase.kde.org/Falkon";
+FALKON_EXPORT const char *WWWADDRESS = "https://www.full-selfbrowsing.com";
+FALKON_EXPORT const char *BUGSADDRESS = "https://www.full-selfbrowsing.com";
+FALKON_EXPORT const char *WIKIADDRESS = "https://www.full-selfbrowsing.com";
 
 const QList<AuthorInfo> AUTHORS = {
     {QSL("Juraj Oravec"), QSL("jurajoravec@mailo.com"), 2020, 2025},

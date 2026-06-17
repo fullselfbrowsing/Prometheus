@@ -79,6 +79,10 @@
 #include <QActionGroup>
 #include <QStringConverter>
 
+#ifdef Q_OS_MACOS
+#include "prometheusmacwindowchrome.h"
+#endif
+
 #ifdef QZ_WS_X11
 #include <xcb/xcb.h>
 #include <xcb/xcb_atom.h>
@@ -223,11 +227,12 @@ BrowserWindow::BrowserWindow(Qz::BrowserWindowType type, const QList<QUrl> start
     setAttribute(Qt::WA_DontCreateNativeAncestors);
 
     setObjectName(QSL("mainwindow"));
-    setWindowTitle(tr("Falkon"));
+    setWindowTitle(QSL("Prometheus"));
     setProperty("private", mApp->isPrivate());
 
     setupUi();
     setupMenu();
+    applyPrometheusWindowChrome();
 
     m_hideNavigationTimer = new QTimer(this);
     m_hideNavigationTimer->setInterval(1000);
@@ -239,10 +244,10 @@ BrowserWindow::BrowserWindow(Qz::BrowserWindowType type, const QList<QUrl> start
     QTimer::singleShot(0, this, &BrowserWindow::postLaunch);
 
     if (mApp->isPrivate()) {
-        QzTools::setWmClass(QSL("Falkon Browser (Private Window)"), this);
+        QzTools::setWmClass(QSL("Prometheus Browser (Private Window)"), this);
     }
     else {
-        QzTools::setWmClass(QSL("Falkon Browser"), this);
+        QzTools::setWmClass(QSL("Prometheus Browser"), this);
     }
 }
 
@@ -295,6 +300,7 @@ void BrowserWindow::postLaunch()
 
     if (!mApp->isTestModeEnabled()) {
         show();
+        applyPrometheusWindowChrome();
     }
 
     switch (m_windowType) {
@@ -509,6 +515,14 @@ void BrowserWindow::setupMenu()
 
     auto* restoreClosedWindow = new QShortcut(QKeySequence(QSL("Ctrl+Shift+N")), this);
     connect(restoreClosedWindow, &QShortcut::activated, mApp->closedWindowsManager(), &ClosedWindowsManager::restoreClosedWindow);
+}
+
+void BrowserWindow::applyPrometheusWindowChrome()
+{
+#ifdef Q_OS_MACOS
+    setUnifiedTitleAndToolBarOnMac(true);
+    applyPrometheusMacWindowChrome(this);
+#endif
 }
 
 void BrowserWindow::updateStartupFocus()
@@ -1037,9 +1051,9 @@ void BrowserWindow::currentTabChanged()
 
     const QString title = view->webTab()->title(/*allowEmpty*/true);
     if (title.isEmpty()) {
-        setWindowTitle(tr("Falkon"));
+        setWindowTitle(QSL("Prometheus"));
     } else {
-        setWindowTitle(tr("%1 - Falkon").arg(title));
+        setWindowTitle(QSL("%1 - Prometheus").arg(title));
     }
     m_ipLabel->setText(view->getIp());
     view->setFocus();

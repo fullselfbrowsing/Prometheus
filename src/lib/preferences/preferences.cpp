@@ -265,7 +265,7 @@ Preferences::Preferences(BrowserWindow* window)
     ui->showClosedTabsButton->setChecked(settings.value(QSL("showClosedTabsButton"), false).toBool());
     ui->showCloseOnInactive->setCurrentIndex(settings.value(QSL("showCloseOnInactiveTabs"), 0).toInt());
     const QzSettings::TabLayout tabLayout = QzSettings::tabLayoutFromString(
-        settings.value(QSL("tabLayout"), QSL("Separate")).toString());
+        settings.value(QSL("tabLayout"), QSL("Compact")).toString());
     ui->tabLayout->setCurrentIndex(tabLayout == QzSettings::TabLayout::Compact ? 0 : 1);
     const QzSettings::TabDisplay tabDisplay = QzSettings::tabDisplayFromString(
         settings.value(QSL("tabDisplay"), QSL("TitleAndIcon")).toString());

@@ -13,7 +13,19 @@
 /*MainWindow*/
 #mainwindow
 {
-    background : #ffffff;
+    background : #090909;
+}
+
+#mainwindow-statusbar
+{
+    background-color: #141414;
+    color: #f2f2f2;
+}
+
+#locationbar, #websearchbar
+{
+    border-color: #ff6b35;
+    selection-background-color: #ff6b35;
 }
 
 #statusbar-ip-label
@@ -275,7 +287,7 @@ IconProvider
 
 #locationbar::focus
 {
-    border-color: #0078d7;
+    border-color: #ff6b35;
 }
 
 #locationbar-bookmarkicon
@@ -349,7 +361,7 @@ IconProvider
 
 #websearchbar::focus
 {
-    border-color: #0078d7;
+    border-color: #ff6b35;
 }
 
 #websearchbar-searchbutton

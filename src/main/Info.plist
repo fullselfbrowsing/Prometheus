@@ -3,7 +3,7 @@
 <plist version="0.9">
 <dict>
     <key>CFBundleIconFile</key>
-    <string>@ICON@</string>
+    <string>prometheus.icns</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleGetInfoString</key>
@@ -11,17 +11,17 @@
     <key>CFBundleVersion</key>
     <string>2.1.2</string>
     <key>CFBundleSignature</key>
-    <string>@TYPEINFO@</string>
+    <string>PRMT</string>
     <key>CFBundleExecutable</key>
-    <string>@EXECUTABLE@</string>
+    <string>prometheus</string>
     <key>CFBundleIdentifier</key>
-    <string>org.kde.falkon</string>
+    <string>com.fullselfbrowsing.prometheus</string>
 
     <key>CFBundleURLTypes</key>
     <array>
       <dict>
         <key>CFBundleURLIconFile</key>
-        <string>@ICON@</string>
+        <string>prometheus.icns</string>
         <key>CFBundleURLName</key>
         <string>http URL</string>
         <key>CFBundleURLSchemes</key>
@@ -43,7 +43,7 @@
           <string>xhtml</string>
         </array>
         <key>CFBundleTypeIconFile</key>
-        <string>@ICON@</string>
+        <string>prometheus.icns</string>
         <key>CFBundleTypeName</key>
         <string>HTML Document</string>
         <key>CFBundleTypeOSTypes</key>
@@ -58,9 +58,9 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>English</string>
     <key>CFBundleName</key>
-    <string>Falkon</string>
+    <string>Prometheus</string>
     <key>CFBundleDisplayName</key>
-    <string>Falkon</string>
+    <string>Prometheus</string>
 
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>

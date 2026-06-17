@@ -527,6 +527,7 @@ set(SRCS ${SRCS}
     tools/mactoolbutton.h
     tools/menubar.h
     tools/pagethumbnailer.h
+    tools/prometheusmacwindowchrome.h
     tools/progressbar.h
     tools/qztools.h
     tools/removeitemfocusdelegate.h
@@ -560,7 +561,10 @@ if (WIN32)
     set(SRCS ${SRCS} other/registerqappassociation.cpp other/registerqappassociation.h)
 endif()
 if (APPLE)
-    set(SRCS ${SRCS} tools/disablewindowtabbbing.mm)
+    set(SRCS ${SRCS}
+        tools/disablewindowtabbbing.mm
+        tools/prometheusmacwindowchrome.mm
+    )
 endif()
 
 # TODO: use ki18n_wrap_ui?

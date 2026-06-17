@@ -26,7 +26,7 @@
 
 class QMenuBar;
 
-class Preferences;
+class FsbControlPanelPage;
 class HistoryMenu;
 class BookmarksMenu;
 class BrowserWindow;
@@ -120,7 +120,7 @@ private:
 
     QHash<QString, QAction*> m_actions;
     QPointer<BrowserWindow> m_window;
-    QPointer<Preferences> m_preferences;
+    QPointer<FsbControlPanelPage> m_preferences;
 
     QMenu* m_menuFile;
     QMenu* m_menuEdit;

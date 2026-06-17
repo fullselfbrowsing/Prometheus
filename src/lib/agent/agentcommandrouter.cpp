@@ -5,7 +5,6 @@
 #include "datapaths.h"
 #include "fsbcontrolpanel.h"
 #include "mainapplication.h"
-#include "preferences.h"
 #include "settings.h"
 #include "sidebar.h"
 #include "statusbar.h"
@@ -915,16 +914,16 @@ QJsonObject AgentCommandRouter::routeOpenInternalSurface(const QString &id, cons
     const bool internalSurfaceEnabled = policySettings.value(QSL("PrometheusRuntime/Policy/internalSurfaceControl"), true).toBool();
     if (!internalSurfaceEnabled) {
         return failure(id, tool, QSL("PERMISSION_BLOCKED"),
-                       QSL("Internal surface control is disabled by the Prometheus policy settings. Enable it from the native Preferences to allow agent access to browser-internal pages."),
+                       QSL("Internal surface control is disabled by the Prometheus policy settings. Enable it from the Prometheus Control Panel to allow agent access to browser-internal pages."),
                        auditSequence);
     }
 
     const QString surface = params.value(QSL("surface")).toString(QSL("preferences"));
-    const bool wantsPreferences = surface == QL1S("preferences");
+    const bool wantsPreferences = surface == QL1S("preferences") || surface == QL1S("settings");
     const bool wantsAgent = surface == QL1S("agent") || surface == QL1S("prometheus_agent") || surface == QL1S("runtime");
-    const bool wantsControlPanel = surface == QL1S("control_panel");
+    const bool wantsControlPanel = surface == QL1S("control_panel") || surface == QL1S("dashboard");
     if (!wantsPreferences && !wantsAgent && !wantsControlPanel) {
-        return failure(id, tool, QSL("unsupported_surface"), QSL("Supported internal surfaces are preferences, prometheus_agent, and control_panel."), auditSequence);
+        return failure(id, tool, QSL("unsupported_surface"), QSL("Supported internal surfaces are preferences, settings, prometheus_agent, and control_panel."), auditSequence);
     }
 
     const QList<BrowserWindow*> windows = mApp->windows();
@@ -944,17 +943,15 @@ QJsonObject AgentCommandRouter::routeOpenInternalSurface(const QString &id, cons
         return failure(id, tool, agentErrorCode, agentErrorMessage, auditSequence);
     }
 
-    if (wantsPreferences) {
-        auto* preferences = new Preferences(windows.at(windowIndex));
-        preferences->setAttribute(Qt::WA_DeleteOnClose);
-        preferences->show();
-        preferences->raise();
-        preferences->activateWindow();
-    } else if (wantsControlPanel) {
+    if (wantsPreferences || wantsControlPanel) {
         auto* panel = new FsbControlPanelPage(windows.at(windowIndex));
         panel->setWindowFlags(Qt::Window);
         panel->setAttribute(Qt::WA_DeleteOnClose);
         panel->setWindowTitle(tr("Prometheus Control Panel"));
+        panel->resize(1080, 720);
+        if (wantsPreferences) {
+            panel->showSettingsSection();
+        }
         panel->show();
         panel->raise();
         panel->activateWindow();

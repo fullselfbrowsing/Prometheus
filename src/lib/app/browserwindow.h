@@ -193,6 +193,7 @@ private:
 
     void setupUi();
     void setupMenu();
+    void applyPrometheusWindowChrome();
     void updateStartupFocus();
 
     QAction *createEncodingAction(const QString &codecName, const QString &activeCodecName, QMenu *menu);

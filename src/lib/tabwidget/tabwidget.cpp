@@ -32,6 +32,7 @@
 #include "tabgroupmodel.h"
 #include "pluginproxy.h"
 #include "checkboxdialog.h"
+#include "agent/prometheusiconresolver.h"
 
 #include <QFile>
 #include <QTimer>
@@ -41,6 +42,7 @@
 #include <QWebEngineHistory>
 #include <QClipboard>
 #include <QMessageBox>
+#include <QSize>
 
 namespace {
 const QString kTabGroupSessionKey = QSL("prometheusTabGroupId");
@@ -52,6 +54,8 @@ AddTabButton::AddTabButton(TabWidget* tabWidget, TabBar* tabBar)
     , m_tabWidget(tabWidget)
 {
     setObjectName("tabwidget-button-addtab");
+    setIcon(PrometheusIconResolver::icon(QSL("nav-new-tab")));
+    setIconSize(QSize(14, 14));
     setAutoRaise(true);
     setFocusPolicy(Qt::NoFocus);
     setAcceptDrops(true);
@@ -129,6 +133,8 @@ TabWidget::TabWidget(BrowserWindow *window, QWidget *parent)
     // ClosedTabs button displayed as a permanent corner widget
     m_buttonClosedTabs = new ToolButton(m_tabBar);
     m_buttonClosedTabs->setObjectName("tabwidget-button-closedtabs");
+    m_buttonClosedTabs->setIcon(PrometheusIconResolver::icon(QSL("tab-closed")));
+    m_buttonClosedTabs->setIconSize(QSize(14, 14));
     m_buttonClosedTabs->setMenu(m_menuClosedTabs);
     m_buttonClosedTabs->setPopupMode(QToolButton::InstantPopup);
     m_buttonClosedTabs->setToolTip(tr("Closed tabs"));
@@ -140,6 +146,8 @@ TabWidget::TabWidget(BrowserWindow *window, QWidget *parent)
     // ListTabs button is showed only when tabbar overflows
     m_buttonListTabs = new ToolButton(m_tabBar);
     m_buttonListTabs->setObjectName("tabwidget-button-opentabs");
+    m_buttonListTabs->setIcon(PrometheusIconResolver::icon(QSL("tab-all")));
+    m_buttonListTabs->setIconSize(QSize(14, 14));
     m_buttonListTabs->setMenu(m_menuTabs);
     m_buttonListTabs->setPopupMode(QToolButton::InstantPopup);
     m_buttonListTabs->setToolTip(tr("List of tabs"));

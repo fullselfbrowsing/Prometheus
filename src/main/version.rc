@@ -17,13 +17,13 @@ BEGIN
     BEGIN
         BLOCK "000004b0"
         BEGIN
-            VALUE "CompanyName", "KDE"
-            VALUE "FileDescription", "Falkon"
+            VALUE "CompanyName", "Full Self Browsing"
+            VALUE "FileDescription", "Prometheus"
             VALUE "FileVersion", FALKON_VERSION_STRING
             VALUE "LegalCopyright", "Copyright (C) 2010-2018 David Rosca"
-            VALUE "InternalName", "falkon"
-            VALUE "OriginalFilename", "falkon.exe"
-            VALUE "ProductName", "Falkon"
+            VALUE "InternalName", "prometheus"
+            VALUE "OriginalFilename", "prometheus.exe"
+            VALUE "ProductName", "Prometheus"
             VALUE "ProductVersion", FALKON_VERSION_STRING
         END
     END

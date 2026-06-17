@@ -19,10 +19,10 @@
 #include "locationcompletermodel.h"
 #include "locationcompleterdelegate.h"
 #include "toolbutton.h"
-#include "iconprovider.h"
 #include "mainapplication.h"
 #include "searchenginesmanager.h"
 #include "loadrequest.h"
+#include "agent/prometheusiconresolver.h"
 
 #include <QKeyEvent>
 #include <QApplication>
@@ -69,9 +69,10 @@ LocationCompleterView::LocationCompleterView()
     searchLayout->setContentsMargins(10, 4, 4, 4);
 
     auto *searchSettingsButton = new ToolButton(this);
-    searchSettingsButton->setIcon(IconProvider::settingsIcon());
+    searchSettingsButton->setIcon(PrometheusIconResolver::icon(QSL("settings-general")));
     searchSettingsButton->setToolTip(tr("Manage Search Engines"));
     searchSettingsButton->setAutoRaise(true);
+    searchSettingsButton->setToolbarButtonLook(true);
     searchSettingsButton->setIconSize(QSize(16, 16));
     connect(searchSettingsButton, &ToolButton::clicked, this, &LocationCompleterView::searchEnginesDialogRequested);
 
@@ -358,6 +359,7 @@ void LocationCompleterView::setupSearchEngines()
         button->setIcon(engine.icon);
         button->setToolTip(engine.name);
         button->setAutoRaise(true);
+        button->setToolbarButtonLook(true);
         button->setIconSize(QSize(16, 16));
         connect(button, &ToolButton::clicked, this, [=]() {
             const QString text = model()->index(0, 0).data(LocationCompleterModel::SearchStringRole).toString();

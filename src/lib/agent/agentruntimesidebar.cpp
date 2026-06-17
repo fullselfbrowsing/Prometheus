@@ -1,6 +1,7 @@
 #include "agentruntimesidebar.h"
 
 #include "agentruntime.h"
+#include "prometheusiconresolver.h"
 #include "prometheusmarkwidget.h"
 #include "bookmarkitem.h"
 #include "bookmarks.h"
@@ -37,6 +38,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QUrl>
+#include <QSize>
 #include <QVBoxLayout>
 
 namespace {
@@ -48,6 +50,16 @@ QString progressSummary(const QJsonObject &task)
         return QString();
     }
     return progress.at(progress.size() - 1).toObject().value(QSL("message")).toString();
+}
+
+QPushButton* makePrometheusChip(QWidget* parent, const QIcon &icon, const QString &text)
+{
+    auto* button = new QPushButton(icon, text, parent);
+    button->setProperty("pm-chip", true);
+    button->setMinimumHeight(30);
+    button->setIconSize(QSize(11, 11));
+    button->setCursor(Qt::PointingHandCursor);
+    return button;
 }
 
 } // namespace
@@ -159,8 +171,14 @@ AgentRuntimeSidebarWidget::AgentRuntimeSidebarWidget(BrowserWindow* window, QWid
     // allocated (WR-05 — QTabWidget wastes ~20-30 px of sidebar height for the
     // empty tab content region even with setMaximumHeight(36)).
     auto* modeSwitcher = new QTabBar(this);
+    modeSwitcher->setObjectName(QSL("PrometheusModeSwitcher"));
     modeSwitcher->setDocumentMode(true);
     modeSwitcher->setMaximumHeight(36);
+    modeSwitcher->setIconSize(QSize(14, 14));
+    modeSwitcher->setDrawBase(false);
+    modeSwitcher->setExpanding(true);
+    modeSwitcher->setElideMode(Qt::ElideNone);
+    modeSwitcher->setUsesScrollButtons(false);
 
     // Stacked widget holding the four mode pages
     m_modeStack = new QStackedWidget(this);
@@ -182,10 +200,14 @@ AgentRuntimeSidebarWidget::AgentRuntimeSidebarWidget(BrowserWindow* window, QWid
     m_modeStack->addWidget(toolsPage);
 
     // Add four tab labels; content is managed by m_modeStack, not the bar itself.
-    modeSwitcher->addTab(tr("FSB Agent"));
-    modeSwitcher->addTab(tr("Explorer"));
-    modeSwitcher->addTab(tr("Tabs"));
-    modeSwitcher->addTab(tr("Tools"));
+    modeSwitcher->addTab(PrometheusIconResolver::icon(QSL("mode-agent")), tr("Agent"));
+    modeSwitcher->addTab(PrometheusIconResolver::icon(QSL("mode-explorer")), tr("Explore"));
+    modeSwitcher->addTab(PrometheusIconResolver::icon(QSL("mode-tabs")), tr("Tabs"));
+    modeSwitcher->addTab(PrometheusIconResolver::icon(QSL("mode-tools")), tr("Tools"));
+    modeSwitcher->setTabToolTip(0, tr("FSB Agent"));
+    modeSwitcher->setTabToolTip(1, tr("Explorer"));
+    modeSwitcher->setTabToolTip(2, tr("Tabs"));
+    modeSwitcher->setTabToolTip(3, tr("Tools"));
 
     connect(modeSwitcher, &QTabBar::currentChanged, m_modeStack, &QStackedWidget::setCurrentIndex);
 
@@ -234,12 +256,16 @@ void AgentRuntimeSidebarWidget::buildFsbAgentPage(QWidget* page)
     actionRow->setSpacing(8);
 
     m_runTaskBtn = new QPushButton(tr("Run Task"), page);
+    m_runTaskBtn->setIcon(PrometheusIconResolver::icon(QSL("agent-send")));
+    m_runTaskBtn->setIconSize(QSize(14, 14));
     m_runTaskBtn->setMinimumHeight(32);
     m_runTaskBtn->setProperty("accent", true);
     auto* runShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), page);
     connect(runShortcut, &QShortcut::activated, this, &AgentRuntimeSidebarWidget::runTask);
 
     m_cancelTaskBtn = new QPushButton(tr("Cancel Task"), page);
+    m_cancelTaskBtn->setIcon(PrometheusIconResolver::icon(QSL("agent-stop-task")));
+    m_cancelTaskBtn->setIconSize(QSize(14, 14));
     m_cancelTaskBtn->setMinimumHeight(32);
     m_cancelTaskBtn->setProperty("destructive", true);
     m_cancelTaskBtn->setVisible(false);
@@ -248,8 +274,39 @@ void AgentRuntimeSidebarWidget::buildFsbAgentPage(QWidget* page)
     actionRow->addWidget(m_cancelTaskBtn);
     layout->addLayout(actionRow);
 
+    auto* suggestionRow = new QHBoxLayout;
+    suggestionRow->setSpacing(6);
+    suggestionRow->setContentsMargins(0, 0, 0, 0);
+
+    auto* summarizeChip = makePrometheusChip(page, PrometheusIconResolver::icon(QSL("agent-summarize")), tr("Summarize"));
+    auto* extractChip = makePrometheusChip(page, PrometheusIconResolver::icon(QSL("agent-extract")), tr("Extract table"));
+    auto* translateChip = makePrometheusChip(page, PrometheusIconResolver::icon(QSL("agent-translate")), tr("Translate"));
+    suggestionRow->addWidget(summarizeChip);
+    suggestionRow->addWidget(extractChip);
+    suggestionRow->addWidget(translateChip);
+    suggestionRow->addStretch(1);
+    layout->addLayout(suggestionRow);
+
     connect(m_runTaskBtn, &QPushButton::clicked, this, &AgentRuntimeSidebarWidget::runTask);
     connect(m_cancelTaskBtn, &QPushButton::clicked, this, &AgentRuntimeSidebarWidget::cancelCurrentTask);
+    connect(summarizeChip, &QPushButton::clicked, this, [this]() {
+        if (m_taskPrompt) {
+            m_taskPrompt->setPlainText(tr("Summarize this page."));
+            m_taskPrompt->setFocus();
+        }
+    });
+    connect(extractChip, &QPushButton::clicked, this, [this]() {
+        if (m_taskPrompt) {
+            m_taskPrompt->setPlainText(tr("Extract the main table from this page."));
+            m_taskPrompt->setFocus();
+        }
+    });
+    connect(translateChip, &QPushButton::clicked, this, [this]() {
+        if (m_taskPrompt) {
+            m_taskPrompt->setPlainText(tr("Translate the visible page content."));
+            m_taskPrompt->setFocus();
+        }
+    });
 }
 
 void AgentRuntimeSidebarWidget::buildExplorerPage(QWidget* page)
@@ -268,7 +325,7 @@ void AgentRuntimeSidebarWidget::buildExplorerPage(QWidget* page)
     bookmarksLayout->setSpacing(4);
     m_bookmarkList = new QListWidget(bookmarksWidget);
     bookmarksLayout->addWidget(m_bookmarkList, 1);
-    m_explorerTabs->addTab(bookmarksWidget, tr("Bookmarks"));
+    m_explorerTabs->addTab(bookmarksWidget, PrometheusIconResolver::icon(QSL("nav-bookmarks")), tr("Bookmarks"));
 
     // Reading List sub-tab
     auto* readingWidget = new QWidget(m_explorerTabs);
@@ -277,7 +334,7 @@ void AgentRuntimeSidebarWidget::buildExplorerPage(QWidget* page)
     readingLayout->setSpacing(4);
     m_readingList = new QListWidget(readingWidget);
     readingLayout->addWidget(m_readingList, 1);
-    m_explorerTabs->addTab(readingWidget, tr("Reading List"));
+    m_explorerTabs->addTab(readingWidget, PrometheusIconResolver::icon(QSL("tool-reader")), tr("Reading List"));
 
     // History sub-tab
     auto* historyWidget = new QWidget(m_explorerTabs);
@@ -286,7 +343,7 @@ void AgentRuntimeSidebarWidget::buildExplorerPage(QWidget* page)
     historyLayout->setSpacing(4);
     m_historyList = new QListWidget(historyWidget);
     historyLayout->addWidget(m_historyList, 1);
-    m_explorerTabs->addTab(historyWidget, tr("History"));
+    m_explorerTabs->addTab(historyWidget, PrometheusIconResolver::icon(QSL("diag-log")), tr("History"));
 
     layout->addWidget(m_explorerTabs, 1);
 
@@ -316,6 +373,7 @@ void AgentRuntimeSidebarWidget::buildTabsPage(QWidget* page)
     // Pinned section
     auto* pinnedLabel = new QLabel(tr("Pinned"), page);
     pinnedLabel->setObjectName(QSL("sectionLabel"));
+    pinnedLabel->setProperty("pm-section-label", true);
     layout->addWidget(pinnedLabel);
 
     m_pinnedList = new QListWidget(page);
@@ -324,6 +382,7 @@ void AgentRuntimeSidebarWidget::buildTabsPage(QWidget* page)
     // Groups section
     auto* groupsLabel = new QLabel(tr("Groups"), page);
     groupsLabel->setObjectName(QSL("sectionLabel"));
+    groupsLabel->setProperty("pm-section-label", true);
     layout->addWidget(groupsLabel);
 
     m_groupList = new QListWidget(page);
@@ -332,6 +391,7 @@ void AgentRuntimeSidebarWidget::buildTabsPage(QWidget* page)
     // Open now section
     auto* openLabel = new QLabel(tr("Open now"), page);
     openLabel->setObjectName(QSL("sectionLabel"));
+    openLabel->setProperty("pm-section-label", true);
     layout->addWidget(openLabel);
 
     m_openTabsList = new QListWidget(page);
@@ -346,32 +406,77 @@ void AgentRuntimeSidebarWidget::buildToolsPage(QWidget* page)
 
     // Page toggle checkboxes
     m_readerModeCheck = new QCheckBox(tr("Reader mode"), page);
+    m_readerModeCheck->setIcon(PrometheusIconResolver::icon(QSL("tool-reader")));
+    m_readerModeCheck->setIconSize(QSize(14, 14));
+    m_readerModeCheck->setProperty("pm-tool", true);
     m_readerModeCheck->setMinimumHeight(32);
     layout->addWidget(m_readerModeCheck);
 
     m_focusHighlightCheck = new QCheckBox(tr("Focus highlight"), page);
+    m_focusHighlightCheck->setIcon(PrometheusIconResolver::icon(QSL("tool-focus")));
+    m_focusHighlightCheck->setIconSize(QSize(14, 14));
+    m_focusHighlightCheck->setProperty("pm-tool", true);
     m_focusHighlightCheck->setMinimumHeight(32);
     layout->addWidget(m_focusHighlightCheck);
 
     m_forceDarkCheck = new QCheckBox(tr("Force dark site"), page);
+    m_forceDarkCheck->setIcon(PrometheusIconResolver::icon(QSL("tool-force-dark")));
+    m_forceDarkCheck->setIconSize(QSize(14, 14));
+    m_forceDarkCheck->setProperty("pm-tool", true);
     m_forceDarkCheck->setMinimumHeight(32);
     layout->addWidget(m_forceDarkCheck);
 
-    // Annotate chip row (placeholder)
     auto* annotateLabel = new QLabel(tr("Annotate"), page);
-    annotateLabel->setObjectName(QSL("chipRow"));
-    annotateLabel->setMinimumHeight(32);
+    annotateLabel->setProperty("pm-section-label", true);
     layout->addWidget(annotateLabel);
 
-    // FSB on this page: switches to FSB Agent mode (index 0)
-    auto* fsbOnPageBtn = new QPushButton(tr("FSB on this page"), page);
-    fsbOnPageBtn->setMinimumHeight(32);
-    connect(fsbOnPageBtn, &QPushButton::clicked, this, [this]() {
-        if (m_modeStack) {
-            m_modeStack->setCurrentIndex(0);
+    auto* annotateRow = new QHBoxLayout;
+    annotateRow->setContentsMargins(0, 0, 0, 0);
+    annotateRow->setSpacing(6);
+    annotateRow->addWidget(makePrometheusChip(page, PrometheusIconResolver::icon(QSL("tool-annotate-highlight")), tr("Highlight")));
+    annotateRow->addWidget(makePrometheusChip(page, PrometheusIconResolver::icon(QSL("tool-annotate-draw")), tr("Draw")));
+    annotateRow->addWidget(makePrometheusChip(page, PrometheusIconResolver::icon(QSL("tool-annotate-note")), tr("Note")));
+    annotateRow->addWidget(makePrometheusChip(page, PrometheusIconResolver::icon(QSL("tool-annotate-snapshot")), tr("Snapshot")));
+    annotateRow->addWidget(makePrometheusChip(page, PrometheusIconResolver::icon(QSL("tool-annotate-copy")), tr("Copy link")));
+    annotateRow->addStretch(1);
+    layout->addLayout(annotateRow);
+
+    auto* fsbLabel = new QLabel(tr("FSB on this page"), page);
+    fsbLabel->setProperty("pm-section-label", true);
+    layout->addWidget(fsbLabel);
+
+    auto* fsbRow = new QHBoxLayout;
+    fsbRow->setContentsMargins(0, 0, 0, 0);
+    fsbRow->setSpacing(6);
+    auto* summarizeChip = makePrometheusChip(page, PrometheusIconResolver::icon(QSL("agent-summarize")), tr("Summarize"));
+    auto* extractChip = makePrometheusChip(page, PrometheusIconResolver::icon(QSL("agent-extract")), tr("Extract"));
+    auto* translateChip = makePrometheusChip(page, PrometheusIconResolver::icon(QSL("agent-translate")), tr("Translate"));
+    auto* pricesChip = makePrometheusChip(page, PrometheusIconResolver::icon(QSL("agent-find-prices")), tr("Find prices"));
+    fsbRow->addWidget(summarizeChip);
+    fsbRow->addWidget(extractChip);
+    fsbRow->addWidget(translateChip);
+    fsbRow->addWidget(pricesChip);
+    fsbRow->addStretch(1);
+    layout->addLayout(fsbRow);
+
+    auto seedToolPrompt = [this](const QString &prompt) {
+        seedPromptAndOpen(prompt);
+        if (m_taskPrompt) {
+            m_taskPrompt->setFocus();
         }
+    };
+    connect(summarizeChip, &QPushButton::clicked, this, [seedToolPrompt]() {
+        seedToolPrompt(AgentRuntimeSidebarWidget::tr("Summarize this page."));
     });
-    layout->addWidget(fsbOnPageBtn);
+    connect(extractChip, &QPushButton::clicked, this, [seedToolPrompt]() {
+        seedToolPrompt(AgentRuntimeSidebarWidget::tr("Extract useful structured data from this page."));
+    });
+    connect(translateChip, &QPushButton::clicked, this, [seedToolPrompt]() {
+        seedToolPrompt(AgentRuntimeSidebarWidget::tr("Translate the visible page content."));
+    });
+    connect(pricesChip, &QPushButton::clicked, this, [seedToolPrompt]() {
+        seedToolPrompt(AgentRuntimeSidebarWidget::tr("Find product prices and compare the options on this page."));
+    });
 
     layout->addStretch(1);
 }
@@ -500,6 +605,7 @@ void AgentRuntimeSidebarWidget::refreshExplorer()
             BookmarkItem* item = queue.takeFirst();
             if (item->isUrl()) {
                 auto* listItem = new QListWidgetItem(
+                    PrometheusIconResolver::icon(QSL("nav-bookmarks")),
                     QSL("%1\n%2").arg(item->title(), item->urlString()),
                     m_bookmarkList
                 );
@@ -524,6 +630,7 @@ void AgentRuntimeSidebarWidget::refreshExplorer()
         const QVector<HistoryEntry> entries = mApp->history()->mostVisited(50);
         for (const HistoryEntry &entry : entries) {
             auto* listItem = new QListWidgetItem(
+                PrometheusIconResolver::icon(QSL("diag-log")),
                 QSL("%1\n%2").arg(entry.title, entry.url.toString()),
                 m_historyList
             );

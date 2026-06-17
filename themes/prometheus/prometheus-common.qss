@@ -6,6 +6,113 @@
 /* Border radius tokens: r-sm=8px r-md=12px r-lg=18px r-pill=9999px */
 /* Chrome height: 50px, Panel width: 320px */
 
+/* Global rounded Prometheus primitives */
+QWidget
+{
+    outline: none;
+}
+
+QLineEdit,
+QComboBox,
+QSpinBox,
+QDoubleSpinBox,
+QDateEdit,
+QTimeEdit,
+QDateTimeEdit
+{
+    min-height: 30px;
+    border-radius: 12px;
+    padding: 0px 10px;
+}
+
+QTextEdit,
+QPlainTextEdit
+{
+    border-radius: 12px;
+    padding: 8px 10px;
+}
+
+QPushButton
+{
+    min-height: 30px;
+    border-radius: 12px;
+    padding: 5px 12px;
+    qproperty-iconSize: 14px 14px;
+}
+
+QToolButton
+{
+    min-width: 28px;
+    min-height: 28px;
+    border-radius: 8px;
+    padding: 4px;
+    qproperty-iconSize: 14px 14px;
+}
+
+QComboBox::drop-down
+{
+    width: 24px;
+    border: none;
+}
+
+QAbstractItemView,
+QListView,
+QListWidget,
+QTreeView,
+QTreeWidget,
+QTableView,
+QTableWidget
+{
+    border-radius: 12px;
+    outline: none;
+}
+
+QAbstractItemView::item
+{
+    min-height: 26px;
+    border-radius: 8px;
+    padding: 4px 8px;
+}
+
+QMenu
+{
+    border-radius: 12px;
+    padding: 6px;
+}
+
+QMenu::item
+{
+    min-height: 24px;
+    border-radius: 8px;
+    padding: 4px 28px 4px 10px;
+}
+
+QDialogButtonBox QPushButton
+{
+    border-radius: 9999px;
+    padding: 6px 14px;
+}
+
+QGroupBox
+{
+    border-radius: 18px;
+    margin-top: 12px;
+    padding: 14px 12px 12px 12px;
+}
+
+QGroupBox::title
+{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px;
+    padding: 0px 6px;
+}
+
+QSplitter::handle
+{
+    border: none;
+}
+
 /* Toolbar icon buttons — 30x30 clickable area with 16px icon */
 QToolButton[toolbar-look="true"]
 {
@@ -25,13 +132,33 @@ QToolButton[toolbar-look="true"]
     max-width: 320px;
 }
 
+#PrometheusAgentSidebar #PrometheusHeader
+{
+    min-height: 34px;
+}
+
 /* Side panel mode tab bar */
-#PrometheusAgentSidebar QTabBar::tab
+#PrometheusAgentSidebar QTabBar#PrometheusModeSwitcher
+{
+    min-height: 34px;
+    max-height: 34px;
+    border-radius: 12px;
+    padding: 2px;
+}
+
+#PrometheusAgentSidebar QTabBar#PrometheusModeSwitcher::tab
 {
     min-height: 30px;
     border-radius: 8px;
     padding: 0px 8px;
     font-size: 13px;
+    min-width: 66px;
+    max-width: 76px;
+}
+
+#PrometheusAgentSidebar QTabBar::pane
+{
+    border: none;
 }
 
 /* Status pill */
@@ -123,4 +250,190 @@ QWidget[pm-card-lg="true"]
 {
     min-height: 50px;
     max-height: 50px;
+}
+
+/* Compact active tab/address pill */
+#locationbar
+{
+    min-height: 32px;
+    max-height: 32px;
+    border-radius: 9999px;
+}
+
+#compact-tab-strip
+{
+    min-height: 32px;
+    max-height: 32px;
+    border: none;
+}
+
+#websearchbar
+{
+    min-height: 32px;
+    max-height: 32px;
+    border-radius: 12px;
+}
+
+#tabbar,
+#tabbarwidget
+{
+    border: none;
+}
+
+#tabwidget-button-addtab,
+#tabwidget-button-closedtabs,
+#tabwidget-button-opentabs,
+#tabbar-button-left,
+#tabbar-button-right,
+#combotabbar_tabs_close_button
+{
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    border-radius: 8px;
+}
+
+#TabSearchPopup
+{
+    border-radius: 18px;
+}
+
+#TabSearchPopup QLineEdit,
+#TabSearchPopup QComboBox
+{
+    min-height: 30px;
+}
+
+#TabSearchPopup QToolButton,
+#TabSearchPopup QCheckBox
+{
+    border-radius: 10px;
+}
+
+#SearchToolbar
+{
+    min-height: 40px;
+}
+
+#SearchToolbar QLineEdit
+{
+    min-height: 30px;
+    border-radius: 12px;
+}
+
+#SearchToolbar QToolButton
+{
+    border-radius: 10px;
+}
+
+#PrometheusAgentSidebar QListWidget
+{
+    border: none;
+    outline: none;
+}
+
+#PrometheusAgentSidebar QListWidget::item
+{
+    min-height: 30px;
+    border-radius: 12px;
+    padding: 6px 8px;
+}
+
+QCheckBox[pm-tool="true"]
+{
+    border-radius: 12px;
+    padding: 8px 10px;
+    spacing: 8px;
+}
+
+QCheckBox[pm-tool="true"]::indicator
+{
+    width: 34px;
+    height: 20px;
+}
+
+/* Prometheus control panel */
+#FsbControlPanelPage #FsbControlPanelHeader
+{
+    min-height: 56px;
+    max-height: 56px;
+}
+
+#FsbControlPanelPage #sectionRail
+{
+    border-radius: 18px;
+    padding: 8px;
+    outline: none;
+}
+
+#FsbControlPanelPage #sectionRail::item
+{
+    min-height: 34px;
+    border-radius: 12px;
+    padding: 0px 10px;
+}
+
+#FsbControlPanelPage #sectionHeading
+{
+    font-size: 22px;
+    font-weight: 700;
+}
+
+#FsbControlPanelPage #controlHelpText
+{
+    font-size: 12px;
+    line-height: 140%;
+}
+
+#FsbControlPanelPage #statusChip
+{
+    border-radius: 9999px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+#FsbControlPanelPage QGroupBox[pm-control-card="true"]
+{
+    border-radius: 18px;
+    margin-top: 12px;
+    padding: 16px 14px 14px 14px;
+    font-weight: 650;
+}
+
+#FsbControlPanelPage QGroupBox[pm-control-card="true"]::title
+{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 14px;
+    padding: 0px 6px;
+}
+
+#FsbControlPanelPage QComboBox,
+#FsbControlPanelPage QSpinBox,
+#FsbControlPanelPage QLineEdit
+{
+    min-height: 30px;
+    border-radius: 10px;
+    padding: 0px 10px;
+}
+
+#FsbControlPanelPage QPlainTextEdit,
+#FsbControlPanelPage QListWidget,
+#FsbControlPanelPage QTableWidget
+{
+    border-radius: 14px;
+}
+
+#FsbControlPanelPage QPushButton
+{
+    border-radius: 9999px;
+    padding: 6px 12px;
+}
+
+#FsbControlPanelPage QCheckBox
+{
+    min-height: 28px;
+    spacing: 8px;
 }

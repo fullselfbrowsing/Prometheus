@@ -17,6 +17,8 @@
 * ============================================================ */
 #include "reloadstopbutton.h"
 
+#include "agent/prometheusiconresolver.h"
+
 #include <QTimer>
 #include <QStyle>
 
@@ -55,10 +57,12 @@ void ReloadStopButton::updateButton()
 {
     if (m_loadInProgress) {
         setToolTip(tr("Stop"));
+        setIcon(PrometheusIconResolver::icon(QSL("nav-stop")));
         setObjectName(QSL("navigation-button-stop"));
     }
     else {
         setToolTip(tr("Reload"));
+        setIcon(PrometheusIconResolver::icon(QSL("nav-reload")));
         setObjectName(QSL("navigation-button-reload"));
     }
 

@@ -110,7 +110,7 @@ void DataPaths::init()
     }
 
     if (MainApplication::isTestModeEnabled()) {
-        m_paths[Config].append(QDir::tempPath() + QSL("/Falkon-test"));
+        m_paths[Config].append(QDir::tempPath() + QSL("/Prometheus-test"));
     } else {
         m_paths[Config].append(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation));
     }

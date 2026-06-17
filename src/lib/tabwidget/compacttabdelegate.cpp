@@ -132,6 +132,21 @@ void CompactTabDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
 
     style->drawPrimitive(QStyle::PE_PanelItemViewItem, &opt, painter, widget);
 
+    const bool hovered = opt.state & QStyle::State_MouseOver;
+    const bool selected = opt.state & QStyle::State_Selected;
+    const bool current = index.data(TabModel::CurrentTabRole).toBool();
+    if (hovered || selected || current) {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        QColor fill = opt.palette.color(QPalette::Text);
+        fill.setAlpha(current || selected ? 36 : 18);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(fill);
+        const QRect pillRect = opt.rect.adjusted(2, 2, -2, -2);
+        painter->drawRoundedRect(pillRect, pillRect.height() / 2, pillRect.height() / 2);
+        painter->restore();
+    }
+
     const QRect contentRect = opt.rect.adjusted(Padding, 0, -Padding, 0);
     const int centerY = contentRect.center().y();
     int left = contentRect.left();

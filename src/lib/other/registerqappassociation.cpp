@@ -109,7 +109,7 @@ bool RegisterQAppAssociation::registerAppCapabilities()
 
         if (capabilitiesKey.isEmpty()) {
             QMessageBox::warning(mApp->getWindow(), tr("Warning!"),
-                                 tr("There are some problems. Please, reinstall Falkon.\n"
+                                 tr("There are some problems. Please, reinstall Prometheus.\n"
                                     "Maybe relaunch with administrator right do a magic for you! ;)"));
             return false;
         }

@@ -20,10 +20,11 @@
 #include "webpage.h"
 #include "lineedit.h"
 #include "ui_searchtoolbar.h"
-#include "iconprovider.h"
+#include "agent/prometheusiconresolver.h"
 
 #include <QKeyEvent>
 #include <QShortcut>
+#include <QStyle>
 
 SearchToolBar::SearchToolBar(WebView* view, QWidget* parent)
     : QWidget(parent)
@@ -34,7 +35,10 @@ SearchToolBar::SearchToolBar(WebView* view, QWidget* parent)
     setAttribute(Qt::WA_DeleteOnClose);
     ui->setupUi(this);
 
-    ui->closeButton->setIcon(IconProvider::instance()->standardIcon(QStyle::SP_DialogCloseButton));
+    ui->closeButton->setIcon(PrometheusIconResolver::icon(QSL("utility-close")));
+    ui->next->setIcon(PrometheusIconResolver::icon(QSL("nav-forward")));
+    ui->previous->setIcon(PrometheusIconResolver::icon(QSL("nav-back")));
+    ui->caseSensitive->setIcon(PrometheusIconResolver::icon(QSL("utility-match-case")));
     ui->next->setShortcut(QKeySequence(QSL("Ctrl+G")));
     ui->previous->setShortcut(QKeySequence(QSL("Ctrl+Shift+G")));
 

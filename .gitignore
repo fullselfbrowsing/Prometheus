@@ -1,4 +1,5 @@
 /build*/
+Testing/
 DEBIAN
 *.deb
 *.pro.user*
