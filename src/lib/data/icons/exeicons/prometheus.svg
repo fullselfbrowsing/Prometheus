@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Prometheus app icon — canonical PM mark -->
+<!-- Rounded square 24% corner radius, orange gradient, PM in Poppins Thin/Black -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff6b35"/>
+      <stop offset="100%" stop-color="#ff8c42"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background: 24% corner radius = 30.72px on 128px canvas -->
+  <rect width="128" height="128" rx="30.72" ry="30.72" fill="url(#grad)"/>
+  <!-- PM monogram: P Poppins Thin 100, M Poppins Black 900, white -->
+  <text x="32" y="72" font-family="Poppins, sans-serif" font-weight="100"
+        font-size="64" fill="#ffffff" text-anchor="middle"
+        dominant-baseline="middle">P</text>
+  <text x="96" y="72" font-family="Poppins, sans-serif" font-weight="900"
+        font-size="64" fill="#ffffff" text-anchor="middle"
+        dominant-baseline="middle">M</text>
+</svg>
