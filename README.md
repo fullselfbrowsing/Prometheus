@@ -1,18 +1,12 @@
 <div align="center">
 
-<img src="assets/prometheus.svg" alt="Prometheus app icon" width="112" />
+<img src="assets/prometheus.svg" alt="Prometheus logo" width="520" />
 
 # Prometheus
 
 **The agent native desktop browser. Full control of the whole browser through structure, not screenshots.**
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/fsb_logo_dark.png" />
-  <source media="(prefers-color-scheme: light)" srcset="assets/fsb_logo_light.png" />
-  <img src="assets/fsb_logo_light.png" alt="Powered by FSB logo" width="180" />
-</picture>
-
-*Powered by FSB. Pure structural intelligence. Zero vision. Zero guessing.*
+*Pure structural intelligence. Zero vision. Zero guessing.*
 
 ![Prometheus](https://img.shields.io/badge/Prometheus-Powered_by_FSB-090909?style=for-the-badge)
 ![Qt 6](https://img.shields.io/badge/Qt_6-QtWebEngine-41CD52?style=for-the-badge&logo=qt&logoColor=white)
@@ -62,26 +56,18 @@ Where a Chrome extension can only reach the page, Prometheus owns the browser. A
 
 ## Branding
 
-Prometheus is the product visible identity in the app, installer, and README. The affiliation mark is **Powered by FSB**, matching the in-app copy and bundled bookmark metadata.
+Prometheus is the product visible identity in the app, installer, and README. The README logo follows the canonical brand sheet in `.planning/design/prometheus-brand/Prometheus Logo.html`: a PM monogram, version tag, warm ink surface, and orange Prometheus wordmark.
 
 <div align="center">
 
-<img src="assets/prometheus.svg" alt="Prometheus app icon" width="88" />
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/fsb_logo_dark_footer.png" />
-  <source media="(prefers-color-scheme: light)" srcset="assets/fsb_logo_light_footer.png" />
-  <img src="assets/fsb_logo_light_footer.png" alt="Powered by FSB mark" width="128" />
-</picture>
+<img src="assets/prometheus.svg" alt="Prometheus logo" width="420" />
 
 </div>
 
 | Asset | Source | Use |
 |-------|--------|-----|
-| Prometheus app icon | `assets/prometheus.svg` | Product logo used by the README, mirrored from the in-app Prometheus icon. |
-| macOS bundle icon | `falkon/src/lib/data/icons/exeicons/prometheus.icns` | Packaged app icon. |
-| Powered by FSB mark | `assets/fsb_logo_light.png`, `assets/fsb_logo_dark.png` | README affiliation logo for light and dark readers. |
-| Footer affiliation mark | `assets/fsb_logo_light_footer.png`, `assets/fsb_logo_dark_footer.png` | Compact README footer logo. |
+| Prometheus README logo | `assets/prometheus.svg` | PM monogram and wordmark derived from the brand sheet. |
+| Brand sheet | `.planning/design/prometheus-brand/Prometheus Logo.html` | Canonical logo construction, palette, type, icon treatments, and clear-space guidance. |
 
 Inherited Falkon, KDE, Qt, and QtWebEngine attribution remains preserved under the license and legal inventory.
 
@@ -271,7 +257,6 @@ Supervision reads require a session created through `create_supervision_pairing`
 | `falkon/tools/prometheus-mcp/server.mjs` | Dependency free Node stdio MCP bridge that forwards tool calls to the native router. |
 | `falkon/tools/fsb-baseline/` | Build, smoke, packaging, release validation, and legal inventory scripts. |
 | `assets/prometheus.svg` | Prometheus product logo used by this README. |
-| `assets/` | Powered by FSB README logo assets for light, dark, and footer placements. |
 | `falkon/src/` | Qt and QtWebEngine browser shell. |
 | `falkon/COPYING` | GPLv3 license text. |
 | `.planning/` | Product planning and phase records. |
@@ -287,12 +272,6 @@ Prometheus is built on the Falkon browser from the KDE community and on Qt and Q
 Prometheus is supervised, auditable automation software. It is intentionally not a stealth browser, a scraper farm, or an unsupervised account operator.
 
 <div align="center">
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/fsb_logo_dark_footer.png" />
-  <source media="(prefers-color-scheme: light)" srcset="assets/fsb_logo_light_footer.png" />
-  <img src="assets/fsb_logo_light_footer.png" alt="Powered by FSB" width="140" />
-</picture>
 
 **Prometheus** · Powered by FSB
 
