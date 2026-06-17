@@ -181,7 +181,8 @@ FsbControlPanelPage::FsbControlPanelPage(BrowserWindow* window, QWidget* parent)
         tr("Memory & Site Guides"),
         tr("Logs & Diagnostics"),
         tr("Supervision & Pairing"),
-        tr("Parity Matrix")
+        tr("Parity Matrix"),
+        tr("Appearance")
     };
     for (const QString &name : sectionNames) {
         m_sectionRail->addItem(name);
@@ -225,6 +226,10 @@ FsbControlPanelPage::FsbControlPanelPage(BrowserWindow* window, QWidget* parent)
     auto* parityPage = new QWidget(m_sectionStack);
     buildParityMatrixSection(parityPage);
     m_sectionStack->addWidget(parityPage);
+
+    auto* appearancePage = new QWidget(m_sectionStack);
+    buildAppearanceSection(appearancePage);
+    m_sectionStack->addWidget(appearancePage);
 
     connect(m_sectionRail, &QListWidget::currentRowChanged, m_sectionStack, &QStackedWidget::setCurrentIndex);
     m_sectionRail->setCurrentRow(0);
@@ -839,6 +844,75 @@ void FsbControlPanelPage::buildParityMatrixSection(QWidget* page)
     monoFont.setPointSize(9);
     m_parityOutput->setFont(monoFont);
     layout->addWidget(m_parityOutput);
+}
+
+void FsbControlPanelPage::buildAppearanceSection(QWidget* page)
+{
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
+
+    auto* sectionTitle = new QLabel(tr("Appearance"), page);
+    sectionTitle->setObjectName(QSL("sectionHeading"));
+    layout->addWidget(sectionTitle);
+
+    // Theme variant toggle: Dark / Light
+    auto* variantRow = new QHBoxLayout;
+    variantRow->setSpacing(8);
+    auto* darkBtn = new QPushButton(tr("Dark"), page);
+    darkBtn->setMinimumHeight(32);
+    darkBtn->setToolTip(tr("Switch to dark theme"));
+    auto* lightBtn = new QPushButton(tr("Light"), page);
+    lightBtn->setMinimumHeight(32);
+    lightBtn->setToolTip(tr("Switch to light theme"));
+
+    connect(darkBtn,  &QPushButton::clicked, this, [](){ mApp->loadPrometheusVariant(true); });
+    connect(lightBtn, &QPushButton::clicked, this, [](){ mApp->loadPrometheusVariant(false); });
+
+    variantRow->addWidget(darkBtn);
+    variantRow->addWidget(lightBtn);
+    variantRow->addStretch();
+    layout->addLayout(variantRow);
+
+    // Accent color label
+    auto* accentLabel = new QLabel(tr("Accent color"), page);
+    layout->addWidget(accentLabel);
+
+    // Four curated accent swatches
+    // FSB Orange (default): #ff6b35 / #ff8c42
+    // Indigo:               #6366f1 / #818cf8
+    // Teal:                 #14b8a6 / #2dd4bf
+    // Rose:                 #f43f5e / #fb7185
+    struct SwatchDef { const char* label; const char* accent; const char* accent2; };
+    static const SwatchDef swatches[] = {
+        { "FSB Orange", "#ff6b35", "#ff8c42" },
+        { "Indigo",     "#6366f1", "#818cf8" },
+        { "Teal",       "#14b8a6", "#2dd4bf" },
+        { "Rose",       "#f43f5e", "#fb7185" },
+    };
+
+    auto* swatchRow = new QHBoxLayout;
+    swatchRow->setSpacing(8);
+    for (const auto &sw : swatches) {
+        auto* btn = new QPushButton(page);
+        btn->setToolTip(tr(sw.label));
+        btn->setFixedSize(28, 28);
+        btn->setStyleSheet(QStringLiteral(
+            "QPushButton { background-color: %1; border-radius: 9999px; border: 2px solid transparent; }"
+            "QPushButton:hover { border-color: rgba(255,255,255,0.4); }"
+        ).arg(QLatin1String(sw.accent)));
+
+        const QString accentVal  = QLatin1String(sw.accent);
+        const QString accent2Val = QLatin1String(sw.accent2);
+        connect(btn, &QPushButton::clicked, this, [accentVal, accent2Val]() {
+            mApp->setPrometheusAccent(accentVal, accent2Val);
+        });
+        swatchRow->addWidget(btn);
+    }
+    swatchRow->addStretch();
+    layout->addLayout(swatchRow);
+
+    layout->addStretch();
 }
 
 // ---------------------------------------------------------------------------

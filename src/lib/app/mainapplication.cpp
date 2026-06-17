@@ -1047,6 +1047,13 @@ void MainApplication::loadSettings()
 
     loadTheme(activeTheme);
 
+    // Prometheus theme: apply dynamic tokenized stylesheet immediately after static main.css load
+    if (activeTheme == QLatin1String("prometheus")) {
+        Settings themeSettings;
+        const bool useDark = themeSettings.value(QSL("Interface/PrometheusThemeDark"), true).toBool();
+        loadPrometheusVariant(useDark);
+    }
+
     QWebEngineSettings* webSettings = m_webProfile->settings();
 
     // Web browsing settings
@@ -1181,6 +1188,59 @@ void MainApplication::loadTheme(const QString &name)
     QString relativePath = QDir::current().relativeFilePath(activeThemePath);
     qss.replace(QRegularExpression(QSL("url\\s*\\(\\s*([^\\*:\\);]+)\\s*\\)")), QSL("url(%1/\\1)").arg(relativePath));
     setStyleSheet(qss);
+}
+
+// ---------------------------------------------------------------------------
+// Prometheus theme helpers
+// ---------------------------------------------------------------------------
+
+static QString substituteAccentTokens(const QString &qss,
+                                       const QString &accent,
+                                       const QString &accent2)
+{
+    QColor c(accent);
+    QString accentSoft2 = QStringLiteral("rgba(%1,%2,%3,0.18)")
+        .arg(c.red()).arg(c.green()).arg(c.blue());
+    QString result = qss;
+    result.replace(QSL("@@ACCENT@@"),       accent);
+    result.replace(QSL("@@ACCENT2@@"),      accent2);
+    result.replace(QSL("@@ACCENT_SOFT2@@"), accentSoft2);
+    return result;
+}
+
+void MainApplication::loadPrometheusVariant(bool useDark)
+{
+    Settings settings;
+    const QString accent  = settings.value(QSL("PrometheusRuntime/Theme/accent"),  QSL("#ff6b35")).toString();
+    const QString accent2 = settings.value(QSL("PrometheusRuntime/Theme/accent2"), QSL("#ff8c42")).toString();
+
+    const QString themePath = DataPaths::locate(DataPaths::Themes, QSL("prometheus"));
+    if (themePath.isEmpty()) {
+        qWarning() << "loadPrometheusVariant: prometheus theme directory not found";
+        return;
+    }
+
+    QString qss = QzTools::readAllFileContents(themePath + QLatin1String("/prometheus-common.qss"));
+    const QString variantFile = useDark
+        ? QLatin1String("/prometheus-dark.qss")
+        : QLatin1String("/prometheus-light.qss");
+    qss.append(QzTools::readAllFileContents(themePath + variantFile));
+
+    qss = substituteAccentTokens(qss, accent, accent2);
+
+    settings.setValue(QSL("Interface/PrometheusThemeDark"), useDark);
+
+    setStyleSheet(qss);
+}
+
+void MainApplication::setPrometheusAccent(const QString &accentHex, const QString &accent2Hex)
+{
+    Settings settings;
+    settings.setValue(QSL("PrometheusRuntime/Theme/accent"),  accentHex);
+    settings.setValue(QSL("PrometheusRuntime/Theme/accent2"), accent2Hex);
+
+    const bool useDark = settings.value(QSL("Interface/PrometheusThemeDark"), true).toBool();
+    loadPrometheusVariant(useDark);
 }
 
 void MainApplication::checkDefaultWebBrowser()

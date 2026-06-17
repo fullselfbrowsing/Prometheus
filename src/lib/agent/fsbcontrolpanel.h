@@ -34,6 +34,7 @@ private:
     void buildLogsDiagnosticsSection(QWidget* page);
     void buildSupervisionSection(QWidget* page);
     void buildParityMatrixSection(QWidget* page);
+    void buildAppearanceSection(QWidget* page);
 
     // Refresh slots
     void refreshAll();

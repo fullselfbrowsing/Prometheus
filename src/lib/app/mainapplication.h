@@ -142,6 +142,10 @@ public Q_SLOTS:
     void changeOccurred();
     void quitApplication();
 
+    // Prometheus theme runtime switching — no restart required
+    void loadPrometheusVariant(bool useDark);
+    void setPrometheusAccent(const QString &accentHex, const QString &accent2Hex);
+
 Q_SIGNALS:
     void settingsReloaded();
     void activeWindowChanged(BrowserWindow* window);

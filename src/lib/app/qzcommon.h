@@ -131,15 +131,8 @@ enum ColorScheme {
 
 }
 
-#if defined(Q_OS_WIN) || defined(Q_OS_OS2)
-#define DEFAULT_THEME_NAME QSL("windows")
-#elif defined(Q_OS_MACOS)
-#define DEFAULT_THEME_NAME QSL("mac")
-#elif defined(Q_OS_UNIX)
-#define DEFAULT_THEME_NAME QSL("linux")
-#else
-#define DEFAULT_THEME_NAME QSL("default")
-#endif
+// Prometheus is the active theme on first launch (warm aesthetic renders immediately)
+#define DEFAULT_THEME_NAME QSL("prometheus")
 
 #ifdef Q_OS_WIN
 #define DISABLE_CHECK_UPDATES false
