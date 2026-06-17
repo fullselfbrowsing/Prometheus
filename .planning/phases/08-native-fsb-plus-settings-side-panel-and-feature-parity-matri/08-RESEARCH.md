@@ -441,22 +441,25 @@ All claims in this research were verified against local project files, local FSB
 |---|-------|---------|---------------|
 | - | No assumed claims. | - | - |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should `FSB-PARITY.md` live under `falkon/tools/fsb-baseline/` or only under the phase directory?**  
    What we know: the phase context requires creating `FSB-PARITY.md`, and release validation scripts live in `falkon/tools/fsb-baseline/`. [VERIFIED: `.planning/phases/08-native-fsb-plus-settings-side-panel-and-feature-parity-matri/08-CONTEXT.md`; VERIFIED: `falkon/tools/fsb-baseline/release-validate.sh`]  
    What's unclear: the user did not specify the durable file path. [VERIFIED: user prompt]  
-   Recommendation: place the release-enforced matrix at `falkon/tools/fsb-baseline/FSB-PARITY.md` so `release-validate.sh` can validate it; optionally link/copy phase evidence from the planning directory. [VERIFIED: `falkon/tools/fsb-baseline/release-validate.sh`]
+   Recommendation: place the release-enforced matrix at `falkon/tools/fsb-baseline/FSB-PARITY.md` so `release-validate.sh` can validate it; optionally link/copy phase evidence from the planning directory. [VERIFIED: `falkon/tools/fsb-baseline/release-validate.sh`]  
+   **Resolved:** Plan 08-01 places the durable matrix at `falkon/tools/fsb-baseline/FSB-PARITY.md` and wires `smoke-fsb-plus-parity.sh` + `release-validate.sh` to validate it.
 
 2. **How much real hosted-provider execution should Phase 8 implement?**  
    What we know: provider config exists, provider secrets can be saved natively, and current execution is local-only. [VERIFIED: `falkon/src/lib/agent/agentruntime.cpp`; VERIFIED: `falkon/src/lib/agent/agentruntimesidebar.cpp`]  
    What's unclear: there is no reviewed in-tree hosted-provider adapter for task reasoning/execution. [VERIFIED: `falkon/src/lib/agent`; VERIFIED: `falkon/tools/prometheus-mcp/server.mjs`]  
-   Recommendation: implement a typed execution-mode contract now, use provider-backed execution only for adapters that exist and can be tested without exposing secrets, and mark missing providers unavailable with fallback metadata instead of pretending parity. [VERIFIED: `.planning/REQUIREMENTS.md`]
+   Recommendation: implement a typed execution-mode contract now, use provider-backed execution only for adapters that exist and can be tested without exposing secrets, and mark missing providers unavailable with fallback metadata instead of pretending parity. [VERIFIED: `.planning/REQUIREMENTS.md`]  
+   **Resolved:** Plan 08-02 adds a typed execution-mode contract to `finishTask` (executionMode / provider / model / providerAvailable / unavailableReason) and a `PROVIDER_NOT_CONFIGURED` code; missing providers are reported unavailable with fallback metadata rather than faking parity.
 
 3. **Should Prometheus align the agent cap default with FSB's default of 8 or preserve the current router default of 4?**  
    What we know: FSB exposes a configurable cap default of 8 and clamps 1..64; Prometheus router defaults to 4 unless `PROMETHEUS_AGENT_CAP` is set. [VERIFIED: `.context/fsb-org/FSB/extension/options.js`; VERIFIED: `.context/fsb-org/FSB/references/multi-agent-contract.md`; VERIFIED: `falkon/src/lib/agent/agentcommandrouter.cpp`]  
    What's unclear: whether the stricter Prometheus default is an intentional native improvement or just pre-Phase-8 bootstrap behavior. [VERIFIED: `.planning/REQUIREMENTS.md`]  
-   Recommendation: expose a persisted cap setting and document the default in the matrix; change to 8 only if exact FSB behavioral parity is desired. [VERIFIED: `.planning/phases/08-native-fsb-plus-settings-side-panel-and-feature-parity-matri/08-CONTEXT.md`]
+   Recommendation: expose a persisted cap setting and document the default in the matrix; change to 8 only if exact FSB behavioral parity is desired. [VERIFIED: `.planning/phases/08-native-fsb-plus-settings-side-panel-and-feature-parity-matri/08-CONTEXT.md`]  
+   **Resolved:** Plans 08-02/08-03 expose a persisted `PrometheusRuntime/Policy/agentCap` setting (SpinBox range 1–16, default 4) read by the router at startup; the stricter native default of 4 is preserved as an intentional improvement and documented in the parity matrix.
 
 ## Environment Availability
 
