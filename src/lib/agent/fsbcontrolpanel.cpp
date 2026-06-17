@@ -1141,9 +1141,10 @@ void FsbControlPanelPage::saveProvider()
         config[QSL("endpoint")] = m_providerEndpoint->text().trimmed();
     }
     // Secret field: include only if non-empty; clear after save (native-only path)
+    // Key must be "secret" — AgentRuntime::saveProviderConfig reads config.value("secret").
     const QString secret = m_providerSecret->text();
     if (!secret.isEmpty()) {
-        config[QSL("apiKey")] = secret;
+        config[QSL("secret")] = secret;
     }
 
     // allowSecretPayload=true for native UI paths only
