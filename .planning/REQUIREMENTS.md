@@ -87,7 +87,7 @@
 - [x] **ICON-01**: Prometheus bundles a curated offline Font Awesome Free icon subset in Qt resources with required license and attribution metadata preserved.
 - [x] **ICON-02**: Prometheus provides a central native icon resolver for browser, tab, agent, MCP, provider, vault, diagnostics, supervision, and settings actions.
 - [x] **ICON-03**: Primary UI icons have deterministic bundled fallbacks instead of depending on platform theme availability.
-- [ ] **ICON-04**: Release validation fails when required bundled icons are missing, network-loaded, legally unattributed, or unreadable at intended sizes.
+- [x] **ICON-04**: Release validation fails when required bundled icons are missing, network-loaded, legally unattributed, or unreadable at intended sizes.
 - [x] **THEME-01**: Prometheus themes are minimal and native-feeling, with restrained surfaces, clear focus/hover/active states, and no decorative visual noise.
 - [x] **THEME-02**: Minimal themes support normal, private, supervised, warning, disabled, and active-agent states without relying on heavy gradients or one-note color treatment.
 - [x] **THEME-03**: Prometheus implements the canonical warm dark and warm light token sets and an accent recolor option as pure token swaps, per the design reference.
