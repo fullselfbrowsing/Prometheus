@@ -83,6 +83,8 @@ private:
     QJsonObject routeMemory(const QString &id, const QString &tool, const QJsonObject &params, quint64 auditSequence);
     QJsonObject routeVault(const QString &id, const QString &tool, const QJsonObject &params, quint64 auditSequence);
     QJsonObject routeSupervision(const QString &id, const QString &tool, const QJsonObject &params, quint64 auditSequence);
+    QJsonObject routeGetAgentPolicy(const QString &id, const QString &tool, const QJsonObject &params, quint64 auditSequence);
+    QJsonObject routeSetAgentPolicy(const QString &id, const QString &tool, const QJsonObject &params, quint64 auditSequence);
 
     QJsonValue jsonFromVariant(const QVariant &value) const;
     QString auditPath() const;

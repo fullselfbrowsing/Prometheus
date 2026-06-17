@@ -164,6 +164,12 @@ QJsonObject AgentCommandRouter::routeForSession(const QJsonObject &request, cons
     if (tool == QL1S("set_provider_config")) {
         return routeSetProviderConfig(id, tool, params, 0);
     }
+    if (tool == QL1S("get_agent_policy")) {
+        return routeGetAgentPolicy(id, tool, params, 0);
+    }
+    if (tool == QL1S("set_agent_policy")) {
+        return routeSetAgentPolicy(id, tool, params, 0);
+    }
     if (tool == QL1S("list_runtime_logs") || tool == QL1S("action_history")) {
         return routeRuntimeLogs(id, tool, params, 0);
     }
@@ -432,7 +438,9 @@ QJsonObject AgentCommandRouter::health()
             QSL("start_supervision_session"),
             QSL("get_supervision_snapshot"),
             QSL("get_supervision_diff"),
-            QSL("end_supervision_session")
+            QSL("end_supervision_session"),
+            QSL("get_agent_policy"),
+            QSL("set_agent_policy")
         }}
     };
 }
@@ -1218,6 +1226,99 @@ QJsonObject AgentCommandRouter::routeSetProviderConfig(const QString &id, const 
         return failure(id, tool, result.value(QSL("errorCode")).toString(QSL("provider_error")), result.value(QSL("message")).toString(), auditSequence);
     }
     return success(id, tool, result, auditSequence);
+}
+
+QJsonObject AgentCommandRouter::routeGetAgentPolicy(const QString &id, const QString &tool, const QJsonObject &params, quint64 auditSequence)
+{
+    Q_UNUSED(params)
+
+    Settings settings;
+    settings.beginGroup(QSL("PrometheusRuntime/Policy"));
+    // agentCap: authoritative runtime value (m_agentCap) is the live cap; Settings value is the persisted preference.
+    const int settingsCap = settings.value(QSL("agentCap"), m_agentCap).toInt();
+    Q_UNUSED(settingsCap)
+    const bool internalSurfaceControl = settings.value(QSL("internalSurfaceControl"), true).toBool();
+    const bool tabOwnershipEnforcement = settings.value(QSL("tabOwnershipEnforcement"), true).toBool();
+    const bool visualFeedback = settings.value(QSL("visualFeedback"), true).toBool();
+    const int telemetry = settings.value(QSL("telemetry"), 0).toInt();
+    // vaultBoundary: "native_only" is the locked invariant default — never absent or empty.
+    const QString vaultBoundary = settings.value(QSL("vaultBoundary"), QSL("native_only")).toString().trimmed().isEmpty()
+                                   ? QSL("native_only")
+                                   : settings.value(QSL("vaultBoundary"), QSL("native_only")).toString();
+    const bool supervisionPairing = settings.value(QSL("supervisionPairing"), true).toBool();
+    const bool vaultAutofillConfirmation = settings.value(QSL("vaultAutofillConfirmation"), true).toBool();
+    settings.endGroup();
+
+    return success(id, tool, QJsonObject{
+        {QSL("agentCap"), m_agentCap},
+        {QSL("internalSurfaceControl"), internalSurfaceControl},
+        {QSL("tabOwnershipEnforcement"), tabOwnershipEnforcement},
+        {QSL("visualFeedback"), visualFeedback},
+        {QSL("telemetry"), telemetry},
+        {QSL("vaultBoundary"), vaultBoundary},
+        {QSL("supervisionPairing"), supervisionPairing},
+        {QSL("vaultAutofillConfirmation"), vaultAutofillConfirmation}
+    }, auditSequence);
+}
+
+QJsonObject AgentCommandRouter::routeSetAgentPolicy(const QString &id, const QString &tool, const QJsonObject &params, quint64 auditSequence)
+{
+    // Reject any parameter named "secret", "apiKey", "password", or "token" — PERMISSION_BLOCKED.
+    const QStringList secretKeys{QSL("secret"), QSL("apiKey"), QSL("password"), QSL("token")};
+    for (const QString &secretKey : secretKeys) {
+        if (params.contains(secretKey)) {
+            return failure(id, tool, QSL("PERMISSION_BLOCKED"),
+                           QSL("Policy parameters may not include secret, apiKey, password, or token fields."),
+                           auditSequence,
+                           QJsonObject{{QSL("rejectedKey"), secretKey}});
+        }
+    }
+
+    // Validate agentCap range (1..16) if present.
+    if (params.contains(QSL("agentCap"))) {
+        const int newCap = params.value(QSL("agentCap")).toInt(-1);
+        if (newCap < 1 || newCap > 16) {
+            return failure(id, tool, QSL("invalid_param"),
+                           QSL("agentCap must be an integer between 1 and 16."),
+                           auditSequence);
+        }
+        m_agentCap = newCap;
+    }
+
+    // Persist accepted params to Settings.
+    Settings settings;
+    settings.beginGroup(QSL("PrometheusRuntime/Policy"));
+    if (params.contains(QSL("agentCap"))) {
+        settings.setValue(QSL("agentCap"), m_agentCap);
+    }
+    if (params.contains(QSL("internalSurfaceControl"))) {
+        settings.setValue(QSL("internalSurfaceControl"), params.value(QSL("internalSurfaceControl")).toBool(true));
+    }
+    if (params.contains(QSL("tabOwnershipEnforcement"))) {
+        settings.setValue(QSL("tabOwnershipEnforcement"), params.value(QSL("tabOwnershipEnforcement")).toBool(true));
+    }
+    if (params.contains(QSL("visualFeedback"))) {
+        settings.setValue(QSL("visualFeedback"), params.value(QSL("visualFeedback")).toBool(true));
+    }
+    if (params.contains(QSL("telemetry"))) {
+        settings.setValue(QSL("telemetry"), params.value(QSL("telemetry")).toInt(0));
+    }
+    if (params.contains(QSL("vaultBoundary"))) {
+        const QString vb = params.value(QSL("vaultBoundary")).toString().trimmed();
+        settings.setValue(QSL("vaultBoundary"), vb.isEmpty() ? QSL("native_only") : vb);
+    }
+    if (params.contains(QSL("supervisionPairing"))) {
+        settings.setValue(QSL("supervisionPairing"), params.value(QSL("supervisionPairing")).toBool(true));
+    }
+    if (params.contains(QSL("vaultAutofillConfirmation"))) {
+        settings.setValue(QSL("vaultAutofillConfirmation"), params.value(QSL("vaultAutofillConfirmation")).toBool(true));
+    }
+    settings.endGroup();
+    settings.sync();
+
+    writeAudit(id, tool, true, QString(), QJsonObject{{QSL("policyUpdated"), true}, {QSL("agentCap"), m_agentCap}});
+
+    return success(id, tool, QJsonObject{{QSL("applied"), true}, {QSL("agentCap"), m_agentCap}}, auditSequence);
 }
 
 QJsonObject AgentCommandRouter::routeRuntimeLogs(const QString &id, const QString &tool, const QJsonObject &params, quint64 auditSequence)
