@@ -1,14 +1,16 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/fsb_logo_dark.png" />
-  <source media="(prefers-color-scheme: light)" srcset="assets/fsb_logo_light.png" />
-  <img src="assets/fsb_logo_light.png" alt="Powered by FSB" width="200" />
-</picture>
+<img src="assets/prometheus.svg" alt="Prometheus app icon" width="112" />
 
 # Prometheus
 
 **The agent native desktop browser. Full control of the whole browser through structure, not screenshots.**
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/fsb_logo_dark.png" />
+  <source media="(prefers-color-scheme: light)" srcset="assets/fsb_logo_light.png" />
+  <img src="assets/fsb_logo_light.png" alt="Powered by FSB logo" width="180" />
+</picture>
 
 *Powered by FSB. Pure structural intelligence. Zero vision. Zero guessing.*
 
@@ -24,7 +26,7 @@
 [![Issues](https://img.shields.io/github/issues/fullselfbrowsing/Prometheus?style=for-the-badge&logo=github&logoColor=white&color=555555)](https://github.com/fullselfbrowsing/Prometheus/issues)
 [![Last Commit](https://img.shields.io/github/last-commit/fullselfbrowsing/Prometheus?style=for-the-badge&logo=github&logoColor=white&color=555555)](https://github.com/fullselfbrowsing/Prometheus/commits/main)
 
-[Why I Built This](#why-i-built-this) · [Overview](#overview) · [Why DOM First](#why-dom-first) · [The Whole Browser](#the-whole-browser-not-just-the-page) · [Architecture](#architecture) · [Features](#features) · [Native Control Surface](#native-control-surface) · [MCP Bridge](#mcp-bridge) · [Quick Start](#quick-start) · [Repository Layout](#repository-layout) · [License](#license-and-attribution)
+[Why I Built This](#why-i-built-this) · [Overview](#overview) · [Branding](#branding) · [Why DOM First](#why-dom-first) · [The Whole Browser](#the-whole-browser-not-just-the-page) · [Architecture](#architecture) · [Features](#features) · [Native Control Surface](#native-control-surface) · [MCP Bridge](#mcp-bridge) · [Quick Start](#quick-start) · [Repository Layout](#repository-layout) · [License](#license-and-attribution)
 
 </div>
 
@@ -55,6 +57,33 @@ Where a Chrome extension can only reach the page, Prometheus owns the browser. A
 * Ships a native sidebar with Task, Providers, Logs, Memory, and Vault panels, keeping provider and vault secrets off the agent transports.
 * Mirrors supervised sessions as structured DOM snapshots and hash diffs rather than pixel or video streaming.
 * Keeps provider flexibility: xAI, Gemini, OpenAI, Anthropic, OpenRouter, LM Studio, and custom OpenAI compatible endpoints.
+
+---
+
+## Branding
+
+Prometheus is the product visible identity in the app, installer, and README. The affiliation mark is **Powered by FSB**, matching the in-app copy and bundled bookmark metadata.
+
+<div align="center">
+
+<img src="assets/prometheus.svg" alt="Prometheus app icon" width="88" />
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/fsb_logo_dark_footer.png" />
+  <source media="(prefers-color-scheme: light)" srcset="assets/fsb_logo_light_footer.png" />
+  <img src="assets/fsb_logo_light_footer.png" alt="Powered by FSB mark" width="128" />
+</picture>
+
+</div>
+
+| Asset | Source | Use |
+|-------|--------|-----|
+| Prometheus app icon | `assets/prometheus.svg` | Product logo used by the README, mirrored from the in-app Prometheus icon. |
+| macOS bundle icon | `falkon/src/lib/data/icons/exeicons/prometheus.icns` | Packaged app icon. |
+| Powered by FSB mark | `assets/fsb_logo_light.png`, `assets/fsb_logo_dark.png` | README affiliation logo for light and dark readers. |
+| Footer affiliation mark | `assets/fsb_logo_light_footer.png`, `assets/fsb_logo_dark_footer.png` | Compact README footer logo. |
+
+Inherited Falkon, KDE, Qt, and QtWebEngine attribution remains preserved under the license and legal inventory.
 
 ---
 
@@ -241,6 +270,8 @@ Supervision reads require a session created through `create_supervision_pairing`
 | `falkon/src/lib/agent/agentruntimesidebar.*` | Native sidebar with Task, Providers, Logs, Memory, and Vault panels. |
 | `falkon/tools/prometheus-mcp/server.mjs` | Dependency free Node stdio MCP bridge that forwards tool calls to the native router. |
 | `falkon/tools/fsb-baseline/` | Build, smoke, packaging, release validation, and legal inventory scripts. |
+| `assets/prometheus.svg` | Prometheus product logo used by this README. |
+| `assets/` | Powered by FSB README logo assets for light, dark, and footer placements. |
 | `falkon/src/` | Qt and QtWebEngine browser shell. |
 | `falkon/COPYING` | GPLv3 license text. |
 | `.planning/` | Product planning and phase records. |
