@@ -446,22 +446,19 @@ fi
 | A1 | Keep at least 100GB free disk as an operational planning buffer for Chromium source plus build outputs. [ASSUMED] | Environment Availability / Open Questions | Planner may understate disk needs; local current source plus one build is about 45G, but future builds/caches can grow. [VERIFIED: `du -sh`; ASSUMED] |
 | A2 | `osascript -e 'tell application id "org.chromium.Chromium" to quit'` can be the clean shutdown mechanism for launch smoke. [ASSUMED] | Code Examples / Validation Architecture | Launch script may need a different quit strategy, such as app name, PID-aware AppleScript, or documented manual fallback. [ASSUMED] |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should Phase 12 add a tracked root `.gitignore`?**
    - What we know: `.context/` is ignored through `/Users/lakshman/conductor/repos/prometheus/.git/info/exclude`; no tracked root `.gitignore` exists. [VERIFIED: `git check-ignore -v`; VERIFIED: `.gitignore` scan]
-   - What's unclear: Whether this workspace-specific exclude is acceptable for fresh clones or whether a tracked ignore file is required. [VERIFIED: .planning/phases/12-chromium-checkout-build-and-patch-discipline/12-CONTEXT.md]
-   - Recommendation: Add a tracked root `.gitignore` with `.context/`, `.gclient`, `out/`, depot_tools, and build-log patterns unless the planner intentionally keeps isolation local-only. [ASSUMED]
+   - RESOLVED: Phase 12 should add a tracked root `.gitignore` policy for fresh-clone artifact protection. `verify-artifact-isolation.sh` must also verify the existing gitdir exclude behavior where present, but the tracked policy is the canonical root-repo protection path for `.context/`, `.gclient`, Chromium `out/`, depot_tools, logs, caches, and generated artifacts. [VERIFIED: .planning/phases/12-chromium-checkout-build-and-patch-discipline/12-01-PLAN.md]
 
 2. **What exact launch success signal should the smoke script require?**
    - What we know: User decisions require start, local/data smoke page, clean exit, and recorded evidence. [VERIFIED: .planning/phases/12-chromium-checkout-build-and-patch-discipline/12-CONTEXT.md]
-   - What's unclear: Whether process start plus clean quit is sufficient or whether the script must inspect a window/tab title. [ASSUMED]
-   - Recommendation: Plan a pragmatic first smoke that starts the process with isolated profile, waits for process liveness, requests quit by bundle ID, records exit status, and marks deeper UI inspection as optional only if launch hangs or fails. [ASSUMED]
+   - RESOLVED: A passing launch smoke requires the normal-first unmodified Chromium process to start with an isolated profile, open deterministic local or `data:` smoke content, exit cleanly after a requested quit, and write recorded status/log evidence. Workaround flags such as `--disable-features=DialMediaRouteProvider` are allowed only after the normal path is attempted and the retry is documented in the status evidence. [VERIFIED: .planning/phases/12-chromium-checkout-build-and-patch-discipline/12-03-PLAN.md]
 
 3. **Should depot_tools auto-update be allowed in future validation?**
    - What we know: depot_tools auto-updated during `gclient`; official depot_tools docs state this is normal unless disabled. [CITED: https://chromium.googlesource.com/chromium/tools/depot_tools.git] [VERIFIED: local command audit]
-   - What's unclear: Whether Prometheus wants reproducible tool revision pinning or current depot_tools by default. [ASSUMED]
-   - Recommendation: Record the actual depot_tools revision after validation and do not disable auto-update unless a toolchain regression appears. [ASSUMED]
+   - RESOLVED: Allow depot_tools auto-update during validation, record the actual post-validation depot_tools revision in status and handoff evidence, and do not pin or disable auto-update unless a regression is documented. Phase 12 documentation must replace stale depot_tools revisions with the observed post-validation revision. [VERIFIED: .planning/phases/12-chromium-checkout-build-and-patch-discipline/12-02-PLAN.md] [VERIFIED: .planning/phases/12-chromium-checkout-build-and-patch-discipline/12-04-PLAN.md]
 
 ## Environment Availability
 
