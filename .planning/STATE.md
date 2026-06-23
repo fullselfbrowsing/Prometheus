@@ -4,8 +4,8 @@ milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
 stopped_at: Phase 11 context gathered
-last_updated: "2026-06-23T18:14:48.468Z"
-last_activity: 2026-06-23 -- Phase 11 planning complete
+last_updated: "2026-06-23T18:15:42.654Z"
+last_activity: 2026-06-23 -- Phase 11 execution started
 progress:
   total_phases: 14
   completed_phases: 0
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-17)
 
 **Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** v2.0 Chromium Engine Migration — preserve v1 Falkon reference, retire Falkon as active source, and rebuild Prometheus on Chromium.
+**Current focus:** Phase 11 — Preservation Contract and Falkon Freeze
 
 ## Current Position
 
-Phase: Phase 12 in progress — Chromium Checkout, Build, and Patch Discipline
-Plan: —
-Status: Ready to execute
-Last activity: 2026-06-23 -- Phase 11 planning complete
+Phase: 11 (Preservation Contract and Falkon Freeze) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 11
+Last activity: 2026-06-23 -- Phase 11 execution started
 
 ## Performance Metrics
 
