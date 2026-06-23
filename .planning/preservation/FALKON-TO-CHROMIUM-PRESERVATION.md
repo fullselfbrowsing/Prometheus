@@ -36,6 +36,7 @@ The Falkon subtree is a nested git checkout, not tracked by the root repository 
 | Ahead of upstream | 81 commits ahead of `origin/master` |
 | Local bundle | `.context/falkon-preservation/falkon-prometheus-v1.bundle` |
 | Patch series | `.context/falkon-preservation/patches/` |
+| Active checkout status | already_removed — root `falkon/` must not be recreated as active source |
 
 The preservation bundle was created before source removal planning:
 
@@ -50,9 +51,37 @@ To restore the reference later:
 git clone .context/falkon-preservation/falkon-prometheus-v1.bundle falkon-restored
 ```
 
+### Preservation Evidence Gate
+
+- Expected preserved HEAD: b0521c9d37e7545c680b78dfcc24f777a984091c
+- Expected patch count: 81
+- Bundle path: .context/falkon-preservation/falkon-prometheus-v1.bundle
+- Patch path: .context/falkon-preservation/patches/
+- Restore check path pattern: .context/falkon-preservation/restore-check-*
+- Active Falkon checkout status: already_removed
+- Root git tracking rule: .context/ is ignored; preservation artifacts must not be committed to root git
+
+Downstream developers run:
+
+```sh
+bash .planning/preservation/verify-preservation.sh
+```
+
 ## Licensing Boundary
 
 Falkon is GPLv3-derived. Chromium is BSD-style with many third-party licenses. The v2 migration must not casually copy Falkon GPL implementation code into the Chromium tree.
+
+Default rule: preserve behavior, design, tests, protocol shapes, and asset provenance; do not copy GPL Falkon C++ implementation, Qt widget classes, QSS, packaging scripts, or inherited Falkon/KDE metadata into Chromium without explicit license review.
+
+### Carry-forward classifications
+
+| Material | Status | Rule |
+|----------|--------|------|
+| Behavior contracts and tool names | contract_only | Preserve expected behavior and protocol names; reimplement with Chromium-native owners. |
+| Root `assets/` and `.planning/design/` assets | product_owned | Carry forward as Prometheus/FSB-owned assets when provenance notes stay attached. |
+| Font Awesome, Poppins, and Space Mono | third_party_attribution_required | Carry forward only with required notices and bundled attribution intact. |
+| Falkon C++/Qt/QSS/package metadata | reference_only | Use as reference evidence only, not as Chromium implementation source. |
+| Any copied GPL implementation text | license_review_required | Do not move into Chromium without explicit license review and accepted obligations. |
 
 Preserve these from Falkon as **reference material**:
 
