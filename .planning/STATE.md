@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
-stopped_at: Completed 11-01-PLAN.md
-last_updated: "2026-06-23T18:21:18.468Z"
+stopped_at: Completed 11-02-PLAN.md
+last_updated: "2026-06-23T18:28:24.668Z"
 last_activity: 2026-06-23
 progress:
   total_phases: 14
   completed_phases: 0
   total_plans: 3
-  completed_plans: 1
-  percent: 33
+  completed_plans: 2
+  percent: 67
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-17)
 ## Current Position
 
 Phase: 11 (Preservation Contract and Falkon Freeze) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-06-23
 
@@ -81,6 +81,7 @@ Last activity: 2026-06-23
 | Phase 10 P03 | 15min | 2 tasks | 6 files |
 | Phase 10 P04 | 3min | 2 tasks | 0 files |
 | Phase 11-preservation-contract-and-falkon-freeze P01 | 3min | 2 tasks | 2 files |
+| Phase 11-preservation-contract-and-falkon-freeze P02 | 4min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -146,6 +147,8 @@ Recent decisions affecting current work:
 - [Milestone v2.0]: First Chromium `chrome` build is running in detached `screen` session `prometheus-chromium-build`; log `.context/chromium-build-screen.log`, status file `.context/chromium-build-screen.status`, working directory `.context/chromium/src`.
 - [Phase 11]: Preservation verification must prove bundle integrity, expected refs, patch count 81, temporary restore, and root git ignore coverage.
 - [Phase 11]: Falkon GPL implementation, Qt/QSS/package metadata, and copied GPL text remain reference-only or license-review-required for Chromium migration.
+- [Phase 11-preservation-contract-and-falkon-freeze]: Use the canonical dossier's Capability Migration Map as the source-of-truth linking v1 behavior contracts to Chromium owner phases, parity evidence, and license status.
+- [Phase 11-preservation-contract-and-falkon-freeze]: Preservation verification now enforces required migration-map rows, columns, license labels, and Chromium owner phases before later Chromium work proceeds.
 
 ### Roadmap Evolution
 
@@ -197,8 +200,8 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Because
 
 ## Session Continuity
 
-Last session: 2026-06-23T18:21:18.465Z
-Stopped at: Completed 11-01-PLAN.md
+Last session: 2026-06-23T18:28:24.665Z
+Stopped at: Completed 11-02-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
