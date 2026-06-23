@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
-stopped_at: Phase 12 context gathered
-last_updated: "2026-06-23T20:29:59.468Z"
+stopped_at: Completed Phase 12 Plan 02 — build-chromium-baseline.sh
+last_updated: "2026-06-23T20:36:30.535Z"
 last_activity: 2026-06-23
 progress:
   total_phases: 14
   completed_phases: 1
   total_plans: 7
-  completed_plans: 4
-  percent: 57
+  completed_plans: 5
+  percent: 71
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-23)
 ## Current Position
 
 Phase: 12 (chromium-checkout-build-and-patch-discipline) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-06-23
 
@@ -84,6 +84,7 @@ Last activity: 2026-06-23
 | Phase 11-preservation-contract-and-falkon-freeze P01 | 3min | 2 tasks | 2 files |
 | Phase 11-preservation-contract-and-falkon-freeze P02 | 4min | 2 tasks | 2 files |
 | Phase 11-preservation-contract-and-falkon-freeze P03 | 6min | 2 tasks | 6 files |
+| Phase 12 P12-02 | 1min | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -156,6 +157,7 @@ Recent decisions affecting current work:
 - [Phase 11-preservation-contract-and-falkon-freeze]: Carry all 26 deferred Phase 08, 09, and 10 human visual checks forward as Chromium-owned checks instead of marking any complete or retiring them prematurely.
 - [Phase 11-preservation-contract-and-falkon-freeze]: Treat the first Chromium build as completed with exit status 0 while keeping unmodified launch verification in Phase 12 scope.
 - [Phase 11-preservation-contract-and-falkon-freeze]: Use the preservation verifier as the gate for visual-ledger count, freeze-status vocabulary, and stale active-Falkon/build wording.
+- [Phase ?]: build-chromium-baseline.sh: --no-op-ok runs same GN+autoninja as no-arg; status file written before fail-on-nonzero
 
 ### Roadmap Evolution
 
@@ -201,8 +203,8 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Phase 1
 
 ## Session Continuity
 
-Last session: 2026-06-23T20:29:59.464Z
-Stopped at: Phase 12 context gathered
+Last session: 2026-06-23T20:36:30.532Z
+Stopped at: Completed Phase 12 Plan 02 — build-chromium-baseline.sh
 Resume file: None
 
 ## Operator Next Steps

@@ -350,7 +350,7 @@ Plans:
 | Phase | Milestone | Requirements | Status | Completed |
 |-------|-----------|--------------|--------|-----------|
 | 11. Preservation Contract and Falkon Freeze | v2.0 | 3/3 | Complete   | 2026-06-23 |
-| 12. Chromium Checkout, Build, and Patch Discipline | v2.0 | 1/4 | In Progress|  |
+| 12. Chromium Checkout, Build, and Patch Discipline | v2.0 | 2/4 | In Progress|  |
 | 13. Product Identity, Branding, and Legal Baseline | v2.0 | BRAND-01..BRAND-07 | Planned | — |
 | 14. Asset and Design System Port | v2.0 | DESIGN-01..DESIGN-07 | Planned | — |
 | 15. Chromium UI Shell, Compact Chrome, and Tab Model | v2.0 | UX-01..UX-07 | Planned | — |
