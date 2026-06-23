@@ -1,0 +1,12 @@
+# Local Chromium/depot_tools workspaces and generated artifacts
+/.context/
+/.gclient
+/.gclient_entries
+/depot_tools/
+/out/
+/*.log
+/*.status
+/*.tmp
+/*.cache
+/chromium-*.log
+/chromium-*.status
