@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
-status: ready
-stopped_at: Phase 11 verified; Phase 12 ready to plan
-last_updated: "2026-06-23T18:56:10Z"
+status: planning
+stopped_at: Phase 12 context gathered
+last_updated: "2026-06-23T19:16:35.824Z"
 last_activity: 2026-06-23
 progress:
   total_phases: 14
@@ -201,9 +201,9 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Phase 1
 
 ## Session Continuity
 
-Last session: 2026-06-23T18:56:10Z
-Stopped at: Phase 11 verified; Phase 12 ready to plan
-Resume file: None
+Last session: 2026-06-23T19:16:35.820Z
+Stopped at: Phase 12 context gathered
+Resume file: .planning/phases/12-chromium-checkout-build-and-patch-discipline/12-CONTEXT.md
 
 ## Operator Next Steps
 
