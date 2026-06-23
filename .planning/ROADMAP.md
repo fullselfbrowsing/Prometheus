@@ -11,7 +11,7 @@ Prometheus keeps its product, design, and agent-native control thesis, but retir
 
 ## Active Phases
 
-- [ ] **Phase 11: Preservation Contract and Falkon Freeze** — Save every v1 decision, behavior, asset, test, source reference, and legal boundary before removing the active Falkon tree.
+- [x] **Phase 11: Preservation Contract and Falkon Freeze** — Save every v1 decision, behavior, asset, test, source reference, and legal boundary before removing the active Falkon tree. (completed 2026-06-23)
 - [ ] **Phase 12: Chromium Checkout, Build, and Patch Discipline** — Bring in upstream Chromium with depot_tools, build it cleanly on macOS, and establish source/layout rules that keep the root repo clean.
 - [ ] **Phase 13: Product Identity, Branding, and Legal Baseline** — Turn the Chromium baseline into a Prometheus-owned app identity with correct attribution and no unwanted Chrome/Chromium/Falkon/KDE-facing product surfaces.
 - [ ] **Phase 14: Asset and Design System Port** — Port warm tokens, PM/FSB assets, Poppins, Space Mono, Font Awesome, dark/light themes, and visual state rules into Chromium resources.
@@ -34,12 +34,12 @@ Prometheus keeps its product, design, and agent-native control thesis, but retir
 
 **Requirements:** PRES-01, PRES-02, PRES-03, PRES-04, PRES-05, PRES-06, PRES-07
 
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 - [x] 11-01-PLAN.md — Create the preservation evidence gate and canonical dossier evidence/license boundary.
 - [x] 11-02-PLAN.md — Complete the capability-first Falkon-to-Chromium migration map and verifier invariants.
-- [ ] 11-03-PLAN.md — Add the deferred visual-check ledger, freeze checklist, and stale-doc cleanup gate.
+- [x] 11-03-PLAN.md — Add the deferred visual-check ledger, freeze checklist, and stale-doc cleanup gate.
 
 **Success criteria:**
 
@@ -349,7 +349,7 @@ Plans:
 
 | Phase | Milestone | Requirements | Status | Completed |
 |-------|-----------|--------------|--------|-----------|
-| 11. Preservation Contract and Falkon Freeze | v2.0 | 2/3 | In Progress|  |
+| 11. Preservation Contract and Falkon Freeze | v2.0 | 3/3 | Complete   | 2026-06-23 |
 | 12. Chromium Checkout, Build, and Patch Discipline | v2.0 | CHROM-01..CHROM-08 | Planned | — |
 | 13. Product Identity, Branding, and Legal Baseline | v2.0 | BRAND-01..BRAND-07 | Planned | — |
 | 14. Asset and Design System Port | v2.0 | DESIGN-01..DESIGN-07 | Planned | — |

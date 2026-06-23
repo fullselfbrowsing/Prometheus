@@ -19,8 +19,8 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 - [x] **PRES-03**: Project has an explicit migration map from each v1 Falkon/Qt implementation surface to a Chromium-native owner or a deliberately deferred/out-of-scope item.
 - [x] **PRES-04**: Project distinguishes behavior/design contracts from GPL-derived Falkon implementation code so Chromium work does not copy GPL source without license review.
 - [x] **PRES-05**: Developer can remove the active `falkon/` checkout from the workspace without losing source history, patches, assets, or planning context.
-- [ ] **PRES-06**: Root project documentation no longer presents Falkon/QtWebEngine as the production architecture after the Chromium baseline is established.
-- [ ] **PRES-07**: v1 deferred human-visual verification items are either re-run against Chromium equivalents or explicitly retired with rationale because the Falkon UI surface no longer exists.
+- [x] **PRES-06**: Root project documentation no longer presents Falkon/QtWebEngine as the production architecture after the Chromium baseline is established.
+- [x] **PRES-07**: v1 deferred human-visual verification items are either re-run against Chromium equivalents or explicitly retired with rationale because the Falkon UI surface no longer exists.
 
 ### Chromium Baseline
 
@@ -167,7 +167,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PRES-01..PRES-07 | Phase 11 | Planned |
+| PRES-01..PRES-07 | Phase 11 | Complete |
 | CHROM-01..CHROM-08 | Phase 12 | Planned |
 | BRAND-01..BRAND-07 | Phase 13 | Planned |
 | DESIGN-01..DESIGN-07 | Phase 14 | Planned |
