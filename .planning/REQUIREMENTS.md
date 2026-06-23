@@ -24,14 +24,14 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 
 ### Chromium Baseline
 
-- [ ] **CHROM-01**: Developer can check out upstream Chromium using official `depot_tools`/`fetch chromium` workflow into a Prometheus-owned source location.
+- [x] **CHROM-01**: Developer can check out upstream Chromium using official `depot_tools`/`fetch chromium` workflow into a Prometheus-owned source location.
 - [ ] **CHROM-02**: Developer can generate a local macOS Chromium build directory with GN and build the `chrome` target using Ninja/autoninja.
-- [ ] **CHROM-03**: Project documents minimum disk, time, SDK, Xcode, depot_tools, GN, and Ninja requirements for local Chromium development.
-- [ ] **CHROM-04**: Chromium source is kept in a patch-discipline structure that allows upstream rebases without mixing generated build output, local caches, or `.gclient` state into the root planning repo.
-- [ ] **CHROM-05**: Project records the exact Chromium revision used as the Prometheus migration baseline.
+- [x] **CHROM-03**: Project documents minimum disk, time, SDK, Xcode, depot_tools, GN, and Ninja requirements for local Chromium development.
+- [x] **CHROM-04**: Chromium source is kept in a patch-discipline structure that allows upstream rebases without mixing generated build output, local caches, or `.gclient` state into the root planning repo.
+- [x] **CHROM-05**: Project records the exact Chromium revision used as the Prometheus migration baseline.
 - [ ] **CHROM-06**: Developer can run the unmodified Chromium app from the local build before Prometheus modifications begin.
 - [ ] **CHROM-07**: Project has a reproducible build/run script for macOS that fits Conductor/workspace constraints and avoids fixed-port or global-state conflicts where possible.
-- [ ] **CHROM-08**: Chromium checkout/build artifacts are excluded or isolated so the root repository does not accidentally commit massive generated directories.
+- [x] **CHROM-08**: Chromium checkout/build artifacts are excluded or isolated so the root repository does not accidentally commit massive generated directories.
 
 ### Product Identity, Legal, And Branding
 
