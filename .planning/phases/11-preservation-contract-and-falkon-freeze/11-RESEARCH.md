@@ -389,22 +389,19 @@ Source: local audit found stale README/STATE/CHROMIUM-CHECKOUT references and cu
 |---|-------|---------|---------------|
 | A1 | Source wipe checklist and visual check ledger are tempting to split into separate files. [ASSUMED] | Common Pitfalls | Low; locked decision still requires the canonical dossier to remain source of truth. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **How far should Phase 11 update root `README.md` versus only tag stale sections for Phase 13?** [VERIFIED: PRES-06 assigned to Phase 11; VERIFIED: ROADMAP Phase 13 also owns README architecture language]
+1. **RESOLVED: How far should Phase 11 update root `README.md` versus only tag stale sections for Phase 13?** [VERIFIED: PRES-06 assigned to Phase 11; VERIFIED: ROADMAP Phase 13 also owns README architecture language]
    - What we know: `README.md` currently contains active Qt/QtWebEngine and `falkon/` build instructions. [VERIFIED: `rg` stale-reference scan]
-   - What's unclear: The exact division between Phase 11 preservation cleanup and Phase 13 product identity/legal baseline is not explicitly locked. [VERIFIED: 11-CONTEXT.md; VERIFIED: ROADMAP Phase 13]
-   - Recommendation: Phase 11 should at minimum update false active-source/build claims and record remaining product-doc updates as Phase 13-owned. [VERIFIED: synthesis from PRES-06 and D-04]
+   - Resolution: Phase 11 handles false current-state and active-source/build claims in `README.md`, `.planning/STATE.md`, and `.planning/chromium/CHROMIUM-CHECKOUT.md` via Plan 11-03. Broader product identity, branding, and legal copy beyond those stale claims remains Phase 13-owned. [VERIFIED: 11-03-PLAN.md files_modified and action scope; VERIFIED: ROADMAP Phase 13]
 
-2. **Who performs explicit license review if a later phase wants a Falkon-derived asset or source hunk?** [VERIFIED: 11-CONTEXT.md D-08/D-09]
+2. **RESOLVED: Who performs explicit license review if a later phase wants a Falkon-derived asset or source hunk?** [VERIFIED: 11-CONTEXT.md D-08/D-09]
    - What we know: The default is no GPL Falkon implementation copy into Chromium without review. [VERIFIED: 11-CONTEXT.md D-08]
-   - What's unclear: The project does not name a legal reviewer or approval artifact. [VERIFIED: reviewed provided phase/project docs]
-   - Recommendation: Phase 11 should add an approval placeholder such as `license_review_required` in migration rows rather than attempting legal approval. [VERIFIED: synthesis from D-08/D-09]
+   - Resolution: Phase 11 does not perform or name a legal approval authority. Any later row that would copy GPL-derived implementation text or ambiguous Falkon-derived assets is marked `license_review_required` until an explicit human/legal approval artifact exists. [VERIFIED: 11-01-PLAN.md license boundary task; VERIFIED: 11-02-PLAN.md required license status labels]
 
-3. **Should the preservation verification gate be shell or Node?** [VERIFIED: 11-CONTEXT.md discretion]
+3. **RESOLVED: Should the preservation verification gate be shell or Node?** [VERIFIED: 11-CONTEXT.md discretion]
    - What we know: Shell, Node, and required CLI tools are available locally. [VERIFIED: environment availability commands]
-   - What's unclear: The planner may prefer shell for simplicity or Node for Markdown row validation. [VERIFIED: 11-CONTEXT.md discretion]
-   - Recommendation: Use shell for bundle/patch/stale-state checks and only add Node if the visual-check ledger needs structured Markdown parsing. [VERIFIED: local tool availability; VERIFIED: phase scope]
+   - Resolution: Use shell for Phase 11. Plan 11-01 creates `.planning/preservation/verify-preservation.sh`, and Plans 11-02/11-03 extend that shell verifier for migration-map, visual-ledger, freeze-checklist, and stale-doc invariants. Node remains unnecessary unless a later phase needs a structured parser. [VERIFIED: 11-01-PLAN.md; VERIFIED: 11-02-PLAN.md; VERIFIED: 11-03-PLAN.md]
 
 ## Environment Availability
 
