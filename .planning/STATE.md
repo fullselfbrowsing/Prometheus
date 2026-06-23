@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
-stopped_at: Phase 11 context gathered
-last_updated: "2026-06-23T18:15:42.654Z"
-last_activity: 2026-06-23 -- Phase 11 execution started
+stopped_at: Completed 11-01-PLAN.md
+last_updated: "2026-06-23T18:21:18.468Z"
+last_activity: 2026-06-23
 progress:
   total_phases: 14
   completed_phases: 0
   total_plans: 3
-  completed_plans: 0
-  percent: 0
+  completed_plans: 1
+  percent: 33
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-06-17)
 ## Current Position
 
 Phase: 11 (Preservation Contract and Falkon Freeze) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 11
-Last activity: 2026-06-23 -- Phase 11 execution started
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-06-23
 
 ## Performance Metrics
 
@@ -80,6 +80,7 @@ Last activity: 2026-06-23 -- Phase 11 execution started
 | Phase 10 P01 | 3min | 2 tasks | 5 files |
 | Phase 10 P03 | 15min | 2 tasks | 6 files |
 | Phase 10 P04 | 3min | 2 tasks | 0 files |
+| Phase 11-preservation-contract-and-falkon-freeze P01 | 3min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -143,6 +144,8 @@ Recent decisions affecting current work:
 - [Milestone v2.0]: The Metal Toolchain blocker is resolved with `xcodebuild -runFirstLaunch` and `xcodebuild -downloadComponent MetalToolchain`; `xcrun metal -v` now succeeds.
 - [Milestone v2.0]: GN generation for `.context/chromium/src/out/Default` succeeds with `is_debug=false is_component_build=true symbol_level=0`.
 - [Milestone v2.0]: First Chromium `chrome` build is running in detached `screen` session `prometheus-chromium-build`; log `.context/chromium-build-screen.log`, status file `.context/chromium-build-screen.status`, working directory `.context/chromium/src`.
+- [Phase 11]: Preservation verification must prove bundle integrity, expected refs, patch count 81, temporary restore, and root git ignore coverage.
+- [Phase 11]: Falkon GPL implementation, Qt/QSS/package metadata, and copied GPL text remain reference-only or license-review-required for Chromium migration.
 
 ### Roadmap Evolution
 
@@ -194,9 +197,9 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Because
 
 ## Session Continuity
 
-Last session: 2026-06-23T17:37:58.045Z
-Stopped at: Phase 11 context gathered
-Resume file: .planning/phases/11-preservation-contract-and-falkon-freeze/11-CONTEXT.md
+Last session: 2026-06-23T18:21:18.465Z
+Stopped at: Completed 11-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 

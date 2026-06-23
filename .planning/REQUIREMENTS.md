@@ -14,11 +14,11 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 
 ### Preservation And Retirement
 
-- [ ] **PRES-01**: Developer can recover the full Falkon-based Prometheus v1 source reference from a local preservation bundle after the active `falkon/` tree is removed.
+- [x] **PRES-01**: Developer can recover the full Falkon-based Prometheus v1 source reference from a local preservation bundle after the active `falkon/` tree is removed.
 - [ ] **PRES-02**: Project has a written inventory of v1 product decisions, design tokens, UI surfaces, asset paths, tool contracts, tests, validation scripts, and deferred verification items before source removal.
 - [ ] **PRES-03**: Project has an explicit migration map from each v1 Falkon/Qt implementation surface to a Chromium-native owner or a deliberately deferred/out-of-scope item.
-- [ ] **PRES-04**: Project distinguishes behavior/design contracts from GPL-derived Falkon implementation code so Chromium work does not copy GPL source without license review.
-- [ ] **PRES-05**: Developer can remove the active `falkon/` checkout from the workspace without losing source history, patches, assets, or planning context.
+- [x] **PRES-04**: Project distinguishes behavior/design contracts from GPL-derived Falkon implementation code so Chromium work does not copy GPL source without license review.
+- [x] **PRES-05**: Developer can remove the active `falkon/` checkout from the workspace without losing source history, patches, assets, or planning context.
 - [ ] **PRES-06**: Root project documentation no longer presents Falkon/QtWebEngine as the production architecture after the Chromium baseline is established.
 - [ ] **PRES-07**: v1 deferred human-visual verification items are either re-run against Chromium equivalents or explicitly retired with rationale because the Falkon UI surface no longer exists.
 
