@@ -34,6 +34,13 @@ Prometheus keeps its product, design, and agent-native control thesis, but retir
 
 **Requirements:** PRES-01, PRES-02, PRES-03, PRES-04, PRES-05, PRES-06, PRES-07
 
+**Plans:** 3 plans
+
+Plans:
+- [ ] 11-01-PLAN.md — Create the preservation evidence gate and canonical dossier evidence/license boundary.
+- [ ] 11-02-PLAN.md — Complete the capability-first Falkon-to-Chromium migration map and verifier invariants.
+- [ ] 11-03-PLAN.md — Add the deferred visual-check ledger, freeze checklist, and stale-doc cleanup gate.
+
 **Success criteria:**
 
 1. `.context/falkon-preservation/falkon-prometheus-v1.bundle` restores the full Falkon-based v1 reference.
