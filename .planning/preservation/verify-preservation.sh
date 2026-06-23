@@ -73,16 +73,54 @@ check_dossier_evidence() {
   require_rg "Do not copy.*without explicit license review|no GPL Falkon.*without explicit license review" "$dossier"
 }
 
+check_migration_map() {
+  require_rg "Capability Migration Map" "$dossier"
+  require_rg "Chromium Owner" "$dossier"
+  require_rg "Parity Evidence" "$dossier"
+  require_rg "License / Attribution Note" "$dossier"
+  require_rg "Product identity and Powered by FSB" "$dossier"
+  require_rg "Font Awesome Free offline icon subset" "$dossier"
+  require_rg "Compact chrome" "$dossier"
+  require_rg "FSB Control Panel nine operator sections" "$dossier"
+  require_rg "Prometheus start page" "$dossier"
+  require_rg "Native agent command router" "$dossier"
+  require_rg "DOM/page snapshots" "$dossier"
+  require_rg "MCP bridge tool names" "$dossier"
+  require_rg "Provider runtime" "$dossier"
+  require_rg "Supervision, pairing" "$dossier"
+  require_rg "Extension surfaces" "$dossier"
+  require_rg "Parity/security/de-Falkon" "$dossier"
+  require_rg "contract_only" "$dossier"
+  require_rg "product_owned" "$dossier"
+  require_rg "third_party_attribution_required" "$dossier"
+  require_rg "reference_only" "$dossier"
+  require_rg "license_review_required" "$dossier"
+  require_rg "Phase 13 Product Identity" "$dossier"
+  require_rg "Phase 14 Asset" "$dossier"
+  require_rg "Phase 15 Chromium UI Shell" "$dossier"
+  require_rg "Phase 16 Prometheus WebUI" "$dossier"
+  require_rg "Phase 17 Native Agent" "$dossier"
+  require_rg "Phase 18 Page Adapter" "$dossier"
+  require_rg "Phase 19 MCP Bridge" "$dossier"
+  require_rg "Phase 20 FSB Runtime" "$dossier"
+  require_rg "Phase 21 Supervision" "$dossier"
+  require_rg "Phase 22 Chrome Extension" "$dossier"
+  require_rg "Phase 23 Migration Parity" "$dossier"
+  require_rg "Phase 24 Packaging" "$dossier"
+}
+
 case "${1:-}" in
   --artifacts-only)
     check_preservation_artifacts
     ;;
   --dossier-only)
     check_dossier_evidence
+    check_migration_map
     ;;
   "")
     check_preservation_artifacts
     check_dossier_evidence
+    check_migration_map
     ;;
   *)
     fail "unknown argument: $1"
