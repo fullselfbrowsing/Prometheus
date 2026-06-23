@@ -16,7 +16,7 @@ Agents get fast, precise, auditable control of the whole browser through DOM/nat
 
 v1.0 delivered the Prometheus product identity with the "Powered by FSB" affiliation; a native agent command router with surface adapters, permissioned JS execution, and DOM/page reads; FSB-compatible MCP tooling with multi-agent ownership, typed errors, and visual-session fields; native FSB runtime surfaces (side panel, providers, autopilot, logs, memory/site guides, secure vault); PhantomStream-style supervision, safe pairing, and a local macOS validation package; compact Safari-style chrome with advanced tab management; a native FSB-Plus control center with a release-gated feature parity matrix; an offline Font Awesome Free icon system with Poppins/Space Mono brand fonts and warm dark/light themes; and a Prometheus start page.
 
-**Active: v2.0 Chromium Engine Migration (started 2026-06-17).** Falkon is now treated as a preserved reference, not the production base. The current milestone preserves every v1 decision and asset, retires the active Falkon tree, checks out and builds Chromium, and rebuilds Prometheus on Chromium-native primitives while keeping the product/design/agent-control contract intact.
+**Active: v2.0 Chromium Engine Migration (started 2026-06-17).** Falkon is now treated as a preserved reference, not the production base. Phase 11 validated the preservation contract: the v1 bundle restores, 81 patches are preserved, the active Falkon tree is absent, and the canonical dossier now carries the migration map, GPL boundary, source-freeze checklist, and all 26 deferred visual checks. The next active step is Phase 12: verify the unmodified Chromium baseline before Prometheus patches begin.
 
 ## Current Milestone: v2.0 Chromium Engine Migration
 
@@ -54,13 +54,13 @@ v1.0 delivered the Prometheus product identity with the "Powered by FSB" affilia
 - ✓ Lightweight architecture: no Electron, no screenshot-heavy control loops, native Qt/QtWebEngine plus small local agent services — v1.0
 - ✓ Compact Safari-style chrome: tabs share the toolbar, active tab becomes the address/search field, separate layout stays optional — v1.0 (Phase 7)
 - ✓ Advanced native tab management: groups, overview/search, quick switch, close/restore, unload/suspend, duplicate, detach, ownership, health, supervision — v1.0 (Phase 7)
+- ✓ Preserve v1 Falkon/Prometheus source, patch series, decisions, design system, assets, contracts, GPL boundary, migration map, and deferred visual-check ledger before Chromium work begins — Phase 11
 
 ### Active
 
 (See `.planning/REQUIREMENTS.md` for the full v2.0 requirement set.)
 
-- [ ] Preserve v1 Falkon/Prometheus source, patch series, decisions, design system, assets, contracts, and legal boundaries.
-- [ ] Retire the active Falkon implementation and establish a Chromium checkout/build baseline.
+- [ ] Verify the unmodified Chromium checkout/build baseline and document patch discipline before Prometheus changes begin.
 - [ ] Rebuild Prometheus product identity, design system, compact chrome, WebUI surfaces, native agent control, MCP bridge, runtime, supervision, extension policy, validation, and packaging on Chromium.
 - [ ] Prove parity or consciously retire each v1/FSB capability through a maintained matrix.
 
@@ -78,7 +78,9 @@ v1.0 delivered the Prometheus product identity with the "Powered by FSB" affilia
 
 **v1.0 codebase state (2026-06-17):** The browser was built on the Falkon/QtWebEngine fork, tracked as a separate nested `falkon/` checkout. The macOS build linked 177/177 targets. Prometheus-specific work spans the native agent command router and adapters, the MCP bridge, the native side panel and FSB-Plus control center, compact chrome and tab management, the offline icon/font/theme system, and the start page. The output was a local macOS validation package, not a notarized public release.
 
-**v2.0 pivot state (2026-06-17):** The nested Falkon checkout is clean at `b0521c9d37e7545c680b78dfcc24f777a984091c`, 81 commits ahead of upstream Falkon `origin/master`. A recoverable bundle and patch series have been saved under `.context/falkon-preservation/`. The active milestone is to delete/retire the active `falkon/` source tree after preservation and rebuild Prometheus on Chromium.
+**v2.0 pivot state (2026-06-17):** The nested Falkon checkout is clean at `b0521c9d37e7545c680b78dfcc24f777a984091c`, 81 commits ahead of upstream Falkon `origin/master`. A recoverable bundle and patch series have been saved under `.context/falkon-preservation/`. The active milestone is to rebuild Prometheus on Chromium while keeping the v1 source, assets, behavior contracts, and legal boundaries recoverable.
+
+**Phase 11 preservation state (2026-06-23):** The active root `falkon/` checkout is absent. `.planning/preservation/verify-preservation.sh` verifies the bundle, expected refs, 81 patches, temporary restore, `.context/` ignore/tracking boundaries, dossier invariants, and stale-doc cleanup. `.planning/preservation/FALKON-TO-CHROMIUM-PRESERVATION.md` is the canonical dossier for later Chromium phases.
 
 The Full Self Browsing GitHub organization currently has four public repositories:
 
@@ -137,7 +139,8 @@ FSB extension capabilities to preserve or improve include:
 | Use Font Awesome Free as a curated offline icon source | Font Awesome Free is GPL-friendly when licenses and attribution are preserved; bundling a curated subset improves deterministic native icon rendering. | - Accepted |
 | Replace Falkon/QtWebEngine with Chromium as the production base | Falkon proved the product but lacks the extension/runtime ecosystem and long-term base we need; Chromium gives the native browser platform, WebUI, Views, WebContents, and extension system to rebuild Prometheus correctly. | v2.0 active |
 | Preserve Prometheus/FSB product DNA while replacing the implementation | The value is the agent-native browser, design language, MCP contract, and supervision model, not the Falkon codebase. | v2.0 active |
-| Treat Falkon source as reference, not copy-paste implementation | Falkon is GPL-derived and Chromium is not; behavior and design can be reimplemented, but source copying requires explicit license review. | v2.0 active |
+| Treat Falkon source as reference, not copy-paste implementation | Falkon is GPL-derived and Chromium is not; behavior and design can be reimplemented, but source copying requires explicit license review. | ✓ Validated — Phase 11 preservation dossier and verifier |
+| Use the preservation dossier as the Chromium migration contract | Later Chromium phases need one source of truth for v1 behavior, assets, visual checks, owner phases, parity evidence, and license boundaries. | ✓ Validated — Phase 11 |
 
 ## Evolution
 
@@ -157,4 +160,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-17 after v2.0 Chromium Engine Migration milestone start*
+*Last updated: 2026-06-23 after Phase 11 preservation verification*

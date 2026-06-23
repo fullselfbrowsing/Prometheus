@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
-status: verifying
-stopped_at: Completed 11-03-PLAN.md
-last_updated: "2026-06-23T18:37:30.108Z"
+status: ready
+stopped_at: Phase 11 verified; Phase 12 ready to plan
+last_updated: "2026-06-23T18:56:10Z"
 last_activity: 2026-06-23
 progress:
   total_phases: 14
@@ -18,23 +18,23 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-06-17)
+See: .planning/PROJECT.md (updated 2026-06-23)
 
 **Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** Phase 11 — Preservation Contract and Falkon Freeze
+**Current focus:** Phase 12 — Chromium Checkout, Build, and Patch Discipline
 
 ## Current Position
 
-Phase: 11 (Preservation Contract and Falkon Freeze) — VERIFYING
-Plan: 3 of 3
-Status: Phase complete — ready for verification
+Phase: 12 (Chromium Checkout, Build, and Patch Discipline)
+Plan: Not started
+Status: Phase 11 complete and verified; Phase 12 ready to plan
 Last activity: 2026-06-23
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 51
+- Total plans completed: 54
 - Average duration: 7min
 - Total execution time: 0.3 hours
 
@@ -46,6 +46,7 @@ Last activity: 2026-06-23
 | 08 | 5 | - | - |
 | 09 | 6 | - | - |
 | 10 | 4 | - | - |
+| 11 | 3 | - | - |
 
 **Recent Trend:**
 
@@ -150,7 +151,7 @@ Recent decisions affecting current work:
 - [Phase 11]: Falkon GPL implementation, Qt/QSS/package metadata, and copied GPL text remain reference-only or license-review-required for Chromium migration.
 - [Phase 11-preservation-contract-and-falkon-freeze]: Use the canonical dossier's Capability Migration Map as the source-of-truth linking v1 behavior contracts to Chromium owner phases, parity evidence, and license status.
 - [Phase 11-preservation-contract-and-falkon-freeze]: Preservation verification now enforces required migration-map rows, columns, license labels, and Chromium owner phases before later Chromium work proceeds.
-- [Phase 11-preservation-contract-and-falkon-freeze]: Phase 11 planning/execution is the active preservation step: complete the deferred visual ledger, source-freeze checklist, and stale-doc verification gate before Phase 12 launch validation.
+- [Phase 11-preservation-contract-and-falkon-freeze]: Phase 11 completed the deferred visual ledger, source-freeze checklist, and stale-doc verification gate before Phase 12 launch validation.
 - [Phase 11-preservation-contract-and-falkon-freeze]: No active screen session was present during Phase 11 research; .context/chromium-build-screen.status was 0; .context/chromium-build-screen.log ended with a successful Chromium build message.
 - [Phase 11-preservation-contract-and-falkon-freeze]: Carry all 26 deferred Phase 08, 09, and 10 human visual checks forward as Chromium-owned checks instead of marking any complete or retiring them prematurely.
 - [Phase 11-preservation-contract-and-falkon-freeze]: Treat the first Chromium build as completed with exit status 0 while keeping unmodified launch verification in Phase 12 scope.
@@ -175,7 +176,7 @@ Recent decisions affecting current work:
 
 Open items carried into v2.0 (formal list in Deferred Items below):
 
-- 26 human-visual UAT checks across phases 08/09/10 were never run on a live Falkon binary; in v2.0 they should become Chromium-equivalent visual checks or be retired with rationale.
+- 26 human-visual UAT checks across phases 08/09/10 were never run on a live Falkon binary; Phase 11 mapped all of them into the canonical Chromium carry-forward ledger for later Chromium-equivalent UAT.
 - Internal Falkon → Prometheus namespace/class/library rename is obsolete as a direct task because the implementation is being replaced; de-Falkon validation moves to Phase 23.
 - The release artifact is a local macOS validation package, not a notarized public release.
 - Provider-backed hosted model execution remains partially deferred.
@@ -184,13 +185,13 @@ Open items carried into v2.0 (formal list in Deferred Items below):
 
 ## Deferred Items
 
-Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Because Falkon is being retired, these should be converted into Chromium-equivalent visual checks where the surface still exists, or explicitly retired with rationale in Phase 11/23.
+Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Phase 11 mapped every item into `.planning/preservation/FALKON-TO-CHROMIUM-PRESERVATION.md` as Chromium-owned `carry_forward` evidence; later owner phases must run the Chromium-equivalent visual checks or retire a check with rationale if the surface no longer exists.
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| verification | 08-VERIFICATION.md — 10 control-panel/side-panel visual checks | human_needed | v1.0 close 2026-06-17 |
-| verification | 09-VERIFICATION.md — 8 icon/font/theme rendering checks | human_needed | v1.0 close 2026-06-17 |
-| verification | 10-VERIFICATION.md — 8 start-page visual checks | human_needed | v1.0 close 2026-06-17 |
+| verification | 08-VERIFICATION.md — 10 control-panel/side-panel visual checks | carried_forward_phase_11 | v1.0 close 2026-06-17 |
+| verification | 09-VERIFICATION.md — 8 icon/font/theme rendering checks | carried_forward_phase_11 | v1.0 close 2026-06-17 |
+| verification | 10-VERIFICATION.md — 8 start-page visual checks | carried_forward_phase_11 | v1.0 close 2026-06-17 |
 | migration | Internal Falkon → Prometheus namespace/class/library rename replaced by Chromium migration and de-Falkon gate | active_v2_replacement | v2.0 start 2026-06-17 |
 | release | Notarized, distributable macOS release (current is local validation package) | deferred | v1.0 close 2026-06-17 |
 | preservation | Falkon v1 source bundle and 81-patch series | saved | v2.0 start 2026-06-17 |
@@ -200,8 +201,8 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Because
 
 ## Session Continuity
 
-Last session: 2026-06-23T18:37:30.105Z
-Stopped at: Completed 11-03-PLAN.md
+Last session: 2026-06-23T18:56:10Z
+Stopped at: Phase 11 verified; Phase 12 ready to plan
 Resume file: None
 
 ## Operator Next Steps
