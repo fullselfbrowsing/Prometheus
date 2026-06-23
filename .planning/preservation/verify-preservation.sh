@@ -62,6 +62,11 @@ check_preservation_artifacts() {
   trap - EXIT
 
   git check-ignore -q "$bundle" || fail "preservation bundle is not ignored by root git: $bundle"
+  git check-ignore -q "$patch_dir" || fail "preservation patch directory is not ignored by root git: $patch_dir"
+
+  if git ls-files -- "$bundle" "$patch_dir" | rg -q .; then
+    fail "preservation artifacts must not be tracked by root git"
+  fi
 }
 
 check_dossier_evidence() {
@@ -159,9 +164,23 @@ check_freeze_docs() {
 check_stale_docs() {
   local stale_pattern
   stale_pattern='cmake -S falkon|falkon/tools|detached.*screen|prometheus-chromium-build.*running|built on Qt and QtWebEngine'
-  if rg -n "$stale_pattern" README.md .planning/STATE.md .planning/chromium/CHROMIUM-CHECKOUT.md; then
+
+  local stale_files=(README.md .planning/STATE.md .planning/chromium/CHROMIUM-CHECKOUT.md)
+  local file
+  for file in "${stale_files[@]}"; do
+    [ -r "$file" ] || fail "missing or unreadable stale-doc scan target: $file"
+  done
+
+  set +e
+  rg -n "$stale_pattern" "${stale_files[@]}"
+  local rg_status=$?
+  set -e
+
+  if [ "$rg_status" -eq 0 ]; then
     fail "stale active Falkon/build docs remain"
   fi
+
+  [ "$rg_status" -eq 1 ] || fail "stale-doc scan failed with rg exit status $rg_status"
 }
 
 case "${1:-}" in

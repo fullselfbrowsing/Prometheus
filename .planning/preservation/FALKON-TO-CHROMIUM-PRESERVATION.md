@@ -167,7 +167,10 @@ These are already outside Falkon and must stay:
 
 | Path | Role |
 |------|------|
-| `assets/prometheus.svg` | Product mark for README and external docs |
+| `assets/prometheus.svg` | Legacy/canonical product mark source for external docs |
+| `assets/prometheus-icon.svg` | README hero icon and product mark artifact |
+| `assets/prometheus-wordmark.svg` | README dark-mode Prometheus wordmark artifact |
+| `assets/prometheus-wordmark-light.svg` | README light-mode Prometheus wordmark artifact |
 | `assets/fsb_logo_dark.png` | FSB logo on dark |
 | `assets/fsb_logo_light.png` | FSB logo on light |
 | `assets/fsb_logo_dark_footer.png` | Footer variant |
