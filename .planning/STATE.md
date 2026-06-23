@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-06-17)
 
 Phase: 11 (Preservation Contract and Falkon Freeze) — EXECUTING
 Plan: 3 of 3
-Status: Ready to execute
+Status: Executing preservation ledger, source-freeze checklist, and stale-doc cleanup
 Last activity: 2026-06-23
 
 ## Performance Metrics
@@ -144,11 +144,13 @@ Recent decisions affecting current work:
 - [Milestone v2.0]: The local Xcode blocker is resolved. Active developer directory is `/Applications/Xcode.app/Contents/Developer`; `xcodebuild -version` reports Xcode 26.5 build 17F42.
 - [Milestone v2.0]: The Metal Toolchain blocker is resolved with `xcodebuild -runFirstLaunch` and `xcodebuild -downloadComponent MetalToolchain`; `xcrun metal -v` now succeeds.
 - [Milestone v2.0]: GN generation for `.context/chromium/src/out/Default` succeeds with `is_debug=false is_component_build=true symbol_level=0`.
-- [Milestone v2.0]: First Chromium `chrome` build is running in detached `screen` session `prometheus-chromium-build`; log `.context/chromium-build-screen.log`, status file `.context/chromium-build-screen.status`, working directory `.context/chromium/src`.
+- [Milestone v2.0]: First Chromium `chrome` build finished successfully with status file `.context/chromium-build-screen.status` reporting `0`; unmodified launch verification remains Phase 12 scope.
 - [Phase 11]: Preservation verification must prove bundle integrity, expected refs, patch count 81, temporary restore, and root git ignore coverage.
 - [Phase 11]: Falkon GPL implementation, Qt/QSS/package metadata, and copied GPL text remain reference-only or license-review-required for Chromium migration.
 - [Phase 11-preservation-contract-and-falkon-freeze]: Use the canonical dossier's Capability Migration Map as the source-of-truth linking v1 behavior contracts to Chromium owner phases, parity evidence, and license status.
 - [Phase 11-preservation-contract-and-falkon-freeze]: Preservation verification now enforces required migration-map rows, columns, license labels, and Chromium owner phases before later Chromium work proceeds.
+- [Phase 11-preservation-contract-and-falkon-freeze]: Phase 11 planning/execution is the active preservation step: complete the deferred visual ledger, source-freeze checklist, and stale-doc verification gate before Phase 12 launch validation.
+- [Phase 11-preservation-contract-and-falkon-freeze]: No active screen session was present during Phase 11 research; .context/chromium-build-screen.status was 0; .context/chromium-build-screen.log ended with a successful Chromium build message.
 
 ### Roadmap Evolution
 
@@ -163,13 +165,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- Monitor the detached first Chromium build from the root checkout:
-  `screen -ls`
-
-- Watch build output:
-  `tail -f .context/chromium-build-screen.log`
-
-- After the build exits, launch `.context/chromium/src/out/Default/Chromium.app/Contents/MacOS/Chromium` if the binary exists.
+- Launch `.context/chromium/src/out/Default/Chromium.app/Contents/MacOS/Chromium` during Phase 12 to verify the unmodified Chromium app before Prometheus patches begin.
 
 ### Blockers/Concerns
 
@@ -179,7 +175,7 @@ Open items carried into v2.0 (formal list in Deferred Items below):
 - Internal Falkon → Prometheus namespace/class/library rename is obsolete as a direct task because the implementation is being replaced; de-Falkon validation moves to Phase 23.
 - The release artifact is a local macOS validation package, not a notarized public release.
 - Provider-backed hosted model execution remains partially deferred.
-- Chromium checkout completed under `.context/chromium`; local Xcode and Metal blockers are resolved; first `chrome` build is still in progress and not yet verified by launching Chromium.
+- Chromium checkout completed under `.context/chromium`; local Xcode and Metal blockers are resolved; first `chrome` build finished successfully and still needs Phase 12 launch verification.
 - License boundary is high-risk: do not copy Falkon GPL implementation into Chromium without review.
 
 ## Deferred Items
@@ -196,7 +192,7 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Because
 | preservation | Falkon v1 source bundle and 81-patch series | saved | v2.0 start 2026-06-17 |
 | local_build | Chromium GN generation required accepted Xcode license | fixed | v2.0 Phase 12 2026-06-17 |
 | local_build | Chromium Metal Toolchain asset required for ANGLE Metal shader compilation | fixed | v2.0 Phase 12 2026-06-17 |
-| local_build | First Chromium `chrome` build must finish and launch before Prometheus patches begin | running | v2.0 Phase 12 2026-06-17 |
+| local_build | First Chromium `chrome` build finished; unmodified launch verification remains Phase 12 scope | build_finished_launch_pending | v2.0 Phase 12 2026-06-17 |
 
 ## Session Continuity
 
@@ -206,6 +202,6 @@ Resume file: None
 
 ## Operator Next Steps
 
-- Monitor the detached build using `screen -ls` and `.context/chromium-build-screen.log`.
-- If the build fails, inspect `.context/chromium/src/out/Default/siso_output` and rerun the command in `.planning/chromium/CHROMIUM-CHECKOUT.md`.
-- If the build succeeds, launch the unmodified Chromium app before Prometheus patches begin.
+- Use `.planning/chromium/CHROMIUM-CHECKOUT.md` as the reproduction record for the completed Chromium build.
+- Launch the unmodified Chromium app during Phase 12 before Prometheus patches begin.
+- If a future rebuild fails, inspect `.context/chromium/src/out/Default/siso_output` and rerun the build command in `.planning/chromium/CHROMIUM-CHECKOUT.md`.

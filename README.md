@@ -14,10 +14,10 @@
 *Pure structural intelligence. Zero vision. Zero guessing.*
 
 ![Prometheus](https://img.shields.io/badge/Prometheus-Powered_by_FSB-090909?style=for-the-badge)
-![Qt 6](https://img.shields.io/badge/Qt_6-QtWebEngine-41CD52?style=for-the-badge&logo=qt&logoColor=white)
+![Chromium Migration](https://img.shields.io/badge/Chromium-migration_active-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?style=for-the-badge&logo=cplusplus&logoColor=white)
 ![MCP](https://img.shields.io/badge/MCP-stdio_bridge-FF6B35?style=for-the-badge)
-![License](https://img.shields.io/badge/license-GPLv3-F5C518?style=for-the-badge)
+![Licensing](https://img.shields.io/badge/licensing-v1_GPLv3_%2B_Chromium_obligations-F5C518?style=for-the-badge)
 ![Platform](https://img.shields.io/badge/macOS-validated-555555?style=for-the-badge&logo=apple&logoColor=white)
 
 [![Stars](https://img.shields.io/github/stars/fullselfbrowsing/Prometheus?style=for-the-badge&logo=github&logoColor=white&color=555555)](https://github.com/fullselfbrowsing/Prometheus/stargazers)
@@ -41,11 +41,11 @@ And that's what this is.
 
 ## Overview
 
-Prometheus is an agent native desktop browser built on Qt and QtWebEngine. It brings Full Self Browsing's DOM first automation into the browser itself, so AI agents and the humans supervising them can inspect, script, click, type, navigate, configure, and recover across the whole browser through first class native structure instead of screenshots, brittle extension injection, or human only UI.
+Prometheus is migrating to a Chromium-based agent-native desktop browser; v1.0 was proven on a Falkon/QtWebEngine bootstrap and Falkon is now a preserved reference, not the production base. It brings Full Self Browsing's DOM first automation into the browser itself, so AI agents and the humans supervising them can inspect, script, click, type, navigate, configure, and recover across the whole browser through first class native structure instead of screenshots, brittle extension injection, or human only UI.
 
 Where a Chrome extension can only reach the page, Prometheus owns the browser. Agents drive normal web pages and the surfaces an extension can never touch: settings, tabs, downloads, history, and internal pages. Every action runs through a typed native command router with tab ownership, permission boundaries, change reports, and an audit log.
 
-> **Status:** Prometheus is an active build. The native control spine, the stdio MCP bridge, multi agent tab ownership, the runtime sidebar, DOM native supervision, and a repeatable macOS artifact are in place. Treat it as supervised automation software: keep a human in the loop and test on non critical pages first.
+> **Status:** v1.0 shipped as a Falkon/QtWebEngine bootstrap and is preserved for reference. Active work is the v2.0 Chromium migration: rebuild the same product, MCP, runtime, supervision, and design contracts on Chromium-native primitives while keeping Falkon source reference-only.
 
 ### What it does
 
@@ -181,43 +181,21 @@ Visual session intent travels with each call through the implicit `client`, `vis
 
 ## MCP Bridge
 
-The bridge is a single dependency free Node script. It speaks MCP over stdio to your client and forwards each `tools/call` to the native router over loopback.
+The v1 bridge contract is preserved: MCP clients speak over stdio, calls are forwarded to a browser-owned loopback router, and each tool returns a normalized result or typed error. During the Chromium migration, that contract is tracked in `.planning/preservation/FALKON-TO-CHROMIUM-PRESERVATION.md` and reimplemented in Phase 19 instead of using the archived Falkon bridge as active source.
 
-1. Launch Prometheus with the agent port enabled:
-
-   ```bash
-   PROMETHEUS_AGENT_PORT=17880 open -a Prometheus
-   ```
-
-2. Point an MCP client at the bridge. It forwards to the router named by `PROMETHEUS_AGENT_URL` and defaults to `http://127.0.0.1:17880`:
-
-   ```bash
-   PROMETHEUS_AGENT_URL=http://127.0.0.1:17880 node falkon/tools/prometheus-mcp/server.mjs
-   ```
-
-3. From your client, ask the browser to act: read the current page, open a settings surface, or run a task.
-
-The router contract is intentionally small, so the same `POST /agent/command` endpoint backs both the bridge and any direct local integration.
+The intended Chromium shape is unchanged: the same `POST /agent/command` route family backs direct local integrations and the stdio MCP bridge, with browser-owned authentication, tab ownership, audit logs, and visual-session fields.
 
 ---
 
 ## Quick Start
 
-Prometheus builds from the Qt and QtWebEngine source under `falkon/` with CMake.
+The active workspace is in v2.0 migration mode. Use the Chromium handoff and preservation dossier instead of rebuilding the archived Falkon bootstrap from the root checkout:
 
-```bash
-# Configure and build
-cmake -S falkon -B falkon/build -DCMAKE_BUILD_TYPE=Release
-cmake --build falkon/build
+- Chromium checkout/build baseline: `.planning/chromium/CHROMIUM-CHECKOUT.md`
+- Falkon v1 preserved reference, migration map, visual ledger, and freeze rules: `.planning/preservation/FALKON-TO-CHROMIUM-PRESERVATION.md`
+- Preservation verifier: `bash .planning/preservation/verify-preservation.sh`
 
-# Run the release validation gate (build, browser smoke, agent, MCP, packaging, legal)
-falkon/tools/fsb-baseline/release-validate.sh
-
-# Package a local macOS artifact
-falkon/tools/fsb-baseline/package-macos.sh
-```
-
-Focused smoke checks live alongside the release gate: `smoke-browser.sh`, `smoke-agent-control.sh`, `smoke-mcp-bridge.sh`, and `smoke-compact-tabs.sh`. The MCP bridge has its own self check at `falkon/tools/prometheus-mcp/smoke.mjs`.
+Unmodified Chromium launch verification remains Phase 12 scope before Prometheus patches begin. The Falkon v1 bundle can be restored for reference from `.context/falkon-preservation/`, but it must not be recreated as a long-lived production workspace.
 
 Provider and vault secrets are entered through the native sidebar and stored in the macOS Keychain on the first platform, never through the agent or MCP transports.
 
@@ -235,22 +213,21 @@ Supervision reads require a session created through `create_supervision_pairing`
 
 | Path | What lives here |
 |------|-----------------|
-| `falkon/src/lib/agent/agentcommandrouter.*` | Native JSON command router: tool validation, tab ownership, typed errors, and the audit log. |
-| `falkon/src/lib/agent/agentruntime.*` | AgentRuntime: tasks, providers, logs, diagnostics, memory, site guides, and vault state. |
-| `falkon/src/lib/agent/agentruntimesidebar.*` | Native sidebar with Task, Providers, Logs, Memory, and Vault panels. |
-| `falkon/tools/prometheus-mcp/server.mjs` | Dependency free Node stdio MCP bridge that forwards tool calls to the native router. |
-| `falkon/tools/fsb-baseline/` | Build, smoke, packaging, release validation, and legal inventory scripts. |
-| `falkon/src/` | Qt and QtWebEngine browser shell. |
-| `falkon/COPYING` | GPLv3 license text. |
-| `.planning/` | Product planning and phase records. |
+| `.context/falkon-preservation/` | Recoverable v1 Falkon/Prometheus reference bundle and 81-patch source-change series. |
+| `.planning/preservation/` | Canonical migration dossier, deferred visual ledger, freeze checklist, and preservation verifier. |
+| `.planning/design/` | Product-owned Prometheus/FSB design references, tokens, layouts, and brand assets. |
+| `.planning/chromium/` | Chromium checkout/build handoff, baseline evidence, and launch-verification notes. |
+| `.context/chromium/src` | Local upstream Chromium source checkout for v2 implementation work; excluded from root commits. |
+| `assets/` | Root Prometheus/FSB image assets used by docs and future Chromium packaging. |
+| `.planning/` | Product planning, requirements, roadmap, phase records, and preserved v1 decisions. |
 
 ---
 
 ## License and Attribution
 
-Prometheus is released under the **GNU General Public License, version 3 or later**. The full text lives in `falkon/COPYING`.
+The preserved v1 Falkon/Prometheus reference is GPLv3-or-later and remains recoverable under `.context/falkon-preservation/` with its inherited Falkon, KDE, Qt, Font Awesome, Poppins, Space Mono, and Prometheus/FSB attribution context. That preserved source is reference material, not the v2 production base.
 
-Prometheus is built on the Falkon browser from the KDE community and on Qt and QtWebEngine. Product visible identity is Prometheus, with **Powered by FSB** as the affiliation, but the inherited GPL, Qt, KDE, and Falkon copyright and license notices are preserved in full, and the source availability obligations of the GPL are honored. The legal inventory is tracked at `falkon/tools/fsb-baseline/legal-notice-inventory.md`.
+The Chromium migration has mixed Chromium and third-party license obligations. Phase 13 and Phase 24 own the Chromium-era legal/about surfaces, package notices, source guidance, and attribution checks. Do not copy GPL Falkon implementation code into Chromium without explicit license review.
 
 Prometheus is supervised, auditable automation software. It is intentionally not a stealth browser, a scraper farm, or an unsupervised account operator.
 

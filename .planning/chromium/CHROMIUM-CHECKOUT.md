@@ -2,7 +2,7 @@
 
 **Created:** 2026-06-17
 **Milestone:** v2.0 Chromium Engine Migration
-**Status:** Chromium source checkout complete; Xcode/Metal toolchain fixed; GN generation complete; first `chrome` build running in detached `screen` session.
+**Status:** Chromium source checkout complete; Xcode/Metal toolchain fixed; GN generation complete; first `chrome` build finished successfully; unmodified launch verification remains Phase 12 scope.
 
 ## Local Paths
 
@@ -119,9 +119,11 @@ Result:
 Done. Made 31437 targets from 4783 files
 ```
 
-## First Build Handoff
+## First Build Result
 
-The first `chrome` build is long-running for a clean Chromium checkout. It was started with the faster non-TTY Siso settings that Chromium's `depot_tools/siso.py` applies when `AI_AGENT=1` is present:
+The first `chrome` build for the clean Chromium checkout completed successfully. Phase 11 research found exit status `0`, no active `prometheus-chromium-build` screen, and `.context/chromium-build-screen.log` ending with Chromium's successful build message.
+
+Reproduction command:
 
 ```sh
 cd /Users/lakshman/conductor/workspaces/prometheus/puebla/.context/chromium/src
@@ -132,26 +134,23 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 autoninja -C out/Default chrome
 ```
 
-The active detached build handoff is:
+Recorded build result:
 
 ```text
-screen session: prometheus-chromium-build
 Log file: .context/chromium-build-screen.log
 Exit status file: .context/chromium-build-screen.status
+Exit status: 0
 Working directory: .context/chromium/src
 Expected Siso flags: --quiet --batch=false --heartbeat_period=30s --offline
 ```
 
-Monitor it with:
+Launch verification remains Phase 12 scope. To verify the unmodified Chromium app before Prometheus patches begin, run:
 
 ```sh
-cd /Users/lakshman/conductor/workspaces/prometheus/puebla
-screen -ls
-tail -f .context/chromium-build-screen.log
-test -f .context/chromium-build-screen.status && cat .context/chromium-build-screen.status
+/Users/lakshman/conductor/workspaces/prometheus/puebla/.context/chromium/src/out/Default/Chromium.app/Contents/MacOS/Chromium
 ```
 
-If the `screen` session has exited and the Chromium binary is still missing, resume with:
+If the Chromium binary is missing or the prior result needs to be reproduced, rerun:
 
 ```sh
 cd /Users/lakshman/conductor/workspaces/prometheus/puebla/.context/chromium/src
@@ -160,12 +159,6 @@ AI_AGENT=1 \
 PATH="/Users/lakshman/conductor/workspaces/prometheus/puebla/.context/depot_tools:$PATH" \
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 autoninja -C out/Default chrome
-```
-
-Then run:
-
-```sh
-/Users/lakshman/conductor/workspaces/prometheus/puebla/.context/chromium/src/out/Default/Chromium.app/Contents/MacOS/Chromium
 ```
 
 If macOS shows incoming network permission prompts on repeated local builds, use Chromium's documented development workaround:

@@ -415,6 +415,19 @@ Do **not** remove:
 - root `assets/`
 - v1 archived milestone docs
 
+## Source Wipe And Freeze Checklist
+
+| Item | Status | Evidence / Rule |
+|------|--------|-----------------|
+| `falkon/` | already_removed | Root active checkout is absent; restore only from .context/falkon-preservation/falkon-prometheus-v1.bundle. |
+| `.context/falkon-preservation/falkon-prometheus-v1.bundle` | must_stay | Recoverable v1 source bundle; expected HEAD b0521c9d37e7545c680b78dfcc24f777a984091c. |
+| `.context/falkon-preservation/patches/` | must_stay | 81-patch source-change series. |
+| `.planning/`, `.planning/design/`, `.planning/preservation/`, archived milestone docs, and root `assets/` | must_stay | Planning context, product-owned design references, preservation records, v1 archive, and docs assets must remain available. |
+| Falkon C++ files, Qt widget classes, QSS, package scripts, and Falkon/KDE metadata | reference_only | Use only as preserved reference evidence; do not copy into Chromium without explicit license review. |
+| Chromium Views/WebUI/resources/services/tests | future_chromium_owned | Reimplement equivalent product contracts through Chromium-native owners, resource pipelines, and tests. |
+
+The active Falkon checkout must not receive feature work or be recreated as a long-lived workspace.
+
 ## Migration Rule
 
 Every Chromium phase must answer this before implementation:

@@ -109,6 +109,61 @@ check_migration_map() {
   require_rg "Phase 24 Packaging" "$dossier"
 }
 
+check_visual_ledger() {
+  require_rg "Deferred Visual Check Ledger" "$dossier"
+
+  local visual_rows
+  visual_rows="$(rg -c '^\| VIS-(08|09|10)-' "$dossier")"
+  [ "$visual_rows" = "26" ] || fail "visual ledger row count was $visual_rows, expected 26"
+
+  require_rg "VIS-08-01" "$dossier"
+  require_rg "VIS-08-10" "$dossier"
+  require_rg "VIS-09-01" "$dossier"
+  require_rg "VIS-09-08" "$dossier"
+  require_rg "VIS-10-01" "$dossier"
+  require_rg "VIS-10-08" "$dossier"
+  require_rg "carry_forward" "$dossier"
+  require_rg "retired" "$dossier"
+
+  rg '^\| VIS-(08|09|10)-' "$dossier" | awk -F'|' '
+    {
+      status=$6
+      owner=$5
+      evidence=$7
+      gsub(/^[ \t]+|[ \t]+$/, "", status)
+      gsub(/^[ \t]+|[ \t]+$/, "", owner)
+      gsub(/^[ \t]+|[ \t]+$/, "", evidence)
+      if (status != "carry_forward" && status != "retired") {
+        bad_status=1
+      }
+      if (owner == "" || evidence == "") {
+        bad_content=1
+      }
+    }
+    END {
+      if (bad_status || bad_content) {
+        exit 1
+      }
+    }
+  ' || fail "visual ledger rows must have allowed status, Chromium owner, and future evidence"
+}
+
+check_freeze_docs() {
+  require_rg "Source Wipe And Freeze Checklist" "$dossier"
+  require_rg "already_removed" "$dossier"
+  require_rg "must_stay" "$dossier"
+  require_rg "reference_only" "$dossier"
+  require_rg "future_chromium_owned" "$dossier"
+}
+
+check_stale_docs() {
+  local stale_pattern
+  stale_pattern='cmake -S falkon|falkon/tools|detached.*screen|prometheus-chromium-build.*running|built on Qt and QtWebEngine'
+  if rg -n "$stale_pattern" README.md .planning/STATE.md .planning/chromium/CHROMIUM-CHECKOUT.md; then
+    fail "stale active Falkon/build docs remain"
+  fi
+}
+
 case "${1:-}" in
   --artifacts-only)
     check_preservation_artifacts
@@ -116,11 +171,16 @@ case "${1:-}" in
   --dossier-only)
     check_dossier_evidence
     check_migration_map
+    check_visual_ledger
+    check_freeze_docs
     ;;
   "")
     check_preservation_artifacts
     check_dossier_evidence
     check_migration_map
+    check_visual_ledger
+    check_freeze_docs
+    check_stale_docs
     ;;
   *)
     fail "unknown argument: $1"
