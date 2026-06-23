@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Chromium Engine Migration
-status: Chromium first build running in detached screen session after Xcode and Metal toolchain fixes
-stopped_at: Xcode selected and licensed; Metal Toolchain installed; GN generation succeeded; first Chromium `chrome` build running in detached `screen` session from `.context/chromium/src`
-last_updated: "2026-06-17T19:58:15.000Z"
-last_activity: 2026-06-17 — fixed local Xcode/Metal blockers, generated Chromium build files, and started first `chrome` build in detached `screen`
+milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
+status: Chromium source fetched; Xcode/Metal toolchain fixed; GN generation succeeded; first `chrome` build running in detached `screen`
+stopped_at: Phase 11 context gathered
+last_updated: "2026-06-23T17:37:58.048Z"
+last_activity: 2026-06-17 — verified Falkon bundle restore, removed active `falkon/`, installed depot_tools, fetched Chromium under `.context/chromium`, fixed local Xcode/Metal blockers, generated GN files, and started first build in detached `screen`
 progress:
   total_phases: 14
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
-  percent: 0
 ---
 
 # Project State
@@ -159,8 +158,10 @@ Recent decisions affecting current work:
 
 - Monitor the detached first Chromium build from the root checkout:
   `screen -ls`
+
 - Watch build output:
   `tail -f .context/chromium-build-screen.log`
+
 - After the build exits, launch `.context/chromium/src/out/Default/Chromium.app/Contents/MacOS/Chromium` if the binary exists.
 
 ### Blockers/Concerns
@@ -192,9 +193,9 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Because
 
 ## Session Continuity
 
-Last session: 2026-06-17T14:58:15.000-05:00
-Stopped at: First Chromium `chrome` build running in detached `screen`
-Resume file: None
+Last session: 2026-06-23T17:37:58.045Z
+Stopped at: Phase 11 context gathered
+Resume file: .planning/phases/11-preservation-contract-and-falkon-freeze/11-CONTEXT.md
 
 ## Operator Next Steps
 
