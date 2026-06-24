@@ -63,6 +63,36 @@ fail() {
 }
 
 # -------------------------------------------------------------------------
+# Cleanup trap: remove every temp profile dir created this run and terminate
+# any still-running launched Chromium process so an interrupt (Ctrl-C /
+# SIGTERM) or early exit during the startup/quit sleeps never orphans the
+# process or leaks a profile dir. Fires on normal exit, on `exit 1`, and on
+# INT/TERM. Every action is guarded so cleanup itself never trips `set -e`.
+# -------------------------------------------------------------------------
+
+# Every profile dir created this run; the EXIT trap removes all of them so
+# successful runs, failed runs, and interrupted runs all leave .context clean.
+profile_dirs=()
+
+# `_attempt_pid` is referenced by cleanup; seed it so an interrupt before the
+# first launch finds a defined, no-op value.
+_attempt_pid="-"
+
+cleanup() {
+  # Terminate the launched process (and its Helper children) if still alive.
+  if [ "${_attempt_pid:-"-"}" != "-" ]; then
+    pkill -P "${_attempt_pid}" 2>/dev/null || true
+    kill "${_attempt_pid}" 2>/dev/null || true
+  fi
+  # Remove every profile dir created this run.
+  local d
+  for d in "${profile_dirs[@]:-}"; do
+    [ -n "${d}" ] && rm -rf "${d}" 2>/dev/null || true
+  done
+}
+trap cleanup INT TERM EXIT
+
+# -------------------------------------------------------------------------
 # Preflight: run environment gate
 # -------------------------------------------------------------------------
 
@@ -96,6 +126,8 @@ attempt_launch() {
   local extra_flags="${2:-}"   # e.g. "--disable-features=DialMediaRouteProvider"
 
   profile_dir="$(mktemp -d "${PROJECT_ROOT}/.context/chromium-smoke-profile.XXXXXX")"
+  # Track this dir so the EXIT trap removes it even if we are interrupted.
+  profile_dirs+=("${profile_dir}")
 
   local launch_cmd
   if [ -z "${extra_flags}" ]; then
