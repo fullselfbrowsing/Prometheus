@@ -123,7 +123,11 @@ mkdir -p "${PROJECT_ROOT}/.context"
 chromium_revision="$(git -C "${CHROMIUM_SRC}" rev-parse HEAD 2>/dev/null)" \
   || fail "could not read Chromium HEAD from ${CHROMIUM_SRC}"
 
-gn_args="$(tr '\n' ' ' < "${BUILD_DIR}/args.gn" 2>/dev/null | sed 's/[[:space:]]*$//')"
+# Guard the gn_args capture like chromium_revision above: an unreadable/missing
+# args.gn must fail loudly rather than silently record empty evidence (gn_args=).
+if ! gn_args="$(tr '\n' ' ' < "${BUILD_DIR}/args.gn" 2>/dev/null | sed 's/[[:space:]]*$//')"; then
+  fail "could not read ${BUILD_DIR}/args.gn for evidence"
+fi
 
 # -------------------------------------------------------------------------
 # Launch helper: attempt one Prometheus launch, wait, quit cleanly.
