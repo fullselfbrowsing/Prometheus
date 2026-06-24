@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
-stopped_at: Completed Phase 12 Plan 02 — build-chromium-baseline.sh
-last_updated: "2026-06-24T01:37:53.347Z"
+stopped_at: Completed Phase 12 Plan 04 — CHROMIUM-CHECKOUT.md handoff and state reconciliation
+last_updated: "2026-06-24T02:00:00.000Z"
 last_activity: 2026-06-24
 progress:
   total_phases: 14
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-06-23)
 
 ## Current Position
 
-Phase: 12 (chromium-checkout-build-and-patch-discipline) — EXECUTING
-Plan: 4 of 4
-Status: Ready to execute
+Phase: 12 (chromium-checkout-build-and-patch-discipline) — COMPLETE
+Plan: 4 of 4 (all plans complete)
+Status: Phase 12 complete; ready for Phase 13
 Last activity: 2026-06-24
 
 ## Performance Metrics
@@ -86,6 +86,7 @@ Last activity: 2026-06-24
 | Phase 11-preservation-contract-and-falkon-freeze P03 | 6min | 2 tasks | 6 files |
 | Phase 12 P12-02 | 1min | 1 tasks | 1 files |
 | Phase 12-chromium-checkout-build-and-patch-discipline P12-03 | 7min | 1 tasks | 1 files |
+| Phase 12-chromium-checkout-build-and-patch-discipline P12-04 | 10min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -144,11 +145,14 @@ Recent decisions affecting current work:
 - [Milestone v2.0]: Preserve product/design/behavior contracts, not GPL Falkon implementation code, unless license review explicitly permits copying.
 - [Milestone v2.0]: Chromium implementation should use browser-process services, WebContents/RenderFrameHost/page adapters, WebUI, Views, resource packs, and extension-system policy rather than Qt/QWebChannel/QSS/Falkon plugin APIs.
 - [Milestone v2.0]: Active `falkon/` checkout was removed after bundle restore verification. Root git status is clean after removal.
-- [Milestone v2.0]: depot_tools installed at `.context/depot_tools` (revision `c46c2e905`); Chromium fetched at `.context/chromium/src` (revision `0e8499df5172f55d0d29e2b92ef7e6a704529578`).
+- [Milestone v2.0]: depot_tools installed at `.context/depot_tools` (revision at build time `ea253a3e3ae7653cafd343be001dc5cbe69b3ad0`); Chromium fetched at `.context/chromium/src` (revision `0e8499df5172f55d0d29e2b92ef7e6a704529578`).
 - [Milestone v2.0]: The local Xcode blocker is resolved. Active developer directory is `/Applications/Xcode.app/Contents/Developer`; `xcodebuild -version` reports Xcode 26.5 build 17F42.
 - [Milestone v2.0]: The Metal Toolchain blocker is resolved with `xcodebuild -runFirstLaunch` and `xcodebuild -downloadComponent MetalToolchain`; `xcrun metal -v` now succeeds.
 - [Milestone v2.0]: GN generation for `.context/chromium/src/out/Default` succeeds with `is_debug=false is_component_build=true symbol_level=0`.
-- [Milestone v2.0]: First Chromium `chrome` build finished successfully with status file `.context/chromium-build-screen.status` reporting `0`; unmodified launch verification remains Phase 12 scope.
+- [Milestone v2.0]: First Chromium `chrome` build finished successfully with status file `.context/chromium-build-screen.status` reporting `0`; GN args locked as `is_debug=false is_component_build=true symbol_level=0`.
+- [Phase 12]: Unmodified Chromium launch verification passed before Prometheus patches begin. Normal launch attempted first. Evidence: `.context/chromium-launch.status` records `status=0`, `workaround_used=false`, `patches_blocked=false`, Chromium revision `0e8499df5172f55d0d29e2b92ef7e6a704529578`, depot_tools revision at build time `ea253a3e3ae7653cafd343be001dc5cbe69b3ad0`, GN args `is_debug=false is_component_build=true symbol_level=0`. Full launch log at `.context/chromium-launch.log`.
+- [Phase 12]: Artifact isolation verified: `.planning/chromium/verify-artifact-isolation.sh` exits 0; tracked `.gitignore` policy covers all Chromium checkout, build, and launch artifacts.
+- [Phase 12]: Patch discipline documented in `.planning/chromium/CHROMIUM-CHECKOUT.md`: future Chromium source edits happen inside `.context/chromium/src` on named branches (`git new-branch prometheus/phase-13-branding`); patches exported with `git format-patch` from pinned baseline; root repo stores docs, scripts, evidence, and patch guidance only.
 - [Phase 11]: Preservation verification must prove bundle integrity, expected refs, patch count 81, temporary restore, and root git ignore coverage.
 - [Phase 11]: Falkon GPL implementation, Qt/QSS/package metadata, and copied GPL text remain reference-only or license-review-required for Chromium migration.
 - [Phase 11-preservation-contract-and-falkon-freeze]: Use the canonical dossier's Capability Migration Map as the source-of-truth linking v1 behavior contracts to Chromium owner phases, parity evidence, and license status.
@@ -173,7 +177,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- Launch `.context/chromium/src/out/Default/Chromium.app/Contents/MacOS/Chromium` during Phase 12 to verify the unmodified Chromium app before Prometheus patches begin.
+Unmodified Chromium launch verification passed before Prometheus patches begin. `.context/chromium-launch.status` records `status=0`, `workaround_used=false`, `patches_blocked=false`. Prometheus-specific Chromium patches may now proceed from Phase 13.
 
 ### Blockers/Concerns
 
@@ -183,7 +187,7 @@ Open items carried into v2.0 (formal list in Deferred Items below):
 - Internal Falkon → Prometheus namespace/class/library rename is obsolete as a direct task because the implementation is being replaced; de-Falkon validation moves to Phase 23.
 - The release artifact is a local macOS validation package, not a notarized public release.
 - Provider-backed hosted model execution remains partially deferred.
-- Chromium checkout completed under `.context/chromium`; local Xcode and Metal blockers are resolved; first `chrome` build finished successfully and still needs Phase 12 launch verification.
+- Chromium checkout, build, unmodified launch, and artifact isolation are all complete (Phase 12). Phase 13 Prometheus Chromium patches may begin.
 - License boundary is high-risk: do not copy Falkon GPL implementation into Chromium without review.
 
 ## Deferred Items
@@ -200,16 +204,18 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Phase 1
 | preservation | Falkon v1 source bundle and 81-patch series | saved | v2.0 start 2026-06-17 |
 | local_build | Chromium GN generation required accepted Xcode license | fixed | v2.0 Phase 12 2026-06-17 |
 | local_build | Chromium Metal Toolchain asset required for ANGLE Metal shader compilation | fixed | v2.0 Phase 12 2026-06-17 |
-| local_build | First Chromium `chrome` build finished; unmodified launch verification remains Phase 12 scope | build_finished_launch_pending | v2.0 Phase 12 2026-06-17 |
+| local_build | First Chromium `chrome` build finished; unmodified launch verification remains Phase 12 scope | complete | v2.0 Phase 12 2026-06-17 |
+| local_launch | Unmodified Chromium launch verified (status=0, workaround_used=false, patches_blocked=false); evidence at .context/chromium-launch.status and normal launch attempted first | complete | v2.0 Phase 12 2026-06-24 |
 
 ## Session Continuity
 
-Last session: 2026-06-24T01:37:53.342Z
-Stopped at: Completed Phase 12 Plan 02 — build-chromium-baseline.sh
+Last session: 2026-06-24T02:00:00.000Z
+Stopped at: Completed Phase 12 Plan 04 — CHROMIUM-CHECKOUT.md handoff and state reconciliation
 Resume file: None
 
 ## Operator Next Steps
 
-- Use `.planning/chromium/CHROMIUM-CHECKOUT.md` as the reproduction record for the completed Chromium build.
-- Launch the unmodified Chromium app during Phase 12 before Prometheus patches begin.
-- If a future rebuild fails, inspect `.context/chromium/src/out/Default/siso_output` and rerun the build command in `.planning/chromium/CHROMIUM-CHECKOUT.md`.
+- Phase 12 is complete. The unmodified Chromium baseline is verified (checkout, build, launch, artifact isolation).
+- Begin Phase 13: Prometheus branding and Chromium source patches. Create a named branch in `.context/chromium/src` (e.g. `git new-branch prometheus/phase-13-branding`) before making source edits.
+- Use `.planning/chromium/CHROMIUM-CHECKOUT.md` as the canonical handoff for revision, GN args, gate scripts, and patch discipline.
+- If a future rebuild fails, inspect `.context/chromium/src/out/Default/siso_output` and rerun `bash .planning/chromium/build-chromium-baseline.sh --no-op-ok`.
