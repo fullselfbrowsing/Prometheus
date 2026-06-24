@@ -688,14 +688,16 @@ Description: Offline subset of Font Awesome Free icons used in Prometheus UI.
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Prometheus NOTICES in `chrome://credits` — Option A vs B?**
+   - **RESOLVED: Option A.** Plan 13-02 authors the complete notice content as a tracked root-level `NOTICES.md` (satisfies "visible in source"); a minimal About/version identity links to it. Full `generate_about_credits=true` / `chrome://credits` wiring is deferred to Phase 24; the themed About WebUI is Phase 16.
    - What we know: BRAND-04 requires notices "visible in source and in an appropriate legal/about surface." CONTEXT.md says "wire a minimal About identity" and "author complete notice content now."
    - What's unclear: Does "appropriate legal/about surface" require `chrome://credits` integration (Option B) or does a committed `NOTICES.md` file + a minimal "see NOTICES.md" link in the About surface satisfy Phase 13?
    - Recommendation: Use Option A (standalone NOTICES.md) for Phase 13 and wire `generate_about_credits=true` + third_party dir in Phase 13 Plan 3 or defer to Phase 24. The planner should clarify with the CONTEXT.md decision "author legal notice content in full" — this likely means Option A is sufficient since the richer About WebUI is Phase 16.
 
 2. **Prometheus.app smoke script path update scope**
+   - **RESOLVED: new file.** Plan 13-01 authors a new `.planning/chromium/smoke-launch-prometheus.sh` targeting `Prometheus.app`; `smoke-launch-unmodified.sh` is preserved unchanged as the immutable unmodified-baseline reference.
    - What we know: Phase 12 scripts use `Chromium.app`. After branding rebuild the path changes.
    - What's unclear: Should the existing Phase 12 scripts be updated in-place (breaking their "unmodified baseline" semantics) or should new Phase 13 smoke scripts be authored alongside?
    - Recommendation: Author new scripts (e.g., `smoke-launch-prometheus.sh`) that use `Prometheus.app`; keep Phase 12 scripts unchanged as unmodified baseline references.
