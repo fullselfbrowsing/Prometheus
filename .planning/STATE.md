@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
-status: ready_to_plan
-stopped_at: Completed Phase 13 Plan 01 — GPL guard and Prometheus smoke-launch gate scripts authored
-last_updated: "2026-06-24T04:25:48.803Z"
+status: planning
+stopped_at: Phase 14 context gathered
+last_updated: "2026-06-24T15:26:00.725Z"
 last_activity: 2026-06-24
 progress:
   total_phases: 14
   completed_phases: 3
   total_plans: 11
-  completed_plans: 10
-  percent: 21
+  completed_plans: 11
+  percent: 100
 ---
 
 # Project State
@@ -216,9 +216,9 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Phase 1
 
 ## Session Continuity
 
-Last session: 2026-06-24T04:25:48.798Z
-Stopped at: Completed Phase 13 Plan 01 — GPL guard and Prometheus smoke-launch gate scripts authored
-Resume file: None
+Last session: 2026-06-24T15:26:00.719Z
+Stopped at: Phase 14 context gathered
+Resume file: .planning/phases/14-asset-and-design-system-port/14-CONTEXT.md
 
 ## Operator Next Steps
 
