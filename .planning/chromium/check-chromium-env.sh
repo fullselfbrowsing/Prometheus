@@ -13,7 +13,10 @@ DEPOT_TOOLS="${PROJECT_ROOT}/.context/depot_tools"
 CHROMIUM_ROOT="${PROJECT_ROOT}/.context/chromium"
 CHROMIUM_SRC="${CHROMIUM_ROOT}/src"
 BUILD_DIR="${CHROMIUM_SRC}/out/Default"
-CHROMIUM_BIN="${BUILD_DIR}/Chromium.app/Contents/MacOS/Chromium"
+# CHROMIUM_BIN is resolved branding-aware at the "Built binary check" below:
+# prefer the rebranded Prometheus.app (Phase 13+), fall back to the baseline
+# Chromium.app (Phase 12 unmodified). It cannot be hardcoded here because a
+# clean branded rebuild produces only Prometheus.app.
 
 export PATH="${DEPOT_TOOLS}:${PATH}"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
@@ -62,9 +65,19 @@ grep -qF 'is_debug = false' "${BUILD_DIR}/args.gn" || fail "args.gn does not con
 grep -qF 'is_component_build = true' "${BUILD_DIR}/args.gn" || fail "args.gn does not contain 'is_component_build = true'; expected baseline GN args in ${BUILD_DIR}/args.gn"
 grep -qF 'symbol_level = 0' "${BUILD_DIR}/args.gn" || fail "args.gn does not contain 'symbol_level = 0'; expected baseline GN args in ${BUILD_DIR}/args.gn"
 
-# --- Built binary check ---
+# --- Built binary check (branding-aware) ---
+# Resolve the product binary: prefer the rebranded Prometheus.app (Phase 13+),
+# fall back to the baseline Chromium.app (Phase 12 unmodified). The gate fails
+# only if NEITHER bundle holds an executable binary, so a clean branded rebuild
+# (Prometheus.app only) passes and the Phase-12 baseline (Chromium.app) keeps working.
 
-[ -x "${CHROMIUM_BIN}" ] || fail "missing executable Chromium binary at ${CHROMIUM_BIN}; rebuild with: cd ${CHROMIUM_SRC} && AI_AGENT=1 PATH=\"${DEPOT_TOOLS}:\$PATH\" DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer autoninja -C out/Default chrome"
+if [ -x "${BUILD_DIR}/Prometheus.app/Contents/MacOS/Prometheus" ]; then
+  CHROMIUM_BIN="${BUILD_DIR}/Prometheus.app/Contents/MacOS/Prometheus"
+elif [ -x "${BUILD_DIR}/Chromium.app/Contents/MacOS/Chromium" ]; then
+  CHROMIUM_BIN="${BUILD_DIR}/Chromium.app/Contents/MacOS/Chromium"
+else
+  fail "no built product binary: expected ${BUILD_DIR}/Prometheus.app/Contents/MacOS/Prometheus (branded, Phase 13+) or ${BUILD_DIR}/Chromium.app/Contents/MacOS/Chromium (baseline, Phase 12); rebuild after BRANDING patch: cd ${CHROMIUM_SRC} && AI_AGENT=1 PATH=\"${DEPOT_TOOLS}:\$PATH\" DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer autoninja -C out/Default chrome"
+fi
 
 # --- Xcode developer directory check ---
 
