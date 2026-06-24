@@ -67,7 +67,10 @@ depot_tools_revision="$(git -C "${DEPOT_TOOLS}" rev-parse HEAD 2>/dev/null)" \
 
 gn_args="$(tr '\n' ' ' < "${BUILD_DIR}/args.gn" 2>/dev/null | sed 's/[[:space:]]*$//')"
 
-# --- Run GN generation ---
+# --- Run GN generation, capturing output to the temporary full log ---
+# WR-05: GN stdout+stderr go into the same temp log as autoninja (GN first,
+# via truncate; the build appends below) so a GN-generation failure leaves
+# diagnostics in chromium-build-baseline.log instead of only on the terminal.
 
 start_ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 gn_status=1
@@ -75,16 +78,16 @@ gn_status=1
 (
   cd "${CHROMIUM_SRC}"
   ./buildtools/mac/gn gen out/Default --args='is_debug=false is_component_build=true symbol_level=0'
-) && gn_status=0 || gn_status=$?
+) >"${FULL_LOG_TMP}" 2>&1 && gn_status=0 || gn_status=$?
 
-# --- Run autoninja build, capturing output to a temporary full log ---
+# --- Run autoninja build, appending output to the same temporary full log ---
 
 build_status=1
 
 (
   cd "${CHROMIUM_SRC}"
   AI_AGENT=1 autoninja -C out/Default chrome
-) >"${FULL_LOG_TMP}" 2>&1 && build_status=0 || build_status=$?
+) >>"${FULL_LOG_TMP}" 2>&1 && build_status=0 || build_status=$?
 
 end_ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
