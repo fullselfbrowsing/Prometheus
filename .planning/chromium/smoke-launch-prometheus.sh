@@ -351,10 +351,18 @@ bash "${PROJECT_ROOT}/.planning/chromium/verify-artifact-isolation.sh"
 PLIST="${BUILD_DIR}/Prometheus.app/Contents/Info.plist"
 [ -f "${PLIST}" ] || fail "Info.plist not found at ${PLIST}; rebuild after BRANDING patch"
 
-plutil -p "${PLIST}" | grep -q 'Prometheus' \
-  || fail "CFBundleName does not contain 'Prometheus' in ${PLIST}"
+# Assert the specific keys with `plutil -extract` (exact match), not a loose
+# whole-plist substring grep. A partial-branding drift where, say,
+# CFBundleExecutable=Prometheus while CFBundleName regressed to Chromium must
+# fail this gate. status=0 is written only when BOTH keys match exactly.
+bundle_name="$(plutil -extract CFBundleName raw -o - "${PLIST}" 2>/dev/null)" \
+  || fail "CFBundleName missing from ${PLIST}"
+[ "${bundle_name}" = "Prometheus" ] \
+  || fail "CFBundleName is '${bundle_name}', expected 'Prometheus' in ${PLIST}"
 
-plutil -p "${PLIST}" | grep -q 'com\.fullselfbrowsing\.prometheus' \
-  || fail "CFBundleIdentifier is not 'com.fullselfbrowsing.prometheus' in ${PLIST}"
+bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "${PLIST}" 2>/dev/null)" \
+  || fail "CFBundleIdentifier missing from ${PLIST}"
+[ "${bundle_id}" = "com.fullselfbrowsing.prometheus" ] \
+  || fail "CFBundleIdentifier is '${bundle_id}', expected 'com.fullselfbrowsing.prometheus' in ${PLIST}"
 
 printf 'Prometheus launch smoke passed.\n'
