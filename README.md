@@ -41,11 +41,11 @@ And that's what this is.
 
 ## Overview
 
-Prometheus is migrating to a Chromium-based agent-native desktop browser; v1.0 was proven on a Falkon/QtWebEngine bootstrap and Falkon is now a preserved reference, not the production base. It brings Full Self Browsing's DOM first automation into the browser itself, so AI agents and the humans supervising them can inspect, script, click, type, navigate, configure, and recover across the whole browser through first class native structure instead of screenshots, brittle extension injection, or human only UI.
+Prometheus is a Chromium-based agent-native browser built by Full Self Browsing. It brings FSB's DOM-first automation into the browser itself, so AI agents and the humans supervising them can inspect, script, click, type, navigate, configure, and recover across the whole browser through first class native structure instead of screenshots, brittle extension injection, or human only UI. The v1.0 foundation was proven on a Falkon/QtWebEngine bootstrap; Falkon is now a preserved reference, not the production base.
 
 Where a Chrome extension can only reach the page, Prometheus owns the browser. Agents drive normal web pages and the surfaces an extension can never touch: settings, tabs, downloads, history, and internal pages. Every action runs through a typed native command router with tab ownership, permission boundaries, change reports, and an audit log.
 
-> **Status:** v1.0 shipped as a Falkon/QtWebEngine bootstrap and is preserved for reference. Active work is the v2.0 Chromium migration: rebuild the same product, MCP, runtime, supervision, and design contracts on Chromium-native primitives while keeping Falkon source reference-only.
+> **Status:** v2.0 Chromium migration is active. The Chromium-based engine baseline is established (Phase 12 complete: checkout, build, unmodified launch, and artifact isolation all verified). Active work rebuilds the same product, MCP, runtime, supervision, and design contracts on Chromium-native primitives. The v1.0 Falkon/QtWebEngine bootstrap is preserved as a reference at `.context/falkon-preservation/`.
 
 ### What it does
 
