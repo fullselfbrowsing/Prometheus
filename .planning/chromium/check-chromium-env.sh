@@ -36,9 +36,17 @@ fail() {
 [ -d "${CHROMIUM_SRC}/.git" ] || fail "missing Chromium source .git at ${CHROMIUM_SRC}; run: cd ${CHROMIUM_ROOT} && PATH=\"${DEPOT_TOOLS}:\$PATH\" fetch --no-history chromium"
 
 # --- Baseline revision check ---
+# Accept: HEAD equals the pinned baseline (Phase 12, unmodified) OR the pinned baseline is
+# an ancestor of HEAD on a named Prometheus branch (Phase 13+, patched). Reject diverged or
+# resynced HEADs that break the lineage (e.g., accidental gclient sync).
 
 actual_rev="$(git -C "${CHROMIUM_SRC}" rev-parse HEAD 2>/dev/null)" || fail "could not read Chromium HEAD from ${CHROMIUM_SRC}"
-[ "${actual_rev}" = "${EXPECTED_CHROMIUM_REV}" ] || fail "Chromium HEAD is ${actual_rev}, expected ${EXPECTED_CHROMIUM_REV}; do not run gclient sync or rebase until later phases document an intentional change"
+if [ "${actual_rev}" != "${EXPECTED_CHROMIUM_REV}" ]; then
+  # HEAD differs from pinned baseline. Accept only if the baseline is an ancestor (the checkout
+  # is on a branch that started from the pinned baseline, i.e. a Prometheus patch branch).
+  git -C "${CHROMIUM_SRC}" merge-base --is-ancestor "${EXPECTED_CHROMIUM_REV}" HEAD 2>/dev/null \
+    || fail "Chromium HEAD is ${actual_rev}, expected ${EXPECTED_CHROMIUM_REV}; pinned baseline is not an ancestor — do not run gclient sync or rebase until later phases document an intentional change"
+fi
 
 # --- GN binary check ---
 

@@ -294,6 +294,18 @@ Phase 12 establishes the isolation contract before Prometheus-specific Chromium 
 - **After rebases:** After any rebase or upstream sync, run `gclient sync`, then `gn gen`, then build, then launch smoke, and then artifact isolation again to confirm the baseline is still sound.
 - **License boundary:** Falkon is GPLv3 and Chromium is under a different license structure. Prometheus behavior, design, and contracts can be reimplemented, but GPL Falkon implementation code must not be copied into `.context/chromium/src` without explicit license review.
 
+## Phase 13 Script Gates
+
+Run this script after the Prometheus branding rebuild is complete (Wave 2). It launches Prometheus.app with an isolated profile, asserts CFBundleName and CFBundleIdentifier via plutil, and writes `.context/prometheus-launch.status`.
+
+```sh
+bash .planning/chromium/smoke-launch-prometheus.sh
+```
+
+- **smoke-launch-prometheus.sh**: Asserts Prometheus.app exists at `out/Default`, launches it with `--no-first-run --no-default-browser-check` and a smoke `data:` URL, checks process alive after 8s, stops it, verifies artifact isolation, asserts CFBundleName=Prometheus and CFBundleIdentifier=com.fullselfbrowsing.prometheus via plutil, and writes `.context/prometheus-launch.status` with `status=0` on success.
+
+The Phase 12 script gates (env/build/isolation) remain the baseline and must pass before Phase 13 gates run.
+
 ## Phase 13 Patches
 
 **Branch:** `prometheus/phase-13-branding`
