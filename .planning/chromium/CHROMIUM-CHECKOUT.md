@@ -293,3 +293,66 @@ Phase 12 establishes the isolation contract before Prometheus-specific Chromium 
   Exported patch files are stored under `.context/chromium-patches/` (ignored by root git) and referenced from tracked planning docs.
 - **After rebases:** After any rebase or upstream sync, run `gclient sync`, then `gn gen`, then build, then launch smoke, and then artifact isolation again to confirm the baseline is still sound.
 - **License boundary:** Falkon is GPLv3 and Chromium is under a different license structure. Prometheus behavior, design, and contracts can be reimplemented, but GPL Falkon implementation code must not be copied into `.context/chromium/src` without explicit license review.
+
+## Phase 13 Patches
+
+**Branch:** `prometheus/phase-13-branding`
+**Patch directory:** `.context/chromium-patches/phase-13-branding/`
+**Pinned baseline:** `0e8499df5172f55d0d29e2b92ef7e6a704529578`
+
+### Patch 1: BRANDING file override
+
+Commit: `branding: override BRANDING file for Prometheus identity`
+
+Fields changed:
+
+| Field | Upstream value | Prometheus override |
+|-------|---------------|---------------------|
+| `COMPANY_FULLNAME` | `The Chromium Authors` | `Full Self Browsing` |
+| `COMPANY_SHORTNAME` | `The Chromium Authors` | `FSB` |
+| `PRODUCT_FULLNAME` | `Chromium` | `Prometheus` |
+| `PRODUCT_SHORTNAME` | `Chromium` | `Prometheus` |
+| `PRODUCT_INSTALLER_FULLNAME` | `Chromium Installer` | `Prometheus Installer` |
+| `PRODUCT_INSTALLER_SHORTNAME` | `Chromium Installer` | `Prometheus Installer` |
+| `COPYRIGHT` | `Copyright @LASTCHANGE_YEAR@ The Chromium Authors. All rights reserved.` | `Copyright 2024-2026 Full Self Browsing. Powered by Chromium.` |
+| `MAC_BUNDLE_ID` | `org.chromium.Chromium` | `com.fullselfbrowsing.prometheus` |
+| `MAC_CREATOR_CODE` | `Cr24` | `Cr24` (unchanged) |
+| `MAC_TEAM_ID` | (empty) | (empty, unchanged — notarization deferred to Phase 24) |
+
+After applying this patch, `gn gen` must be re-run before `autoninja`. The `branding.gni` `exec_script` reads BRANDING at GN generation time only. GN gen command used:
+
+```sh
+cd .context/chromium/src
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+export PATH="$(pwd)/../../depot_tools:${PATH}"
+./buildtools/mac/gn gen out/Default --args='is_debug=false is_component_build=true symbol_level=0'
+```
+
+### Patch 2: chromium_strings.grd product-name overrides
+
+Commit: `branding: override chromium_strings.grd product-name strings for Prometheus`
+
+All 11 high-visibility IDS_* strings overridden to Prometheus identity. Includes both `use_titlecase` and `not use_titlecase` branches of `IDS_ABOUT` for macOS. ChromeOS branch left unchanged.
+
+### Applying Patches on a Fresh Checkout
+
+```sh
+cd .context/chromium/src
+git checkout -b prometheus/phase-13-branding 0e8499df5172f55d0d29e2b92ef7e6a704529578
+git am /path/to/.context/chromium-patches/phase-13-branding/0001-*.patch
+git am /path/to/.context/chromium-patches/phase-13-branding/0002-*.patch
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+export PATH="$(pwd)/../../depot_tools:${PATH}"
+./buildtools/mac/gn gen out/Default --args='is_debug=false is_component_build=true symbol_level=0'
+AI_AGENT=1 autoninja -C out/Default chrome
+```
+
+### Exporting the Patch Series
+
+```sh
+cd .context/chromium/src
+git format-patch 0e8499df5172f55d0d29e2b92ef7e6a704529578..HEAD \
+  -o /absolute/path/to/puebla/.context/chromium-patches/phase-13-branding
+```
+
+Note: use an absolute `-o` path. The relative path `../../../../.context/chromium-patches/` resolves above the project root when run from `src` inside a subdirectory.

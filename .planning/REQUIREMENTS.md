@@ -35,12 +35,12 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 
 ### Product Identity, Legal, And Branding
 
-- [ ] **BRAND-01**: User sees Prometheus as the app name, window title, profile/application identity, app icon, first-run/about identity, and primary product documentation.
+- [x] **BRAND-01**: User sees Prometheus as the app name, window title, profile/application identity, app icon, first-run/about identity, and primary product documentation.
 - [x] **BRAND-02**: User sees "Powered by FSB" as the explicit affiliation/tagline in the side panel, start page, about/legal surfaces, and relevant docs.
-- [ ] **BRAND-03**: User does not see Chromium/Chrome/Falkon/KDE branding in primary Prometheus product surfaces except where legally required or intentionally left as upstream attribution.
+- [x] **BRAND-03**: User does not see Chromium/Chrome/Falkon/KDE branding in primary Prometheus product surfaces except where legally required or intentionally left as upstream attribution.
 - [x] **BRAND-04**: Required Chromium, third-party, Font Awesome, Poppins, Space Mono, FSB-owned, and any retained inherited notices are visible in source and in an appropriate legal/about surface.
 - [x] **BRAND-05**: Migration avoids copying GPL Falkon source into Chromium unless the project explicitly accepts and documents the resulting license obligations.
-- [ ] **BRAND-06**: Product metadata and bundle identifiers are Prometheus-owned and do not conflict with installed Chrome/Chromium profiles or apps.
+- [x] **BRAND-06**: Product metadata and bundle identifiers are Prometheus-owned and do not conflict with installed Chrome/Chromium profiles or apps.
 - [x] **BRAND-07**: README and release docs describe Prometheus as a Chromium-based agent-native browser after the baseline migration.
 
 ### Design System And Assets
