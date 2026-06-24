@@ -13,7 +13,7 @@ Prometheus keeps its product, design, and agent-native control thesis, but retir
 
 - [x] **Phase 11: Preservation Contract and Falkon Freeze** — Save every v1 decision, behavior, asset, test, source reference, and legal boundary before removing the active Falkon tree. (completed 2026-06-23)
 - [x] **Phase 12: Chromium Checkout, Build, and Patch Discipline** — Bring in upstream Chromium with depot_tools, build it cleanly on macOS, and establish source/layout rules that keep the root repo clean. (completed 2026-06-24)
-- [ ] **Phase 13: Product Identity, Branding, and Legal Baseline** — Turn the Chromium baseline into a Prometheus-owned app identity with correct attribution and no unwanted Chrome/Chromium/Falkon/KDE-facing product surfaces.
+- [x] **Phase 13: Product Identity, Branding, and Legal Baseline** — Turn the Chromium baseline into a Prometheus-owned app identity with correct attribution and no unwanted Chrome/Chromium/Falkon/KDE-facing product surfaces. (completed 2026-06-24)
 - [ ] **Phase 14: Asset and Design System Port** — Port warm tokens, PM/FSB assets, Poppins, Space Mono, Font Awesome, dark/light themes, and visual state rules into Chromium resources.
 - [ ] **Phase 15: Chromium UI Shell, Compact Chrome, and Tab Model** — Rebuild the compact browser chrome and advanced tab workflows using Chromium-native UI architecture.
 - [ ] **Phase 16: Prometheus WebUI Surfaces and New Tab** — Build Prometheus start page, side panel surfaces, and FSB Control Panel as Chromium WebUI/browser-backed surfaces.
@@ -85,13 +85,13 @@ Plans:
 
 **Requirements:** BRAND-01, BRAND-02, BRAND-03, BRAND-04, BRAND-05, BRAND-06, BRAND-07
 
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans complete
 
 Plans:
 - [x] 13-01-PLAN.md — Author Prometheus smoke-launch gate and GPL Falkon source guard script
 - [x] 13-02-PLAN.md — Author NOTICES.md, product identity inventory, legal notice inventory, and README update
 - [x] 13-03-PLAN.md — Apply BRANDING and GRD string patches to Chromium tree; rebuild Prometheus.app
-- [ ] 13-04-PLAN.md — Run identity smoke gate, human visual verification, and phase handoff docs
+- [x] 13-04-PLAN.md — Run identity smoke gate, human visual verification, and phase handoff docs
 
 **Success criteria:**
 
@@ -359,7 +359,7 @@ Plans:
 |-------|-----------|--------------|--------|-----------|
 | 11. Preservation Contract and Falkon Freeze | v2.0 | 3/3 | Complete   | 2026-06-23 |
 | 12. Chromium Checkout, Build, and Patch Discipline | v2.0 | 4/4 | Complete    | 2026-06-24 |
-| 13. Product Identity, Branding, and Legal Baseline | v2.0 | 3/4 | In Progress|  |
+| 13. Product Identity, Branding, and Legal Baseline | v2.0 | 4/4 | Complete    | 2026-06-24 |
 | 14. Asset and Design System Port | v2.0 | DESIGN-01..DESIGN-07 | Planned | — |
 | 15. Chromium UI Shell, Compact Chrome, and Tab Model | v2.0 | UX-01..UX-07 | Planned | — |
 | 16. Prometheus WebUI Surfaces and New Tab | v2.0 | WEBUI-01..WEBUI-07 | Planned | — |
