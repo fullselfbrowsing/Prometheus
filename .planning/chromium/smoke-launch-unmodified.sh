@@ -178,7 +178,11 @@ attempt_launch() {
   fi
 
   if [ "${quit_sent}" = "false" ]; then
-    printf 'Launch smoke: osascript quit failed; falling back to SIGTERM for pid %s.\n' "${_attempt_pid}" >&2
+    printf 'Launch smoke: osascript quit failed; falling back to SIGTERM for pid %s and its children.\n' "${_attempt_pid}" >&2
+    # SIGTERM the Helper children (Renderer/GPU/Network) as well as the parent.
+    # On macOS killing only the parent reparents helpers to launchd and leaks
+    # them; pkill -P signals the parent's direct children too (WR-03).
+    pkill -TERM -P "${_attempt_pid}" 2>/dev/null || true
     kill "${_attempt_pid}" 2>/dev/null || true
   fi
 
@@ -190,10 +194,14 @@ attempt_launch() {
   done
 
   if kill -0 "${_attempt_pid}" 2>/dev/null; then
-    # Still alive after quit wait — timeout
-    printf 'Launch smoke: process %s still alive after %ss quit wait; terminating.\n' "${_attempt_pid}" "${QUIT_WAIT_SECONDS}" >&2
+    # Still alive after quit wait — timeout. Force-kill the parent AND its
+    # Helper children; killing only ${_attempt_pid} leaves reparented helpers
+    # alive holding the profile/socket (WR-03).
+    printf 'Launch smoke: process %s still alive after %ss quit wait; terminating process tree.\n' "${_attempt_pid}" "${QUIT_WAIT_SECONDS}" >&2
+    pkill -TERM -P "${_attempt_pid}" 2>/dev/null || true
     kill "${_attempt_pid}" 2>/dev/null || true
     sleep 1
+    pkill -KILL -P "${_attempt_pid}" 2>/dev/null || true
     kill -9 "${_attempt_pid}" 2>/dev/null || true
     _attempt_status=1
     return 1
