@@ -29,7 +29,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 - [x] **CHROM-03**: Project documents minimum disk, time, SDK, Xcode, depot_tools, GN, and Ninja requirements for local Chromium development.
 - [x] **CHROM-04**: Chromium source is kept in a patch-discipline structure that allows upstream rebases without mixing generated build output, local caches, or `.gclient` state into the root planning repo.
 - [x] **CHROM-05**: Project records the exact Chromium revision used as the Prometheus migration baseline.
-- [ ] **CHROM-06**: Developer can run the unmodified Chromium app from the local build before Prometheus modifications begin.
+- [x] **CHROM-06**: Developer can run the unmodified Chromium app from the local build before Prometheus modifications begin.
 - [x] **CHROM-07**: Project has a reproducible build/run script for macOS that fits Conductor/workspace constraints and avoids fixed-port or global-state conflicts where possible.
 - [x] **CHROM-08**: Chromium checkout/build artifacts are excluded or isolated so the root repository does not accidentally commit massive generated directories.
 
