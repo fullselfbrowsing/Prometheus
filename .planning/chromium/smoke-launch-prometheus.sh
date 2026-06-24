@@ -77,11 +77,23 @@ profile_dirs=()
 
 _attempt_pid="-"
 
+# Reap any surviving "Prometheus Helper*" processes for THIS bundle. On macOS the
+# Renderer/GPU/Network/Alerts helpers are frequently NOT direct children of the
+# main browser process, so once the parent exits they are reparented to launchd
+# and survive a parent-only / `pkill -P` kill — leaving a green smoke that still
+# leaks helpers and holds the temp profile dir. The pattern is scoped to
+# ${BUILD_DIR} so it can never touch an unrelated installed Prometheus.
+reap_bundle_helpers() {
+  pkill -KILL -f "${BUILD_DIR}/Prometheus.app/Contents/Frameworks/.*Prometheus Helper" 2>/dev/null || true
+}
+
 cleanup() {
   if [ "${_attempt_pid:-"-"}" != "-" ]; then
     pkill -P "${_attempt_pid}" 2>/dev/null || true
     kill "${_attempt_pid}" 2>/dev/null || true
   fi
+  # Sweep reparented helpers the parent-only/direct-child kills above miss.
+  reap_bundle_helpers
   local d
   for d in "${profile_dirs[@]:-}"; do
     [ -n "${d}" ] && rm -rf "${d}" 2>/dev/null || true
@@ -215,6 +227,11 @@ attempt_launch() {
     fi
     printf 'Launch smoke: process %s terminated via SIGKILL; launch smoke passes (app launched and ran).\n' "${_attempt_pid}" >&2
   fi
+
+  # Parent confirmed gone above. Sweep any reparented "Prometheus Helper*"
+  # processes that outlived the parent (and would otherwise keep the temp
+  # profile dir busy) before reporting success.
+  reap_bundle_helpers
 
   _attempt_status=0
   return 0
