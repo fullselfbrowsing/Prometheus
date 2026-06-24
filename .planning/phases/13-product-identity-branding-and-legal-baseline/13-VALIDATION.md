@@ -81,4 +81,4 @@ completed: 2026-06-24
 - [x] Feedback latency acceptable (branding rebuild is the one slow step)
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** Phase 13 automated gate passed. Human visual verification pending (Task 2 checkpoint).
+**Approval:** approved 2026-06-24 — Phase 13 automated gate passed and human visual verification confirmed (app menu, window title, About, Dock all read Prometheus).
