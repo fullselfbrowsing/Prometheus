@@ -646,22 +646,25 @@ NOT satisfied by Phase 14 (stay with later owner phases):
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Accent pref storage location**
    - What we know: D-05 says accent is stored in a Prometheus-owned pref, NOT `ColorProviderKey::user_color`.
    - What's unclear: Where the pref is registered (new Prometheus pref file vs. extending `chrome/common/pref_names.h`) and how the mixer reads it (pref service is not available in mixer context; may need ColorProviderKey custom data or a `PrefService*` callback).
    - Recommendation: For Phase 14, hardcode the default accent (`#ff6b35`) in the mixer; stub the pref-reading path. The picker UI (deferred to Phase 16) is what needs live pref → mixer wiring. The planner should note this as a Wave 1 implementation constraint.
+   - **RESOLVED:** Phase 14 hardcodes the default accent `#ff6b35` (FSB Orange) as a constant in the mixer (Plan 14-03); Prometheus-owned pref wiring is deferred to Phase 16 per D-05. No pref service access in the Phase 14 mixer.
 
 2. **Poppins ttf availability for Views shim**
    - What we know: D-11 says ship TTF for the Views shim path. The v1 Falkon bundle has `falkon/src/lib/data/fonts/poppins/*.ttf`.
    - What's unclear: Whether Space Mono and Poppins TTFs from the v1 bundle are the exact versions that should be vendored, or whether fresh download from source is required to confirm provenance.
    - Recommendation: Source fresh from upstream (fonts.google.com / github.com/itfoundry/poppins) to ensure clean provenance for `README.chromium`; do not rely on the v1 bundle as the authoritative font source.
+   - **RESOLVED:** Source Poppins and Space Mono TTF (and woff2) fresh from upstream (github.com/itfoundry/poppins and github.com/googlefonts/spacemono) for clean README.chromium provenance (Plan 14-04). The v1 Falkon bundle TTFs are not used as the authoritative source.
 
 3. **accent-soft/glow derivation in CSS vs. C++**
    - What we know: `styles.css` uses `color-mix(in srgb, var(--accent) 12%, transparent)`. C++ mixer must produce an SkColor equivalent.
    - What's unclear: Whether `SkColorSetARGB(30, 0xff, 0x6b, 0x35)` (12% of 255 ≈ 30) matches browsers' `color-mix(in srgb, #ff6b35 12%, transparent)` output precisely.
    - Recommendation: Use `SkColorSetARGB(static_cast<uint8_t>(0.12 * 255), ...)` and document the rounding. The DESIGN-07 visual verification will catch any perceptible drift.
+   - **RESOLVED:** Derive accent-soft/soft-2/glow via `SkColorSetARGB` from the 8-bit-rounded `color-mix` alpha values: accent-soft = `SkColorSetARGB(30, 0xff, 0x6b, 0x35)` (12% of 255 ≈ 30), accent-soft-2 = `SkColorSetARGB(45, ...)` (18%), accent-glow = `SkColorSetARGB(61, ...)` (24%). Each line is documented with a rounding comment in prometheus_color_mixer.cc (Plan 14-03). Visual drift < 0.4% at 8-bit precision; DESIGN-07 visual check catches perceptible issues.
 
 ---
 

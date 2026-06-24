@@ -59,7 +59,7 @@ created: 2026-06-24
 | TBD | — | — | DESIGN-04 | — | IDR constants for FA glyph SVGs resolve (non-null) | unit | `prometheus_unittests --gtest_filter=*IconResource*` | ❌ W0 | ⬜ pending |
 | TBD | — | — | DESIGN-05 | — | IDR constants for PM mark, wordmark, FSB logos (dark+light) resolve | unit | `prometheus_unittests --gtest_filter=*BrandAsset*` | ❌ W0 | ⬜ pending |
 | TBD | — | — | DESIGN-06 | — | `kColorPrometheus*` ids fall within `kChromeColorsStart..kChromeColorsEnd` | unit | `prometheus_unittests --gtest_filter=*ColorIdRange*` | ❌ W0 | ⬜ pending |
-| TBD | — | — | DESIGN-07 | — | Views token gallery rebuilds on `OnThemeChanged()` | unit/visual | build `views_examples` with Prometheus tokens | ❌ later wave | ⬜ pending |
+| 14-07 T2 | 14-07 | 4 | DESIGN-07 | — | Views token gallery rebuilds on `OnThemeChanged()`; PrometheusTokenGalleryView registered in `views_examples` target alongside colors_example.cc (D-13 live-rebuild proof) | unit/visual | `autoninja -C out/Default views_examples && out/Default/views_examples` — Prometheus token gallery tab present | ❌ later wave | ⬜ pending |
 | TBD | — | — | DESIGN-07 | T-dev-surface | Visual token gallery renders; dev-surface evidence captured | manual/screenshot | open `chrome://prometheus-theme-preview`, toggle dark/light | ❌ later wave | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
