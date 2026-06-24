@@ -115,10 +115,14 @@ gn_args="$(tr '\n' ' ' < "${BUILD_DIR}/args.gn" 2>/dev/null | sed 's/[[:space:]]
 # -------------------------------------------------------------------------
 # Launch helper: attempt one Chromium launch, wait, quit cleanly.
 # Returns 0 on clean exit; 1 on startup failure or timeout.
-# Sets global: _attempt_pid, _attempt_status
+# Sets global: _attempt_pid, _attempt_status, profile_dir (this attempt's dir)
 # -------------------------------------------------------------------------
 
-# Profile dir is created once per script invocation; reused if workaround retry.
+# Each attempt_launch call mints its OWN profile dir into `profile_dir` and
+# appends it to the `profile_dirs` array (WR-04): when the normal attempt fails
+# and the workaround retry runs, the normal attempt's dir is still tracked for
+# cleanup and still recorded in the evidence, instead of being overwritten and
+# leaked.
 profile_dir=""
 
 attempt_launch() {
@@ -278,6 +282,15 @@ if [ "${WITH_DIAL_WORKAROUND}" = "true" ]; then
   ATTEMPT_VALUE="normal_then_workaround"
 fi
 
+# Record every profile dir used this run (WR-04): when the workaround retry
+# runs, this lists both the normal and workaround attempt dirs, joined by ';',
+# so the evidence no longer drops the normal attempt's dir. ${profile_dir}
+# above still reports the final attempt's dir for backward compatibility.
+all_profile_dirs="$( IFS=';'; printf '%s' "${profile_dirs[*]:-}" )"
+if [ -z "${all_profile_dirs}" ]; then
+  all_profile_dirs="-"
+fi
+
 {
   printf 'chromium_revision=%s\n'         "${chromium_revision}"
   printf 'depot_tools_revision=%s\n'      "${depot_tools_revision}"
@@ -291,6 +304,7 @@ fi
   printf 'status=%s\n'                   "${final_status}"
   printf 'log_file=%s\n'                 "${LOG_FILE}"
   printf 'profile_dir=%s\n'              "${final_profile_dir}"
+  printf 'profile_dirs=%s\n'             "${all_profile_dirs}"
   printf 'started_pid=%s\n'              "${final_pid}"
   printf 'startup_wait_seconds=%s\n'     "${STARTUP_WAIT_SECONDS}"
   printf 'quit_wait_seconds=%s\n'        "${QUIT_WAIT_SECONDS}"
