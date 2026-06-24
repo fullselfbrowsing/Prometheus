@@ -22,13 +22,15 @@ Attribution comments are preserved in each bundled SVG file.
 
 Poppins — https://github.com/itfoundry/poppins
 
-License: SIL Open Font License 1.1 — see LICENSES/poppins-OFL.txt
+License: SIL Open Font License 1.1 — https://scripts.sil.org/OFL
+The full OFL 1.1 text ships alongside the bundled Poppins font files in the asset port.
 
 ## Space Mono
 
 Space Mono — https://github.com/googlefonts/spacemono
 
-License: SIL Open Font License 1.1 — see LICENSES/spacemono-OFL.txt
+License: SIL Open Font License 1.1 — https://scripts.sil.org/OFL
+The full OFL 1.1 text ships alongside the bundled Space Mono font files in the asset port.
 
 ## FSB-Owned Material
 
