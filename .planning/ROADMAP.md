@@ -131,6 +131,19 @@ Plans:
 - Add asset/license validation script.
 - Preserve accent swatches: FSB Orange, Indigo, Teal, Rose.
 
+**Plans:** 8 plans
+
+Plans:
+- [ ] 14-01-PLAN.md — Wave 0: Phase 14 branch, test scaffold (RED stubs), verify-asset-pipeline.sh, convert-fa-icons.sh
+- [ ] 14-02-PLAN.md — Declare kColorPrometheus* ids in COMMON_CHROME_COLOR_IDS; register mixer last in AddChromeColorMixers
+- [ ] 14-03-PLAN.md — Fill warm dark/light palette + accent derivations in prometheus_color_mixer.cc (token tests GREEN)
+- [ ] 14-04-PLAN.md — Vendor font/FA license metadata; source Poppins/SpaceMono/mark assets; write prometheus_fonts.css
+- [ ] 14-05-PLAN.md — Run FA icon conversion; declare prometheus_vector_icons GN target; write PrometheusAction resolver
+- [ ] 14-06-PLAN.md — Write prometheus_resources.grd; wire pak into browser bundle; IDR resource tests GREEN
+- [ ] 14-07-PLAN.md — Build chrome://prometheus-theme-preview WebUI dev surface + PrometheusTokenGalleryView
+- [ ] 14-08-PLAN.md — Full gate run; tag VIS satisfied-by-Ph14-harness; export Phase 14 patches
+
+
 ### Phase 15: Chromium UI Shell, Compact Chrome, and Tab Model
 
 **Goal:** Rebuild the compact browser shell and advanced tab behavior on Chromium-native UI.
