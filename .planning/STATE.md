@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
-status: ready_to_plan
-stopped_at: Completed Phase 12 Plan 04 — CHROMIUM-CHECKOUT.md handoff and state reconciliation
-last_updated: "2026-06-24T01:45:56.622Z"
+status: executing
+stopped_at: Completed Phase 13 Plan 01 — GPL guard and Prometheus smoke-launch gate scripts authored
+last_updated: "2026-06-24T04:07:21.621Z"
 last_activity: 2026-06-24
 progress:
   total_phases: 14
-  completed_phases: 3
-  total_plans: 7
-  completed_plans: 7
-  percent: 21
+  completed_phases: 2
+  total_plans: 11
+  completed_plans: 8
+  percent: 73
 ---
 
 # Project State
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-23)
 
 **Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** Phase 12 — chromium-checkout-build-and-patch-discipline
+**Current focus:** Phase 13 — product-identity-branding-and-legal-baseline
 
 ## Current Position
 
-Phase: 13
-Plan: Not started
-Status: Ready to plan
+Phase: 13 (product-identity-branding-and-legal-baseline) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
 Last activity: 2026-06-24
 
 ## Performance Metrics
@@ -88,6 +88,7 @@ Last activity: 2026-06-24
 | Phase 12 P12-02 | 1min | 1 tasks | 1 files |
 | Phase 12-chromium-checkout-build-and-patch-discipline P12-03 | 7min | 1 tasks | 1 files |
 | Phase 12-chromium-checkout-build-and-patch-discipline P12-04 | 10min | 2 tasks | 2 files |
+| Phase 13 P01 | 3min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -164,6 +165,8 @@ Recent decisions affecting current work:
 - [Phase 11-preservation-contract-and-falkon-freeze]: Treat the first Chromium build as completed with exit status 0 while keeping unmodified launch verification in Phase 12 scope.
 - [Phase 11-preservation-contract-and-falkon-freeze]: Use the preservation verifier as the gate for visual-ledger count, freeze-status vocabulary, and stale active-Falkon/build wording.
 - [Phase ?]: build-chromium-baseline.sh: --no-op-ok runs same GN+autoninja as no-arg; status file written before fail-on-nonzero
+- [Phase ?]: [Phase 13-01]: GPL guard scans only chrome/browser/prometheus and components/prometheus to avoid false positives from unrelated Chromium third-party code
+- [Phase ?]: [Phase 13-01]: smoke-launch-prometheus.sh is a new sibling; smoke-launch-unmodified.sh preserved unchanged as immutable baseline reference
 
 ### Roadmap Evolution
 
@@ -210,8 +213,8 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Phase 1
 
 ## Session Continuity
 
-Last session: 2026-06-24T02:00:00.000Z
-Stopped at: Completed Phase 12 Plan 04 — CHROMIUM-CHECKOUT.md handoff and state reconciliation
+Last session: 2026-06-24T04:07:21.616Z
+Stopped at: Completed Phase 13 Plan 01 — GPL guard and Prometheus smoke-launch gate scripts authored
 Resume file: None
 
 ## Operator Next Steps
