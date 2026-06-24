@@ -85,6 +85,14 @@ Plans:
 
 **Requirements:** BRAND-01, BRAND-02, BRAND-03, BRAND-04, BRAND-05, BRAND-06, BRAND-07
 
+**Plans:** 4 plans
+
+Plans:
+- [ ] 13-01-PLAN.md — Author Prometheus smoke-launch gate and GPL Falkon source guard script
+- [ ] 13-02-PLAN.md — Author NOTICES.md, product identity inventory, legal notice inventory, and README update
+- [ ] 13-03-PLAN.md — Apply BRANDING and GRD string patches to Chromium tree; rebuild Prometheus.app
+- [ ] 13-04-PLAN.md — Run identity smoke gate, human visual verification, and phase handoff docs
+
 **Success criteria:**
 
 1. App name, window title, app icon, bundle/profile identity, docs, and first-run/about surfaces use Prometheus.
