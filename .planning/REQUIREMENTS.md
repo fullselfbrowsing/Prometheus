@@ -45,12 +45,12 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 
 ### Design System And Assets
 
-- [ ] **DESIGN-01**: Prometheus implements the canonical warm dark and warm light token sets: `#0d0a09`, `#141110`, `#1d1816`, `#f6efe9`, `#d2c1b4`, `#a99283`, `#fffdfb`, `#f3ede6`, `#e9e2da`, `#ff6b35`, and `#ff8c42`.
-- [ ] **DESIGN-02**: Prometheus uses FSB orange sparingly for primary action, active agent/supervision state, selected/focus state, and logo treatment rather than broad decoration.
-- [ ] **DESIGN-03**: Prometheus bundles or otherwise reliably serves Poppins and Space Mono with required OFL notices and no network font dependency.
-- [ ] **DESIGN-04**: Prometheus bundles a curated Font Awesome Free icon subset with CC BY 4.0 attribution preserved and no network icon dependency.
-- [ ] **DESIGN-05**: Prometheus ships the PM monogram, Prometheus wordmark, and FSB logo assets in dark/light contexts with correct clear-space, minimum-size, and fallback behavior.
-- [ ] **DESIGN-06**: Prometheus WebUI and native Views surfaces use the same token vocabulary and state colors so side panel, control panel, start page, and chrome feel like one product.
+- [x] **DESIGN-01**: Prometheus implements the canonical warm dark and warm light token sets: `#0d0a09`, `#141110`, `#1d1816`, `#f6efe9`, `#d2c1b4`, `#a99283`, `#fffdfb`, `#f3ede6`, `#e9e2da`, `#ff6b35`, and `#ff8c42`.
+- [x] **DESIGN-02**: Prometheus uses FSB orange sparingly for primary action, active agent/supervision state, selected/focus state, and logo treatment rather than broad decoration.
+- [x] **DESIGN-03**: Prometheus bundles or otherwise reliably serves Poppins and Space Mono with required OFL notices and no network font dependency.
+- [x] **DESIGN-04**: Prometheus bundles a curated Font Awesome Free icon subset with CC BY 4.0 attribution preserved and no network icon dependency.
+- [x] **DESIGN-05**: Prometheus ships the PM monogram, Prometheus wordmark, and FSB logo assets in dark/light contexts with correct clear-space, minimum-size, and fallback behavior.
+- [x] **DESIGN-06**: Prometheus WebUI and native Views surfaces use the same token vocabulary and state colors so side panel, control panel, start page, and chrome feel like one product.
 - [ ] **DESIGN-07**: Visual verification covers dark/light themes, accent states, text fit, icon rendering, font loading, focus rings, disabled states, warning states, and private/supervised states.
 
 ### Browser Chrome And Tab Experience

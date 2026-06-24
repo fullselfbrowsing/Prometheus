@@ -131,11 +131,11 @@ Plans:
 - Add asset/license validation script.
 - Preserve accent swatches: FSB Orange, Indigo, Teal, Rose.
 
-**Plans:** 8 plans
+**Plans:** 1/8 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 14-01-PLAN.md — Wave 0: Phase 14 branch, test scaffold (RED stubs), verify-asset-pipeline.sh, convert-fa-icons.sh
+- [x] 14-01-PLAN.md — Wave 0: Phase 14 branch, test scaffold (RED stubs), verify-asset-pipeline.sh, convert-fa-icons.sh
 - [ ] 14-02-PLAN.md — Declare kColorPrometheus* ids in COMMON_CHROME_COLOR_IDS; register mixer last in AddChromeColorMixers
 - [ ] 14-04-PLAN.md — Vendor font/FA license metadata; source Poppins/SpaceMono/mark assets; write prometheus_fonts.css
 
@@ -382,7 +382,7 @@ Plans:
 | 11. Preservation Contract and Falkon Freeze | v2.0 | 3/3 | Complete   | 2026-06-23 |
 | 12. Chromium Checkout, Build, and Patch Discipline | v2.0 | 4/4 | Complete    | 2026-06-24 |
 | 13. Product Identity, Branding, and Legal Baseline | v2.0 | 4/4 | Complete    | 2026-06-24 |
-| 14. Asset and Design System Port | v2.0 | DESIGN-01..DESIGN-07 | Planned | — |
+| 14. Asset and Design System Port | v2.0 | 1/8 | In Progress|  |
 | 15. Chromium UI Shell, Compact Chrome, and Tab Model | v2.0 | UX-01..UX-07 | Planned | — |
 | 16. Prometheus WebUI Surfaces and New Tab | v2.0 | WEBUI-01..WEBUI-07 | Planned | — |
 | 17. Native Agent Command Service and Tab Ownership | v2.0 | AGENT-01..AGENT-08 | Planned | — |
