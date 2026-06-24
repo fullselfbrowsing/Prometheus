@@ -1,7 +1,12 @@
 # Prometheus Notices
 
-Prometheus is built on Chromium. See chrome://credits for Chromium and
-third-party open source notices.
+Prometheus is built on Chromium, which is licensed under the BSD 3-Clause
+License. The full Chromium license text and the bundled third-party open
+source notices live in the Chromium source tree (`LICENSE` at the checkout
+root and the generated `about_credits`); `chrome://credits` exposes the
+complete generated credits in packaged builds (credit generation is wired in
+the release phase). See those surfaces for the Chromium and upstream
+third-party notices.
 
 ## Font Awesome Free
 
