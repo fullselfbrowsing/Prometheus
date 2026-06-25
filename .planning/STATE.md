@@ -4,14 +4,14 @@ milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
 stopped_at: Phase 14 context gathered
-last_updated: "2026-06-25T08:20:34.118Z"
+last_updated: "2026-06-25T08:28:10.377Z"
 last_activity: 2026-06-25
 progress:
   total_phases: 14
   completed_phases: 3
   total_plans: 19
-  completed_plans: 14
-  percent: 74
+  completed_plans: 15
+  percent: 79
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-23)
 ## Current Position
 
 Phase: 14 (asset-and-design-system-port) — EXECUTING
-Plan: 3 of 8
+Plan: 4 of 8
 Status: Ready to execute
 Last activity: 2026-06-25
 
@@ -94,6 +94,7 @@ Last activity: 2026-06-25
 | Phase 13 P03 | 6min | 2 tasks | 3 files |
 | Phase 14 P02 | 15min | 2 tasks | 3 files |
 | Phase 14 P14-04 | 35 | 3 tasks | 38 files |
+| Phase 14 P14-03 | 20min | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -172,6 +173,7 @@ Recent decisions affecting current work:
 - [Phase ?]: build-chromium-baseline.sh: --no-op-ok runs same GN+autoninja as no-arg; status file written before fail-on-nonzero
 - [Phase ?]: [Phase 13-01]: GPL guard scans only chrome/browser/prometheus and components/prometheus to avoid false positives from unrelated Chromium third-party code
 - [Phase ?]: [Phase 13-01]: smoke-launch-prometheus.sh is a new sibling; smoke-launch-unmodified.sh preserved unchanged as immutable baseline reference
+- [Phase ?]: Moved swatch constants from .cc anonymous namespace to .h header for test accessibility
 
 ### Roadmap Evolution
 
@@ -218,7 +220,7 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Phase 1
 
 ## Session Continuity
 
-Last session: 2026-06-25T08:20:34.114Z
+Last session: 2026-06-25T08:28:10.373Z
 Stopped at: Phase 14 context gathered
 Resume file: None
 
