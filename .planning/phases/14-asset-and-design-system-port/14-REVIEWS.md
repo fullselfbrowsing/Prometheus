@@ -1,223 +1,214 @@
 ---
 phase: 14
-cycle: 2
+cycle: 3
 reviewers: [codex]
-reviewed_at: 2026-06-25T07:32:22Z
+reviewed_at: 2026-06-25T07:49:29Z
 plans_reviewed: [14-01-PLAN.md, 14-02-PLAN.md, 14-03-PLAN.md, 14-04-PLAN.md, 14-05-PLAN.md, 14-06-PLAN.md, 14-07-PLAN.md, 14-08-PLAN.md]
 model: codex (codex-cli 0.142.0, default model)
-prior_cycle_commit: 173575b6e
-replan_commit: 04a4f4e97
-unresolved_high: 1
+prior_cycle_commit: c0897ad23
+replan_commit: 354a67d9f
+unresolved_high: 0
 ---
 
-# Cross-AI Plan Review — Phase 14: Asset and Design System Port (CYCLE 2 — RE-REVIEW)
+# Cross-AI Plan Review — Phase 14: Asset and Design System Port (CYCLE 3 — RE-REVIEW)
 
-> Re-review of the plan set AFTER the replan (commit `04a4f4e97`) that was made to resolve
-> the 13 HIGH + several MEDIUM findings from Cycle 1 (preserved below under
-> "Cycle 1 Review — Archived"). Codex re-audited each prior finding against the current plan
-> text AND was asked to surface any NEW concerns the revisions introduced. The reviewer's
-> three load-bearing new findings (TTF IDR mismatch, the 14-08 YAML defect, and the 14-08
-> line-120 coverage escape hatch) were each independently re-confirmed against the plan files
-> before publishing — see "Reviewer-Verified Findings (Cycle 2)".
+> Re-review of the plan set AFTER the Cycle-2 replan (commit `354a67d9f`) that fixed the single
+> Cycle-2 HIGH (TTF IDR manifest/GRDP mismatch — reconciled to 2 TTF IDRs per D-11) plus the 5
+> Cycle-2 MEDIUM/LOW consistency items. Codex re-audited each Cycle-2 finding against the current
+> plan text AND was asked to surface any NEW HIGH the revision introduced. Every Codex claim below
+> was independently re-confirmed against the current plan files before publishing — see
+> "Reviewer-Verified Findings (Cycle 3)". Cycles 1 and 2 are preserved at the bottom for traceability.
 
-## Codex Review (Cycle 2)
+## Codex Review (Cycle 3)
 
 **Summary**
 
-The revised plan set genuinely closes most of the prior HIGH/MEDIUM findings, especially the
-Wave 0 drift, duplicate-symbol risk, icon-resolver ownership, real pak-load tests, WebUI build
-wiring, Views layering, and the VIS-09-04 over-claim. It is NOT ready to execute as-is yet:
-there is one NEW HIGH cross-plan mismatch around TTF IDRs, plus a malformed `14-08` frontmatter
-block that will break YAML parsing.
+The current Phase 14 plan set is execution-ready from a plan-review standpoint. The Cycle-2 HIGH is
+fully cleared: the TTF IDR set is consistently trimmed to exactly two packaged TTF resources across
+the manifest, the GRDP/GRD path, and the final full-manifest tests. No new HIGH-severity concern was
+introduced by the revision. Remaining issues are execution-quality risks around WebUI shared-resource
+specificity and a few weaker intermediate verification commands, but the final 14-08 gate is
+materially stronger.
 
-**Prior-Finding Resolution Audit**
+**Cycle-2 Finding Resolution Audit**
 
-| Prior finding (Cycle 1) | Status | Mechanism |
-|---|---|---|
-| 14-02 stale color-id insertion | RESOLVED | 14-02 Task 1 is now verification-only and explicitly warns not to re-insert (14-02:118-139). |
-| Duplicate mixer symbol (direct test source + `:mixers`) | RESOLVED | 14-02 removes `../ui/color/prometheus_color_mixer.cc` and adds `//chrome/browser/ui/color:mixers` dep (14-02:158-175). |
-| Asset gate disagrees with 14-04 names/layout | RESOLVED | 14-04 adopts the exact PNG gate names and TTF root paths (14-04:142-158, 271-296). |
-| Offline-URL vs CC-BY provenance conflict (top blocker) | RESOLVED | 14-08 rewrites Assertion 5 to a load-bearing-URL grep only (14-08:167-172). |
-| Converter not manifest-driven / no exact-69 gate | RESOLVED | 14-05 adds `fa-glyph-manifest.txt`, a manifest loop, and an exact-69 count gate (14-05:152-169). |
-| D-08 resolver orphaned | RESOLVED | 14-05 owns `prometheus_action.cc` + GN target + unit tests (14-05:270-308). |
-| Resource tests unreliable / static-assert fallback | RESOLVED | 14-06 mandates `AddDataPackFromPath` + non-empty `GetRawDataResource()`; static_assert path banned (14-06:169-183, 213). |
-| WebUI resources not addressable | PARTIALLY RESOLVED | 14-07 adds `AddResourcePath` for every asset (14-07:188, 220-222). Residual font-URL host ambiguity → see New Concerns (MEDIUM). |
-| WebUI `.cc` not wired into a GN target | RESOLVED | 14-07 adds `chrome/browser/ui/webui/prometheus/BUILD.gn` + webui-target wiring (14-07:191-193, 222). |
-| Views gallery `//ui/views/examples` layering violation | RESOLVED | 14-07 moves the gallery to a Chrome-owned target + browsertest; excludes `ui/views/examples` (14-07:226-274). |
-| D-14 coverage weaker than the validation contract | PARTIALLY RESOLVED | 14-08 mostly requires full tables (14-08:26, 127, 151), but line 120 still permits "a representative set" of icon IDRs → see New Concerns (MEDIUM). |
-| D-05 swatches missing / VIS-09-04 over-claim | RESOLVED | 14-03 adds all four swatch constants + `AccentSwatchConstantsDefined` (14-03:102-120). 14-08 keeps VIS-09-04 `carry_forward` (14-08:83-86, 184-186). |
-| `pm_mark_light` copy-of-dark fallback | RESOLVED | 14-04 requires a real recolored light variant + a `cmp -s` guard (14-04:153, 276-278, 294). |
-| Mixer "not literally last" (prior MEDIUM) | PARTIALLY RESOLVED | Main instruction places it after the custom_theme block (14-02:92-95, 158); the documented fallback (14-02:96-99) still lets custom_theme win — acceptable only as an explicitly-documented edge, but worth confirming at execution. |
-| Unrealistic manual 69-icon fallback (prior MEDIUM) | RESOLVED | 14-05 now CHECKPOINTS if `skiafy` is unobtainable; no hand-authoring of 69 icons (14-05:187-189). |
-| Broken 14-04 verify command (prior MEDIUM) | RESOLVED | 14-04 verify uses concrete shell vars / real checks, no empty `""`-expansions (14-04:290-294). |
-| `DCHECK_IS_ON()` dev gate too broad (prior MEDIUM) | RESOLVED | 14-07 adds a channel guard (`chrome::GetChannel() == UNKNOWN`) so canary/dev do not expose the preview (14-07:120-123, 208-211). |
+| Cycle-2 Finding | Status | Evidence | Notes |
+|---|---|---|---|
+| [HIGH] TTF IDR manifest/GRDP mismatch | RESOLVED | 14-04:36, 14-04:193, 14-04:204; 14-05:244; 14-06:122; 14-08:128 | 14-04 manifest: all 5 physical TTF files exist, but only **2 TTF IDR rows**: `IDR_PROMETHEUS_FONT_POPPINS_THIN_TTF`, `IDR_PROMETHEUS_FONT_SPACE_MONO_TTF`. 14-05 GRDP: declares **exactly those 2**, explicitly bans Light/ExtraBold/Black TTF IDRs. 14-06 GRD: includes the GRDP via `<part file="prometheus_resources.grdp" />`, inheriting the same set. 14-08 test: iterates `5 woff2 + 2 ttf`, not 5 TTF. No undeclared `POPPINS_LIGHT_TTF`/`POPPINS_EXTRABOLD_TTF`/`POPPINS_BLACK_TTF` symbol is referenced as a test target. |
+| [MEDIUM] 14-08 frontmatter invalid YAML | RESOLVED | 14-08:24-27 | `must_haves:` now carries the required `truths:` subkey; frontmatter parses as valid YAML. |
+| [MEDIUM] 14-08 IconResource coverage escape hatch | RESOLVED | 14-08:27, 14-08:121, 14-08:128, 14-08:152 | The "representative set / ideally all" language is gone. The plan now requires all 69 FA icon IDRs table-driven, no sampling. |
+| [MEDIUM] WebUI font `url()` vs `AddResourcePath` host mismatch | RESOLVED | 14-07:32, 14-07:111-121, 14-07:211, 14-07:245 | The plan keeps `url(//resources/prometheus/fonts/...)` and explicitly serves the 5 woff2 from the `chrome://resources/` shared origin under `prometheus/fonts/`, not only the preview data source. |
+| [MEDIUM] 14-05 manifest tag-parse ordering | RESOLVED | 14-05:153-161, 14-05:170 | Parse order is now explicit and load-bearing: read `SUBSTITUTE=` / `PLACEHOLDER` tags BEFORE stripping inline comments, so the substitution/placeholder branches always fire. |
+| [LOW] 14-08 unit-test verify false-green | RESOLVED | 14-08:150 | The final automated gate now captures output, fails on a failing test process, fails if `FAILED` appears, and requires `PASSED` — no longer the old `... \|\| echo "ALL TESTS GREEN"` pattern. |
 
-**New Concerns (introduced or surfaced by the revision)**
+**New Concerns**
 
-- **[HIGH] TTF IDR manifest/GRDP mismatch (cross-plan).** 14-04 Task 0 says the authoritative
-  manifest lists TTF rows for "same 5 files" with `IDR_PROMETHEUS_FONT_*_TTF` (14-04:193), and
-  14-04 copies all 5 TTFs into the resource tree (14-04:274). But 14-05's GRDP declares only
-  TWO TTF IDRs: `IDR_PROMETHEUS_FONT_POPPINS_THIN_TTF` and `IDR_PROMETHEUS_FONT_SPACE_MONO_TTF`
-  (14-05:243). 14-08 then table-drives the asset test over "EVERY IDR in 14-ASSET-MANIFEST.md"
-  (14-08:26, 127). If the manifest lists 5 TTF IDRs but the GRDP only declares 2, the
-  full-manifest IDR test references 3 undeclared symbols (Poppins Light/ExtraBold/Black TTF) and
-  fails to compile / fails at runtime. The planner must reconcile the TTF set in ONE place: either
-  trim the manifest to the 2 TTF IDRs D-11 actually needs for the as-needed Views shim
-  (Poppins Thin + Space Mono), or expand the GRDP to declare all 5. (D-11 frames TTF as a minimal
-  as-needed shim, which argues for trimming the manifest to 2.)
+No new HIGH concerns found.
 
-- **[MEDIUM] `14-08-PLAN.md` frontmatter is invalid YAML.** `must_haves:` (line 24) is immediately
-  followed by a sequence of strings (lines 25-34) with NO `truths:` sub-key, then `artifacts:` /
-  `key_links:` are indented as if nested under that sequence (lines 35-39). Every other plan uses
-  `must_haves: → truths: → [list]` (cf. 14-02:18-19, 14-05:24-25). A strict YAML parser raises
-  "did not find expected key"; the decision-coverage gate scans `must_haves`, so a parse failure
-  there can silently drop 14-08's truths. Re-add the `truths:` key and fix the indentation.
+- **[MEDIUM] 14-07 shared `chrome://resources` font registration is conceptually fixed but still
+  under-specified operationally.** The plan says to register via "shared ui/webui/resources grd/grdp,
+  or `content::WebUIDataSource` for chrome://resources, whichever the checkout uses" (14-07:211),
+  while the automated verify only greps for `AddResourcePath` and does not prove the shared-origin
+  font mapping (14-07:243). The done condition requires DevTools 200 verification (14-07:245), so this
+  is not a HIGH, but naming the exact file/target to edit would reduce execution drift.
 
-- **[MEDIUM] 14-08 still contains a coverage escape hatch.** The behavior block line 120 permits
-  "at minimum a representative set across the 69; ideally all 69" for IconResource, which directly
-  contradicts the full-manifest mandate at 14-08:26, 127, and 151. Pick one: either commit to all
-  69 icon IDRs table-driven (consistent with the D-14 depth fix) or down-scope the must_have. As
-  written, an executor could ship "representative" icon coverage and still mark the must_have green.
+- **[LOW] Several intermediate (wave-local) plan verifies still use `grep -E "PASSED|FAILED|OK"`,
+  which exits 0 even on failing test output: 14-03:171, 14-05:307, 14-06:181.** The final 14-08 gate
+  is strict (14-08:150), so this does not compromise phase close, but the wave-local gates could
+  report false confidence mid-phase.
 
-- **[MEDIUM] WebUI font addressability is ambiguous.** `prometheus_fonts.css` uses
-  `url(//resources/prometheus/fonts/...)` (14-04:135-140 / 285), but 14-07 maps the fonts as
-  `fonts/...` paths on the `chrome://prometheus-theme-preview` data source (14-07:101-110). Unless
-  the woff2 are ALSO served from `chrome://resources/` (or the `@font-face` url and the
-  `AddResourcePath` key are made to resolve to the same origin/path), the preview's font loads can
-  404 even though every asset is "addressable." 14-07 should pin the exact url()-to-resource-path
-  mapping (or switch the CSS to relative `fonts/...` URLs that match the data-source keys).
-
-- **[MEDIUM] Manifest tag-parsing order is internally ambiguous (14-05).** The 69-glyph manifest
-  carries `# SUBSTITUTE=arrow-down` and `# PLACEHOLDER` as inline trailing comments (14-05:152-160),
-  but the same instruction tells the converter to "strip comments/blank lines" while reading. If the
-  script strips comments before reading the tags, the substitution/placeholder branches never fire.
-  The plan should state explicitly: parse the trailing tag FIRST, then strip the comment.
-
-- **[LOW] 14-08 unit-test verify can false-green.** Line 149's
-  `... | grep -q "FAILED" && echo "TESTS FAILING" || echo "ALL TESTS GREEN"` prints a message but
-  the compound command exits 0 regardless of whether tests failed, so as a `<automated>` gate it can
-  never actually fail the task. Invert it (e.g. `! grep -q "FAILED"`) so a failing suite returns
-  non-zero.
+- **[LOW] 14-04 line 274** says all 5 TTF files are copied into `resources/fonts/` and calls that
+  "the directory the GRD packages." The authoritative TTF IDR text elsewhere is unambiguous, but this
+  one line could be tightened to "available for packaging; only Thin + Space Mono are packaged as TTF
+  IDRs."
 
 **Strengths**
 
-- The replan correctly RECONCILES Wave 0 reality (pre-added IDs, direct mixer wiring) instead of
-  pretending 14-01 did not happen — 14-02 is now a clean idempotent reconciliation.
-- D-08 (the action→icon resolver) is now owned end-to-end by 14-05 (.cc + GN target + tests); it is
-  no longer orphaned.
-- The pak-load testing approach (14-06) is substantially stronger and matches the real
-  resource-packaging risk; the static_assert/uninitialized-bundle false-GREEN path is explicitly banned.
-- The Views gallery layering fix (Chrome-owned target + browsertest, no upward `//ui/views/examples`
-  dependency) is the correct Chromium direction.
-- VIS-09-04 is no longer over-claimed; the manifest-as-single-source-of-truth pattern (when its IDRs
-  are made consistent) is the right structural fix for the gate/plan-drift class of bug.
+- The 14-ASSET-MANIFEST.md now does the right job: physical files, IDR rows, GRDP, GRD, tests, and
+  preview are explicitly tied together as a single source of truth.
+- The TTF shim scope matches D-11 (an as-needed Views shim) instead of growing into a native font
+  subsystem — which is exactly why trimming the manifest IDR set to 2 was the correct reconciliation
+  direction.
+- The final asset tests require real `prometheus_resources.pak` loading and non-empty bytes, not IDR
+  existence checks.
+- The FA converter is manifest-driven, count-gated (exactly 69), and preserves CC BY 4.0 attribution
+  while fixing the substitution/placeholder tag-parse ordering.
+- The WebUI preview and Views gallery build/link/layering concerns are substantially addressed,
+  including channel gating for the dev surface.
 
 **Risk Assessment**
 
-Overall risk: **HIGH** until the TTF IDR mismatch and the 14-08 YAML defect are fixed. Of the 13
-prior HIGH findings, **0 remain unresolved** (most are fully resolved; the residuals of the two
-"partially resolved" prior HIGHs are themselves rated MEDIUM, not HIGH). **1 NEW HIGH** was
-introduced by the revision (the cross-plan TTF IDR mismatch). The remaining items are MEDIUM/LOW
-internal-consistency tightenings.
+Overall risk: **MEDIUM** — but driven by Chromium integration complexity, not by any unresolved plan
+defect. The plan set has no remaining deterministic HIGH break, and the Cycle-2 HIGH is fully cleared.
+The residual risk is execution-side: exact shared WebUI resource registration, GN target wiring, and
+ensuring intermediate verification does not mask failures before the strict final 14-08 gate.
 
-**Unresolved HIGH count this cycle: 1.**
+**Unresolved HIGH count this cycle: 0.**
 
 ---
 
-## Reviewer-Verified Findings (Cycle 2)
+## Reviewer-Verified Findings (Cycle 3)
 
-The following Cycle-2 findings were independently re-confirmed against the current plan files
+The following Cycle-3 conclusions were independently re-confirmed against the current plan files
 during this review (not just taken from the model output):
 
-1. **TTF IDR mismatch (CONFIRMED, new HIGH).**
-   - `14-04-PLAN.md:193` — manifest "Fonts (ttf): same 5 files, ttf, ... `IDR_PROMETHEUS_FONT_*_TTF`".
-   - `14-05-PLAN.md:243` — GRDP declares only `IDR_PROMETHEUS_FONT_POPPINS_THIN_TTF` and
-     `IDR_PROMETHEUS_FONT_SPACE_MONO_TTF` (no Light/ExtraBold/Black TTF IDRs anywhere in 14-05/06/08).
-   - `14-08-PLAN.md:26,127` — asset test is table-driven over "EVERY IDR in 14-ASSET-MANIFEST.md".
-   The 5-vs-2 gap makes the 14-08 full-manifest IDR test reference 3 undeclared TTF IDRs → a
-   deterministic compile/test break. Reconcile the TTF set in one place (D-11 favors trimming the
-   manifest to the 2 needed for the as-needed Views shim).
+1. **TTF IDR mismatch CLEARED (the Cycle-2 HIGH).** Traced the TTF IDR set end-to-end:
+   - `14-04-PLAN.md:36, 193, 204` — manifest ships all 5 TTF FILES on disk for the Assertion-1 gate
+     but declares **exactly 2 TTF IDRs** (`IDR_PROMETHEUS_FONT_POPPINS_THIN_TTF`,
+     `IDR_PROMETHEUS_FONT_SPACE_MONO_TTF`); Poppins Light/ExtraBold/Black TTF rows are explicitly
+     written as "(no IDR — on-disk gate asset only; not packaged; D-11 as-needed shim)".
+   - `14-05-PLAN.md:244` — GRDP declares "EXACTLY TWO, no more" and explicitly says "Do NOT add ttf
+     IDRs for Poppins Light/ExtraBold/Black".
+   - `14-06-PLAN.md:122` — GRD includes the GRDP via `<part file="prometheus_resources.grdp" />`, so
+     it inherits the same 2-TTF-IDR set (no separate TTF list).
+   - `14-08-PLAN.md:128` — the full-manifest asset test table-drives "all font IDRs (5 woff2 + 2 ttf)"
+     — i.e. 2 TTF, matching the manifest/GRDP.
+   - A tree-wide grep for `POPPINS_LIGHT_TTF` / `POPPINS_EXTRABOLD_TTF` / `POPPINS_BLACK_TTF` across
+     all 8 plans returns NOTHING — no undeclared TTF symbol is referenced anywhere. The 5-vs-2 gap is
+     gone; the full-manifest test references only declared TTF symbols. Cycle-2 HIGH fully cleared.
 
-2. **14-08 frontmatter YAML defect (CONFIRMED, MEDIUM).**
-   `14-08-PLAN.md:24-39` — `must_haves:` is followed directly by a 5-space-indented string sequence
-   (no `truths:` key), then `artifacts:`/`key_links:` at 3-space indent. All sibling plans nest the
-   list under `truths:`. This is a structural regression from the replan edit; the decision-coverage
-   gate reads `must_haves`, so a parse failure can silently drop 14-08's truths.
+2. **14-08 frontmatter YAML CONFIRMED VALID (Cycle-2 MEDIUM closed).** All 8 plans parse as valid
+   YAML; `14-08`'s `must_haves:` now nests its 10 `truths:` correctly (matching every sibling plan),
+   so the decision-coverage gate parses clean. (The replan commit message records 15/15 decision
+   coverage.)
 
-3. **14-08 line-120 coverage escape hatch (CONFIRMED, MEDIUM).**
-   `14-08-PLAN.md:120` ("at minimum a representative set across the 69; ideally all 69") contradicts
-   the FULL-manifest mandate at lines 26/127/151 — the exact D-14-depth concern Cycle 1 raised,
-   re-opened by a softer behavior-block phrasing.
+3. **14-08 IconResource escape hatch REMOVED (Cycle-2 MEDIUM closed).** `14-08-PLAN.md:121` now reads
+   "...every one of the 69 IDR_PROMETHEUS_ICON_FA_* entries is asserted... NOT a representative
+   sample"; the prior "representative set across the 69; ideally all 69" wording is gone, consistent
+   with the full-manifest mandate at 14-08:27/128/152.
 
-> Note on on-disk gate scripts: `verify-asset-pipeline.sh` and `convert-fa-icons.sh` are still the
-> committed Wave 0 versions and therefore still contain the prior Assertion-4-vs-5 contradiction and
-> the `*.svg`-glob (non-manifest) loop. This is BY DESIGN — 14-08 (Assertion 5) and 14-05 (manifest
-> loop) own those edits during later-wave execution. The plans specify the fixes correctly. The only
-> residual risk is that the contradictory script is what runs at every wave boundary per
-> 14-VALIDATION.md until 14-08 lands; that is acceptable because the script is RED-by-design pre-assets
-> and the assets that would trip the Assertion-4/5 conflict do not exist until 14-04/14-05 run.
+4. **Intermediate-gate LOW CONFIRMED.** 14-03:171, 14-05:307, 14-06:181 pipe to
+   `grep -E "PASSED|FAILED|OK"` (exits 0 on `FAILED`), whereas the phase-close gate 14-08:150 is
+   correctly hardened to `! grep -q "FAILED" && grep -q "PASSED"`. Real but LOW: the phase cannot
+   close GREEN with failing tests because the final gate is strict.
+
+> Note on on-disk gate scripts: `verify-asset-pipeline.sh` and `convert-fa-icons.sh` remain the
+> committed Wave 0 versions; their Assertion-4-vs-5 reconciliation and the manifest-driven loop are
+> still owned by 14-08 (Assertion 5) and 14-05 (manifest loop) during later-wave execution. This is
+> unchanged from Cycle 2 and remains BY DESIGN — the contradictory script is RED-by-design pre-assets
+> and the assets that would trip the conflict do not exist until 14-04/14-05 run.
 
 ---
 
 ## Consensus Summary
 
-Single-reviewer cycle (`--codex`) plus reviewer re-verification of the load-bearing claims.
+Single-reviewer cycle (`--codex`) plus reviewer re-verification of the load-bearing claims. The
+independent file-trace and the Codex review agree on every point.
 
 ### Agreed Strengths
 
-- The replan genuinely closed the Cycle-1 HIGH set: Wave 0 reconciliation (14-02), manifest-driven
-  exact-69 conversion (14-05), in-phase D-08 resolver ownership (14-05), real pak-load tests (14-06),
-  WebUI build wiring + Chrome-owned gallery (14-07), the offline-vs-CC-BY Assertion 5 fix (14-08),
-  and the VIS-09-04 carry_forward correction (14-08).
-- The 14-ASSET-MANIFEST.md "single source of truth" pattern is the right structural antidote to the
-  gate/plan drift that caused most of Cycle 1's HIGHs — provided its IDR rows are made internally
-  consistent (see the TTF finding).
+- The Cycle-2 replan landed exactly the targeted fixes with no collateral regressions: the TTF IDR
+  set is now internally consistent across 14-04/14-05/14-06/14-08, the 14-08 frontmatter is valid
+  YAML, the icon-coverage escape hatch is gone, the WebUI font origin is pinned to the shared
+  resources origin, the FA tag-parse order is load-bearing, and the final test gate fails closed.
+- The 14-ASSET-MANIFEST.md single-source-of-truth pattern (now with a consistent IDR set) is the
+  correct structural antidote to the gate/plan-drift class of bug that produced most of the Cycle-1
+  HIGHs.
 
 ### Agreed Concerns (highest priority first)
 
-1. **TTF IDR mismatch between the 14-04 manifest (5) and the 14-05 GRDP (2)** breaks the 14-08
-   full-manifest asset test. (HIGH — the one unresolved HIGH this cycle.)
-2. **14-08 frontmatter is invalid YAML** (`must_haves` missing its `truths:` key). (MEDIUM)
-3. **14-08 line-120 icon-coverage escape hatch** contradicts the full-manifest D-14 mandate. (MEDIUM)
-4. **WebUI font url() vs AddResourcePath host/path mismatch** can 404 preview fonts. (MEDIUM)
-5. **14-05 manifest tag-parse-vs-strip-comment ordering** could disable the substitution/placeholder
-   branches. (MEDIUM)
-6. **14-08 unit-test verify** is informational-only and can false-green. (LOW)
+1. **[MEDIUM] 14-07 shared chrome://resources font registration is under-specified** — the mechanism
+   is correct (serve the 5 woff2 from the shared origin under `prometheus/fonts/`) but the exact
+   file/target to edit is left to the executor; the automated verify only greps `AddResourcePath`.
+   Mitigated by the DevTools-200 done condition.
+2. **[LOW] Wave-local verify gates can false-green** (14-03:171, 14-05:307, 14-06:181) — the strict
+   final 14-08 gate prevents a false phase close.
+3. **[LOW] 14-04:274 wording** could be tightened to make clear only Thin + Space Mono are packaged
+   as TTF IDRs.
 
 ### Divergent Views
 
-None — single reviewer. The reviewer's "PARTIALLY RESOLVED" labels on the WebUI-addressability and
-D-14-coverage prior HIGHs were checked: in both cases the underlying prior HIGH is resolved and the
-residual is a NEW MEDIUM (not a lingering HIGH), so neither counts toward the unresolved-HIGH total.
+None — single reviewer. The reviewer's RESOLVED labels on all six Cycle-2 findings were each
+independently confirmed against the current plan text; no label was downgraded on verification.
 
 ---
 
 ## Recommended Next Step
 
-One genuine HIGH plus a small set of MEDIUM/LOW internal-consistency fixes remain — all mechanical.
-Feed this review back into planning before executing Wave 1+:
+No HIGH concerns remain. The plan set is execution-ready. The 1 MEDIUM + 2 LOW are optional polish
+that can be incorporated at the planner's discretion or simply handled by the executor at wave time:
+
+1. (MEDIUM, optional) In 14-07, name the exact shared-resources file/target to edit for the
+   `prometheus/fonts/` woff2 registration, and add a verify that proves the shared-origin mapping (not
+   just `AddResourcePath`).
+2. (LOW, optional) Harden the wave-local verifies at 14-03:171 / 14-05:307 / 14-06:181 to the same
+   fail-closed pattern used at 14-08:150.
+3. (LOW, optional) Tighten the 14-04:274 wording about which TTF files are packaged as IDRs.
+
+Otherwise, proceed to execute:
 
 ```
-/gsd-plan-phase 14 --reviews
+/gsd-execute-phase 14
 ```
 
-Priority replan targets:
-1. Reconcile the TTF IDR set in ONE place (trim the 14-04 manifest to the 2 TTF IDRs D-11 needs, OR
-   expand the 14-05 GRDP to declare all 5) so 14-08's full-manifest test compiles. (HIGH)
-2. Fix the 14-08 frontmatter: restore `must_haves: → truths:` and re-indent `artifacts`/`key_links`.
-3. Remove the 14-08 line-120 "representative set" escape hatch (commit to all 69 icon IDRs) to match
-   lines 26/127/151.
-4. Pin the WebUI font url()-to-AddResourcePath mapping in 14-07 (or serve fonts from chrome://resources).
-5. State the 14-05 tag-parse-before-strip-comment order explicitly.
-6. Invert the 14-08 line-149 verify so a failing suite returns non-zero.
+---
+
+## Cycle 2 Review — Archived
+
+> The Cycle-2 single-reviewer (`--codex`) re-review of the first replan (`04a4f4e97`). It confirmed
+> all 13 Cycle-1 HIGHs resolved and raised 1 NEW HIGH (the TTF IDR mismatch) + 5 MEDIUM/LOW. The
+> Cycle-2 HIGH and its MEDIUM/LOW items were addressed by the replan (`354a67d9f`) re-reviewed in
+> Cycle 3 above. Resolution status of each Cycle-2 item is in the Cycle-3 audit table.
+
+**Cycle 2 Summary:** The first replan genuinely closed most prior HIGH/MEDIUM findings (Wave 0 drift,
+duplicate-symbol risk, icon-resolver ownership, real pak-load tests, WebUI build wiring, Views
+layering, VIS-09-04 over-claim) but was not yet executable: one NEW HIGH cross-plan mismatch around
+TTF IDRs (14-04 manifest listed 5 TTF IDRs while 14-05's GRDP declared 2, breaking 14-08's
+full-manifest asset test) plus a malformed 14-08 frontmatter block (missing `truths:`), a 14-08
+line-120 icon-coverage escape hatch, a WebUI font url()-vs-AddResourcePath host mismatch, a 14-05
+tag-parse-vs-strip-comment ordering ambiguity, and a 14-08 false-green unit-test verify.
+
+**Cycle 2 Risk Assessment:** HIGH until the TTF IDR mismatch and the 14-08 YAML defect were fixed.
+0 of the 13 prior HIGHs remained unresolved; 1 NEW HIGH was introduced; the rest were MEDIUM/LOW
+internal-consistency tightenings. Recommended `/gsd-plan-phase 14 --reviews` — which produced commit
+`354a67d9f`, re-reviewed in Cycle 3 above. (Cycle 2 unresolved-HIGH count: 1.)
 
 ---
 
 ## Cycle 1 Review — Archived
 
-> The full Cycle-1 single-reviewer (`--codex`) review that produced the 13 HIGH + MEDIUM findings the
-> replan (`04a4f4e97`) addressed. Retained for traceability; the resolution status of each item is in
-> the "Prior-Finding Resolution Audit" above.
+> The Cycle-1 single-reviewer (`--codex`) review that produced the 13 HIGH + MEDIUM findings the first
+> replan (`04a4f4e97`) addressed. Retained for traceability.
 
 **Cycle 1 Summary:** The plan set was directionally strong but not ready to execute — the biggest
 risks were deterministic execution failures from Wave 0 reality drift, asset-manifest mismatches,
@@ -242,4 +233,4 @@ command (empty-variable expansions); `DCHECK_IS_ON()` exposing the preview on ca
 
 **Cycle 1 Risk Assessment:** HIGH — several plans would fail deterministic build/gate checks, and
 D-05/D-08/D-14 were not fully satisfied. Recommended `/gsd-plan-phase 14 --reviews` — which produced
-commit `04a4f4e97`, re-reviewed in Cycle 2 above.
+commit `04a4f4e97`, re-reviewed in Cycle 2.
