@@ -285,7 +285,7 @@ while IFS= read -r raw_line; do
   TMP_ICON_RAW="${TMP_DIR}/fa_${glyph_name//-/_}.icon.raw"
 
   # 1. Optimize with SVGO (preserve CC BY 4.0 comments per D-12)
-  if ! svgo --config="${SVGO_CONFIG}" "${actual_source}" -o "${TMP_SVG}" 2>/dev/null; then
+  if ! svgo --config="${SVGO_CONFIG}" "${actual_source}" -o "${TMP_SVG}" < /dev/null 2>/dev/null; then
     printf 'warning: SVGO failed for %s; using unoptimized source\n' "${glyph_name}" >&2
     cp "${actual_source}" "${TMP_SVG}"
   fi
@@ -301,7 +301,9 @@ while IFS= read -r raw_line; do
   fi
 
   # 2. Convert to .icon path commands with skiafy
-  if ! skiafy -i "${TMP_SVG}" -o "${TMP_ICON_RAW}" 2>/dev/null; then
+  # Note: redirect stdin from /dev/null because skiafy (Node.js) detects non-TTY stdin and
+  # adds it as an implicit input, which would consume the manifest file the while loop reads.
+  if ! skiafy -i "${TMP_SVG}" -o "${TMP_ICON_RAW}" < /dev/null 2>/dev/null; then
     printf 'warning: skiafy failed for %s; skipping\n' "${glyph_name}" >&2
     ERRORS=$((ERRORS + 1))
     continue
