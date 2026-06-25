@@ -4,8 +4,8 @@ milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
 stopped_at: Phase 14 context gathered
-last_updated: "2026-06-24T16:54:22.259Z"
-last_activity: 2026-06-24
+last_updated: "2026-06-25T07:43:16.096Z"
+last_activity: 2026-06-25 -- Phase 14 planning complete
 progress:
   total_phases: 14
   completed_phases: 3
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-06-23)
 Phase: 14 (Asset and Design System Port) — EXECUTING
 Plan: 2 of 8
 Status: Ready to execute
-Last activity: 2026-06-24
+Last activity: 2026-06-25 -- Phase 14 planning complete
 
 ## Performance Metrics
 
