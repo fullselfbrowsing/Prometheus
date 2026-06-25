@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
-stopped_at: Phase 14 context gathered
-last_updated: "2026-06-25T08:28:10.377Z"
+stopped_at: "Completed 14-05-PLAN.md — FA icon pipeline, GN wiring, PrometheusAction resolver"
+last_updated: "2026-06-25T11:26:07.820Z"
 last_activity: 2026-06-25
 progress:
   total_phases: 14
   completed_phases: 3
   total_plans: 19
-  completed_plans: 15
-  percent: 79
+  completed_plans: 16
+  percent: 84
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-23)
 ## Current Position
 
 Phase: 14 (asset-and-design-system-port) — EXECUTING
-Plan: 4 of 8
+Plan: 5 of 8
 Status: Ready to execute
 Last activity: 2026-06-25
 
@@ -95,6 +95,7 @@ Last activity: 2026-06-25
 | Phase 14 P02 | 15min | 2 tasks | 3 files |
 | Phase 14 P14-04 | 35 | 3 tasks | 38 files |
 | Phase 14 P14-03 | 20min | 1 tasks | 3 files |
+| Phase 14 P14-05 | 510min | 4 tasks | 150 files |
 
 ## Accumulated Context
 
@@ -174,6 +175,10 @@ Recent decisions affecting current work:
 - [Phase ?]: [Phase 13-01]: GPL guard scans only chrome/browser/prometheus and components/prometheus to avoid false positives from unrelated Chromium third-party code
 - [Phase ?]: [Phase 13-01]: smoke-launch-prometheus.sh is a new sibling; smoke-launch-unmodified.sh preserved unchanged as immutable baseline reference
 - [Phase ?]: Moved swatch constants from .cc anonymous namespace to .h header for test accessibility
+- [Phase 14-05]: Actual FA glyph count is 72 (not 69 as plan stated); Falkon v1 bundle has 72 SVG files; used 72 as authoritative count throughout
+- [Phase 14-05]: source_set wrapper required over aggregate_vector_icons due to hardcoded visibility=[":*"] in GN template
+- [Phase 14-05]: Prometheus-specific vector_icons.cc/h.template needed to avoid -Wunused-const-variable from wrong-module header include
+- [Phase 14-05]: PrometheusAction enum uses kArrowDownToLine (not kDownload); resolves to arrow-down substitution glyph per D-08
 
 ### Roadmap Evolution
 
@@ -220,7 +225,7 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Phase 1
 
 ## Session Continuity
 
-Last session: 2026-06-25T08:28:10.373Z
+Last session: 2026-06-25T11:26:07.816Z
 Stopped at: Phase 14 context gathered
 Resume file: None
 
