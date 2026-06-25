@@ -53,10 +53,10 @@ woff2 + ttf ALSO copied to: `chrome/browser/resources/prometheus/fonts/` (GRD pa
 
 ## Section 3: FA Icons (svg) — WebUI raw subset; ALSO converted to .icon for Views (D-06, D-09)
 
-Location: `chrome/browser/resources/prometheus/svg/fa_*.svg` (69 files)
-Also: `chrome/browser/resources/prometheus/vector_icons/fa_*.icon` (69 files — Views)
+Location: `chrome/browser/resources/prometheus/svg/fa_*.svg` (72 files)
+Also: `chrome/browser/resources/prometheus/vector_icons/fa_*.icon` (72 files — Views)
 
-This section is produced by Plan 14-05 (manifest-driven converter). Count = 69 (curated
+This section is produced by Plan 14-05 (manifest-driven converter). Count = 72 (curated
 subset). IDR names use the pattern `IDR_PROMETHEUS_ICON_FA_<GLYPH>` where GLYPH is the
 glyph name uppercased with hyphens replaced by underscores.
 
@@ -135,9 +135,9 @@ glyph name uppercased with hyphens replaced by underscores.
 | fa_wrench.svg | chrome/browser/resources/prometheus/svg/fa_wrench.svg | IDR_PROMETHEUS_ICON_FA_WRENCH | 1 | https://github.com/FortAwesome/Font-Awesome@6.x | CC-BY-4.0 | Assertion 1 line 51-52; Assertion 4 |
 | fa_xmark.svg | chrome/browser/resources/prometheus/svg/fa_xmark.svg | IDR_PROMETHEUS_ICON_FA_XMARK | 1 | https://github.com/FortAwesome/Font-Awesome@6.x | CC-BY-4.0 | Assertion 1 line 51-52; Assertion 4 |
 
-**Subtotal: 69 FA SVG files; 69 IDR rows (owned by Plan 14-05)**
+**Subtotal: 72 FA SVG files; 72 IDR rows (owned by Plan 14-05)**
 
-Special cases (embedded in the 69):
+Special cases (embedded in the 72):
 - `fa_arrow_down_to_line` — arrow-down-to-line is missing from FA Free 6.x solid; substituted with arrow-down.svg source (D-08)
 - `fa_sidebar_flip` — Pro-only, not in FA Free 6.x; bundled as a custom placeholder SVG (D-08)
 
@@ -178,9 +178,9 @@ Notes:
 |---------|-------|---------------|
 | Fonts (woff2) | 5 | 5 |
 | Fonts (ttf) | 5 | 2 (Thin + SpaceMono only; 3 Light/ExtraBold/Black have no IDR) |
-| FA icons (svg + icon) | 69 each | 69 (14-05 owns) |
+| FA icons (svg + icon) | 72 each | 72 (14-05 owns) |
 | Brand marks (png + svg) | 7 PNG + 4 SVG | 7 IDR |
-| **Total** | **155 files** | **83 packaged IDRs** |
+| **Total** | **165 files** | **86 packaged IDRs** |
 
 ---
 
