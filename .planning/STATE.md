@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
-stopped_at: "Completed 14-05-PLAN.md — FA icon pipeline, GN wiring, PrometheusAction resolver"
-last_updated: "2026-06-25T11:26:07.820Z"
-last_activity: 2026-06-25
+stopped_at: "Completed 14-06-PLAN.md — GRIT resource pipeline wired, real pak-load FontResource/BrandAsset tests GREEN"
+last_updated: "2026-07-01T21:43:57.735Z"
+last_activity: 2026-07-01
 progress:
-  total_phases: 14
+  total_phases: 15
   completed_phases: 3
   total_plans: 19
-  completed_plans: 16
-  percent: 84
+  completed_plans: 17
+  percent: 89
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-06-23)
 ## Current Position
 
 Phase: 14 (asset-and-design-system-port) — EXECUTING
-Plan: 5 of 8
+Plan: 7 of 8
 Status: Ready to execute
-Last activity: 2026-06-25
+Last activity: 2026-07-01
 
 ## Performance Metrics
 
@@ -96,6 +96,7 @@ Last activity: 2026-06-25
 | Phase 14 P14-04 | 35 | 3 tasks | 38 files |
 | Phase 14 P14-03 | 20min | 1 tasks | 3 files |
 | Phase 14 P14-05 | 510min | 4 tasks | 150 files |
+| Phase 14 P14-06 | 55min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -179,6 +180,10 @@ Recent decisions affecting current work:
 - [Phase 14-05]: source_set wrapper required over aggregate_vector_icons due to hardcoded visibility=[":*"] in GN template
 - [Phase 14-05]: Prometheus-specific vector_icons.cc/h.template needed to avoid -Wunused-const-variable from wrong-module header include
 - [Phase 14-05]: PrometheusAction enum uses kArrowDownToLine (not kDownload); resolves to arrow-down substitution glyph per D-08
+- [Phase 14-06]: grit() targets with output_dir=$root_gen_dir/chrome need #include "chrome/grit/<name>.h" (chrome/ prefix), not bare "grit/<name>.h" — Chromium's include search root is $root_gen_dir
+- [Phase 14-06]: test() targets constructing ui::ResourceBundle must link //base/test:run_all_unittests, not bare //testing/gtest:gtest_main, or ResourceBundle's ctor DCHECK-crashes on uninitialized base::CommandLine
+- [Phase 14-06]: resource_ids.spec entries for chrome/browser/resources/*.grd files belong in the chrome/browser section, not components/
+- [Phase 14-06]: IDR_PROMETHEUS_ASSET_PM_WORDMARK_DARK/LIGHT is the manifest-authoritative name (grdp had WORDMARK_DARK/LIGHT without the PM_ prefix, fixed to match 14-ASSET-MANIFEST.md)
 
 ### Roadmap Evolution
 
@@ -190,6 +195,7 @@ Recent decisions affecting current work:
 - Phase 10 added: New Tab Start Page (design-driven new scope)
 - Milestone v2.0 started: Chromium Engine Migration.
 - Phases 11-24 added: preservation, Chromium checkout/build, branding/legal, design-system port, compact chrome, WebUI, native agent service, page adapters, MCP, FSB runtime, supervision, extensions, parity/security, packaging.
+- Phase 20.1 inserted after Phase 20: Embedded xterm.js terminal with bundled/pinned Claude Code CLI runtime, CLAUDE.md provisioning, and auto-installed MCP bridge; toggleable in Settings as an alternate side-panel engine alongside FSB's own provider engine. User-requested scope extension (2026-07-01) -- NOT jumping the execution queue; the autonomous run continues Phase 14 -> 15 -> ... -> 20 -> 20.1 -> 21 in numeric sequence.
 
 ### Pending Todos
 
@@ -225,8 +231,8 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Phase 1
 
 ## Session Continuity
 
-Last session: 2026-06-25T11:26:07.816Z
-Stopped at: Phase 14 context gathered
+Last session: 2026-07-01T21:43:57.735Z
+Stopped at: Completed 14-06-PLAN.md — GRIT resource pipeline wired, real pak-load FontResource/BrandAsset tests GREEN
 Resume file: None
 
 ## Operator Next Steps
