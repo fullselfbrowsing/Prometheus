@@ -1,0 +1,54 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-07-02T23:01:54.855Z",
+  "phase": "14",
+  "phase_name": "asset-and-design-system-port",
+  "phase_dir": ".planning/phases/14-asset-and-design-system-port",
+  "plan": "14-07",
+  "task": 2,
+  "total_tasks": 2,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": "14-01", "name": "Wave 0 test scaffold and gate scripts", "status": "done", "commit": "666f7034d"},
+    {"id": "14-02", "name": "Color pipeline reconciliation", "status": "done", "commit": "1dc3f7fb2"},
+    {"id": "14-03", "name": "Warm palette and accent derivations", "status": "done", "commit": "675d98077"},
+    {"id": "14-04", "name": "Asset vendoring and manifest", "status": "done", "commit": "139888e1b"},
+    {"id": "14-05", "name": "FA icon pipeline, GN wiring, PrometheusAction resolver", "status": "done", "commit": "238582170"},
+    {"id": "14-06", "name": "GRIT resource pipeline wiring", "status": "done", "commit": "e57d8cda9"},
+    {"id": "14-07-task-1", "name": "chrome://prometheus-theme-preview WebUI page", "status": "in_progress", "progress": "Implemented (header, .cc, BUILD.gn, chrome_web_ui_configs.cc registration, prometheus_theme_preview.html). Hit a real build failure (content::kChromeUIScheme not visible), diagnosed and fixed with an explicit #include \"content/public/common/url_constants.h\" — fix applied but NOT yet verified by a successful rebuild. All uncommitted in .context/chromium/src."},
+    {"id": "14-07-task-2", "name": "PrometheusTokenGalleryView Views gallery + browsertest", "status": "in_progress", "progress": "Implemented (view + BUILD.gn + browsertest). Caught and fixed a real bug proactively: an unparented widget's ColorProvider resolves through the OS NativeTheme singleton, not the profile's BrowserColorScheme, so the original browsertest would not have observed a theme toggle — fixed before it could fail. Not yet build-verified (same interrupted rebuild as task 1). All uncommitted in .context/chromium/src."}
+  ],
+  "remaining_tasks": [
+    {"id": "14-07-verify", "name": "Rebuild chrome + browser_tests and confirm 0 failures (prior build stopped at 13264 done / 1 failed / 5683 remaining — unknown if more errors exist beyond the first)", "status": "not_started"},
+    {"id": "14-07-run", "name": "Actually run the PrometheusTokenGalleryView browsertest (and chrome://prometheus-theme-preview if there's a non-interactive way) — build-green is not sufficient evidence in this phase", "status": "not_started"},
+    {"id": "14-07-commit", "name": "Split into the plan's atomic commits on branch prometheus/phase-14-assets in .context/chromium/src", "status": "not_started"},
+    {"id": "14-07-summary", "name": "Write 14-07-SUMMARY.md documenting all deviations", "status": "not_started"},
+    {"id": "14-07-state", "name": "Update STATE.md and ROADMAP.md in main repo", "status": "not_started"},
+    {"id": "14-08", "name": "Full manifest test expansion, IconResource tests GREEN, fix verify-asset-pipeline.sh Assertion 5, run full gate suite, tag 6 VIS checks, export Phase 14 patch series (phase close plan)", "status": "not_started"},
+    {"id": "phase-14-review", "name": "Code review + VERIFICATION.md for phase 14 once all 8 plans are done", "status": "not_started"},
+    {"id": "phases-15-24", "name": "Remaining milestone phases 15 through 24, in sequence", "status": "not_started"},
+    {"id": "phase-20.1", "name": "Inserted phase — embedded xterm.js terminal + bundled Claude Code runtime. Not yet planned (discuss + plan needed). Runs after Phase 20, before Phase 21 in the autonomous sequence.", "status": "not_started"},
+    {"id": "milestone-lifecycle", "name": "audit -> complete -> cleanup for milestone v2.0 once all phases (including 20.1) pass", "status": "not_started"}
+  ],
+  "blockers": [],
+  "human_actions_pending": [
+    {"action": "Verify Anthropic's Claude Code CLI redistribution/license terms before the Phase 20.1 bundling task ships a binary in a release installer", "context": "User directed the phase to proceed regardless of this open question (2026-07-01); it is documented as a flagged item on the specific bundling task inside Phase 20.1, not a blocker on planning/other work in that phase.", "blocking": false}
+  ],
+  "decisions": [
+    {"decision": "Inserted Phase 20.1 (Embedded Terminal and Bundled Claude Code Runtime) after Phase 20, before Phase 21", "rationale": "User-requested scope extension: bundle a pinned Claude Code CLI + xterm.js terminal + auto-installed MCP + CLAUDE.md provisioning, toggleable in Settings so it runs alongside (not replacing) FSB's own provider engine. Does not jump the execution queue.", "phase": "20.1"},
+    {"decision": "Chromium C++/GN source edits for this milestone live in the separate .context/chromium/src git checkout (branch prometheus/phase-14-assets), not the main repo", "rationale": "Established project convention since Phase 12 (patch discipline) — main repo tracks planning docs and exported patches only.", "phase": "14"},
+    {"decision": "\"Build succeeds\" is never treated as sufficient verification in this phase without also running the produced test/browsertest", "rationale": "Three separate real defects (wrong grit include path in 14-06, missing base::CommandLine::Init via gtest_main in 14-06, missing content::kChromeUIScheme include in 14-07) all passed a clean compile or link and only surfaced at runtime or on a later build.", "phase": "14"}
+  ],
+  "uncommitted_files": [
+    ".context/chromium/src: M chrome/browser/resources/prometheus/prometheus_resources.grdp",
+    ".context/chromium/src: M chrome/browser/ui/webui/BUILD.gn",
+    ".context/chromium/src: M chrome/browser/ui/webui/chrome_web_ui_configs.cc",
+    ".context/chromium/src: M chrome/test/BUILD.gn",
+    ".context/chromium/src: ?? chrome/browser/resources/prometheus/prometheus_theme_preview.html",
+    ".context/chromium/src: ?? chrome/browser/ui/views/prometheus/",
+    ".context/chromium/src: ?? chrome/browser/ui/webui/prometheus/",
+    "main repo: ?? .planning/phases/20.1-embedded-xterm-js-terminal-with-bundled-claude-code-agentic-/"
+  ],
+  "next_action": "cd .context/chromium/src && background-rebuild 'chrome browser_tests' to a fresh log file with an explicit EXIT_CODE marker, wait for it via process/log polling (not in-context assumption), then run the PrometheusTokenGalleryView browsertest before finishing plan 14-07 with commits + SUMMARY.md + STATE/ROADMAP updates.",
+  "context_notes": "This was a user-requested hard stop ('kill all use gsd pause work') mid-verification of plan 14-07, not a technical blocker. All build/compile OS processes and the executor agent were killed on request and confirmed clean via ps. The kChromeUIScheme fix is believed correct (matches an in-tree precedent pattern) but is UNVERIFIED — do not assume it works, rebuild and confirm before proceeding. Autonomous milestone run (gsd-autonomous, no flags) was in progress across phase 14 remainder + phases 15-24 + inserted 20.1 + milestone lifecycle; resume with the same overall plan once this phase finishes."
+}
