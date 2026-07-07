@@ -396,7 +396,7 @@ Plans:
 | 13. Product Identity, Branding, and Legal Baseline | v2.0 | 4/4 | Complete    | 2026-06-24 |
 | 14. Asset and Design System Port | v2.0 | 8/8 | Complete    | 2026-07-07 |
 | 15. Chromium UI Shell, Compact Chrome, and Tab Model | v2.0 | 6/6 | Complete   | 2026-07-07 |
-| 16. Prometheus WebUI Surfaces and New Tab | v2.0 | 4/6 | In Progress | — |
+| 16. Prometheus WebUI Surfaces and New Tab | v2.0 | 5/6 | In Progress | — |
 | 17. Native Agent Command Service and Tab Ownership | v2.0 | AGENT-01..AGENT-08 | Planned | — |
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | PAGE-01..PAGE-08 | Planned | — |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | MCP-01..MCP-07 | Planned | — |
