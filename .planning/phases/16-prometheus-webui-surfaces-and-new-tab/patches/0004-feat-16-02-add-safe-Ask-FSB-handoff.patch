@@ -1,0 +1,778 @@
+From 5ed0bd5f420c3c80c2938620e09bf150059f4bd2 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 02:30:41 -0500
+Subject: [PATCH 4/9] feat(16-02): add safe Ask FSB handoff
+
+---
+ chrome/browser/prometheus/BUILD.gn            | 19 +++-
+ .../prometheus/prometheus_ask_fsb_handoff.cc  | 88 ++++++++++++++++++
+ .../prometheus/prometheus_ask_fsb_handoff.h   | 26 ++++++
+ .../resources/prometheus/prometheus_webui.js  | 55 ++++++++++++
+ chrome/browser/ui/views/prometheus/BUILD.gn   | 18 ++++
+ .../prometheus_side_panel_helper.cc           | 73 +++++++++++++++
+ .../prometheus/prometheus_side_panel_helper.h | 22 +++++
+ chrome/browser/ui/views/toolbar/BUILD.gn      |  1 +
+ .../browser/ui/views/toolbar/toolbar_view.cc  | 49 ++--------
+ chrome/browser/ui/webui/prometheus/BUILD.gn   |  3 +
+ .../ui/webui/prometheus/prometheus_web_ui.cc  | 89 +++++++++++++++++++
+ .../prometheus_web_ui_browsertest.cc          | 79 ++++++++++++++++
+ 12 files changed, 477 insertions(+), 45 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_ask_fsb_handoff.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_ask_fsb_handoff.h
+ create mode 100644 chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.cc
+ create mode 100644 chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.h
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 876477e502..167a714deb 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -44,9 +44,7 @@ source_set("prometheus_tab_state") {
+     "prometheus_tab_state.h",
+   ]
+ 
+-  deps = [
+-    "//content/public/browser",
+-  ]
++  deps = [ "//content/public/browser" ]
+ }
+ 
+ source_set("prometheus_tab_commands") {
+@@ -61,6 +59,18 @@ source_set("prometheus_tab_commands") {
+   ]
+ }
+ 
++source_set("prometheus_ask_fsb_handoff") {
++  sources = [
++    "prometheus_ask_fsb_handoff.cc",
++    "prometheus_ask_fsb_handoff.h",
++  ]
++
++  deps = [
++    "//base",
++    "//chrome/browser/profiles:profile",
++  ]
++}
++
+ test("prometheus_unittests") {
+   sources = [
+     "prometheus_action_unittest.cc",
+@@ -78,14 +88,15 @@ test("prometheus_unittests") {
+ 
+   deps = [
+     ":prometheus_action",
++    ":prometheus_ask_fsb_handoff",
+     ":prometheus_chrome_mode",
+     ":prometheus_tab_state",
+     "//base",
+-    "//chrome/common:constants",
+     "//chrome/browser/resources/prometheus:prometheus_resources",
+     "//chrome/browser/resources/prometheus:prometheus_vector_icons",
+     "//chrome/browser/ui/color:color_headers",
+     "//chrome/browser/ui/color:mixers",
++    "//chrome/common:constants",
+     "//components/prefs:test_support",
+     "//content/test:run_all_unittests",
+     "//content/test:test_support",
+diff --git a/chrome/browser/prometheus/prometheus_ask_fsb_handoff.cc b/chrome/browser/prometheus/prometheus_ask_fsb_handoff.cc
+new file mode 100644
+index 0000000000..838dbfb4b1
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_ask_fsb_handoff.cc
+@@ -0,0 +1,88 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_ask_fsb_handoff.h"
++
++#include <memory>
++#include <utility>
++
++#include "base/strings/string_util.h"
++#include "base/supports_user_data.h"
++#include "chrome/browser/profiles/profile.h"
++
++namespace prometheus {
++namespace {
++
++constexpr char kAskFsbHandoffUserDataKey[] = "prometheus.ask_fsb_handoff";
++
++class AskFsbHandoffData : public base::SupportsUserData::Data {
++ public:
++  explicit AskFsbHandoffData(std::string prompt)
++      : pending_prompt_(std::move(prompt)) {}
++
++  const std::string& pending_prompt() const { return pending_prompt_; }
++  void set_pending_prompt(std::string prompt) {
++    pending_prompt_ = std::move(prompt);
++  }
++
++ private:
++  std::string pending_prompt_;
++};
++
++AskFsbHandoffData* GetHandoffData(Profile* profile) {
++  if (!profile) {
++    return nullptr;
++  }
++  return static_cast<AskFsbHandoffData*>(
++      profile->GetUserData(kAskFsbHandoffUserDataKey));
++}
++
++}  // namespace
++
++std::string SanitizeAskFsbPrompt(std::string_view prompt) {
++  std::string sanitized;
++  base::TrimString(std::string(prompt), base::kWhitespaceASCII, &sanitized);
++  if (sanitized.size() > kMaxAskFsbPromptLength) {
++    sanitized.resize(kMaxAskFsbPromptLength);
++  }
++  return sanitized;
++}
++
++void SetPendingAskFsbPrompt(Profile* profile, std::string_view prompt) {
++  if (!profile) {
++    return;
++  }
++
++  std::string sanitized = SanitizeAskFsbPrompt(prompt);
++  if (sanitized.empty()) {
++    ClearPendingAskFsbPrompt(profile);
++    return;
++  }
++
++  if (AskFsbHandoffData* data = GetHandoffData(profile)) {
++    data->set_pending_prompt(std::move(sanitized));
++    return;
++  }
++
++  profile->SetUserData(
++      kAskFsbHandoffUserDataKey,
++      std::make_unique<AskFsbHandoffData>(std::move(sanitized)));
++}
++
++std::optional<std::string> GetPendingAskFsbPrompt(Profile* profile) {
++  AskFsbHandoffData* const data = GetHandoffData(profile);
++  if (!data) {
++    return std::nullopt;
++  }
++  return data->pending_prompt();
++}
++
++void ClearPendingAskFsbPrompt(Profile* profile) {
++  if (!profile) {
++    return;
++  }
++  profile->RemoveUserData(kAskFsbHandoffUserDataKey);
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_ask_fsb_handoff.h b/chrome/browser/prometheus/prometheus_ask_fsb_handoff.h
+new file mode 100644
+index 0000000000..3d49604ecc
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_ask_fsb_handoff.h
+@@ -0,0 +1,26 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_ASK_FSB_HANDOFF_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_ASK_FSB_HANDOFF_H_
++
++#include <cstddef>
++#include <optional>
++#include <string>
++#include <string_view>
++
++class Profile;
++
++namespace prometheus {
++
++inline constexpr size_t kMaxAskFsbPromptLength = 4096;
++
++std::string SanitizeAskFsbPrompt(std::string_view prompt);
++void SetPendingAskFsbPrompt(Profile* profile, std::string_view prompt);
++std::optional<std::string> GetPendingAskFsbPrompt(Profile* profile);
++void ClearPendingAskFsbPrompt(Profile* profile);
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_ASK_FSB_HANDOFF_H_
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.js b/chrome/browser/resources/prometheus/prometheus_webui.js
+index 7889885304..d3621aa85a 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.js
++++ b/chrome/browser/resources/prometheus/prometheus_webui.js
+@@ -3,3 +3,58 @@
+ // found in the LICENSE file.
+ 
+ document.documentElement.toggleAttribute('prometheus-webui-ready', true);
++
++const surface = document.querySelector('[data-prometheus-surface]')
++    ?.dataset.prometheusSurface;
++
++window.prometheusAskFsbHandoffForTesting = '';
++window.prometheusAskFsbSeedForTesting = '';
++
++function setAskFsbStatus(text) {
++  const status = document.querySelector('#ask-fsb-status');
++  if (status) {
++    status.textContent = text;
++  }
++}
++
++window.prometheusAskFsbHandoffComplete = (prompt) => {
++  window.prometheusAskFsbHandoffForTesting = prompt;
++  document.documentElement.dataset.askFsbHandoff = 'submitted';
++  setAskFsbStatus('Opening FSB Agent');
++};
++
++window.prometheusAskFsbHandoffRejectedForTesting = () => {
++  window.prometheusAskFsbHandoffForTesting = '';
++  document.documentElement.dataset.askFsbHandoff = 'rejected';
++  setAskFsbStatus('');
++};
++
++window.prometheusReceiveAskFsbSeed = (prompt) => {
++  window.prometheusAskFsbSeedForTesting = prompt;
++  const seed = document.querySelector('#ask-fsb-seed');
++  const seedText = document.querySelector('#ask-fsb-seed-text');
++  if (!seed || !seedText || !prompt) {
++    return;
++  }
++  seed.hidden = false;
++  seedText.textContent = prompt;
++};
++
++if (surface === 'newtab') {
++  const form = document.querySelector('#ask-fsb-form');
++  const input = document.querySelector('#ask-fsb-input');
++  form?.addEventListener('submit', (event) => {
++    event.preventDefault();
++    const prompt = input?.value.trim() || '';
++    if (!prompt) {
++      window.prometheusAskFsbHandoffRejectedForTesting();
++      return;
++    }
++    setAskFsbStatus('Opening FSB Agent');
++    chrome.send('prometheusAskFsb', [prompt]);
++  });
++}
++
++if (surface === 'side-panel') {
++  chrome.send('prometheusRequestAskFsbSeed');
++}
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 2643d35749..9bdacd68b6 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -32,6 +32,23 @@ source_set("prometheus") {
+   ]
+ }
+ 
++source_set("side_panel") {
++  sources = [
++    "prometheus_side_panel_helper.cc",
++    "prometheus_side_panel_helper.h",
++  ]
++
++  deps = [
++    "//base",
++    "//chrome/browser/profiles:profile",
++    "//chrome/browser/ui/browser_window",
++    "//chrome/browser/ui/side_panel",
++    "//chrome/common",
++    "//ui/views",
++    "//url",
++  ]
++}
++
+ source_set("browser_tests") {
+   testonly = true
+   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+@@ -45,6 +62,7 @@ source_set("browser_tests") {
+ 
+   deps = [
+     ":prometheus",
++    ":side_panel",
+     "//base/test:test_support",
+     "//chrome/browser/prometheus:prometheus_chrome_mode",
+     "//chrome/browser/prometheus:prometheus_tab_commands",
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.cc b/chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.cc
+new file mode 100644
+index 0000000000..f80854bb12
+--- /dev/null
++++ b/chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.cc
+@@ -0,0 +1,73 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.h"
++
++#include <memory>
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/side_panel/side_panel_entry.h"
++#include "chrome/browser/ui/side_panel/side_panel_entry_scope.h"
++#include "chrome/browser/ui/side_panel/side_panel_registry.h"
++#include "chrome/browser/ui/side_panel/side_panel_ui.h"
++#include "chrome/common/webui_url_constants.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/controls/webview/webview.h"
++#include "url/gurl.h"
++
++namespace prometheus {
++namespace {
++
++SidePanelEntry::Key GetPrometheusSidePanelEntryKey() {
++  return SidePanelEntry::Key(SidePanelEntry::Id::kAssistant);
++}
++
++SidePanelNativeView CreatePrometheusSidePanelWebView(
++    SidePanelEntryScope& scope) {
++  auto web_view = std::make_unique<views::WebView>(
++      scope.GetBrowserWindowInterface().GetProfile());
++  web_view->GetViewAccessibility().SetName(u"Prometheus side panel");
++  web_view->LoadInitialURL(GURL(chrome::kChromeUIPrometheusSidePanelURL));
++  return web_view;
++}
++
++}  // namespace
++
++void EnsurePrometheusSidePanelEntry(BrowserWindowInterface* browser) {
++  SidePanelRegistry* const registry = SidePanelRegistry::From(browser);
++  if (!registry || registry->GetEntryForKey(GetPrometheusSidePanelEntryKey())) {
++    return;
++  }
++
++  auto entry = std::make_unique<SidePanelEntry>(
++      GetPrometheusSidePanelEntryKey(),
++      base::BindRepeating(&CreatePrometheusSidePanelWebView),
++      base::BindRepeating(
++          []() { return SidePanelEntry::kSidePanelDefaultContentWidth; }));
++  entry->set_should_show_header(false);
++  entry->set_should_show_ephemerally_in_toolbar(false);
++  registry->Register(std::move(entry));
++}
++
++void ShowPrometheusSidePanel(BrowserWindowInterface* browser,
++                             SidePanelOpenTrigger open_trigger) {
++  EnsurePrometheusSidePanelEntry(browser);
++  if (SidePanelUI* side_panel_ui = SidePanelUI::From(browser)) {
++    side_panel_ui->Show(GetPrometheusSidePanelEntryKey(), open_trigger,
++                        /*suppress_animations=*/false);
++  }
++}
++
++void TogglePrometheusSidePanel(BrowserWindowInterface* browser,
++                               SidePanelOpenTrigger open_trigger) {
++  EnsurePrometheusSidePanelEntry(browser);
++  if (SidePanelUI* side_panel_ui = SidePanelUI::From(browser)) {
++    side_panel_ui->Toggle(GetPrometheusSidePanelEntryKey(), open_trigger);
++  }
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.h b/chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.h
+new file mode 100644
+index 0000000000..ded5e07bdf
+--- /dev/null
++++ b/chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.h
+@@ -0,0 +1,22 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_PROMETHEUS_PROMETHEUS_SIDE_PANEL_HELPER_H_
++#define CHROME_BROWSER_UI_VIEWS_PROMETHEUS_PROMETHEUS_SIDE_PANEL_HELPER_H_
++
++#include "chrome/browser/ui/side_panel/side_panel_enums.h"
++
++class BrowserWindowInterface;
++
++namespace prometheus {
++
++void EnsurePrometheusSidePanelEntry(BrowserWindowInterface* browser);
++void ShowPrometheusSidePanel(BrowserWindowInterface* browser,
++                             SidePanelOpenTrigger open_trigger);
++void TogglePrometheusSidePanel(BrowserWindowInterface* browser,
++                               SidePanelOpenTrigger open_trigger);
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_UI_VIEWS_PROMETHEUS_PROMETHEUS_SIDE_PANEL_HELPER_H_
+diff --git a/chrome/browser/ui/views/toolbar/BUILD.gn b/chrome/browser/ui/views/toolbar/BUILD.gn
+index fb66862782..841497388f 100644
+--- a/chrome/browser/ui/views/toolbar/BUILD.gn
++++ b/chrome/browser/ui/views/toolbar/BUILD.gn
+@@ -223,6 +223,7 @@ source_set("impl") {
+     "//chrome/browser/ui/views/glic",
+     "//chrome/browser/ui/views/interaction",
+     "//chrome/browser/ui/views/page_action",
++    "//chrome/browser/ui/views/prometheus:side_panel",
+     "//chrome/browser/ui/views/tabs/glic",
+     "//chrome/browser/ui/waap",
+     "//chrome/browser/ui/waap:manager",
+diff --git a/chrome/browser/ui/views/toolbar/toolbar_view.cc b/chrome/browser/ui/views/toolbar/toolbar_view.cc
+index 643a6e0dc8..06f83e0338 100644
+--- a/chrome/browser/ui/views/toolbar/toolbar_view.cc
++++ b/chrome/browser/ui/views/toolbar/toolbar_view.cc
+@@ -92,8 +92,8 @@
+ #include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
+ #include "chrome/browser/ui/views/performance_controls/battery_saver_button.h"
+ #include "chrome/browser/ui/views/performance_controls/performance_intervention_button.h"
++#include "chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.h"
+ #include "chrome/browser/ui/views/side_panel/side_panel.h"
+-#include "chrome/browser/ui/views/side_panel/side_panel_coordinator.h"
+ #include "chrome/browser/ui/views/tabs/glic/glic_and_actor_buttons_container.h"
+ #include "chrome/browser/ui/views/tabs/tab_strip.h"
+ #include "chrome/browser/ui/views/tabs/tab_strip_controller.h"
+@@ -153,7 +153,6 @@
+ #include "ui/gfx/image/canvas_image_source.h"
+ #include "ui/gfx/paint_vector_icon.h"
+ #include "ui/gfx/scoped_canvas.h"
+-#include "ui/views/accessibility/view_accessibility.h"
+ #include "ui/views/actions/action_view_controller.h"
+ #include "ui/views/background.h"
+ #include "ui/views/cascading_property.h"
+@@ -165,7 +164,6 @@
+ #include "ui/views/layout/proposed_layout.h"
+ #include "ui/views/mouse_watcher.h"
+ #include "ui/views/mouse_watcher_view_host.h"
+-#include "ui/views/view.h"
+ #include "ui/views/view_class_properties.h"
+ #include "ui/views/view_utils.h"
+ #include "ui/views/widget/tooltip_manager.h"
+@@ -220,17 +218,6 @@ constexpr char16_t kPrometheusSidePanelButtonLabel[] =
+     u"Toggle Prometheus side panel";
+ constexpr char16_t kPrometheusAskFsbButtonLabel[] = u"Ask FSB";
+ 
+-SidePanelEntry::Key GetPrometheusSidePanelEntryKey() {
+-  return SidePanelEntry::Key(SidePanelEntry::Id::kAssistant);
+-}
+-
+-SidePanelNativeView CreatePrometheusSidePanelPlaceholderView(
+-    SidePanelEntryScope& scope) {
+-  auto view = std::make_unique<views::View>();
+-  view->GetViewAccessibility().SetName(u"Prometheus side panel");
+-  return view;
+-}
+-
+ // Returns whether `point` should be treated as part of the caption area in
+ // `view`. Recursively traverses into icon containers to correctly handle
+ // padding between buttons.
+@@ -494,9 +481,8 @@ void ToolbarView::Init() {
+       AddChildView(std::make_unique<PrometheusToolbarButton>(
+           PrometheusAction::kSidebarFlip,
+           std::u16string(kPrometheusSidePanelButtonLabel),
+-          base::BindRepeating(
+-              &ToolbarView::OnPrometheusSidePanelButtonPressed,
+-              base::Unretained(this))));
++          base::BindRepeating(&ToolbarView::OnPrometheusSidePanelButtonPressed,
++                              base::Unretained(this))));
+   prometheus_ask_fsb_button_ =
+       AddChildView(std::make_unique<PrometheusToolbarButton>(
+           PrometheusAction::kWandMagicSparkles,
+@@ -1993,36 +1979,17 @@ void ToolbarView::OnPrometheusAskFsbButtonPressed(const ui::Event& event) {
+ }
+ 
+ void ToolbarView::EnsurePrometheusSidePanelEntry() {
+-  SidePanelRegistry* const registry = SidePanelRegistry::From(browser_);
+-  if (!registry || registry->GetEntryForKey(GetPrometheusSidePanelEntryKey())) {
+-    return;
+-  }
+-
+-  auto entry = std::make_unique<SidePanelEntry>(
+-      GetPrometheusSidePanelEntryKey(),
+-      base::BindRepeating(&CreatePrometheusSidePanelPlaceholderView),
+-      base::BindRepeating(
+-          []() { return SidePanelEntry::kSidePanelDefaultContentWidth; }));
+-  entry->set_should_show_header(false);
+-  entry->set_should_show_ephemerally_in_toolbar(false);
+-  registry->Register(std::move(entry));
++  prometheus::EnsurePrometheusSidePanelEntry(browser_);
+ }
+ 
+ void ToolbarView::TogglePrometheusSidePanel() {
+-  EnsurePrometheusSidePanelEntry();
+-  if (auto* coordinator = SidePanelCoordinator::From(browser_)) {
+-    coordinator->Toggle(GetPrometheusSidePanelEntryKey(),
+-                        SidePanelOpenTrigger::kToolbarButton);
+-  }
++  prometheus::TogglePrometheusSidePanel(browser_,
++                                        SidePanelOpenTrigger::kToolbarButton);
+ }
+ 
+ void ToolbarView::ShowPrometheusSidePanel() {
+-  EnsurePrometheusSidePanelEntry();
+-  if (auto* coordinator = SidePanelCoordinator::From(browser_)) {
+-    coordinator->Show(GetPrometheusSidePanelEntryKey(),
+-                      SidePanelOpenTrigger::kToolbarButton,
+-                      /*suppress_animations=*/false);
+-  }
++  prometheus::ShowPrometheusSidePanel(browser_,
++                                      SidePanelOpenTrigger::kToolbarButton);
+ }
+ 
+ void ToolbarView::SetForwardButtonVisibility(bool visible) {
+diff --git a/chrome/browser/ui/webui/prometheus/BUILD.gn b/chrome/browser/ui/webui/prometheus/BUILD.gn
+index 047a915692..18be81d816 100644
+--- a/chrome/browser/ui/webui/prometheus/BUILD.gn
++++ b/chrome/browser/ui/webui/prometheus/BUILD.gn
+@@ -26,7 +26,10 @@ source_set("prometheus") {
+   deps = [
+     "//base",
+     "//chrome/browser/profiles:profile",
++    "//chrome/browser/prometheus:prometheus_ask_fsb_handoff",
+     "//chrome/browser/resources/prometheus:prometheus_resources",
++    "//chrome/browser/ui/browser_window",
++    "//chrome/browser/ui/views/prometheus:side_panel",
+     "//content/public/common",
+     "//ui/webui",
+   ]
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index 63fb9f755d..05a557f150 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -4,15 +4,101 @@
+ 
+ #include "chrome/browser/ui/webui/prometheus/prometheus_web_ui.h"
+ 
++#include <memory>
++#include <string>
++
++#include "base/functional/bind.h"
++#include "base/values.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/prometheus/prometheus_ask_fsb_handoff.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.h"
+ #include "chrome/common/webui_url_constants.h"
+ #include "chrome/grit/prometheus_resources.h"
++#include "content/public/browser/web_contents.h"
+ #include "content/public/browser/web_ui.h"
+ #include "content/public/browser/web_ui_data_source.h"
++#include "content/public/browser/web_ui_message_handler.h"
+ #include "content/public/common/url_constants.h"
+ 
+ namespace {
+ 
++class PrometheusNewTabMessageHandler : public content::WebUIMessageHandler {
++ public:
++  PrometheusNewTabMessageHandler() = default;
++  PrometheusNewTabMessageHandler(const PrometheusNewTabMessageHandler&) =
++      delete;
++  PrometheusNewTabMessageHandler& operator=(
++      const PrometheusNewTabMessageHandler&) = delete;
++  ~PrometheusNewTabMessageHandler() override = default;
++
++ private:
++  void RegisterMessages() override {
++    web_ui()->RegisterMessageCallback(
++        "prometheusAskFsb",
++        base::BindRepeating(&PrometheusNewTabMessageHandler::HandleAskFsb,
++                            base::Unretained(this)));
++  }
++
++  void HandleAskFsb(const base::ListValue& args) {
++    AllowJavascript();
++    if (args.size() != 1 || !args[0].is_string()) {
++      web_ui()->CallJavascriptFunctionUnsafe(
++          "prometheusAskFsbHandoffRejectedForTesting");
++      return;
++    }
++
++    Profile* const profile = Profile::FromWebUI(web_ui());
++    const std::string prompt =
++        prometheus::SanitizeAskFsbPrompt(args[0].GetString());
++    if (prompt.empty()) {
++      prometheus::ClearPendingAskFsbPrompt(profile);
++      web_ui()->CallJavascriptFunctionUnsafe(
++          "prometheusAskFsbHandoffRejectedForTesting");
++      return;
++    }
++
++    prometheus::SetPendingAskFsbPrompt(profile, prompt);
++    if (BrowserWindowInterface* browser =
++            GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
++                web_ui()->GetWebContents())) {
++      prometheus::ShowPrometheusSidePanel(browser,
++                                          SidePanelOpenTrigger::kToolbarButton);
++    }
++    web_ui()->CallJavascriptFunctionUnsafe("prometheusAskFsbHandoffComplete",
++                                           base::Value(prompt));
++  }
++};
++
++class PrometheusSidePanelMessageHandler : public content::WebUIMessageHandler {
++ public:
++  PrometheusSidePanelMessageHandler() = default;
++  PrometheusSidePanelMessageHandler(const PrometheusSidePanelMessageHandler&) =
++      delete;
++  PrometheusSidePanelMessageHandler& operator=(
++      const PrometheusSidePanelMessageHandler&) = delete;
++  ~PrometheusSidePanelMessageHandler() override = default;
++
++ private:
++  void RegisterMessages() override {
++    web_ui()->RegisterMessageCallback(
++        "prometheusRequestAskFsbSeed",
++        base::BindRepeating(
++            &PrometheusSidePanelMessageHandler::HandleRequestAskFsbSeed,
++            base::Unretained(this)));
++  }
++
++  void HandleRequestAskFsbSeed(const base::ListValue& args) {
++    AllowJavascript();
++    Profile* const profile = Profile::FromWebUI(web_ui());
++    const std::string prompt =
++        prometheus::GetPendingAskFsbPrompt(profile).value_or(std::string());
++    web_ui()->CallJavascriptFunctionUnsafe("prometheusReceiveAskFsbSeed",
++                                           base::Value(prompt));
++  }
++};
++
+ void AddPrometheusCommonResourcePaths(content::WebUIDataSource* source) {
+   source->AddResourcePath("prometheus_webui.css", IDR_PROMETHEUS_WEBUI_CSS);
+   source->AddResourcePath("prometheus_webui.js", IDR_PROMETHEUS_WEBUI_JS);
+@@ -49,6 +135,7 @@ PrometheusNewTabUI::PrometheusNewTabUI(content::WebUI* web_ui)
+     : content::WebUIController(web_ui) {
+   ConfigurePrometheusDataSource(web_ui, chrome::kChromeUIPrometheusNewTabHost,
+                                 IDR_PROMETHEUS_NEWTAB_HTML);
++  web_ui->AddMessageHandler(std::make_unique<PrometheusNewTabMessageHandler>());
+ }
+ 
+ PrometheusNewTabUI::~PrometheusNewTabUI() = default;
+@@ -58,6 +145,8 @@ PrometheusSidePanelUI::PrometheusSidePanelUI(content::WebUI* web_ui)
+   ConfigurePrometheusDataSource(web_ui,
+                                 chrome::kChromeUIPrometheusSidePanelHost,
+                                 IDR_PROMETHEUS_SIDE_PANEL_HTML);
++  web_ui->AddMessageHandler(
++      std::make_unique<PrometheusSidePanelMessageHandler>());
+ }
+ 
+ PrometheusSidePanelUI::~PrometheusSidePanelUI() = default;
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 9d31c19d20..4e5f56c66b 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -4,19 +4,30 @@
+ 
+ #include "chrome/browser/ui/webui/prometheus/prometheus_web_ui.h"
+ 
++#include "base/test/scoped_feature_list.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/common/chrome_features.h"
+ #include "chrome/common/webui_url_constants.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+ #include "chrome/test/base/ui_test_utils.h"
++#include "content/public/browser/navigation_entry.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/browser/web_ui.h"
++#include "content/public/common/content_features.h"
+ #include "content/public/test/browser_test.h"
+ #include "content/public/test/browser_test_utils.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ #include "url/gurl.h"
+ 
+ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
++ public:
++  PrometheusWebUIFoundationBrowserTest() {
++    scoped_feature_list_.InitWithFeatures(
++        {}, {features::kInitialWebUI,
++             features::kWebUIToolbarProcessOverheadExperiment});
++  }
++
+  protected:
+   content::WebContents* NavigateTo(const char* url) {
+     EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(url)));
+@@ -36,8 +47,14 @@ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
+         "document.querySelector('input')?.placeholder === $1", placeholder);
+     return content::EvalJs(web_contents, script).ExtractBool();
+   }
++
++ private:
++  base::test::ScopedFeatureList scoped_feature_list_;
+ };
+ 
++class PrometheusNewTabBrowserTest
++    : public PrometheusWebUIFoundationBrowserTest {};
++
+ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+                        NewTabCreatesControllerAndRendersRequiredCopy) {
+   content::WebContents* const web_contents =
+@@ -81,3 +98,65 @@ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+   EXPECT_TRUE(BodyContains(web_contents, "Logs & Diagnostics"));
+   EXPECT_TRUE(BodyContains(web_contents, "Parity Matrix"));
+ }
++
++IN_PROC_BROWSER_TEST_F(PrometheusNewTabBrowserTest,
++                       AskFsbHandoffKeepsPromptOutOfUrlAndSeedsSidePanel) {
++  constexpr char kPrompt[] = "book me a flight to Tokyo";
++  content::WebContents* web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusNewTabURL);
++
++  ASSERT_TRUE(web_contents);
++  ASSERT_TRUE(content::ExecJs(web_contents, content::JsReplace(R"(
++    document.querySelector('#ask-fsb-input').value = $1;
++    document.querySelector('#ask-fsb-form').requestSubmit();
++  )",
++                                                               kPrompt)));
++
++  EXPECT_EQ(chrome::kChromeUIPrometheusNewTabURL,
++            web_contents->GetLastCommittedURL().spec());
++  EXPECT_EQ(std::string::npos,
++            web_contents->GetLastCommittedURL().spec().find(kPrompt));
++  ASSERT_TRUE(web_contents->GetController().GetVisibleEntry());
++  EXPECT_EQ(
++      std::string::npos,
++      web_contents->GetController().GetVisibleEntry()->GetURL().spec().find(
++          kPrompt));
++
++  EXPECT_EQ(kPrompt, content::EvalJs(web_contents, content::JsReplace(R"(
++    new Promise(resolve => {
++      const check = () => {
++        if (window.prometheusAskFsbHandoffForTesting === $1) {
++          resolve(window.prometheusAskFsbHandoffForTesting);
++          return;
++        }
++        setTimeout(check, 0);
++      };
++      check();
++    });
++  )",
++                                                                      kPrompt))
++                         .ExtractString());
++
++  web_contents = NavigateTo(chrome::kChromeUIPrometheusSidePanelURL);
++  ASSERT_TRUE(web_contents);
++
++  EXPECT_EQ(kPrompt, content::EvalJs(web_contents, content::JsReplace(R"(
++    new Promise(resolve => {
++      const check = () => {
++        if (window.prometheusAskFsbSeedForTesting === $1) {
++          resolve(window.prometheusAskFsbSeedForTesting);
++          return;
++        }
++        setTimeout(check, 0);
++      };
++      check();
++    });
++  )",
++                                                                      kPrompt))
++                         .ExtractString());
++  EXPECT_TRUE(BodyContains(web_contents, kPrompt));
++  EXPECT_EQ(std::string::npos,
++            web_contents->GetLastCommittedURL().spec().find(kPrompt));
++  EXPECT_FALSE(BodyContains(web_contents, "api_key"));
++  EXPECT_FALSE(BodyContains(web_contents, "vault secret"));
++}
+-- 
+2.50.1 (Apple Git-155)
+

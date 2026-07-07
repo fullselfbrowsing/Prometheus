@@ -1,0 +1,323 @@
+From 8227e28c1fab8c843346c046a6adaba7b49e965e Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 02:54:38 -0500
+Subject: [PATCH 7/9] feat(16-04): add Prometheus control panel sections
+
+---
+ .../prometheus/prometheus_control_panel.html  | 134 ++++++++++++++++--
+ .../resources/prometheus/prometheus_webui.css |  78 +++++++++-
+ .../resources/prometheus/prometheus_webui.js  |  33 +++++
+ 3 files changed, 231 insertions(+), 14 deletions(-)
+
+diff --git a/chrome/browser/resources/prometheus/prometheus_control_panel.html b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+index fd526fff81..bb52434507 100644
+--- a/chrome/browser/resources/prometheus/prometheus_control_panel.html
++++ b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+@@ -15,27 +15,137 @@
+           <div class="brand__name">Prometheus</div>
+           <div class="brand__meta">Powered by FSB</div>
+         </div>
+-        <span class="status">shell ready</span>
++        <div class="control-status" aria-label="Control panel status">
++          <span class="status">shell ready</span>
++          <span class="status">metadata only</span>
++        </div>
+       </header>
+       <div class="control-shell">
+         <nav class="section-rail" aria-label="FSB Control Panel sections">
+-          <button>Tasks</button>
+-          <button>Providers &amp; Models</button>
+-          <button>MCP Status</button>
+-          <button>Permissions &amp; Agents</button>
+-          <button>Vault</button>
+-          <button>Memory &amp; Site Guides</button>
+-          <button>Logs &amp; Diagnostics</button>
+-          <button>Supervision &amp; Pairing</button>
+-          <button>Parity Matrix</button>
++          <button data-section-target="tasks" aria-selected="true">Tasks</button>
++          <button data-section-target="providers" aria-selected="false">
++            Providers &amp; Models
++          </button>
++          <button data-section-target="mcp" aria-selected="false">
++            MCP Status
++          </button>
++          <button data-section-target="permissions" aria-selected="false">
++            Permissions &amp; Agents
++          </button>
++          <button data-section-target="vault" aria-selected="false">Vault</button>
++          <button data-section-target="memory" aria-selected="false">
++            Memory &amp; Site Guides
++          </button>
++          <button data-section-target="logs" aria-selected="false">
++            Logs &amp; Diagnostics
++          </button>
++          <button data-section-target="supervision" aria-selected="false">
++            Supervision &amp; Pairing
++          </button>
++          <button data-section-target="parity" aria-selected="false">
++            Parity Matrix
++          </button>
+         </nav>
+-        <section class="section-panel">
++        <select class="section-select" id="section-select"
++            aria-label="FSB Control Panel section">
++          <option value="tasks">Tasks</option>
++          <option value="providers">Providers &amp; Models</option>
++          <option value="mcp">MCP Status</option>
++          <option value="permissions">Permissions &amp; Agents</option>
++          <option value="vault">Vault</option>
++          <option value="memory">Memory &amp; Site Guides</option>
++          <option value="logs">Logs &amp; Diagnostics</option>
++          <option value="supervision">Supervision &amp; Pairing</option>
++          <option value="parity">Parity Matrix</option>
++        </select>
++        <section class="section-panel" id="section-tasks"
++            data-section-panel="tasks">
+           <h1>Tasks</h1>
+           <h2>No tasks yet</h2>
+-          <p class="muted">
++          <p class="empty-copy">
+             Ask Prometheus to work in this browser. Tasks will appear here with
+             progress, cost, and final result.
+           </p>
++          <table class="meta-table" aria-label="Task metadata">
++            <tbody>
++              <tr><th scope="row">Queue</th><td>Empty</td></tr>
++              <tr><th scope="row">Runtime</th><td>Not connected</td></tr>
++            </tbody>
++          </table>
++        </section>
++        <section class="section-panel" id="section-providers"
++            data-section-panel="providers" hidden>
++          <h1>Providers &amp; Models</h1>
++          <h2>No provider configured</h2>
++          <p class="empty-copy">
++            Choose a provider, model, endpoint, and save from the control panel.
++          </p>
++          <p class="security-note">
++            Provider secret blocked. Store keys from the native Prometheus UI.
++          </p>
++        </section>
++        <section class="section-panel" id="section-mcp" data-section-panel="mcp"
++            hidden>
++          <h1>MCP Status</h1>
++          <h2>MCP bridge offline</h2>
++          <p class="empty-copy">
++            Start Prometheus with the native agent server enabled, then refresh
++            diagnostics.
++          </p>
++        </section>
++        <section class="section-panel" id="section-permissions"
++            data-section-panel="permissions" hidden>
++          <h1>Permissions &amp; Agents</h1>
++          <h2>No agent permissions granted</h2>
++          <p class="empty-copy">
++            Grant per-scope internal-surface access before agents control
++            browser state.
++          </p>
++          <p class="security-note">
++            Permission blocked. Enable internal-surface control for this scope.
++          </p>
++        </section>
++        <section class="section-panel" id="section-vault"
++            data-section-panel="vault" hidden>
++          <h1>Vault</h1>
++          <h2>No vault entries</h2>
++          <p class="empty-copy">
++            Save metadata here. Secrets stay in native secure storage.
++          </p>
++          <p class="security-note">
++            Vault secret blocked. Secrets cannot cross MCP or remote transports.
++          </p>
++        </section>
++        <section class="section-panel" id="section-memory"
++            data-section-panel="memory" hidden>
++          <h1>Memory &amp; Site Guides</h1>
++          <h2>No memory guides</h2>
++          <p class="empty-copy">
++            Site guidance and reusable browser notes will appear here after the
++            native runtime is connected.
++          </p>
++        </section>
++        <section class="section-panel" id="section-logs"
++            data-section-panel="logs" hidden>
++          <h1>Logs &amp; Diagnostics</h1>
++          <h2>No runtime logs yet</h2>
++          <p class="empty-copy">Run a task or refresh diagnostics.</p>
++        </section>
++        <section class="section-panel" id="section-supervision"
++            data-section-panel="supervision" hidden>
++          <h1>Supervision &amp; Pairing</h1>
++          <h2>No active supervision session</h2>
++          <p class="empty-copy">
++            Pair a dashboard to begin supervised DOM-native viewing.
++          </p>
++        </section>
++        <section class="section-panel" id="section-parity"
++            data-section-panel="parity" hidden>
++          <h1>Parity Matrix</h1>
++          <h2>No parity rows loaded</h2>
++          <p class="empty-copy">
++            Generate parity evidence before claiming FSB parity.
++          </p>
+         </section>
+       </div>
+     </main>
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.css b/chrome/browser/resources/prometheus/prometheus_webui.css
+index 4ad937c92d..54ab43512a 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.css
++++ b/chrome/browser/resources/prometheus/prometheus_webui.css
+@@ -301,6 +301,13 @@ input {
+   grid-template-columns: minmax(180px, 240px) 1fr;
+ }
+ 
++.control-status {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 8px;
++  margin-left: auto;
++}
++
+ .section-rail {
+   display: flex;
+   flex-direction: column;
+@@ -320,11 +327,75 @@ input {
+   white-space: nowrap;
+ }
+ 
++.section-rail button[aria-selected="true"] {
++  background: var(--prometheus-color-accent-soft);
++  border-color: var(--prometheus-color-accent);
++}
++
++.section-select {
++  background: var(--prometheus-surface-2);
++  border: 1px solid var(--prometheus-surface-3);
++  border-radius: 8px;
++  color: var(--prometheus-text);
++  display: none;
++  min-height: 40px;
++  padding: 0 10px;
++}
++
+ .section-panel {
+   min-height: 260px;
+   padding: 16px;
+ }
+ 
++.section-panel[hidden] {
++  display: none;
++}
++
++.section-panel h1,
++.section-panel h2 {
++  margin: 0;
++}
++
++.section-panel h1 {
++  font-size: 20px;
++}
++
++.section-panel h2 {
++  font-size: 16px;
++  margin-top: 18px;
++}
++
++.empty-copy {
++  color: var(--prometheus-text-muted);
++  max-width: 640px;
++}
++
++.security-note {
++  background: rgba(210, 155, 54, 0.12);
++  border: 1px solid rgba(210, 155, 54, 0.35);
++  border-radius: 8px;
++  color: #f3d18e;
++  margin: 16px 0 0;
++  padding: 10px 12px;
++}
++
++.meta-table {
++  border-collapse: collapse;
++  margin-top: 16px;
++  min-width: min(100%, 320px);
++}
++
++.meta-table th,
++.meta-table td {
++  border-top: 1px solid var(--prometheus-surface-3);
++  padding: 10px 12px 10px 0;
++  text-align: left;
++}
++
++.meta-table td {
++  color: var(--prometheus-text-muted);
++}
++
+ .status {
+   color: var(--prometheus-ok);
+   font-family: ui-monospace, monospace;
+@@ -337,7 +408,10 @@ input {
+   }
+ 
+   .section-rail {
+-    display: grid;
+-    grid-template-columns: repeat(auto-fit, minmax(144px, 1fr));
++    display: none;
++  }
++
++  .section-select {
++    display: block;
+   }
+ }
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.js b/chrome/browser/resources/prometheus/prometheus_webui.js
+index 94b3c7bfaa..1733e4d009 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.js
++++ b/chrome/browser/resources/prometheus/prometheus_webui.js
+@@ -33,6 +33,26 @@ function activateSidePanelMode(mode) {
+   document.documentElement.dataset.sidePanelMode = mode;
+ }
+ 
++function activateControlPanelSection(section) {
++  const buttons = document.querySelectorAll('[data-section-target]');
++  const panels = document.querySelectorAll('[data-section-panel]');
++  const select = document.querySelector('#section-select');
++  if (!buttons.length || !panels.length) {
++    return;
++  }
++  for (const button of buttons) {
++    button.setAttribute(
++        'aria-selected', String(button.dataset.sectionTarget === section));
++  }
++  for (const panel of panels) {
++    panel.hidden = panel.dataset.sectionPanel !== section;
++  }
++  if (select) {
++    select.value = section;
++  }
++  document.documentElement.dataset.controlPanelSection = section;
++}
++
+ window.prometheusAskFsbHandoffComplete = (prompt) => {
+   window.prometheusAskFsbHandoffForTesting = prompt;
+   document.documentElement.dataset.askFsbHandoff = 'submitted';
+@@ -81,3 +101,16 @@ if (surface === 'side-panel') {
+   activateSidePanelMode('fsb-agent');
+   chrome.send('prometheusRequestAskFsbSeed');
+ }
++
++if (surface === 'control-panel') {
++  document.querySelectorAll('[data-section-target]').forEach((button) => {
++    button.addEventListener('click', () => {
++      activateControlPanelSection(button.dataset.sectionTarget);
++    });
++  });
++  document.querySelector('#section-select')?.addEventListener('change',
++      (event) => {
++        activateControlPanelSection(event.target.value);
++      });
++  activateControlPanelSection('tasks');
++}
+-- 
+2.50.1 (Apple Git-155)
+

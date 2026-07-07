@@ -1,0 +1,625 @@
+From 33ea0c14536c951ad09360e93299a47b77420bc4 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 02:08:47 -0500
+Subject: [PATCH 1/9] feat(16-01): add Prometheus WebUI controllers
+
+---
+ .../prometheus/prometheus_control_panel.html  |  43 ++++
+ .../prometheus/prometheus_newtab.html         |  42 ++++
+ .../prometheus/prometheus_resources.grdp      |  20 ++
+ .../prometheus/prometheus_side_panel.html     |  31 +++
+ .../resources/prometheus/prometheus_webui.css | 192 ++++++++++++++++++
+ .../resources/prometheus/prometheus_webui.js  |   5 +
+ .../browser/ui/webui/chrome_web_ui_configs.cc |   4 +
+ chrome/browser/ui/webui/prometheus/BUILD.gn   |   2 +
+ .../ui/webui/prometheus/prometheus_web_ui.cc  |  76 +++++++
+ .../ui/webui/prometheus/prometheus_web_ui.h   |  64 ++++++
+ chrome/common/webui_url_constants.cc          |   3 +
+ chrome/common/webui_url_constants.h           |  11 +
+ 12 files changed, 493 insertions(+)
+ create mode 100644 chrome/browser/resources/prometheus/prometheus_control_panel.html
+ create mode 100644 chrome/browser/resources/prometheus/prometheus_newtab.html
+ create mode 100644 chrome/browser/resources/prometheus/prometheus_side_panel.html
+ create mode 100644 chrome/browser/resources/prometheus/prometheus_webui.css
+ create mode 100644 chrome/browser/resources/prometheus/prometheus_webui.js
+ create mode 100644 chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+ create mode 100644 chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+
+diff --git a/chrome/browser/resources/prometheus/prometheus_control_panel.html b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+new file mode 100644
+index 0000000000..fd526fff81
+--- /dev/null
++++ b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+@@ -0,0 +1,43 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="utf-8">
++    <meta name="viewport" content="width=device-width, initial-scale=1">
++    <title>Prometheus Control Panel</title>
++    <link rel="stylesheet" href="prometheus_webui.css">
++    <script type="module" src="prometheus_webui.js"></script>
++  </head>
++  <body>
++    <main class="surface" data-prometheus-surface="control-panel">
++      <header class="brand">
++        <img class="brand__mark" src="images/pm_mark_dark.png" alt="">
++        <div>
++          <div class="brand__name">Prometheus</div>
++          <div class="brand__meta">Powered by FSB</div>
++        </div>
++        <span class="status">shell ready</span>
++      </header>
++      <div class="control-shell">
++        <nav class="section-rail" aria-label="FSB Control Panel sections">
++          <button>Tasks</button>
++          <button>Providers &amp; Models</button>
++          <button>MCP Status</button>
++          <button>Permissions &amp; Agents</button>
++          <button>Vault</button>
++          <button>Memory &amp; Site Guides</button>
++          <button>Logs &amp; Diagnostics</button>
++          <button>Supervision &amp; Pairing</button>
++          <button>Parity Matrix</button>
++        </nav>
++        <section class="section-panel">
++          <h1>Tasks</h1>
++          <h2>No tasks yet</h2>
++          <p class="muted">
++            Ask Prometheus to work in this browser. Tasks will appear here with
++            progress, cost, and final result.
++          </p>
++        </section>
++      </div>
++    </main>
++  </body>
++</html>
+diff --git a/chrome/browser/resources/prometheus/prometheus_newtab.html b/chrome/browser/resources/prometheus/prometheus_newtab.html
+new file mode 100644
+index 0000000000..eb360bc931
+--- /dev/null
++++ b/chrome/browser/resources/prometheus/prometheus_newtab.html
+@@ -0,0 +1,42 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="utf-8">
++    <meta name="viewport" content="width=device-width, initial-scale=1">
++    <title>Prometheus</title>
++    <link rel="stylesheet" href="prometheus_webui.css">
++    <script type="module" src="prometheus_webui.js"></script>
++  </head>
++  <body>
++    <main class="surface" data-prometheus-surface="newtab">
++      <header class="brand">
++        <img class="brand__mark" src="images/pm_mark_dark.png" alt="">
++        <div>
++          <div class="brand__name">Prometheus</div>
++          <div class="brand__meta">Powered by FSB</div>
++        </div>
++      </header>
++      <form class="search-row">
++        <input aria-label="Search or ask FSB" placeholder="Search or ask FSB">
++        <button class="primary" type="button">Ask FSB</button>
++      </form>
++      <section>
++        <h2>Favorites</h2>
++        <div class="section-grid">
++          <article class="tile">
++            <strong>No favorites yet</strong>
++            <p class="muted">Saved pages will appear here.</p>
++          </article>
++        </div>
++      </section>
++      <section>
++        <h2>Suggested automations</h2>
++        <div class="section-grid">
++          <article class="tile">Summarize this tab</article>
++          <article class="tile">Compare open tabs</article>
++          <article class="tile">Extract action items</article>
++        </div>
++      </section>
++    </main>
++  </body>
++</html>
+diff --git a/chrome/browser/resources/prometheus/prometheus_resources.grdp b/chrome/browser/resources/prometheus/prometheus_resources.grdp
+index c4337494f6..f059680870 100644
+--- a/chrome/browser/resources/prometheus/prometheus_resources.grdp
++++ b/chrome/browser/resources/prometheus/prometheus_resources.grdp
+@@ -301,4 +301,24 @@
+            file="prometheus_theme_preview.html"
+            type="BINDATA" />
+ 
++  <!-- ================================================================ -->
++  <!-- Section 6: Phase 16 production WebUI surfaces                    -->
++  <!-- chrome://prometheus-newtab, -side-panel, -control-panel          -->
++  <!-- ================================================================ -->
++  <include name="IDR_PROMETHEUS_WEBUI_CSS"
++           file="prometheus_webui.css"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_WEBUI_JS"
++           file="prometheus_webui.js"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_NEWTAB_HTML"
++           file="prometheus_newtab.html"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_SIDE_PANEL_HTML"
++           file="prometheus_side_panel.html"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_CONTROL_PANEL_HTML"
++           file="prometheus_control_panel.html"
++           type="BINDATA" />
++
+ </grit-part>
+diff --git a/chrome/browser/resources/prometheus/prometheus_side_panel.html b/chrome/browser/resources/prometheus/prometheus_side_panel.html
+new file mode 100644
+index 0000000000..0beae817d5
+--- /dev/null
++++ b/chrome/browser/resources/prometheus/prometheus_side_panel.html
+@@ -0,0 +1,31 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="utf-8">
++    <meta name="viewport" content="width=device-width, initial-scale=1">
++    <title>Prometheus Side Panel</title>
++    <link rel="stylesheet" href="prometheus_webui.css">
++    <script type="module" src="prometheus_webui.js"></script>
++  </head>
++  <body>
++    <main class="surface surface--narrow" data-prometheus-surface="side-panel">
++      <header class="brand">
++        <img class="brand__mark" src="images/pm_mark_dark.png" alt="">
++        <div>
++          <div class="brand__name">Prometheus</div>
++          <div class="brand__meta">Powered by FSB</div>
++        </div>
++      </header>
++      <nav class="mode-bar" aria-label="Prometheus side panel modes">
++        <button class="mode" aria-selected="true">FSB Agent</button>
++        <button class="mode" aria-selected="false">Explorer</button>
++        <button class="mode" aria-selected="false">Tabs</button>
++        <button class="mode" aria-selected="false">Tools</button>
++      </nav>
++      <section class="panel-row">
++        <strong>Ready</strong>
++        <p class="muted">Ask FSB to work in this browser.</p>
++      </section>
++    </main>
++  </body>
++</html>
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.css b/chrome/browser/resources/prometheus/prometheus_webui.css
+new file mode 100644
+index 0000000000..56783af712
+--- /dev/null
++++ b/chrome/browser/resources/prometheus/prometheus_webui.css
+@@ -0,0 +1,192 @@
++/* Copyright 2026 The Chromium Authors
++ * Use of this source code is governed by a BSD-style license that can be
++ * found in the LICENSE file. */
++
++:root {
++  color-scheme: dark light;
++  --prometheus-bg: #0d0a09;
++  --prometheus-surface: #141110;
++  --prometheus-surface-2: #1d1816;
++  --prometheus-surface-3: #26201d;
++  --prometheus-text: #f6efe9;
++  --prometheus-text-muted: #d2c1b4;
++  --prometheus-accent: #ff6b35;
++  --prometheus-ok: #2f9e7e;
++  --prometheus-warning: #d29b36;
++  font-family: system-ui, sans-serif;
++}
++
++html,
++body {
++  background: var(--prometheus-bg);
++  color: var(--prometheus-text);
++  margin: 0;
++}
++
++body {
++  min-height: 100vh;
++}
++
++button,
++input {
++  font: inherit;
++}
++
++.surface {
++  box-sizing: border-box;
++  display: flex;
++  flex-direction: column;
++  gap: 24px;
++  min-height: 100vh;
++  padding: 24px;
++}
++
++.surface--narrow {
++  gap: 16px;
++  min-width: 300px;
++  padding: 16px;
++}
++
++.brand {
++  align-items: center;
++  display: flex;
++  gap: 10px;
++}
++
++.brand__mark {
++  height: 28px;
++  width: 28px;
++}
++
++.brand__name {
++  font-size: 18px;
++  font-weight: 600;
++}
++
++.brand__meta,
++.muted {
++  color: var(--prometheus-text-muted);
++  font-size: 12px;
++}
++
++.search-row {
++  align-items: center;
++  background: var(--prometheus-surface-2);
++  border: 1px solid var(--prometheus-surface-3);
++  border-radius: 8px;
++  display: flex;
++  gap: 8px;
++  max-width: 720px;
++  min-height: 48px;
++  padding: 6px;
++}
++
++.search-row input {
++  background: transparent;
++  border: 0;
++  color: var(--prometheus-text);
++  flex: 1;
++  min-width: 0;
++  outline: 0;
++  padding: 0 12px;
++}
++
++.primary {
++  background: var(--prometheus-accent);
++  border: 0;
++  border-radius: 8px;
++  color: #1f1a17;
++  font-weight: 600;
++  min-height: 36px;
++  padding: 0 14px;
++}
++
++.section-grid {
++  display: grid;
++  gap: 12px;
++  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
++  max-width: 960px;
++}
++
++.tile,
++.panel-row,
++.section-panel {
++  background: var(--prometheus-surface);
++  border: 1px solid var(--prometheus-surface-3);
++  border-radius: 8px;
++  box-sizing: border-box;
++}
++
++.tile {
++  min-height: 96px;
++  padding: 14px;
++}
++
++.mode-bar {
++  display: grid;
++  gap: 6px;
++  grid-template-columns: repeat(4, minmax(0, 1fr));
++}
++
++.mode {
++  background: var(--prometheus-surface-2);
++  border: 1px solid var(--prometheus-surface-3);
++  border-radius: 8px;
++  color: var(--prometheus-text);
++  min-height: 34px;
++}
++
++.mode[aria-selected="true"] {
++  border-color: var(--prometheus-accent);
++}
++
++.panel-row {
++  padding: 12px;
++}
++
++.control-shell {
++  display: grid;
++  gap: 16px;
++  grid-template-columns: minmax(180px, 240px) 1fr;
++}
++
++.section-rail {
++  display: flex;
++  flex-direction: column;
++  gap: 6px;
++}
++
++.section-rail button {
++  background: var(--prometheus-surface-2);
++  border: 1px solid var(--prometheus-surface-3);
++  border-radius: 8px;
++  color: var(--prometheus-text);
++  min-height: 36px;
++  overflow: hidden;
++  padding: 0 10px;
++  text-align: left;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.section-panel {
++  min-height: 260px;
++  padding: 16px;
++}
++
++.status {
++  color: var(--prometheus-ok);
++  font-family: ui-monospace, monospace;
++  font-size: 11px;
++}
++
++@media (max-width: 719px) {
++  .control-shell {
++    grid-template-columns: 1fr;
++  }
++
++  .section-rail {
++    display: grid;
++    grid-template-columns: repeat(auto-fit, minmax(144px, 1fr));
++  }
++}
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.js b/chrome/browser/resources/prometheus/prometheus_webui.js
+new file mode 100644
+index 0000000000..7889885304
+--- /dev/null
++++ b/chrome/browser/resources/prometheus/prometheus_webui.js
+@@ -0,0 +1,5 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++document.documentElement.toggleAttribute('prometheus-webui-ready', true);
+diff --git a/chrome/browser/ui/webui/chrome_web_ui_configs.cc b/chrome/browser/ui/webui/chrome_web_ui_configs.cc
+index fe5b0d5b0e..feb2089b06 100644
+--- a/chrome/browser/ui/webui/chrome_web_ui_configs.cc
++++ b/chrome/browser/ui/webui/chrome_web_ui_configs.cc
+@@ -49,6 +49,7 @@
+ #include "chrome/browser/ui/webui/policy/policy_ui.h"
+ #include "chrome/browser/ui/webui/predictors/predictors_ui.h"
+ #include "chrome/browser/ui/webui/prometheus/prometheus_theme_preview_ui.h"
++#include "chrome/browser/ui/webui/prometheus/prometheus_web_ui.h"
+ #include "chrome/browser/ui/webui/regional_capabilities_internals/regional_capabilities_internals_ui.h"
+ #include "chrome/browser/ui/webui/saved_tab_groups_unsupported/saved_tab_groups_unsupported_ui.h"
+ #include "chrome/browser/ui/webui/segmentation_internals/segmentation_internals_ui.h"
+@@ -298,6 +299,9 @@ void RegisterChromeWebUIConfigs() {
+   map.AddWebUIConfig(std::make_unique<PersonalContextInternalsUIConfig>());
+   map.AddWebUIConfig(std::make_unique<PolicyUIConfig>());
+   map.AddWebUIConfig(std::make_unique<PredictorsUIConfig>());
++  map.AddWebUIConfig(std::make_unique<PrometheusNewTabUIConfig>());
++  map.AddWebUIConfig(std::make_unique<PrometheusSidePanelUIConfig>());
++  map.AddWebUIConfig(std::make_unique<PrometheusControlPanelUIConfig>());
+ #if DCHECK_IS_ON()
+   // chrome://prometheus-theme-preview is a dev-only verification surface
+   // (D-13); it must not be reachable outside local developer builds.
+diff --git a/chrome/browser/ui/webui/prometheus/BUILD.gn b/chrome/browser/ui/webui/prometheus/BUILD.gn
+index 910a401915..047a915692 100644
+--- a/chrome/browser/ui/webui/prometheus/BUILD.gn
++++ b/chrome/browser/ui/webui/prometheus/BUILD.gn
+@@ -14,6 +14,8 @@ source_set("prometheus") {
+   sources = [
+     "prometheus_theme_preview_ui.cc",
+     "prometheus_theme_preview_ui.h",
++    "prometheus_web_ui.cc",
++    "prometheus_web_ui.h",
+   ]
+ 
+   public_deps = [
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+new file mode 100644
+index 0000000000..63fb9f755d
+--- /dev/null
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -0,0 +1,76 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/webui/prometheus/prometheus_web_ui.h"
++
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/common/webui_url_constants.h"
++#include "chrome/grit/prometheus_resources.h"
++#include "content/public/browser/web_ui.h"
++#include "content/public/browser/web_ui_data_source.h"
++#include "content/public/common/url_constants.h"
++
++namespace {
++
++void AddPrometheusCommonResourcePaths(content::WebUIDataSource* source) {
++  source->AddResourcePath("prometheus_webui.css", IDR_PROMETHEUS_WEBUI_CSS);
++  source->AddResourcePath("prometheus_webui.js", IDR_PROMETHEUS_WEBUI_JS);
++  source->AddResourcePath("images/pm_mark_dark.png",
++                          IDR_PROMETHEUS_ASSET_PM_MARK_DARK);
++  source->AddResourcePath("images/pm_wordmark_dark.png",
++                          IDR_PROMETHEUS_ASSET_PM_WORDMARK_DARK);
++}
++
++void ConfigurePrometheusDataSource(content::WebUI* web_ui,
++                                   const char* host,
++                                   int default_resource) {
++  auto* profile = Profile::FromWebUI(web_ui);
++  auto* source = content::WebUIDataSource::CreateAndAdd(profile, host);
++  source->SetDefaultResource(default_resource);
++  AddPrometheusCommonResourcePaths(source);
++}
++
++}  // namespace
++
++PrometheusNewTabUIConfig::PrometheusNewTabUIConfig()
++    : DefaultWebUIConfig(content::kChromeUIScheme,
++                         chrome::kChromeUIPrometheusNewTabHost) {}
++
++PrometheusSidePanelUIConfig::PrometheusSidePanelUIConfig()
++    : DefaultWebUIConfig(content::kChromeUIScheme,
++                         chrome::kChromeUIPrometheusSidePanelHost) {}
++
++PrometheusControlPanelUIConfig::PrometheusControlPanelUIConfig()
++    : DefaultWebUIConfig(content::kChromeUIScheme,
++                         chrome::kChromeUIPrometheusControlPanelHost) {}
++
++PrometheusNewTabUI::PrometheusNewTabUI(content::WebUI* web_ui)
++    : content::WebUIController(web_ui) {
++  ConfigurePrometheusDataSource(web_ui, chrome::kChromeUIPrometheusNewTabHost,
++                                IDR_PROMETHEUS_NEWTAB_HTML);
++}
++
++PrometheusNewTabUI::~PrometheusNewTabUI() = default;
++
++PrometheusSidePanelUI::PrometheusSidePanelUI(content::WebUI* web_ui)
++    : content::WebUIController(web_ui) {
++  ConfigurePrometheusDataSource(web_ui,
++                                chrome::kChromeUIPrometheusSidePanelHost,
++                                IDR_PROMETHEUS_SIDE_PANEL_HTML);
++}
++
++PrometheusSidePanelUI::~PrometheusSidePanelUI() = default;
++
++PrometheusControlPanelUI::PrometheusControlPanelUI(content::WebUI* web_ui)
++    : content::WebUIController(web_ui) {
++  ConfigurePrometheusDataSource(web_ui,
++                                chrome::kChromeUIPrometheusControlPanelHost,
++                                IDR_PROMETHEUS_CONTROL_PANEL_HTML);
++}
++
++PrometheusControlPanelUI::~PrometheusControlPanelUI() = default;
++
++WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusNewTabUI)
++WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusSidePanelUI)
++WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusControlPanelUI)
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+new file mode 100644
+index 0000000000..be0cc9555b
+--- /dev/null
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+@@ -0,0 +1,64 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_WEBUI_PROMETHEUS_PROMETHEUS_WEB_UI_H_
++#define CHROME_BROWSER_UI_WEBUI_PROMETHEUS_PROMETHEUS_WEB_UI_H_
++
++#include "content/public/browser/web_ui_controller.h"
++#include "content/public/browser/webui_config.h"
++
++namespace content {
++class WebUI;
++}  // namespace content
++
++class PrometheusNewTabUI;
++class PrometheusSidePanelUI;
++class PrometheusControlPanelUI;
++
++class PrometheusNewTabUIConfig
++    : public content::DefaultWebUIConfig<PrometheusNewTabUI> {
++ public:
++  PrometheusNewTabUIConfig();
++};
++
++class PrometheusSidePanelUIConfig
++    : public content::DefaultWebUIConfig<PrometheusSidePanelUI> {
++ public:
++  PrometheusSidePanelUIConfig();
++};
++
++class PrometheusControlPanelUIConfig
++    : public content::DefaultWebUIConfig<PrometheusControlPanelUI> {
++ public:
++  PrometheusControlPanelUIConfig();
++};
++
++class PrometheusNewTabUI : public content::WebUIController {
++ public:
++  explicit PrometheusNewTabUI(content::WebUI* web_ui);
++  ~PrometheusNewTabUI() override;
++
++ private:
++  WEB_UI_CONTROLLER_TYPE_DECL();
++};
++
++class PrometheusSidePanelUI : public content::WebUIController {
++ public:
++  explicit PrometheusSidePanelUI(content::WebUI* web_ui);
++  ~PrometheusSidePanelUI() override;
++
++ private:
++  WEB_UI_CONTROLLER_TYPE_DECL();
++};
++
++class PrometheusControlPanelUI : public content::WebUIController {
++ public:
++  explicit PrometheusControlPanelUI(content::WebUI* web_ui);
++  ~PrometheusControlPanelUI() override;
++
++ private:
++  WEB_UI_CONTROLLER_TYPE_DECL();
++};
++
++#endif  // CHROME_BROWSER_UI_WEBUI_PROMETHEUS_PROMETHEUS_WEB_UI_H_
+diff --git a/chrome/common/webui_url_constants.cc b/chrome/common/webui_url_constants.cc
+index 4eacc33130..498e124710 100644
+--- a/chrome/common/webui_url_constants.cc
++++ b/chrome/common/webui_url_constants.cc
+@@ -168,6 +168,9 @@ base::span<const base::cstring_view> ChromeURLHosts() {
+       kChromeUIPredictorsHost,
+       kChromeUIPrefsInternalsHost,
+       kChromeUIProfileInternalsHost,
++      kChromeUIPrometheusControlPanelHost,
++      kChromeUIPrometheusNewTabHost,
++      kChromeUIPrometheusSidePanelHost,
+       content::kChromeUIQuotaInternalsHost,
+ #if !BUILDFLAG(IS_ANDROID)
+       kChromeUIWebUIToolbarHost,
+diff --git a/chrome/common/webui_url_constants.h b/chrome/common/webui_url_constants.h
+index c746536ea1..be8c72c2e2 100644
+--- a/chrome/common/webui_url_constants.h
++++ b/chrome/common/webui_url_constants.h
+@@ -283,6 +283,17 @@ inline constexpr char16_t kChromeUIPrivacySandboxTopicsURL[] =
+ inline constexpr char kChromeUIPrivateAiInternalsHost[] =
+     "private-ai-internals";
+ inline constexpr char kChromeUIProfileInternalsHost[] = "profile-internals";
++inline constexpr char kChromeUIPrometheusControlPanelHost[] =
++    "prometheus-control-panel";
++inline constexpr char kChromeUIPrometheusControlPanelURL[] =
++    "chrome://prometheus-control-panel/";
++inline constexpr char kChromeUIPrometheusNewTabHost[] = "prometheus-newtab";
++inline constexpr char kChromeUIPrometheusNewTabURL[] =
++    "chrome://prometheus-newtab/";
++inline constexpr char kChromeUIPrometheusSidePanelHost[] =
++    "prometheus-side-panel";
++inline constexpr char kChromeUIPrometheusSidePanelURL[] =
++    "chrome://prometheus-side-panel/";
+ inline constexpr char kChromeUIQuitHost[] = "quit";
+ inline constexpr char kChromeUIQuitURL[] = "chrome://quit/";
+ inline constexpr char kChromeUIResetPasswordHost[] = "reset-password";
+-- 
+2.50.1 (Apple Git-155)
+

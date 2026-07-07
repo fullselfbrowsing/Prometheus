@@ -16,7 +16,7 @@ Prometheus keeps its product, design, and agent-native control thesis, but retir
 - [x] **Phase 13: Product Identity, Branding, and Legal Baseline** — Turn the Chromium baseline into a Prometheus-owned app identity with correct attribution and no unwanted Chrome/Chromium/Falkon/KDE-facing product surfaces. (completed 2026-06-24)
 - [x] **Phase 14: Asset and Design System Port** — Port warm tokens, PM/FSB assets, Poppins, Space Mono, Font Awesome, dark/light themes, and visual state rules into Chromium resources. (completed 2026-07-07)
 - [x] **Phase 15: Chromium UI Shell, Compact Chrome, and Tab Model** — Rebuild the compact browser chrome and advanced tab workflows using Chromium-native UI architecture. (completed 2026-07-07)
-- [ ] **Phase 16: Prometheus WebUI Surfaces and New Tab** — Build Prometheus start page, side panel surfaces, and FSB Control Panel as Chromium WebUI/browser-backed surfaces.
+- [x] **Phase 16: Prometheus WebUI Surfaces and New Tab** — Build Prometheus start page, side panel surfaces, and FSB Control Panel as Chromium WebUI/browser-backed surfaces. (completed 2026-07-07)
 - [ ] **Phase 17: Native Agent Command Service and Tab Ownership** — Rebuild the core native command router as a Chromium browser-process service with authenticated sessions and stable tab ownership.
 - [ ] **Phase 18: Page Adapter, DOM Snapshot, and Action Verification** — Rebuild page reads, DOM snapshots, JS execution, action tools, waits, and verification on Chromium WebContents/frame primitives.
 - [ ] **Phase 19: MCP Bridge and Multi-Agent Runtime Compatibility** — Reconnect existing FSB-style MCP clients to the Chromium-native service with multi-agent policy and typed compatibility errors.
@@ -396,7 +396,7 @@ Plans:
 | 13. Product Identity, Branding, and Legal Baseline | v2.0 | 4/4 | Complete    | 2026-06-24 |
 | 14. Asset and Design System Port | v2.0 | 8/8 | Complete    | 2026-07-07 |
 | 15. Chromium UI Shell, Compact Chrome, and Tab Model | v2.0 | 6/6 | Complete   | 2026-07-07 |
-| 16. Prometheus WebUI Surfaces and New Tab | v2.0 | 5/6 | In Progress | — |
+| 16. Prometheus WebUI Surfaces and New Tab | v2.0 | 6/6 | Complete | 2026-07-07 |
 | 17. Native Agent Command Service and Tab Ownership | v2.0 | AGENT-01..AGENT-08 | Planned | — |
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | PAGE-01..PAGE-08 | Planned | — |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | MCP-01..MCP-07 | Planned | — |

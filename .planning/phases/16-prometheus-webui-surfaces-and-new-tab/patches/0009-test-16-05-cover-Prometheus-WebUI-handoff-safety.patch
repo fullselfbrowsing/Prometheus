@@ -1,0 +1,331 @@
+From b46e7a5d1eef2a224e766418ef3f0cefc0f8f30c Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 03:07:54 -0500
+Subject: [PATCH 9/9] test(16-05): cover Prometheus WebUI handoff safety
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   1 +
+ .../prometheus/prometheus_ask_fsb_handoff.cc  |  44 +++++---
+ .../prometheus/prometheus_ask_fsb_handoff.h   |   9 ++
+ .../prometheus/prometheus_webui_unittest.cc   | 106 ++++++++++++++++++
+ .../prometheus_web_ui_browsertest.cc          |  39 ++++++-
+ 5 files changed, 184 insertions(+), 15 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_webui_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 167a714deb..dc460eb193 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -79,6 +79,7 @@ test("prometheus_unittests") {
+     "prometheus_color_mixer_unittest.cc",
+     "prometheus_css_emission_unittest.cc",
+     "prometheus_tab_state_unittest.cc",
++    "prometheus_webui_unittest.cc",
+   ]
+ 
+   data = [ "$root_out_dir/prometheus_resources.pak" ]
+diff --git a/chrome/browser/prometheus/prometheus_ask_fsb_handoff.cc b/chrome/browser/prometheus/prometheus_ask_fsb_handoff.cc
+index 838dbfb4b1..aa07955d8b 100644
+--- a/chrome/browser/prometheus/prometheus_ask_fsb_handoff.cc
++++ b/chrome/browser/prometheus/prometheus_ask_fsb_handoff.cc
+@@ -30,12 +30,12 @@ class AskFsbHandoffData : public base::SupportsUserData::Data {
+   std::string pending_prompt_;
+ };
+ 
+-AskFsbHandoffData* GetHandoffData(Profile* profile) {
+-  if (!profile) {
++AskFsbHandoffData* GetHandoffData(base::SupportsUserData* user_data) {
++  if (!user_data) {
+     return nullptr;
+   }
+   return static_cast<AskFsbHandoffData*>(
+-      profile->GetUserData(kAskFsbHandoffUserDataKey));
++      user_data->GetUserData(kAskFsbHandoffUserDataKey));
+ }
+ 
+ }  // namespace
+@@ -49,40 +49,56 @@ std::string SanitizeAskFsbPrompt(std::string_view prompt) {
+   return sanitized;
+ }
+ 
+-void SetPendingAskFsbPrompt(Profile* profile, std::string_view prompt) {
+-  if (!profile) {
++void SetPendingAskFsbPromptForUserData(base::SupportsUserData* user_data,
++                                       std::string_view prompt) {
++  if (!user_data) {
+     return;
+   }
+ 
+   std::string sanitized = SanitizeAskFsbPrompt(prompt);
+   if (sanitized.empty()) {
+-    ClearPendingAskFsbPrompt(profile);
++    ClearPendingAskFsbPromptForUserData(user_data);
+     return;
+   }
+ 
+-  if (AskFsbHandoffData* data = GetHandoffData(profile)) {
++  if (AskFsbHandoffData* data = GetHandoffData(user_data)) {
+     data->set_pending_prompt(std::move(sanitized));
+     return;
+   }
+ 
+-  profile->SetUserData(
++  user_data->SetUserData(
+       kAskFsbHandoffUserDataKey,
+       std::make_unique<AskFsbHandoffData>(std::move(sanitized)));
+ }
+ 
+-std::optional<std::string> GetPendingAskFsbPrompt(Profile* profile) {
+-  AskFsbHandoffData* const data = GetHandoffData(profile);
++std::optional<std::string> GetPendingAskFsbPromptForUserData(
++    base::SupportsUserData* user_data) {
++  AskFsbHandoffData* const data = GetHandoffData(user_data);
+   if (!data) {
+     return std::nullopt;
+   }
+-  return data->pending_prompt();
++  std::string prompt = data->pending_prompt();
++  ClearPendingAskFsbPromptForUserData(user_data);
++  return prompt;
+ }
+ 
+-void ClearPendingAskFsbPrompt(Profile* profile) {
+-  if (!profile) {
++void ClearPendingAskFsbPromptForUserData(base::SupportsUserData* user_data) {
++  if (!user_data) {
+     return;
+   }
+-  profile->RemoveUserData(kAskFsbHandoffUserDataKey);
++  user_data->RemoveUserData(kAskFsbHandoffUserDataKey);
++}
++
++void SetPendingAskFsbPrompt(Profile* profile, std::string_view prompt) {
++  SetPendingAskFsbPromptForUserData(profile, prompt);
++}
++
++std::optional<std::string> GetPendingAskFsbPrompt(Profile* profile) {
++  return GetPendingAskFsbPromptForUserData(profile);
++}
++
++void ClearPendingAskFsbPrompt(Profile* profile) {
++  ClearPendingAskFsbPromptForUserData(profile);
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_ask_fsb_handoff.h b/chrome/browser/prometheus/prometheus_ask_fsb_handoff.h
+index 3d49604ecc..faefff9f79 100644
+--- a/chrome/browser/prometheus/prometheus_ask_fsb_handoff.h
++++ b/chrome/browser/prometheus/prometheus_ask_fsb_handoff.h
+@@ -12,11 +12,20 @@
+ 
+ class Profile;
+ 
++namespace base {
++class SupportsUserData;
++}  // namespace base
++
+ namespace prometheus {
+ 
+ inline constexpr size_t kMaxAskFsbPromptLength = 4096;
+ 
+ std::string SanitizeAskFsbPrompt(std::string_view prompt);
++void SetPendingAskFsbPromptForUserData(base::SupportsUserData* user_data,
++                                       std::string_view prompt);
++std::optional<std::string> GetPendingAskFsbPromptForUserData(
++    base::SupportsUserData* user_data);
++void ClearPendingAskFsbPromptForUserData(base::SupportsUserData* user_data);
+ void SetPendingAskFsbPrompt(Profile* profile, std::string_view prompt);
+ std::optional<std::string> GetPendingAskFsbPrompt(Profile* profile);
+ void ClearPendingAskFsbPrompt(Profile* profile);
+diff --git a/chrome/browser/prometheus/prometheus_webui_unittest.cc b/chrome/browser/prometheus/prometheus_webui_unittest.cc
+new file mode 100644
+index 0000000000..110fadc3b1
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_webui_unittest.cc
+@@ -0,0 +1,106 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <memory>
++#include <optional>
++#include <string>
++
++#include "base/files/file_path.h"
++#include "base/path_service.h"
++#include "base/supports_user_data.h"
++#include "chrome/browser/prometheus/prometheus_ask_fsb_handoff.h"
++#include "chrome/grit/prometheus_resources.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "ui/base/resource/resource_bundle.h"
++#include "ui/base/resource/resource_scale_factor.h"
++
++namespace {
++
++constexpr int kPrometheusWebUIRendererResources[] = {
++    IDR_PROMETHEUS_WEBUI_CSS,          IDR_PROMETHEUS_WEBUI_JS,
++    IDR_PROMETHEUS_NEWTAB_HTML,        IDR_PROMETHEUS_SIDE_PANEL_HTML,
++    IDR_PROMETHEUS_CONTROL_PANEL_HTML,
++};
++
++class TestUserDataOwner : public base::SupportsUserData {
++ public:
++  TestUserDataOwner() = default;
++  TestUserDataOwner(const TestUserDataOwner&) = delete;
++  TestUserDataOwner& operator=(const TestUserDataOwner&) = delete;
++  ~TestUserDataOwner() override = default;
++};
++
++class PrometheusWebUIResourceTest : public testing::Test {
++ protected:
++  void SetUp() override {
++    resource_bundle_ = std::make_unique<ui::ResourceBundle>(nullptr);
++
++    base::FilePath pak_path;
++    ASSERT_TRUE(base::PathService::Get(base::DIR_ASSETS, &pak_path));
++    pak_path = pak_path.AppendASCII("prometheus_resources.pak");
++    resource_bundle_->AddDataPackFromPath(pak_path, ui::kScaleFactorNone);
++  }
++
++  void TearDown() override { resource_bundle_.reset(); }
++
++  std::string GetResourceString(int id) {
++    return std::string(resource_bundle_->GetRawDataResource(id));
++  }
++
++ private:
++  std::unique_ptr<ui::ResourceBundle> resource_bundle_;
++};
++
++}  // namespace
++
++TEST(PrometheusWebUIHandoffTest, SanitizesEmptyAndBoundsPrompt) {
++  EXPECT_TRUE(prometheus::SanitizeAskFsbPrompt(" \t\n ").empty());
++  EXPECT_EQ("ask FSB", prometheus::SanitizeAskFsbPrompt("  ask FSB\n"));
++
++  const std::string long_prompt(prometheus::kMaxAskFsbPromptLength + 64, 'x');
++  const std::string sanitized = prometheus::SanitizeAskFsbPrompt(long_prompt);
++  EXPECT_EQ(prometheus::kMaxAskFsbPromptLength, sanitized.size());
++  EXPECT_EQ(std::string(prometheus::kMaxAskFsbPromptLength, 'x'), sanitized);
++}
++
++TEST(PrometheusWebUIHandoffTest, PendingPromptConsumesOnRead) {
++  TestUserDataOwner user_data;
++
++  prometheus::SetPendingAskFsbPromptForUserData(&user_data,
++                                                "  compare these tabs  ");
++  std::optional<std::string> prompt =
++      prometheus::GetPendingAskFsbPromptForUserData(&user_data);
++  ASSERT_TRUE(prompt.has_value());
++  EXPECT_EQ("compare these tabs", *prompt);
++  EXPECT_FALSE(
++      prometheus::GetPendingAskFsbPromptForUserData(&user_data).has_value());
++}
++
++TEST(PrometheusWebUIHandoffTest, EmptyPromptClearsPendingPrompt) {
++  TestUserDataOwner user_data;
++
++  prometheus::SetPendingAskFsbPromptForUserData(&user_data,
++                                                "summarize this tab");
++  prometheus::SetPendingAskFsbPromptForUserData(&user_data, "   \n");
++  EXPECT_FALSE(
++      prometheus::GetPendingAskFsbPromptForUserData(&user_data).has_value());
++}
++
++TEST_F(PrometheusWebUIResourceTest,
++       RendererResourcesDoNotContainSecretFixtures) {
++  constexpr const char* kForbiddenFixtures[] = {
++      "api_key",
++      "vault secret",
++      "BEGIN PRIVATE KEY",
++      "sk-test",
++  };
++
++  for (int id : kPrometheusWebUIRendererResources) {
++    const std::string resource = GetResourceString(id);
++    for (const char* fixture : kForbiddenFixtures) {
++      EXPECT_EQ(std::string::npos, resource.find(fixture))
++          << "resource id " << id << " contains forbidden fixture " << fixture;
++    }
++  }
++}
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 82b4da742e..fb1da0645f 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -4,9 +4,12 @@
+ 
+ #include "chrome/browser/ui/webui/prometheus/prometheus_web_ui.h"
+ 
++#include "base/test/run_until.h"
+ #include "base/test/scoped_feature_list.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/side_panel/side_panel.h"
+ #include "chrome/common/chrome_features.h"
+ #include "chrome/common/webui_url_constants.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+@@ -18,8 +21,29 @@
+ #include "content/public/test/browser_test.h"
+ #include "content/public/test/browser_test_utils.h"
+ #include "testing/gtest/include/gtest/gtest.h"
++#include "ui/views/controls/webview/webview.h"
++#include "ui/views/view_utils.h"
+ #include "url/gurl.h"
+ 
++namespace {
++
++views::WebView* FindWebView(views::View* view) {
++  if (!view) {
++    return nullptr;
++  }
++  if (auto* const web_view = views::AsViewClass<views::WebView>(view)) {
++    return web_view;
++  }
++  for (views::View* child : view->children()) {
++    if (auto* const web_view = FindWebView(child)) {
++      return web_view;
++    }
++  }
++  return nullptr;
++}
++
++}  // namespace
++
+ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
+  public:
+   PrometheusWebUIFoundationBrowserTest() {
+@@ -68,6 +92,14 @@ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
+     return content::EvalJs(web_contents, script).ExtractBool();
+   }
+ 
++  content::WebContents* visible_side_panel_web_contents() {
++    SidePanel* const side_panel =
++        BrowserView::GetBrowserViewForBrowser(browser())->side_panel();
++    views::WebView* const web_view =
++        side_panel ? FindWebView(side_panel->GetContentParentView()) : nullptr;
++    return web_view ? web_view->web_contents() : nullptr;
++  }
++
+  private:
+   base::test::ScopedFeatureList scoped_feature_list_;
+ };
+@@ -262,8 +294,13 @@ IN_PROC_BROWSER_TEST_F(PrometheusNewTabBrowserTest,
+                                                                       kPrompt))
+                          .ExtractString());
+ 
+-  web_contents = NavigateTo(chrome::kChromeUIPrometheusSidePanelURL);
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return visible_side_panel_web_contents(); }));
++  web_contents = visible_side_panel_web_contents();
+   ASSERT_TRUE(web_contents);
++  EXPECT_TRUE(content::WaitForLoadStop(web_contents));
++  EXPECT_EQ(chrome::kChromeUIPrometheusSidePanelURL,
++            web_contents->GetLastCommittedURL().spec());
+ 
+   EXPECT_EQ(kPrompt, content::EvalJs(web_contents, content::JsReplace(R"(
+     new Promise(resolve => {
+-- 
+2.50.1 (Apple Git-155)
+

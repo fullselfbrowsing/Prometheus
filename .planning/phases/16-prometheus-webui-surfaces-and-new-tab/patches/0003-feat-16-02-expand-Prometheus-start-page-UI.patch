@@ -1,0 +1,174 @@
+From 4be2b60315e46fe804e1e77345c1f11aa56c481d Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 02:15:18 -0500
+Subject: [PATCH 3/9] feat(16-02): expand Prometheus start page UI
+
+---
+ .../prometheus/prometheus_newtab.html         | 24 +++++++--
+ .../prometheus/prometheus_side_panel.html     |  5 ++
+ .../resources/prometheus/prometheus_webui.css | 51 +++++++++++++++++--
+ 3 files changed, 71 insertions(+), 9 deletions(-)
+
+diff --git a/chrome/browser/resources/prometheus/prometheus_newtab.html b/chrome/browser/resources/prometheus/prometheus_newtab.html
+index eb360bc931..952c149a2b 100644
+--- a/chrome/browser/resources/prometheus/prometheus_newtab.html
++++ b/chrome/browser/resources/prometheus/prometheus_newtab.html
+@@ -16,16 +16,30 @@
+           <div class="brand__meta">Powered by FSB</div>
+         </div>
+       </header>
+-      <form class="search-row">
+-        <input aria-label="Search or ask FSB" placeholder="Search or ask FSB">
+-        <button class="primary" type="button">Ask FSB</button>
++      <form class="search-row" id="ask-fsb-form">
++        <label class="visually-hidden" for="ask-fsb-input">
++          Search or ask FSB
++        </label>
++        <input id="ask-fsb-input" placeholder="Search or ask FSB">
++        <button class="primary" id="ask-fsb-button" type="submit">
++          Ask FSB
++        </button>
+       </form>
++      <p class="handoff-status" id="ask-fsb-status" aria-live="polite"></p>
+       <section>
+         <h2>Favorites</h2>
+         <div class="section-grid">
+           <article class="tile">
+-            <strong>No favorites yet</strong>
+-            <p class="muted">Saved pages will appear here.</p>
++            <strong>Work dashboard</strong>
++            <p class="muted">Daily launchpad for pinned projects.</p>
++          </article>
++          <article class="tile">
++            <strong>Research queue</strong>
++            <p class="muted">Saved pages waiting for review.</p>
++          </article>
++          <article class="tile">
++            <strong>Agent runs</strong>
++            <p class="muted">Recent browser tasks and handoffs.</p>
+           </article>
+         </div>
+       </section>
+diff --git a/chrome/browser/resources/prometheus/prometheus_side_panel.html b/chrome/browser/resources/prometheus/prometheus_side_panel.html
+index 0beae817d5..1a2c6332a2 100644
+--- a/chrome/browser/resources/prometheus/prometheus_side_panel.html
++++ b/chrome/browser/resources/prometheus/prometheus_side_panel.html
+@@ -26,6 +26,11 @@
+         <strong>Ready</strong>
+         <p class="muted">Ask FSB to work in this browser.</p>
+       </section>
++      <section class="panel-row handoff-seed" id="ask-fsb-seed" hidden>
++        <strong>FSB Agent</strong>
++        <p class="muted">Pending start-page request</p>
++        <p id="ask-fsb-seed-text"></p>
++      </section>
+     </main>
+   </body>
+ </html>
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.css b/chrome/browser/resources/prometheus/prometheus_webui.css
+index 56783af712..667eceb7ec 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.css
++++ b/chrome/browser/resources/prometheus/prometheus_webui.css
+@@ -4,6 +4,16 @@
+ 
+ :root {
+   color-scheme: dark light;
++  --prometheus-color-bg-app: #0d0a09;
++  --prometheus-color-surface: #141110;
++  --prometheus-color-surface-2: #1d1816;
++  --prometheus-color-surface-3: #26201d;
++  --prometheus-color-text: #f6efe9;
++  --prometheus-color-text-2: #d2c1b4;
++  --prometheus-color-text-3: #a99283;
++  --prometheus-color-border: rgba(255, 241, 232, 0.1);
++  --prometheus-color-accent: #ff6b35;
++  --prometheus-color-accent-soft: rgba(255, 107, 53, 0.12);
+   --prometheus-bg: #0d0a09;
+   --prometheus-surface: #141110;
+   --prometheus-surface-2: #1d1816;
+@@ -32,6 +42,16 @@ input {
+   font: inherit;
+ }
+ 
++.visually-hidden {
++  clip: rect(0 0 0 0);
++  clip-path: inset(50%);
++  height: 1px;
++  overflow: hidden;
++  position: absolute;
++  white-space: nowrap;
++  width: 1px;
++}
++
+ .surface {
+   box-sizing: border-box;
+   display: flex;
+@@ -71,8 +91,8 @@ input {
+ 
+ .search-row {
+   align-items: center;
+-  background: var(--prometheus-surface-2);
+-  border: 1px solid var(--prometheus-surface-3);
++  background: var(--prometheus-color-surface-2);
++  border: 1px solid var(--prometheus-color-border);
+   border-radius: 8px;
+   display: flex;
+   gap: 8px;
+@@ -84,7 +104,7 @@ input {
+ .search-row input {
+   background: transparent;
+   border: 0;
+-  color: var(--prometheus-text);
++  color: var(--prometheus-color-text);
+   flex: 1;
+   min-width: 0;
+   outline: 0;
+@@ -92,7 +112,7 @@ input {
+ }
+ 
+ .primary {
+-  background: var(--prometheus-accent);
++  background: var(--prometheus-color-accent);
+   border: 0;
+   border-radius: 8px;
+   color: #1f1a17;
+@@ -101,6 +121,19 @@ input {
+   padding: 0 14px;
+ }
+ 
++.primary:focus-visible,
++.search-row:focus-within {
++  outline: 2px solid var(--prometheus-color-accent);
++  outline-offset: 2px;
++}
++
++.handoff-status {
++  color: var(--prometheus-color-text-3);
++  font-size: 12px;
++  margin: -12px 0 0;
++  min-height: 16px;
++}
++
+ .section-grid {
+   display: grid;
+   gap: 12px;
+@@ -144,6 +177,16 @@ input {
+   padding: 12px;
+ }
+ 
++.handoff-seed {
++  background: var(--prometheus-color-accent-soft);
++  border-color: var(--prometheus-color-accent);
++}
++
++.handoff-seed p:last-child {
++  color: var(--prometheus-color-text);
++  margin-bottom: 0;
++}
++
+ .control-shell {
+   display: grid;
+   gap: 16px;
+-- 
+2.50.1 (Apple Git-155)
+

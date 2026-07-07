@@ -1,10 +1,11 @@
 ---
 phase: 16
 slug: prometheus-webui-surfaces-and-new-tab
-status: draft
+status: complete
 nyquist_compliant: true
 wave_0_complete: true
 created: 2026-07-07
+completed: 2026-07-07
 ---
 
 # Phase 16 - Validation Strategy
@@ -24,12 +25,12 @@ created: 2026-07-07
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | Status |
 |---------|------|------|-------------|-----------|-------------------|--------|
-| 16-01-01 | 01 | 1 | WEBUI-01, WEBUI-05, WEBUI-06 | build/browser | `autoninja -C out/Default chrome browser_tests && ./out/Default/browser_tests --gtest_filter='*PrometheusWebUIFoundation*'` | pending |
-| 16-02-01 | 02 | 2 | WEBUI-01, WEBUI-02, WEBUI-03 | browser | `./out/Default/browser_tests --gtest_filter='*PrometheusNewTab*'` | pending |
-| 16-03-01 | 03 | 2 | WEBUI-03, WEBUI-05 | browser/ui | `./out/Default/browser_tests --gtest_filter='*PrometheusSidePanel*'` | pending |
-| 16-04-01 | 04 | 3 | WEBUI-04, WEBUI-05 | browser | `./out/Default/browser_tests --gtest_filter='*PrometheusControlPanel*'` | pending |
-| 16-05-01 | 05 | 3 | WEBUI-05, WEBUI-06, WEBUI-07 | unit/static/browser | `autoninja -C out/Default prometheus_unittests browser_tests && ./out/Default/prometheus_unittests --gtest_filter='*PrometheusWebUI*'` | pending |
-| 16-06-01 | 06 | 4 | WEBUI-01..WEBUI-07 | gate | full Phase 16 build/test/root gates plus patch export | pending |
+| 16-01-01 | 01 | 1 | WEBUI-01, WEBUI-05, WEBUI-06 | build/browser | `autoninja -C out/Default chrome browser_tests && ./out/Default/browser_tests --gtest_filter='*PrometheusWebUIFoundation*'` | passed |
+| 16-02-01 | 02 | 2 | WEBUI-01, WEBUI-02, WEBUI-03 | browser | `./out/Default/browser_tests --gtest_filter='*PrometheusNewTab*'` | passed |
+| 16-03-01 | 03 | 2 | WEBUI-03, WEBUI-05 | browser/ui | `./out/Default/browser_tests --gtest_filter='*PrometheusSidePanel*'` | passed |
+| 16-04-01 | 04 | 3 | WEBUI-04, WEBUI-05 | browser | `./out/Default/browser_tests --gtest_filter='*PrometheusControlPanel*'` | passed |
+| 16-05-01 | 05 | 3 | WEBUI-05, WEBUI-06, WEBUI-07 | unit/static/browser | `autoninja -C out/Default prometheus_unittests browser_tests && ./out/Default/prometheus_unittests --gtest_filter='*PrometheusWebUI*'` | passed |
+| 16-06-01 | 06 | 4 | WEBUI-01..WEBUI-07 | gate | full Phase 16 build/test/root gates plus patch export | passed |
 
 ## Required Assertions
 
@@ -41,6 +42,17 @@ created: 2026-07-07
 - Resource tests prove Phase 16 HTML/CSS/JS resources are packaged.
 - Static scan flags load-bearing remote resources.
 - No tests or fixtures expose provider keys, vault secrets, or pairing secrets.
+
+## Phase 16-06 Gate Evidence
+
+Automated gates passed on 2026-07-07:
+
+- `.context/chromium/src/out/Default/phase16-06-build.log` - `chrome browser_tests prometheus_unittests`, `EXIT_CODE=0`.
+- `.context/chromium/src/out/Default/phase16-06-prometheus-unittests.log` - full `prometheus_unittests`, 22/22 tests passed, `EXIT_CODE=0`.
+- `.context/chromium/src/out/Default/phase16-06-browser-tests.log` - `browser_tests --gtest_filter='*Prometheus*WebUI*:*Prometheus*NewTab*:*Prometheus*SidePanel*:*Prometheus*ControlPanel*'`, 7/7 tests passed, `EXIT_CODE=0`.
+- `.context/chromium/src/out/Default/phase16-06-webui-resource-gate.log` - Prometheus WebUI resource gate passed for five files, `EXIT_CODE=0`.
+- `.context/chromium/src/out/Default/phase16-06-root-gates.log` - Chromium environment, GPL guard, and artifact isolation gates, `EXIT_CODE=0`.
+- `.planning/phases/16-prometheus-webui-surfaces-and-new-tab/patches/` - 9 non-empty Chromium patches exported from `a4423116ff..HEAD`.
 
 ## Manual-Only Verifications
 
@@ -57,3 +69,8 @@ created: 2026-07-07
 - [x] Wave 0 uses existing Phase 14/15 infrastructure.
 - [x] No watch-mode flags.
 - [x] `nyquist_compliant: true` set in frontmatter.
+- [x] Phase 16 automated gate logs contain `EXIT_CODE=0`.
+- [x] Phase 16 Chromium patch series exported.
+- [ ] Human desktop visual UAT completed for dark/light start page polish, side-panel density, and responsive control-panel layout.
+
+**Approval:** approved 2026-07-07

@@ -1,0 +1,136 @@
+From 35853655ee996800583085948404fa77224bf229 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 02:54:45 -0500
+Subject: [PATCH 8/9] test(16-04): cover Prometheus control panel shell
+
+---
+ .../prometheus_web_ui_browsertest.cc          | 99 ++++++++++++++++++-
+ 1 file changed, 97 insertions(+), 2 deletions(-)
+
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index dc5309ff9c..82b4da742e 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -43,8 +43,8 @@ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
+ 
+   bool BodyTextContentContains(content::WebContents* web_contents,
+                                const std::string& text) {
+-    const std::string script =
+-        content::JsReplace("document.body.textContent.includes($1)", text);
++    const std::string script = content::JsReplace(
++        "document.body.textContent.replace(/\\s+/g, ' ').includes($1)", text);
+     return content::EvalJs(web_contents, script).ExtractBool();
+   }
+ 
+@@ -75,6 +75,9 @@ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
+ class PrometheusNewTabBrowserTest
+     : public PrometheusWebUIFoundationBrowserTest {};
+ 
++class PrometheusControlPanelBrowserTest
++    : public PrometheusWebUIFoundationBrowserTest {};
++
+ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+                        NewTabCreatesControllerAndRendersRequiredCopy) {
+   content::WebContents* const web_contents =
+@@ -129,6 +132,98 @@ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+   EXPECT_TRUE(BodyContains(web_contents, "Parity Matrix"));
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
++                       RendersAllSectionsAndRequiredEmptyStates) {
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++
++  ASSERT_TRUE(web_contents);
++  ASSERT_TRUE(web_contents->GetWebUI());
++  EXPECT_TRUE(web_contents->GetWebUI()
++                  ->GetController()
++                  ->GetAs<PrometheusControlPanelUI>());
++
++  EXPECT_EQ(
++      "Tasks|Providers & Models|MCP Status|Permissions & Agents|Vault|"
++      "Memory & Site Guides|Logs & Diagnostics|Supervision & Pairing|"
++      "Parity Matrix",
++      content::EvalJs(web_contents, R"(
++              Array.from(document.querySelectorAll(
++                  '.section-rail [data-section-target]'))
++                  .map(button => button.textContent.trim().replace(/\s+/g, ' '))
++                  .join('|');
++            )")
++          .ExtractString());
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "No tasks yet"));
++  EXPECT_TRUE(BodyTextContentContains(
++      web_contents,
++      "Ask Prometheus to work in this browser. Tasks will appear here with "
++      "progress, cost, and final result."));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "No provider configured"));
++  EXPECT_TRUE(BodyTextContentContains(
++      web_contents,
++      "Choose a provider, model, endpoint, and save from the control panel."));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "MCP bridge offline"));
++  EXPECT_TRUE(BodyTextContentContains(
++      web_contents,
++      "Start Prometheus with the native agent server enabled, then refresh "
++      "diagnostics."));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "No vault entries"));
++  EXPECT_TRUE(BodyTextContentContains(
++      web_contents,
++      "Save metadata here. Secrets stay in native secure storage."));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "No runtime logs yet"));
++  EXPECT_TRUE(BodyTextContentContains(web_contents,
++                                      "Run a task or refresh diagnostics."));
++  EXPECT_TRUE(
++      BodyTextContentContains(web_contents, "No active supervision session"));
++  EXPECT_TRUE(BodyTextContentContains(
++      web_contents,
++      "Pair a dashboard to begin supervised DOM-native viewing."));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "No parity rows loaded"));
++  EXPECT_TRUE(BodyTextContentContains(
++      web_contents, "Generate parity evidence before claiming FSB parity."));
++  EXPECT_TRUE(BodyTextContentContains(
++      web_contents,
++      "Provider secret blocked. Store keys from the native Prometheus UI."));
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
++                       SwitchesSectionsFromRailAndSelect) {
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++
++  ASSERT_TRUE(web_contents);
++  EXPECT_TRUE(content::ExecJs(web_contents, R"(
++    document.querySelector('[data-section-target="providers"]').click();
++  )"));
++  EXPECT_EQ("providers", content::EvalJs(web_contents, R"(
++    document.documentElement.dataset.controlPanelSection;
++  )")
++                             .ExtractString());
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    !document.querySelector('#section-providers').hidden &&
++        document.querySelector('[data-section-target="providers"]')
++            .getAttribute('aria-selected') === 'true';
++  )")
++                  .ExtractBool());
++
++  EXPECT_TRUE(content::ExecJs(web_contents, R"(
++    const select = document.querySelector('#section-select');
++    select.value = 'parity';
++    select.dispatchEvent(new Event('change', {bubbles: true}));
++  )"));
++  EXPECT_EQ("parity", content::EvalJs(web_contents, R"(
++    document.documentElement.dataset.controlPanelSection;
++  )")
++                          .ExtractString());
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    !document.querySelector('#section-parity').hidden &&
++        document.querySelector('#section-select').value === 'parity';
++  )")
++                  .ExtractBool());
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusNewTabBrowserTest,
+                        AskFsbHandoffKeepsPromptOutOfUrlAndSeedsSidePanel) {
+   constexpr char kPrompt[] = "book me a flight to Tokyo";
+-- 
+2.50.1 (Apple Git-155)
+

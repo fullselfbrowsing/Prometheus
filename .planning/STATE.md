@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
-stopped_at: Completed 16-05-PLAN.md
-last_updated: "2026-07-07T08:08:12Z"
-last_activity: 2026-07-07 -- Completed 16-05-PLAN.md
+stopped_at: Completed Phase 16
+last_updated: "2026-07-07T08:14:41Z"
+last_activity: 2026-07-07 -- Completed Phase 16
 progress:
   total_phases: 15
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 31
-  completed_plans: 30
-  percent: 97
+  completed_plans: 31
+  percent: 100
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-23)
 
 **Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** Phase 16 — prometheus-webui-surfaces-and-new-tab
+**Current focus:** Phase 17 — native-agent-command-service-and-tab-ownership
 
 ## Current Position
 
-Phase: 16 (prometheus-webui-surfaces-and-new-tab) — EXECUTING
-Plan: 6 of 6
-Status: Executing Phase 16
-Last activity: 2026-07-07 -- Completed 16-05-PLAN.md
+Phase: 17 (native-agent-command-service-and-tab-ownership) — READY
+Plan: not planned
+Status: Phase 16 complete; next incomplete phase is Phase 17
+Last activity: 2026-07-07 -- Completed Phase 16
 
 ## Performance Metrics
 
@@ -111,6 +111,7 @@ Last activity: 2026-07-07 -- Completed 16-05-PLAN.md
 | Phase 16 P03 | 15min | 2 tasks | 7 files |
 | Phase 16 P04 | 6min | 2 tasks | 4 files |
 | Phase 16 P05 | 13min | 2 tasks | 7 files |
+| Phase 16 P06 | 6min | 2 tasks | 15 files |
 
 ## Accumulated Context
 
@@ -209,6 +210,8 @@ Recent decisions affecting current work:
 - [Phase 16-04]: Required provider/vault secret-blocked strings are UI security copy only; no raw key or vault fixture values are rendered.
 - [Phase 16-05]: Pending Ask FSB prompt reads consume browser-owned state; browser tests inspect the live handoff-opened side-panel WebView instead of navigating a second side-panel page.
 - [Phase 16-05]: Prometheus WebUI iteration remains package-backed by default and is gated by `verify-prometheus-webui-resources.sh`; disk-loaded WebUI is deferred until it can satisfy the same gates.
+- [Phase 16-06]: Phase 16 WebUI automated gates passed: build, full `prometheus_unittests`, full Phase 16 `browser_tests` filter, WebUI resource scanner, Chromium env/GPL/isolation gates, and 9-patch export from `a4423116ff..HEAD`.
+- [Phase 16-06]: Preservation evidence now covers Phase 16 WebUI shells while desktop visual UAT and Phase 20 runtime/provider/vault data checks remain carry-forward.
 
 ### Roadmap Evolution
 
