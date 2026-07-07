@@ -397,7 +397,7 @@ Plans:
 | 14. Asset and Design System Port | v2.0 | 8/8 | Complete    | 2026-07-07 |
 | 15. Chromium UI Shell, Compact Chrome, and Tab Model | v2.0 | 6/6 | Complete   | 2026-07-07 |
 | 16. Prometheus WebUI Surfaces and New Tab | v2.0 | 6/6 | Complete | 2026-07-07 |
-| 17. Native Agent Command Service and Tab Ownership | v2.0 | 0/6 | Planned | — |
+| 17. Native Agent Command Service and Tab Ownership | v2.0 | 1/6 | In Progress | — |
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | PAGE-01..PAGE-08 | Planned | — |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | MCP-01..MCP-07 | Planned | — |
 | 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | FSB-01..FSB-08 | Planned | — |
