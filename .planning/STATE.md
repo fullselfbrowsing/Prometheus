@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
-status: executing
-stopped_at: Completed 15-06-PLAN.md
-last_updated: "2026-07-07T06:36:16Z"
+status: discussing
+stopped_at: Created 16-CONTEXT.md
+last_updated: "2026-07-07T06:42:00Z"
 last_activity: 2026-07-07
 progress:
   total_phases: 15
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-23)
 
 **Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** Phase 15 — chromium-ui-shell-compact-chrome-and-tab-model
+**Current focus:** Phase 16 — prometheus-webui-surfaces-and-new-tab
 
 ## Current Position
 
-Phase: 15 (chromium-ui-shell-compact-chrome-and-tab-model) — COMPLETE
-Plan: 6 of 6
-Status: Phase complete; ready for Phase 16 discussion/planning
+Phase: 16 (prometheus-webui-surfaces-and-new-tab) — DISCUSSING
+Plan: Context gathered
+Status: Ready for UI contract and planning
 Last activity: 2026-07-07
 
 ## Performance Metrics
