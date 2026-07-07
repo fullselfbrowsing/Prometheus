@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
-stopped_at: Completed 16-03-PLAN.md
-last_updated: "2026-07-07T07:48:32Z"
-last_activity: 2026-07-07 -- Completed 16-03-PLAN.md
+stopped_at: Completed 16-04-PLAN.md
+last_updated: "2026-07-07T07:54:57Z"
+last_activity: 2026-07-07 -- Completed 16-04-PLAN.md
 progress:
   total_phases: 15
   completed_phases: 5
   total_plans: 31
-  completed_plans: 28
-  percent: 90
+  completed_plans: 29
+  percent: 94
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-06-23)
 ## Current Position
 
 Phase: 16 (prometheus-webui-surfaces-and-new-tab) — EXECUTING
-Plan: 4 of 6
+Plan: 5 of 6
 Status: Executing Phase 16
-Last activity: 2026-07-07 -- Completed 16-03-PLAN.md
+Last activity: 2026-07-07 -- Completed 16-04-PLAN.md
 
 ## Performance Metrics
 
@@ -109,6 +109,7 @@ Last activity: 2026-07-07 -- Completed 16-03-PLAN.md
 | Phase 16 P01 | 18min | 2 tasks | 14 files |
 | Phase 16 P02 | 22min | 2 tasks | 15 files |
 | Phase 16 P03 | 15min | 2 tasks | 7 files |
+| Phase 16 P04 | 6min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -203,6 +204,8 @@ Recent decisions affecting current work:
 - [Phase 16-02]: Prometheus side-panel entry registration is shared through a BrowserWindowInterface helper and loads `chrome://prometheus-side-panel/`; Plan 16-03 should extend this helper instead of restoring the old placeholder.
 - [Phase 16-03]: The Prometheus side-panel shell uses icon-only mode buttons with title/aria labels and local packaged Font Awesome SVG masks; inactive mode labels remain in DOM text while content visibility is mode-gated.
 - [Phase 16-03]: Toolbar side-panel regression validates the live side-panel WebView from BrowserView's side-panel content parent after opening the existing Assistant side-panel entry.
+- [Phase 16-04]: FSB Control Panel uses a rail/select synchronized section model over nine UI-SPEC operator sections; hidden panels keep required copy in DOM while one section is visible.
+- [Phase 16-04]: Required provider/vault secret-blocked strings are UI security copy only; no raw key or vault fixture values are rendered.
 
 ### Roadmap Evolution
 
