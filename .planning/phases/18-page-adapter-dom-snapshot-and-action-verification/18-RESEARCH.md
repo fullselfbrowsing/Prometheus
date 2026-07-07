@@ -532,22 +532,25 @@ The exact payload field does not exist yet, but the pattern keeps stable constan
 | A1 | The recommended `PrometheusPageAdapter` class split is a planning recommendation, not a locked architectural decision. [ASSUMED] | Summary / Recommended Project Structure | Low: planner may choose a helper owned by `PrometheusAgentService` or a facade split, which CONTEXT.md allows. [VERIFIED: .planning/phases/18-page-adapter-dom-snapshot-and-action-verification/18-CONTEXT.md] |
 | A2 | Direct dependency on the actor feature-gated product stack should be avoided unless the planner confirms layering and feature-flag acceptability. [ASSUMED] | Open Questions / Standard Stack | Medium: if direct actor reuse is allowed, implementation may be smaller; if not, Prometheus needs a parallel renderer seam patterned after actor tools. [VERIFIED: .context/chromium/src/chrome/browser/actor/README.md; VERIFIED: .context/chromium/src/chrome/browser/actor/tools/page_tool.cc] |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should Prometheus directly reuse actor page tools or create a Prometheus-specific renderer interface?** [VERIFIED: local actor source review]
    - What we know: actor tools already solve target validation, renderer invocation, page-stability waits, OOPIF coordinates, and script result handling. [VERIFIED: .context/chromium/src/chrome/browser/actor/tools/page_tool.cc; VERIFIED: .context/chromium/src/chrome/browser/actor/tools/script_tool_host.cc]
    - What's unclear: Phase 18 context says actor can inform implementation but does not lock direct reuse, and actor code is tied to Glic/actor feature flags and task/journal concepts. [VERIFIED: .planning/phases/17-native-agent-command-service-and-tab-ownership/17-CONTEXT.md; VERIFIED: .context/chromium/src/chrome/browser/actor/README.md]
    - Recommendation: plan a Prometheus-specific adapter that mirrors actor seams first, and only directly link actor code after a layering/feature-flag check. [ASSUMED]
+   - RESOLVED: Plans 18-04 (execute_js Mojo seam) and 18-06 (renderer action dispatcher) both chose a Prometheus-specific renderer/Mojo interface (`chrome::mojom::PrometheusRenderFrame`) that mirrors the actor seams without linking `//chrome/renderer/actor` or `//chrome/browser/actor`.
 
 2. **What is the safe policy for `drop_file`?** [VERIFIED: .planning/phases/18-page-adapter-dom-snapshot-and-action-verification/18-CONTEXT.md]
    - What we know: Phase 18 requires no arbitrary local file reads from untrusted input. [VERIFIED: .planning/phases/18-page-adapter-dom-snapshot-and-action-verification/18-CONTEXT.md]
    - What's unclear: No approved file handle/path policy is chosen in context. [VERIFIED: .planning/phases/18-page-adapter-dom-snapshot-and-action-verification/18-CONTEXT.md]
    - Recommendation: implement typed denial in the first wave, then add fixture-only browser-test support or explicit safe file policy if the planner scopes it. [ASSUMED]
+   - RESOLVED: Plan 18-08 implements unconditional typed denial (`AgentErrorCode::kPermissionBlocked`, `changed_state={"file_drop_denied"}`) for `drop_file` regardless of whether `drop_file_tokens` is empty or populated — no file-path/token reads of any kind.
 
 3. **How complete should key/clear support be in the first implementation?** [VERIFIED: .planning/REQUIREMENTS.md]
    - What we know: actor request types cover click, type, scroll, hover/move mouse, select, drag/release, script, and scroll-to; direct press-key and clear routes are not obvious in the actor request list. [VERIFIED: .context/chromium/src/chrome/common/actor.mojom; VERIFIED: .context/chromium/src/chrome/browser/actor/tools/type_tool_request.cc]
    - What's unclear: Prometheus may implement `clear` as a specific input value action and `press_key` through safe browser/renderer input dispatch, or return typed unsupported for unsafe combinations. [ASSUMED]
    - Recommendation: plan key/clear as separate tasks with focused browser tests before claiming PAGE-05 complete. [ASSUMED]
+   - RESOLVED: Plan 18-06 implements both `press_key` (named-key allowlist dispatched as `blink::WebKeyboardEvent` down/up pairs) and `clear` (`WebFormControlElement::SetValue` with an empty string) as first-class actions, not typed-unsupported stubs.
 
 ## Environment Availability
 

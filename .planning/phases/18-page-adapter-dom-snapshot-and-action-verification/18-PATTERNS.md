@@ -317,7 +317,7 @@ TEST_F(PrometheusAgentAuditTest, RejectsUnsafeChangedStateValues) {
 **Apply to Phase 18:**
 
 - Add tests for page-route audit terms such as `script`, `selector`, `typed_text`, `file_path`, `dom_snapshot`, and raw page snippets if the planner extends the deny list.
-- Prefer safe constants like `page_text_returned`, `snapshot_returned`, `element_clicked`, `navigation_observed`, `value_changed`, `verification_timeout`, and `stuck_action_detected`.
+- Prefer safe constants like `visible_text_returned`, `snapshot_returned`, `element_clicked`, `navigation_observed`, `value_changed`, `verification_timeout`, and `stuck_action_detected`.
 
 ### `prometheus_page_adapter.{h,cc}` (service/facade, request-response)
 
@@ -1061,7 +1061,7 @@ Use document token + DOM node id as the base ref. Do not promise refs survive na
 **Source:** `prometheus_agent_service.cc` lines 591-613; `prometheus_agent_audit.cc` lines 17-19, 40-64.
 **Apply to:** All routes, especially `read_page`, snapshots, `execute_js`, `type_text`, and file/drop routes.
 
-Safe changed-state examples: `page_text_returned`, `snapshot_returned`, `compact_snapshot_returned`, `script_executed`, `element_clicked`, `text_typed`, `key_pressed`, `scrolled`, `hovered`, `option_selected`, `input_cleared`, `drag_completed`, `file_drop_denied`, `verification_timeout`, `stuck_action_detected`.
+Safe changed-state examples: `visible_text_returned`, `snapshot_returned`, `compact_snapshot_returned`, `js_executed`, `element_clicked`, `text_typed`, `key_pressed`, `scrolled`, `hovered`, `option_selected`, `input_cleared`, `drag_completed`, `file_drop_denied`, `verification_timeout`, `stuck_action_detected`.
 
 Unsafe changed-state examples: selector strings, page snippets, typed text, JS source, JS result, file paths, raw URLs, prompt text, secrets, vault values, provider keys.
 
