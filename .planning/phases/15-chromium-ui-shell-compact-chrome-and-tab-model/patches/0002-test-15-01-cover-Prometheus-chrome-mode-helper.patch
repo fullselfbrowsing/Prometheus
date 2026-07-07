@@ -1,0 +1,102 @@
+From 11ff9ec73d4a23abed7ca969def9174b52ae30ee Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 00:25:37 -0500
+Subject: [PATCH 02/11] test(15-01): cover Prometheus chrome mode helper
+
+- Verify compact and separate string parsing
+- Verify unknown pref values fall back to separate
+- Add PrefService round-trip coverage
+---
+ chrome/browser/prometheus/BUILD.gn            |  3 ++
+ .../prometheus_chrome_mode_unittest.cc        | 54 +++++++++++++++++++
+ 2 files changed, 57 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_chrome_mode_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 2332612036..7f647e37fa 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -42,6 +42,7 @@ test("prometheus_unittests") {
+   sources = [
+     "prometheus_action_unittest.cc",
+     "prometheus_asset_resource_unittest.cc",
++    "prometheus_chrome_mode_unittest.cc",
+     "prometheus_color_mixer_unittest.cc",
+     "prometheus_css_emission_unittest.cc",
+   ]
+@@ -56,10 +57,12 @@ test("prometheus_unittests") {
+     ":prometheus_chrome_mode",
+     "//base",
+     "//base/test:run_all_unittests",
++    "//chrome/common:constants",
+     "//chrome/browser/resources/prometheus:prometheus_resources",
+     "//chrome/browser/resources/prometheus:prometheus_vector_icons",
+     "//chrome/browser/ui/color:color_headers",
+     "//chrome/browser/ui/color:mixers",
++    "//components/prefs:test_support",
+     "//skia",
+     "//testing/gtest",
+     "//ui/base",
+diff --git a/chrome/browser/prometheus/prometheus_chrome_mode_unittest.cc b/chrome/browser/prometheus/prometheus_chrome_mode_unittest.cc
+new file mode 100644
+index 0000000000..72def07205
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_chrome_mode_unittest.cc
+@@ -0,0 +1,54 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_chrome_mode.h"
++
++#include "chrome/common/pref_names.h"
++#include "components/prefs/pref_registry_simple.h"
++#include "components/prefs/testing_pref_service.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace {
++
++void RegisterPrometheusChromeModePref(TestingPrefServiceSimple& prefs) {
++  prefs.registry()->RegisterStringPref(prefs::kPrometheusChromeMode,
++                                       "separate");
++}
++
++}  // namespace
++
++TEST(PrometheusChromeModeTest, ParsesKnownStrings) {
++  EXPECT_EQ(PrometheusChromeModeFromString("separate"),
++            PrometheusChromeMode::kSeparate);
++  EXPECT_EQ(PrometheusChromeModeFromString("compact"),
++            PrometheusChromeMode::kCompact);
++}
++
++TEST(PrometheusChromeModeTest, UnknownStringFallsBackToSeparate) {
++  EXPECT_EQ(PrometheusChromeModeFromString("bad-value"),
++            PrometheusChromeMode::kSeparate);
++  EXPECT_EQ(PrometheusChromeModeFromString(""),
++            PrometheusChromeMode::kSeparate);
++}
++
++TEST(PrometheusChromeModeTest, SerializesModes) {
++  EXPECT_EQ(PrometheusChromeModeToString(PrometheusChromeMode::kSeparate),
++            "separate");
++  EXPECT_EQ(PrometheusChromeModeToString(PrometheusChromeMode::kCompact),
++            "compact");
++}
++
++TEST(PrometheusChromeModeTest, PrefRoundTrip) {
++  TestingPrefServiceSimple prefs;
++  RegisterPrometheusChromeModePref(prefs);
++
++  EXPECT_EQ(GetPrometheusChromeMode(prefs), PrometheusChromeMode::kSeparate);
++
++  SetPrometheusChromeMode(prefs, PrometheusChromeMode::kCompact);
++  EXPECT_EQ(prefs.GetString(prefs::kPrometheusChromeMode), "compact");
++  EXPECT_EQ(GetPrometheusChromeMode(prefs), PrometheusChromeMode::kCompact);
++
++  prefs.SetString(prefs::kPrometheusChromeMode, "bad-value");
++  EXPECT_EQ(GetPrometheusChromeMode(prefs), PrometheusChromeMode::kSeparate);
++}
+-- 
+2.50.1 (Apple Git-155)
+

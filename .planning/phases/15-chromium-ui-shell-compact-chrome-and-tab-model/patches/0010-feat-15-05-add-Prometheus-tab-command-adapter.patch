@@ -1,0 +1,155 @@
+From a5f864171c84986dc4d2121555a38d9bcd4b7954 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 01:17:32 -0500
+Subject: [PATCH 10/11] feat(15-05): add Prometheus tab command adapter
+
+---
+ chrome/browser/prometheus/BUILD.gn            | 12 +++
+ .../prometheus/prometheus_tab_commands.cc     | 78 +++++++++++++++++++
+ .../prometheus/prometheus_tab_commands.h      | 26 +++++++
+ 3 files changed, 116 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_tab_commands.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_tab_commands.h
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index a1521b744d..876477e502 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -49,6 +49,18 @@ source_set("prometheus_tab_state") {
+   ]
+ }
+ 
++source_set("prometheus_tab_commands") {
++  sources = [
++    "prometheus_tab_commands.cc",
++    "prometheus_tab_commands.h",
++  ]
++
++  deps = [
++    "//chrome/browser/ui",
++    "//chrome/browser/ui/browser_window",
++  ]
++}
++
+ test("prometheus_unittests") {
+   sources = [
+     "prometheus_action_unittest.cc",
+diff --git a/chrome/browser/prometheus/prometheus_tab_commands.cc b/chrome/browser/prometheus/prometheus_tab_commands.cc
+new file mode 100644
+index 0000000000..c60edd3463
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_tab_commands.cc
+@@ -0,0 +1,78 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_tab_commands.h"
++
++#include <vector>
++
++#include "chrome/browser/ui/browser_commands.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++
++namespace {
++
++bool ExecuteContextMenuCommandIfEnabled(
++    TabStripModel* model,
++    int tab_index,
++    TabStripModel::ContextMenuCommand command) {
++  if (!model || !model->ContainsIndex(tab_index) ||
++      !model->IsContextMenuCommandEnabled(tab_index, command)) {
++    return false;
++  }
++
++  model->ExecuteContextMenuCommand(tab_index, command);
++  return true;
++}
++
++}  // namespace
++
++bool ExecutePrometheusTabCommand(BrowserWindowInterface* browser,
++                                 PrometheusTabCommand command,
++                                 int tab_index) {
++  if (!browser) {
++    return false;
++  }
++
++  TabStripModel* const model = browser->GetTabStripModel();
++  if (!model || !model->ContainsIndex(tab_index)) {
++    return false;
++  }
++
++  switch (command) {
++    case PrometheusTabCommand::kDuplicate:
++      if (!chrome::CanDuplicateTabAt(browser, tab_index)) {
++        return false;
++      }
++      chrome::DuplicateTabAt(browser, tab_index);
++      return true;
++    case PrometheusTabCommand::kMoveToNewWindow: {
++      const std::vector<int> tab_indices = {tab_index};
++      if (!chrome::CanMoveTabsToNewWindow(browser, tab_indices)) {
++        return false;
++      }
++      chrome::MoveTabsToNewWindow(browser, tab_indices);
++      return true;
++    }
++    case PrometheusTabCommand::kClose:
++      return ExecuteContextMenuCommandIfEnabled(
++          model, tab_index, TabStripModel::CommandCloseTab);
++    case PrometheusTabCommand::kCloseOthers:
++      return ExecuteContextMenuCommandIfEnabled(
++          model, tab_index, TabStripModel::CommandCloseOtherTabs);
++    case PrometheusTabCommand::kCloseToRight:
++      return ExecuteContextMenuCommandIfEnabled(
++          model, tab_index, TabStripModel::CommandCloseTabsToRight);
++    case PrometheusTabCommand::kAddToNewGroup:
++      return ExecuteContextMenuCommandIfEnabled(
++          model, tab_index, TabStripModel::CommandAddToNewGroup);
++    case PrometheusTabCommand::kTogglePinned:
++      return ExecuteContextMenuCommandIfEnabled(
++          model, tab_index, TabStripModel::CommandTogglePinned);
++    case PrometheusTabCommand::kToggleMuted:
++      return ExecuteContextMenuCommandIfEnabled(
++          model, tab_index, TabStripModel::CommandToggleSiteMuted);
++    case PrometheusTabCommand::kUnloadOrDiscard:
++      return false;
++  }
++}
+diff --git a/chrome/browser/prometheus/prometheus_tab_commands.h b/chrome/browser/prometheus/prometheus_tab_commands.h
+new file mode 100644
+index 0000000000..2a66fb99a3
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_tab_commands.h
+@@ -0,0 +1,26 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_TAB_COMMANDS_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_TAB_COMMANDS_H_
++
++class BrowserWindowInterface;
++
++enum class PrometheusTabCommand {
++  kDuplicate,
++  kMoveToNewWindow,
++  kClose,
++  kCloseOthers,
++  kCloseToRight,
++  kAddToNewGroup,
++  kTogglePinned,
++  kToggleMuted,
++  kUnloadOrDiscard,
++};
++
++bool ExecutePrometheusTabCommand(BrowserWindowInterface* browser,
++                                 PrometheusTabCommand command,
++                                 int tab_index);
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_TAB_COMMANDS_H_
+-- 
+2.50.1 (Apple Git-155)
+

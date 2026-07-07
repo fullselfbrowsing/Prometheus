@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
-stopped_at: Completed 15-05-PLAN.md
-last_updated: "2026-07-07T06:23:58Z"
+stopped_at: Completed 15-06-PLAN.md
+last_updated: "2026-07-07T06:36:16Z"
 last_activity: 2026-07-07
 progress:
   total_phases: 15
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 25
-  completed_plans: 24
-  percent: 96
+  completed_plans: 25
+  percent: 100
 ---
 
 # Project State
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-06-23)
 
 ## Current Position
 
-Phase: 15 (chromium-ui-shell-compact-chrome-and-tab-model) — EXECUTING
+Phase: 15 (chromium-ui-shell-compact-chrome-and-tab-model) — COMPLETE
 Plan: 6 of 6
-Status: Ready to execute
+Status: Phase complete; ready for Phase 16 discussion/planning
 Last activity: 2026-07-07
 
 ## Performance Metrics
@@ -105,6 +105,7 @@ Last activity: 2026-07-07
 | Phase 15 P03 | 17min | 2 tasks | 8 files |
 | Phase 15 P04 | 8min | 2 tasks | 7 files |
 | Phase 15 P05 | 10min | 2 tasks | 5 files |
+| Phase 15 P06 | 12min | 2 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -193,6 +194,7 @@ Recent decisions affecting current work:
 - [Phase 14-06]: resource_ids.spec entries for chrome/browser/resources/*.grd files belong in the chrome/browser section, not components/
 - [Phase 14-06]: IDR_PROMETHEUS_ASSET_PM_WORDMARK_DARK/LIGHT is the manifest-authoritative name (grdp had WORDMARK_DARK/LIGHT without the PM_ prefix, fixed to match 14-ASSET-MANIFEST.md)
 - [Phase 15-05]: Prometheus advanced tab commands delegate to Chromium browser commands and TabStripModel context-menu commands; unsupported unload/discard returns false without mutation until a native discard path is chosen.
+- [Phase 15-06]: Phase 15 automated gates passed and 11 Chromium patches were exported from `19d1f8e0de..HEAD`; desktop visual screenshot UAT remains open because Conductor could not foreground/window-target the native app.
 
 ### Roadmap Evolution
 

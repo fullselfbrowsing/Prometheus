@@ -1,0 +1,158 @@
+From 75f734bc506da5e3d9d9957a4aa31a7bdc03c8aa Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 00:24:47 -0500
+Subject: [PATCH 01/11] feat(15-01): add Prometheus chrome mode pref helper
+
+- Register prometheus.chrome.mode with separate as the safe default
+- Add compact/separate parsing and PrefService helpers
+- Wire the helper into the Prometheus GN target
+---
+ chrome/browser/prefs/browser_prefs.cc         |  1 +
+ chrome/browser/prometheus/BUILD.gn            | 13 ++++++
+ .../prometheus/prometheus_chrome_mode.cc      | 43 +++++++++++++++++++
+ .../prometheus/prometheus_chrome_mode.h       | 23 ++++++++++
+ chrome/common/pref_names.h                    |  5 +++
+ 5 files changed, 85 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_chrome_mode.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_chrome_mode.h
+
+diff --git a/chrome/browser/prefs/browser_prefs.cc b/chrome/browser/prefs/browser_prefs.cc
+index 3b0a3bfb01..f60a05f8c9 100644
+--- a/chrome/browser/prefs/browser_prefs.cc
++++ b/chrome/browser/prefs/browser_prefs.cc
+@@ -1895,6 +1895,7 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
+   PinnedTabCodec::RegisterProfilePrefs(registry);
+   promos_utils::RegisterProfilePrefs(registry);
+   PromoService::RegisterProfilePrefs(registry);
++  registry->RegisterStringPref(prefs::kPrometheusChromeMode, "separate");
+   RegisterReadAnythingProfilePrefs(registry);
+   settings::SettingsUI::RegisterProfilePrefs(registry);
+   send_tab_to_self::RegisterProfilePrefs(registry);
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index fef49b71b3..2332612036 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -26,6 +26,18 @@ source_set("prometheus_action") {
+   # path. GN resolves this via the prometheus_vector_icons dep's output.
+ }
+ 
++source_set("prometheus_chrome_mode") {
++  sources = [
++    "prometheus_chrome_mode.cc",
++    "prometheus_chrome_mode.h",
++  ]
++
++  deps = [
++    "//chrome/common:constants",
++    "//components/prefs",
++  ]
++}
++
+ test("prometheus_unittests") {
+   sources = [
+     "prometheus_action_unittest.cc",
+@@ -41,6 +53,7 @@ test("prometheus_unittests") {
+ 
+   deps = [
+     ":prometheus_action",
++    ":prometheus_chrome_mode",
+     "//base",
+     "//base/test:run_all_unittests",
+     "//chrome/browser/resources/prometheus:prometheus_resources",
+diff --git a/chrome/browser/prometheus/prometheus_chrome_mode.cc b/chrome/browser/prometheus/prometheus_chrome_mode.cc
+new file mode 100644
+index 0000000000..eb20480b07
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_chrome_mode.cc
+@@ -0,0 +1,43 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_chrome_mode.h"
++
++#include <string>
++
++#include "chrome/common/pref_names.h"
++#include "components/prefs/pref_service.h"
++
++namespace {
++
++constexpr std::string_view kSeparateMode = "separate";
++constexpr std::string_view kCompactMode = "compact";
++
++}  // namespace
++
++PrometheusChromeMode PrometheusChromeModeFromString(std::string_view value) {
++  if (value == kCompactMode) {
++    return PrometheusChromeMode::kCompact;
++  }
++  return PrometheusChromeMode::kSeparate;
++}
++
++std::string_view PrometheusChromeModeToString(PrometheusChromeMode mode) {
++  switch (mode) {
++    case PrometheusChromeMode::kSeparate:
++      return kSeparateMode;
++    case PrometheusChromeMode::kCompact:
++      return kCompactMode;
++  }
++}
++
++PrometheusChromeMode GetPrometheusChromeMode(const PrefService& prefs) {
++  return PrometheusChromeModeFromString(
++      prefs.GetString(prefs::kPrometheusChromeMode));
++}
++
++void SetPrometheusChromeMode(PrefService& prefs, PrometheusChromeMode mode) {
++  prefs.SetString(prefs::kPrometheusChromeMode,
++                  std::string(PrometheusChromeModeToString(mode)));
++}
+diff --git a/chrome/browser/prometheus/prometheus_chrome_mode.h b/chrome/browser/prometheus/prometheus_chrome_mode.h
+new file mode 100644
+index 0000000000..bb6d367bb1
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_chrome_mode.h
+@@ -0,0 +1,23 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_CHROME_MODE_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_CHROME_MODE_H_
++
++#include <string_view>
++
++class PrefService;
++
++enum class PrometheusChromeMode {
++  kSeparate,
++  kCompact,
++};
++
++PrometheusChromeMode PrometheusChromeModeFromString(std::string_view value);
++std::string_view PrometheusChromeModeToString(PrometheusChromeMode mode);
++
++PrometheusChromeMode GetPrometheusChromeMode(const PrefService& prefs);
++void SetPrometheusChromeMode(PrefService& prefs, PrometheusChromeMode mode);
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_CHROME_MODE_H_
+diff --git a/chrome/common/pref_names.h b/chrome/common/pref_names.h
+index d23480769e..ad0373380c 100644
+--- a/chrome/common/pref_names.h
++++ b/chrome/common/pref_names.h
+@@ -42,6 +42,11 @@ namespace prefs {
+ // to control both apps and extensions, and before that just apps.
+ inline constexpr char kPreinstalledExtensions[] = "default_apps";
+ 
++// Stores the Prometheus top-chrome layout mode. Supported values are
++// "separate" and "compact"; unknown values are treated as "separate" by the
++// Prometheus helper layer.
++inline constexpr char kPrometheusChromeMode[] = "prometheus.chrome.mode";
++
+ // Disable SafeBrowsing checks for files coming from trusted URLs when false.
+ inline constexpr char kSafeBrowsingForTrustedSourcesEnabled[] =
+     "safebrowsing_for_trusted_sources_enabled";
+-- 
+2.50.1 (Apple Git-155)
+
