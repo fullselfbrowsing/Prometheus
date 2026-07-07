@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
-status: planning
+status: executing
 stopped_at: Phase 15 UI-SPEC approved
-last_updated: "2026-07-07T05:12:01.508Z"
-last_activity: 2026-07-07
+last_updated: "2026-07-07T05:19:49.584Z"
+last_activity: 2026-07-07 -- Phase 15 planning complete
 progress:
   total_phases: 15
   completed_phases: 4
-  total_plans: 19
+  total_plans: 25
   completed_plans: 19
-  percent: 100
+  percent: 76
 ---
 
 # Project State
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-06-23)
 
 Phase: 15 (chromium-ui-shell-compact-chrome-and-tab-model) — PLANNING
 Plan: Not started
-Status: Ready to plan
-Last activity: 2026-07-07
+Status: Ready to execute
+Last activity: 2026-07-07 -- Phase 15 planning complete
 
 ## Performance Metrics
 
