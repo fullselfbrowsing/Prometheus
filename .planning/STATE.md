@@ -4,8 +4,8 @@ milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
 stopped_at: Phase 17 context gathered
-last_updated: "2026-07-07T08:30:39.190Z"
-last_activity: 2026-07-07 -- Phase 17 planning complete
+last_updated: "2026-07-07T08:32:39.215Z"
+last_activity: 2026-07-07 -- Phase 17 execution started
 progress:
   total_phases: 15
   completed_phases: 6
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-06-23)
 
 ## Current Position
 
-Phase: 17 (native-agent-command-service-and-tab-ownership) — READY
-Plan: 0/6 planned
-Status: Ready to execute
-Last activity: 2026-07-07 -- Phase 17 planning complete
+Phase: 17 (native-agent-command-service-and-tab-ownership) — EXECUTING
+Plan: 1 of 6
+Status: Executing Phase 17
+Last activity: 2026-07-07 -- Phase 17 execution started
 
 ## Performance Metrics
 
