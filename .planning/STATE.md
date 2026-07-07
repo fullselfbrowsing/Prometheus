@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
-status: executing
-stopped_at: Completed Phase 16
-last_updated: "2026-07-07T08:14:41Z"
+status: completed
+stopped_at: Phase 17 context gathered
+last_updated: "2026-07-07T08:21:51.436Z"
 last_activity: 2026-07-07 -- Completed Phase 16
 progress:
   total_phases: 15
@@ -259,9 +259,9 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Phase 1
 
 ## Session Continuity
 
-Last session: 2026-07-07T06:13:46.524Z
-Stopped at: Completed 15-04-PLAN.md
-Resume file: None
+Last session: 2026-07-07T08:21:51.432Z
+Stopped at: Phase 17 context gathered
+Resume file: .planning/phases/17-native-agent-command-service-and-tab-ownership/17-CONTEXT.md
 
 ## Operator Next Steps
 
