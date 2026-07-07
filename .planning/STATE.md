@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: planning
-stopped_at: Phase 14 complete — ready to plan Phase 15
-last_updated: "2026-07-07T03:26:55.919Z"
+stopped_at: Phase 15 UI-SPEC approved
+last_updated: "2026-07-07T05:12:01.508Z"
 last_activity: 2026-07-07
 progress:
   total_phases: 15
@@ -234,9 +234,9 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Phase 1
 
 ## Session Continuity
 
-Last session: 2026-07-07T03:24:56.089Z
-Stopped at: Phase 14 complete — ready to plan Phase 15
-Resume file: None
+Last session: 2026-07-07T05:12:01.504Z
+Stopped at: Phase 15 UI-SPEC approved
+Resume file: .planning/phases/15-chromium-ui-shell-compact-chrome-and-tab-model/15-UI-SPEC.md
 
 ## Operator Next Steps
 
