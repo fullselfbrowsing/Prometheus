@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
-status: completed
+status: executing
 stopped_at: Phase 17 context gathered
-last_updated: "2026-07-07T08:21:51.436Z"
-last_activity: 2026-07-07 -- Completed Phase 16
+last_updated: "2026-07-07T08:30:39.190Z"
+last_activity: 2026-07-07 -- Phase 17 planning complete
 progress:
   total_phases: 15
   completed_phases: 6
-  total_plans: 31
+  total_plans: 37
   completed_plans: 31
-  percent: 100
+  percent: 84
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-06-23)
 ## Current Position
 
 Phase: 17 (native-agent-command-service-and-tab-ownership) — READY
-Plan: not planned
-Status: Phase 16 complete; next incomplete phase is Phase 17
-Last activity: 2026-07-07 -- Completed Phase 16
+Plan: 0/6 planned
+Status: Ready to execute
+Last activity: 2026-07-07 -- Phase 17 planning complete
 
 ## Performance Metrics
 
