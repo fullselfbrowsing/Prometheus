@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
-status: discussing
-stopped_at: Created 16-CONTEXT.md
-last_updated: "2026-07-07T06:42:00Z"
+status: planning
+stopped_at: Created 16-UI-SPEC.md
+last_updated: "2026-07-07T06:48:00Z"
 last_activity: 2026-07-07
 progress:
   total_phases: 15
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-06-23)
 
 ## Current Position
 
-Phase: 16 (prometheus-webui-surfaces-and-new-tab) — DISCUSSING
-Plan: Context gathered
-Status: Ready for UI contract and planning
+Phase: 16 (prometheus-webui-surfaces-and-new-tab) — PLANNING
+Plan: UI contract complete
+Status: Ready for detailed planning
 Last activity: 2026-07-07
 
 ## Performance Metrics
