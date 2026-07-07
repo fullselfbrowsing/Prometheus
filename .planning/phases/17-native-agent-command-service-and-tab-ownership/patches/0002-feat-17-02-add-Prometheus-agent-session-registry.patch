@@ -1,0 +1,435 @@
+From b7d208c9d471469ffddcf67e1a14c68a10ab351e Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 03:43:00 -0500
+Subject: [PATCH 2/6] feat(17-02): add Prometheus agent session registry
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  14 ++
+ .../prometheus/prometheus_agent_session.cc    | 161 ++++++++++++++++++
+ .../prometheus/prometheus_agent_session.h     |  80 +++++++++
+ .../prometheus_agent_session_unittest.cc      | 122 +++++++++++++
+ 4 files changed, 377 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_session.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_session.h
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_session_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index ca38b22d07..8366177e65 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -84,10 +84,23 @@ source_set("prometheus_agent_route") {
+   ]
+ }
+ 
++source_set("prometheus_agent_session") {
++  sources = [
++    "prometheus_agent_session.cc",
++    "prometheus_agent_session.h",
++  ]
++
++  deps = [
++    ":prometheus_agent_route",
++    "//base",
++  ]
++}
++
+ test("prometheus_unittests") {
+   sources = [
+     "prometheus_action_unittest.cc",
+     "prometheus_agent_route_unittest.cc",
++    "prometheus_agent_session_unittest.cc",
+     "prometheus_asset_resource_unittest.cc",
+     "prometheus_chrome_mode_unittest.cc",
+     "prometheus_color_mixer_unittest.cc",
+@@ -104,6 +117,7 @@ test("prometheus_unittests") {
+   deps = [
+     ":prometheus_action",
+     ":prometheus_agent_route",
++    ":prometheus_agent_session",
+     ":prometheus_ask_fsb_handoff",
+     ":prometheus_chrome_mode",
+     ":prometheus_tab_state",
+diff --git a/chrome/browser/prometheus/prometheus_agent_session.cc b/chrome/browser/prometheus/prometheus_agent_session.cc
+new file mode 100644
+index 0000000000..c2daafafd2
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_session.cc
+@@ -0,0 +1,161 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_session.h"
++
++#include <utility>
++
++#include "base/strings/string_util.h"
++#include "base/unguessable_token.h"
++
++namespace prometheus {
++
++AgentSession::AgentSession() = default;
++AgentSession::AgentSession(const AgentSession&) = default;
++AgentSession& AgentSession::operator=(const AgentSession&) = default;
++AgentSession::~AgentSession() = default;
++
++AgentSessionResult::AgentSessionResult() = default;
++AgentSessionResult::AgentSessionResult(const AgentSessionResult&) = default;
++AgentSessionResult& AgentSessionResult::operator=(const AgentSessionResult&) =
++    default;
++AgentSessionResult::~AgentSessionResult() = default;
++
++// static
++AgentSessionResult AgentSessionResult::Success(
++    AgentSession session,
++    std::vector<std::string> changed_state) {
++  AgentSessionResult result;
++  result.route_result = AgentRouteResult::Success(std::move(changed_state));
++  result.session = std::move(session);
++  return result;
++}
++
++// static
++AgentSessionResult AgentSessionResult::Failure(AgentErrorCode error_code,
++                                               std::string message,
++                                               std::string recovery) {
++  AgentSessionResult result;
++  result.route_result =
++      AgentRouteResult::Failure(error_code, std::move(message),
++                                std::move(recovery));
++  return result;
++}
++
++AgentSessionRegistry::AgentSessionRegistry(size_t max_active_sessions,
++                                           base::TimeDelta reconnect_grace)
++    : max_active_sessions_(max_active_sessions),
++      reconnect_grace_(reconnect_grace) {}
++
++AgentSessionRegistry::~AgentSessionRegistry() = default;
++
++AgentSessionResult AgentSessionRegistry::CreateSession(
++    std::string display_label,
++    base::Time now) {
++  DeactivateExpiredSessions(now);
++  if (active_session_count() >= max_active_sessions_) {
++    return AgentSessionResult::Failure(
++        AgentErrorCode::kAgentCapReached, "Agent session cap reached",
++        "Close an existing session before creating another agent session");
++  }
++
++  AgentSession session;
++  session.id = base::UnguessableToken::Create().ToString();
++  session.display_label = SanitizeDisplayLabel(display_label);
++  session.created_at = now;
++  session.last_seen_at = now;
++  session.active = true;
++
++  auto [it, inserted] = sessions_.emplace(session.id, session);
++  return AgentSessionResult::Success(it->second, {"session_created"});
++}
++
++AgentSessionResult AgentSessionRegistry::ValidateSession(
++    std::string_view session_id,
++    base::Time now) {
++  DeactivateExpiredSessions(now);
++  auto it = sessions_.find(session_id);
++  if (it == sessions_.end() || !it->second.active) {
++    return AgentSessionResult::Failure(
++        AgentErrorCode::kUnauthorized, "Unknown or expired agent session",
++        "Create a new browser-issued agent session and retry");
++  }
++  return AgentSessionResult::Success(it->second, {});
++}
++
++AgentRouteResult AgentSessionRegistry::TouchSession(
++    std::string_view session_id,
++    base::Time now) {
++  AgentSessionResult validation = ValidateSession(session_id, now);
++  if (!validation.route_result.ok) {
++    return validation.route_result;
++  }
++
++  auto it = sessions_.find(session_id);
++  it->second.last_seen_at = now;
++  return AgentRouteResult::Success({"session_touched"});
++}
++
++AgentRouteResult AgentSessionRegistry::CloseSession(
++    std::string_view session_id) {
++  auto it = sessions_.find(session_id);
++  if (it == sessions_.end() || !it->second.active) {
++    return AgentRouteResult::Failure(
++        AgentErrorCode::kUnauthorized, "Unknown or closed agent session",
++        "Create a new browser-issued agent session and retry");
++  }
++
++  it->second.active = false;
++  return AgentRouteResult::Success({"session_closed"});
++}
++
++size_t AgentSessionRegistry::active_session_count() const {
++  size_t count = 0;
++  for (const auto& [id, session] : sessions_) {
++    if (session.active) {
++      ++count;
++    }
++  }
++  return count;
++}
++
++void AgentSessionRegistry::set_max_active_sessions_for_testing(
++    size_t max_active_sessions) {
++  max_active_sessions_ = max_active_sessions;
++}
++
++const AgentSession* AgentSessionRegistry::GetSessionForTesting(
++    std::string_view session_id) const {
++  auto it = sessions_.find(session_id);
++  if (it == sessions_.end()) {
++    return nullptr;
++  }
++  return &it->second;
++}
++
++std::string AgentSessionRegistry::SanitizeDisplayLabel(
++    std::string_view display_label) const {
++  std::string label(base::TrimWhitespaceASCII(display_label, base::TRIM_ALL));
++  if (label.empty()) {
++    label = "Agent";
++  }
++  if (label.size() > kMaxAgentSessionLabelLength) {
++    label.resize(kMaxAgentSessionLabelLength);
++  }
++  return label;
++}
++
++void AgentSessionRegistry::DeactivateExpiredSessions(base::Time now) {
++  if (!reconnect_grace_.is_positive()) {
++    return;
++  }
++
++  for (auto& [id, session] : sessions_) {
++    if (session.active && now - session.last_seen_at > reconnect_grace_) {
++      session.active = false;
++    }
++  }
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_session.h b/chrome/browser/prometheus/prometheus_agent_session.h
+new file mode 100644
+index 0000000000..49a011eec0
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_session.h
+@@ -0,0 +1,80 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_SESSION_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_SESSION_H_
++
++#include <map>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "base/time/time.h"
++#include "chrome/browser/prometheus/prometheus_agent_route.h"
++
++namespace prometheus {
++
++inline constexpr size_t kMaxAgentSessionLabelLength = 80;
++
++struct AgentSession {
++  AgentSession();
++  AgentSession(const AgentSession&);
++  AgentSession& operator=(const AgentSession&);
++  ~AgentSession();
++
++  std::string id;
++  std::string display_label;
++  base::Time created_at;
++  base::Time last_seen_at;
++  bool active = false;
++};
++
++struct AgentSessionResult {
++  AgentSessionResult();
++  AgentSessionResult(const AgentSessionResult&);
++  AgentSessionResult& operator=(const AgentSessionResult&);
++  ~AgentSessionResult();
++
++  static AgentSessionResult Success(AgentSession session,
++                                    std::vector<std::string> changed_state);
++  static AgentSessionResult Failure(AgentErrorCode error_code,
++                                    std::string message,
++                                    std::string recovery);
++
++  AgentRouteResult route_result;
++  std::optional<AgentSession> session;
++};
++
++class AgentSessionRegistry {
++ public:
++  AgentSessionRegistry(size_t max_active_sessions,
++                       base::TimeDelta reconnect_grace);
++  AgentSessionRegistry(const AgentSessionRegistry&) = delete;
++  AgentSessionRegistry& operator=(const AgentSessionRegistry&) = delete;
++  ~AgentSessionRegistry();
++
++  AgentSessionResult CreateSession(std::string display_label, base::Time now);
++  AgentSessionResult ValidateSession(std::string_view session_id,
++                                      base::Time now);
++  AgentRouteResult TouchSession(std::string_view session_id, base::Time now);
++  AgentRouteResult CloseSession(std::string_view session_id);
++
++  size_t active_session_count() const;
++  void set_max_active_sessions_for_testing(size_t max_active_sessions);
++
++  const AgentSession* GetSessionForTesting(std::string_view session_id) const;
++
++ private:
++  std::string SanitizeDisplayLabel(std::string_view display_label) const;
++  void DeactivateExpiredSessions(base::Time now);
++
++  size_t max_active_sessions_;
++  base::TimeDelta reconnect_grace_;
++  std::map<std::string, AgentSession, std::less<>> sessions_;
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_SESSION_H_
+diff --git a/chrome/browser/prometheus/prometheus_agent_session_unittest.cc b/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
+new file mode 100644
+index 0000000000..dbe6c8f58e
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
+@@ -0,0 +1,122 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_session.h"
++
++#include <string>
++
++#include "base/time/time.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++
++namespace {
++
++class PrometheusAgentSessionTest : public testing::Test {
++ protected:
++  base::Time now() const { return base::Time::FromSecondsSinceUnixEpoch(1000); }
++};
++
++TEST_F(PrometheusAgentSessionTest, CreatesOpaqueDistinctSessionIds) {
++  AgentSessionRegistry registry(4, base::Minutes(5));
++
++  AgentSessionResult first = registry.CreateSession("First", now());
++  AgentSessionResult second = registry.CreateSession("Second", now());
++
++  ASSERT_TRUE(first.route_result.ok);
++  ASSERT_TRUE(second.route_result.ok);
++  ASSERT_TRUE(first.session.has_value());
++  ASSERT_TRUE(second.session.has_value());
++  EXPECT_FALSE(first.session->id.empty());
++  EXPECT_FALSE(second.session->id.empty());
++  EXPECT_NE(first.session->id, second.session->id);
++  EXPECT_EQ(2u, registry.active_session_count());
++}
++
++TEST_F(PrometheusAgentSessionTest, CallerLabelsDoNotAuthorize) {
++  AgentSessionRegistry registry(4, base::Minutes(5));
++
++  AgentSessionResult created = registry.CreateSession("Trusted label", now());
++  ASSERT_TRUE(created.session.has_value());
++
++  AgentSessionResult label_validation =
++      registry.ValidateSession("Trusted label", now());
++  EXPECT_FALSE(label_validation.route_result.ok);
++  EXPECT_EQ(AgentErrorCode::kUnauthorized,
++            label_validation.route_result.error_code);
++  EXPECT_EQ("UNAUTHORIZED",
++            AgentErrorCodeToString(label_validation.route_result.error_code));
++
++  AgentSessionResult id_validation =
++      registry.ValidateSession(created.session->id, now());
++  EXPECT_TRUE(id_validation.route_result.ok);
++}
++
++TEST_F(PrometheusAgentSessionTest, SanitizesBlankAndLongLabels) {
++  AgentSessionRegistry registry(4, base::Minutes(5));
++
++  AgentSessionResult blank = registry.CreateSession(" \t\n ", now());
++  ASSERT_TRUE(blank.session.has_value());
++  EXPECT_EQ("Agent", blank.session->display_label);
++
++  const std::string long_label(kMaxAgentSessionLabelLength + 20, 'x');
++  AgentSessionResult long_result = registry.CreateSession(long_label, now());
++  ASSERT_TRUE(long_result.session.has_value());
++  EXPECT_EQ(kMaxAgentSessionLabelLength,
++            long_result.session->display_label.size());
++}
++
++TEST_F(PrometheusAgentSessionTest, MaxSessionCapReturnsTypedError) {
++  AgentSessionRegistry registry(1, base::Minutes(5));
++
++  EXPECT_TRUE(registry.CreateSession("First", now()).route_result.ok);
++  AgentSessionResult capped = registry.CreateSession("Second", now());
++
++  EXPECT_FALSE(capped.route_result.ok);
++  EXPECT_EQ(AgentErrorCode::kAgentCapReached, capped.route_result.error_code);
++  EXPECT_EQ("AGENT_CAP_REACHED",
++            AgentErrorCodeToString(capped.route_result.error_code));
++}
++
++TEST_F(PrometheusAgentSessionTest, UnknownSessionReturnsUnauthorized) {
++  AgentSessionRegistry registry(4, base::Minutes(5));
++
++  AgentSessionResult result = registry.ValidateSession("missing", now());
++
++  EXPECT_FALSE(result.route_result.ok);
++  EXPECT_EQ(AgentErrorCode::kUnauthorized, result.route_result.error_code);
++  EXPECT_EQ("UNAUTHORIZED", AgentErrorCodeToString(result.route_result.error_code));
++}
++
++TEST_F(PrometheusAgentSessionTest, ExpiredSessionReturnsTypedDenial) {
++  AgentSessionRegistry registry(4, base::Minutes(5));
++  AgentSessionResult created = registry.CreateSession("Agent", now());
++  ASSERT_TRUE(created.session.has_value());
++
++  AgentSessionResult expired =
++      registry.ValidateSession(created.session->id, now() + base::Minutes(6));
++
++  EXPECT_FALSE(expired.route_result.ok);
++  EXPECT_EQ(AgentErrorCode::kUnauthorized, expired.route_result.error_code);
++  EXPECT_EQ(0u, registry.active_session_count());
++}
++
++TEST_F(PrometheusAgentSessionTest, TouchSessionUpdatesLastSeenTime) {
++  AgentSessionRegistry registry(4, base::Minutes(5));
++  AgentSessionResult created = registry.CreateSession("Agent", now());
++  ASSERT_TRUE(created.session.has_value());
++
++  const base::Time later = now() + base::Minutes(2);
++  AgentRouteResult touched = registry.TouchSession(created.session->id, later);
++
++  EXPECT_TRUE(touched.ok);
++  const AgentSession* session =
++      registry.GetSessionForTesting(created.session->id);
++  ASSERT_NE(nullptr, session);
++  EXPECT_EQ(later, session->last_seen_at);
++}
++
++}  // namespace
++
++}  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

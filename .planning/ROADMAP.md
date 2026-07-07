@@ -17,7 +17,7 @@ Prometheus keeps its product, design, and agent-native control thesis, but retir
 - [x] **Phase 14: Asset and Design System Port** — Port warm tokens, PM/FSB assets, Poppins, Space Mono, Font Awesome, dark/light themes, and visual state rules into Chromium resources. (completed 2026-07-07)
 - [x] **Phase 15: Chromium UI Shell, Compact Chrome, and Tab Model** — Rebuild the compact browser chrome and advanced tab workflows using Chromium-native UI architecture. (completed 2026-07-07)
 - [x] **Phase 16: Prometheus WebUI Surfaces and New Tab** — Build Prometheus start page, side panel surfaces, and FSB Control Panel as Chromium WebUI/browser-backed surfaces. (completed 2026-07-07)
-- [ ] **Phase 17: Native Agent Command Service and Tab Ownership** — Rebuild the core native command router as a Chromium browser-process service with authenticated sessions and stable tab ownership.
+- [x] **Phase 17: Native Agent Command Service and Tab Ownership** — Rebuild the core native command router as a Chromium browser-process service with authenticated sessions and stable tab ownership. (completed 2026-07-07)
 - [ ] **Phase 18: Page Adapter, DOM Snapshot, and Action Verification** — Rebuild page reads, DOM snapshots, JS execution, action tools, waits, and verification on Chromium WebContents/frame primitives.
 - [ ] **Phase 19: MCP Bridge and Multi-Agent Runtime Compatibility** — Reconnect existing FSB-style MCP clients to the Chromium-native service with multi-agent policy and typed compatibility errors.
 - [ ] **Phase 20: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel** — Restore provider-backed tasks, logs, memory/site guides, vault boundaries, diagnostics, and dense operator controls.
@@ -397,7 +397,7 @@ Plans:
 | 14. Asset and Design System Port | v2.0 | 8/8 | Complete    | 2026-07-07 |
 | 15. Chromium UI Shell, Compact Chrome, and Tab Model | v2.0 | 6/6 | Complete   | 2026-07-07 |
 | 16. Prometheus WebUI Surfaces and New Tab | v2.0 | 6/6 | Complete | 2026-07-07 |
-| 17. Native Agent Command Service and Tab Ownership | v2.0 | 5/6 | In Progress | — |
+| 17. Native Agent Command Service and Tab Ownership | v2.0 | 6/6 | Complete | 2026-07-07 |
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | PAGE-01..PAGE-08 | Planned | — |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | MCP-01..MCP-07 | Planned | — |
 | 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | FSB-01..FSB-08 | Planned | — |
@@ -406,7 +406,7 @@ Plans:
 | 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | REL-01, REL-02, REL-03, REL-04, REL-07 | Planned | — |
 | 24. Packaging, Release Validation, and Handoff | v2.0 | REL-01, REL-05, REL-06 | Planned | — |
 
-**Totals:** 14 phases, 92 requirements planned, 0 complete.
+**Totals:** 15 phases, 7 complete; 37/37 planned implementation summaries complete through Phase 17.
 
 ## Deferred Beyond v2.0
 

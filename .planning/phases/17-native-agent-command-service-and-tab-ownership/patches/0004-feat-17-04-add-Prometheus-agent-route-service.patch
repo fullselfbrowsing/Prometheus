@@ -1,0 +1,908 @@
+From da0c6a6f7c8eb9a3a08ae104e19469ffe534404f Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 04:09:56 -0500
+Subject: [PATCH 4/6] feat(17-04): add Prometheus agent route service
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  22 +
+ .../prometheus/prometheus_agent_service.cc    | 438 ++++++++++++++++++
+ .../prometheus/prometheus_agent_service.h     |  81 ++++
+ .../prometheus_agent_service_browsertest.cc   | 296 ++++++++++++
+ chrome/browser/ui/views/prometheus/BUILD.gn   |   5 +
+ 5 files changed, 842 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_service.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_service.h
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_service_browsertest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index b7be7622a8..703602f2ac 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -113,6 +113,28 @@ source_set("prometheus_agent_session") {
+   ]
+ }
+ 
++source_set("prometheus_agent_service") {
++  sources = [
++    "prometheus_agent_service.cc",
++    "prometheus_agent_service.h",
++  ]
++
++  deps = [
++    ":prometheus_agent_route",
++    ":prometheus_agent_session",
++    ":prometheus_agent_tab_data",
++    ":prometheus_tab_commands",
++    "//base",
++    "//chrome/browser/tab_list",
++    "//chrome/browser/ui",
++    "//chrome/browser/ui/browser_window",
++    "//components/sessions:session_id",
++    "//components/tabs:public",
++    "//content/public/browser",
++    "//url",
++  ]
++}
++
+ test("prometheus_unittests") {
+   sources = [
+     "prometheus_action_unittest.cc",
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.cc b/chrome/browser/prometheus/prometheus_agent_service.cc
+new file mode 100644
+index 0000000000..ba81116893
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_service.cc
+@@ -0,0 +1,438 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_service.h"
++
++#include <optional>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "base/callback_list.h"
++#include "base/check.h"
++#include "base/functional/bind.h"
++#include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
++#include "chrome/browser/prometheus/prometheus_tab_commands.h"
++#include "chrome/browser/tab_list/tab_list_interface.h"
++#include "chrome/browser/ui/browser_window/public/browser_collection.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "components/sessions/core/session_id.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/web_contents.h"
++#include "url/gurl.h"
++
++namespace prometheus {
++
++namespace {
++
++bool IsNullTabHandle(tabs::TabHandle handle) {
++  return handle.raw_value() == tabs::TabHandle::NullValue;
++}
++
++AgentRouteResult InvalidTarget(std::string message) {
++  return AgentRouteResult::Failure(AgentErrorCode::kInvalidTarget,
++                                   std::move(message),
++                                   "Choose a current browser and tab target");
++}
++
++AgentRouteResult StaleTarget(std::string message) {
++  return AgentRouteResult::Failure(AgentErrorCode::kStaleTarget,
++                                   std::move(message),
++                                   "Refresh targets and retry the route");
++}
++
++AgentRouteResult UnsupportedRoute() {
++  return AgentRouteResult::Failure(
++      AgentErrorCode::kUnsupportedRoute, "Route is not supported in Phase 17",
++      "Use browser-owned tab/window/navigation routes only");
++}
++
++std::vector<std::string> ListTabMetadata(TabListInterface* tab_list) {
++  std::vector<std::string> changed_state;
++  for (tabs::TabInterface* tab : tab_list->GetAllTabs()) {
++    if (tab) {
++      changed_state.push_back("tab:" +
++                              std::to_string(tab->GetHandle().raw_value()));
++    }
++  }
++  return changed_state;
++}
++
++std::vector<std::string> ListWindowMetadata() {
++  std::vector<std::string> changed_state;
++  GlobalBrowserCollection::GetInstance()->ForEach(
++      [&changed_state](BrowserWindowInterface* browser) {
++        changed_state.push_back("window:" +
++                                std::to_string(browser->GetSessionID().id()));
++        return true;
++      });
++  return changed_state;
++}
++
++}  // namespace
++
++struct PrometheusAgentService::OwnedTabData {
++  OwnedTabData(std::unique_ptr<PrometheusAgentTabData> data,
++               base::CallbackListSubscription will_detach_subscription)
++      : data(std::move(data)),
++        will_detach_subscription(std::move(will_detach_subscription)) {}
++
++  ~OwnedTabData() = default;
++
++  std::unique_ptr<PrometheusAgentTabData> data;
++  base::CallbackListSubscription will_detach_subscription;
++};
++
++PrometheusAgentService::PrometheusAgentService(
++    AgentSessionRegistry* session_registry)
++    : PrometheusAgentService(session_registry,
++                             base::BindRepeating(&base::Time::Now)) {}
++
++PrometheusAgentService::PrometheusAgentService(
++    AgentSessionRegistry* session_registry,
++    NowCallback now_callback)
++    : session_registry_(session_registry),
++      now_callback_(std::move(now_callback)) {
++  CHECK(session_registry_);
++  CHECK(now_callback_);
++}
++
++PrometheusAgentService::~PrometheusAgentService() = default;
++
++AgentSessionResult PrometheusAgentService::CreateSession(
++    std::string display_label) {
++  return session_registry_->CreateSession(std::move(display_label), Now());
++}
++
++AgentRouteResult PrometheusAgentService::CloseSession(
++    std::string_view session_id) {
++  return session_registry_->CloseSession(session_id);
++}
++
++AgentRouteResult PrometheusAgentService::ExecuteRoute(
++    BrowserWindowInterface* browser,
++    const AgentRouteRequest& request) {
++  AgentSessionResult session_result =
++      session_registry_->ValidateSession(request.session_id, Now());
++  if (!session_result.route_result.ok) {
++    return session_result.route_result;
++  }
++  CHECK(session_result.session.has_value());
++
++  AgentRouteResult touch_result =
++      session_registry_->TouchSession(request.session_id, Now());
++  if (!touch_result.ok) {
++    return touch_result;
++  }
++
++  ResolvedTarget resolved;
++  switch (request.route_name) {
++    case AgentRouteName::kListTabs: {
++      AgentRouteResult resolved_result = ResolveTarget(
++          browser, request.target, /*require_tab=*/false, &resolved);
++      if (!resolved_result.ok) {
++        return resolved_result;
++      }
++      return SuccessForTarget(ListTabMetadata(resolved.tab_list),
++                              resolved.browser, nullptr);
++    }
++    case AgentRouteName::kListWindows:
++      return AgentRouteResult::Success(ListWindowMetadata());
++    case AgentRouteName::kOpenTab: {
++      AgentRouteResult resolved_result = ResolveTarget(
++          browser, request.target, /*require_tab=*/false, &resolved);
++      if (!resolved_result.ok) {
++        return resolved_result;
++      }
++      tabs::TabInterface* opened_tab = resolved.tab_list->OpenTab(
++          request.url.value_or(GURL("about:blank")), /*index=*/-1,
++          /*foreground=*/true);
++      if (!opened_tab) {
++        return StaleTarget("Failed to open a new tab");
++      }
++      AgentRouteResult claim =
++          EnsureCanControl(opened_tab, *session_result.session);
++      if (!claim.ok) {
++        return claim;
++      }
++      return SuccessForTarget({"tab_opened"}, resolved.browser, opened_tab);
++    }
++    case AgentRouteName::kActivateTab: {
++      AgentRouteResult resolved_result = ResolveTarget(
++          browser, request.target, /*require_tab=*/true, &resolved);
++      if (!resolved_result.ok) {
++        return resolved_result;
++      }
++      AgentRouteResult control =
++          EnsureCanControl(resolved.tab, *session_result.session);
++      if (!control.ok) {
++        return control;
++      }
++      resolved.tab_list->ActivateTab(resolved.tab->GetHandle());
++      return SuccessForTarget({"tab_activated"}, resolved.browser,
++                              resolved.tab);
++    }
++    case AgentRouteName::kCloseTab: {
++      AgentRouteResult resolved_result = ResolveTarget(
++          browser, request.target, /*require_tab=*/true, &resolved);
++      if (!resolved_result.ok) {
++        return resolved_result;
++      }
++      AgentRouteResult control =
++          EnsureCanControl(resolved.tab, *session_result.session);
++      if (!control.ok) {
++        return control;
++      }
++      const int32_t handle = resolved.tab->GetHandle().raw_value();
++      tab_data_.erase(handle);
++      resolved.tab_list->CloseTab(resolved.tab->GetHandle());
++      return SuccessForTarget({"tab_closed"}, resolved.browser, nullptr);
++    }
++    case AgentRouteName::kNavigate: {
++      AgentRouteResult resolved_result = ResolveTarget(
++          browser, request.target, /*require_tab=*/true, &resolved);
++      if (!resolved_result.ok) {
++        return resolved_result;
++      }
++      if (!request.url.has_value() || !request.url->is_valid()) {
++        return InvalidTarget("Navigate route requires a valid URL");
++      }
++      AgentRouteResult control =
++          EnsureCanControl(resolved.tab, *session_result.session);
++      if (!control.ok) {
++        return control;
++      }
++      content::NavigationController::LoadURLParams params(*request.url);
++      resolved.tab->GetContents()->GetController().LoadURLWithParams(
++          std::move(params));
++      return SuccessForTarget({"navigation_started"}, resolved.browser,
++                              resolved.tab);
++    }
++    case AgentRouteName::kReload: {
++      AgentRouteResult resolved_result = ResolveTarget(
++          browser, request.target, /*require_tab=*/true, &resolved);
++      if (!resolved_result.ok) {
++        return resolved_result;
++      }
++      AgentRouteResult control =
++          EnsureCanControl(resolved.tab, *session_result.session);
++      if (!control.ok) {
++        return control;
++      }
++      resolved.tab->GetContents()->GetController().Reload(
++          content::ReloadType::NORMAL, /*check_for_repost=*/false);
++      return SuccessForTarget({"tab_reloaded"}, resolved.browser, resolved.tab);
++    }
++    case AgentRouteName::kGoBack:
++    case AgentRouteName::kGoForward: {
++      AgentRouteResult resolved_result = ResolveTarget(
++          browser, request.target, /*require_tab=*/true, &resolved);
++      if (!resolved_result.ok) {
++        return resolved_result;
++      }
++      AgentRouteResult control =
++          EnsureCanControl(resolved.tab, *session_result.session);
++      if (!control.ok) {
++        return control;
++      }
++      content::NavigationController& controller =
++          resolved.tab->GetContents()->GetController();
++      if (request.route_name == AgentRouteName::kGoBack) {
++        if (!controller.CanGoBack()) {
++          return InvalidTarget("Target tab cannot go back");
++        }
++        controller.GoBack();
++        return SuccessForTarget({"history_back"}, resolved.browser,
++                                resolved.tab);
++      }
++      if (!controller.CanGoForward()) {
++        return InvalidTarget("Target tab cannot go forward");
++      }
++      controller.GoForward();
++      return SuccessForTarget({"history_forward"}, resolved.browser,
++                              resolved.tab);
++    }
++    case AgentRouteName::kDuplicateTab: {
++      AgentRouteResult resolved_result = ResolveTarget(
++          browser, request.target, /*require_tab=*/true, &resolved);
++      if (!resolved_result.ok) {
++        return resolved_result;
++      }
++      AgentRouteResult control =
++          EnsureCanControl(resolved.tab, *session_result.session);
++      if (!control.ok) {
++        return control;
++      }
++      tabs::TabInterface* duplicated =
++          resolved.tab_list->DuplicateTab(resolved.tab->GetHandle());
++      if (!duplicated) {
++        return StaleTarget("Failed to duplicate target tab");
++      }
++      AgentRouteResult claim =
++          EnsureCanControl(duplicated, *session_result.session);
++      if (!claim.ok) {
++        return claim;
++      }
++      return SuccessForTarget({"tab_duplicated"}, resolved.browser, duplicated);
++    }
++    case AgentRouteName::kMoveTabToNewWindow: {
++      AgentRouteResult resolved_result = ResolveTarget(
++          browser, request.target, /*require_tab=*/true, &resolved);
++      if (!resolved_result.ok) {
++        return resolved_result;
++      }
++      AgentRouteResult control =
++          EnsureCanControl(resolved.tab, *session_result.session);
++      if (!control.ok) {
++        return control;
++      }
++      if (!ExecutePrometheusTabCommand(resolved.browser,
++                                       PrometheusTabCommand::kMoveToNewWindow,
++                                       resolved.tab_index)) {
++        return StaleTarget("Failed to move tab to a new window");
++      }
++      BrowserWindowInterface* moved_browser =
++          resolved.tab->GetBrowserWindowInterface();
++      BrowserWindowInterface* result_browser =
++          moved_browser ? moved_browser : resolved.browser.get();
++      return SuccessForTarget({"tab_moved_to_window"}, result_browser,
++                              resolved.tab);
++    }
++    case AgentRouteName::kOpenPrometheusNewTab:
++    case AgentRouteName::kOpenPrometheusSidePanel:
++    case AgentRouteName::kOpenPrometheusControlPanel:
++    case AgentRouteName::kUnsupportedPageAction:
++      return UnsupportedRoute();
++  }
++}
++
++base::Time PrometheusAgentService::Now() const {
++  return now_callback_.Run();
++}
++
++AgentRouteResult PrometheusAgentService::ResolveTarget(
++    BrowserWindowInterface* browser,
++    const AgentTarget& target,
++    bool require_tab,
++    ResolvedTarget* resolved) {
++  if (!browser) {
++    return InvalidTarget("Missing browser target");
++  }
++
++  std::optional<int32_t> requested_window = target.window_session_id;
++  if (target.browser_session_id.has_value()) {
++    if (requested_window.has_value() &&
++        *requested_window != *target.browser_session_id) {
++      return InvalidTarget("Conflicting browser and window targets");
++    }
++    requested_window = target.browser_session_id;
++  }
++
++  if (requested_window.has_value()) {
++    SessionID session_id = SessionID::FromSerializedValue(*requested_window);
++    if (!session_id.is_valid()) {
++      return InvalidTarget("Invalid browser window target");
++    }
++    if (browser->GetSessionID() != session_id) {
++      browser =
++          GlobalBrowserCollection::GetInstance()->FindBrowserWithID(session_id);
++      if (!browser) {
++        return StaleTarget("Requested browser window no longer exists");
++      }
++    }
++  }
++
++  if (browser->IsDeleteScheduled()) {
++    return AgentRouteResult::Failure(
++        AgentErrorCode::kBrowserShuttingDown,
++        "Requested browser is scheduled for deletion",
++        "Choose an active browser window and retry");
++  }
++
++  TabListInterface* tab_list = TabListInterface::From(browser);
++  if (!tab_list) {
++    return InvalidTarget("Browser has no tab list interface");
++  }
++
++  tabs::TabInterface* tab = nullptr;
++  int tab_index = -1;
++  if (!IsNullTabHandle(target.tab_handle)) {
++    tab = target.tab_handle.Get();
++    if (!tab) {
++      return StaleTarget("Requested tab handle no longer exists");
++    }
++    tab_index = tab_list->GetIndexOfTab(target.tab_handle);
++    if (tab_index == -1) {
++      return StaleTarget("Requested tab is not in the target browser");
++    }
++  } else if (require_tab) {
++    tab = tab_list->GetActiveTab();
++    if (!tab) {
++      return StaleTarget("Target browser has no active tab");
++    }
++    tab_index = tab_list->GetIndexOfTab(tab->GetHandle());
++  }
++
++  resolved->browser = browser;
++  resolved->tab_list = tab_list;
++  resolved->tab = tab;
++  resolved->tab_index = tab_index;
++  return AgentRouteResult::Success({});
++}
++
++PrometheusAgentTabData* PrometheusAgentService::EnsureTabData(
++    tabs::TabInterface* tab) {
++  if (!tab) {
++    return nullptr;
++  }
++  if (PrometheusAgentTabData* existing = PrometheusAgentTabData::From(tab)) {
++    return existing;
++  }
++  std::unique_ptr<PrometheusAgentTabData> owned_data =
++      PrometheusAgentTabData::GetOrCreateForTab(tab);
++  PrometheusAgentTabData* data = owned_data.get();
++  tabs::TabHandle tab_handle = tab->GetHandle();
++  tab_data_[tab_handle.raw_value()] = std::make_unique<OwnedTabData>(
++      std::move(owned_data), tab->RegisterWillDetach(base::BindRepeating(
++                                 &PrometheusAgentService::OnTabWillDetach,
++                                 weak_factory_.GetWeakPtr(), tab_handle)));
++  return data;
++}
++
++AgentRouteResult PrometheusAgentService::EnsureCanControl(
++    tabs::TabInterface* tab,
++    const AgentSession& session) {
++  PrometheusAgentTabData* data = EnsureTabData(tab);
++  if (!data) {
++    return InvalidTarget("Unable to attach Prometheus tab ownership data");
++  }
++  return data->ClaimIfUnowned(session.id, session.display_label);
++}
++
++void PrometheusAgentService::OnTabWillDetach(
++    tabs::TabHandle tab_handle,
++    tabs::TabInterface* tab,
++    tabs::TabInterface::DetachReason reason) {
++  if (reason == tabs::TabInterface::DetachReason::kDelete) {
++    tab_data_.erase(tab_handle.raw_value());
++  }
++}
++
++AgentRouteResult PrometheusAgentService::SuccessForTarget(
++    std::vector<std::string> changed_state,
++    BrowserWindowInterface* browser,
++    tabs::TabInterface* tab) const {
++  AgentRouteResult result = AgentRouteResult::Success(std::move(changed_state));
++  if (browser) {
++    result.target.browser_session_id = browser->GetSessionID().id();
++    result.target.window_session_id = browser->GetSessionID().id();
++  }
++  if (tab) {
++    result.target.tab_handle = tab->GetHandle();
++  }
++  return result;
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.h b/chrome/browser/prometheus/prometheus_agent_service.h
+new file mode 100644
+index 0000000000..893ffca835
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_service.h
+@@ -0,0 +1,81 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_SERVICE_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_SERVICE_H_
++
++#include <map>
++#include <memory>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "base/functional/callback.h"
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "base/time/time.h"
++#include "chrome/browser/prometheus/prometheus_agent_route.h"
++#include "chrome/browser/prometheus/prometheus_agent_session.h"
++
++class BrowserWindowInterface;
++class TabListInterface;
++
++namespace tabs {
++class TabInterface;
++}  // namespace tabs
++
++namespace prometheus {
++
++class PrometheusAgentTabData;
++
++class PrometheusAgentService {
++ public:
++  using NowCallback = base::RepeatingCallback<base::Time()>;
++
++  explicit PrometheusAgentService(AgentSessionRegistry* session_registry);
++  PrometheusAgentService(AgentSessionRegistry* session_registry,
++                         NowCallback now_callback);
++  PrometheusAgentService(const PrometheusAgentService&) = delete;
++  PrometheusAgentService& operator=(const PrometheusAgentService&) = delete;
++  ~PrometheusAgentService();
++
++  AgentSessionResult CreateSession(std::string display_label);
++  AgentRouteResult CloseSession(std::string_view session_id);
++  AgentRouteResult ExecuteRoute(BrowserWindowInterface* browser,
++                                const AgentRouteRequest& request);
++
++ private:
++  struct OwnedTabData;
++
++  struct ResolvedTarget {
++    raw_ptr<BrowserWindowInterface> browser = nullptr;
++    raw_ptr<TabListInterface> tab_list = nullptr;
++    raw_ptr<tabs::TabInterface> tab = nullptr;
++    int tab_index = -1;
++  };
++
++  base::Time Now() const;
++  AgentRouteResult ResolveTarget(BrowserWindowInterface* browser,
++                                 const AgentTarget& target,
++                                 bool require_tab,
++                                 ResolvedTarget* resolved);
++  PrometheusAgentTabData* EnsureTabData(tabs::TabInterface* tab);
++  AgentRouteResult EnsureCanControl(tabs::TabInterface* tab,
++                                    const AgentSession& session);
++  void OnTabWillDetach(tabs::TabHandle tab_handle,
++                       tabs::TabInterface* tab,
++                       tabs::TabInterface::DetachReason reason);
++  AgentRouteResult SuccessForTarget(std::vector<std::string> changed_state,
++                                    BrowserWindowInterface* browser,
++                                    tabs::TabInterface* tab) const;
++
++  raw_ptr<AgentSessionRegistry> session_registry_;
++  NowCallback now_callback_;
++  std::map<int32_t, std::unique_ptr<OwnedTabData>> tab_data_;
++  base::WeakPtrFactory<PrometheusAgentService> weak_factory_{this};
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_SERVICE_H_
+diff --git a/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc
+new file mode 100644
+index 0000000000..6bf638e72c
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc
+@@ -0,0 +1,296 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_service.h"
++
++#include <string>
++#include <string_view>
++
++#include "base/time/time.h"
++#include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
++#include "chrome/browser/tab_list/tab_list_interface.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
++#include "components/tabs/public/tab_interface.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/test_navigation_observer.h"
++#include "url/gurl.h"
++
++namespace prometheus {
++
++namespace {
++
++bool HasChangedState(const AgentRouteResult& result, std::string_view state) {
++  for (const std::string& changed_state : result.changed_state) {
++    if (changed_state == state) {
++      return true;
++    }
++  }
++  return false;
++}
++
++bool HasChangedStatePrefix(const AgentRouteResult& result,
++                           std::string_view prefix) {
++  for (const std::string& changed_state : result.changed_state) {
++    if (changed_state.starts_with(prefix)) {
++      return true;
++    }
++  }
++  return false;
++}
++
++}  // namespace
++
++class PrometheusAgentServiceBrowserTest : public InProcessBrowserTest {
++ public:
++  TabStripModel* tab_strip_model() { return browser()->tab_strip_model(); }
++
++  TabListInterface* tab_list() { return TabListInterface::From(browser()); }
++
++  tabs::TabInterface* active_tab() { return tab_list()->GetActiveTab(); }
++
++  PrometheusAgentService& service() { return service_; }
++
++  std::string CreateSession(const std::string& display_label) {
++    AgentSessionResult result = service_.CreateSession(display_label);
++    EXPECT_TRUE(result.route_result.ok) << result.route_result.message;
++    if (!result.session.has_value()) {
++      return std::string();
++    }
++    return result.session->id;
++  }
++
++  AgentRouteRequest Request(AgentRouteName route_name,
++                            std::string_view session_id) {
++    AgentRouteRequest request;
++    request.route_name = route_name;
++    request.session_id = std::string(session_id);
++    return request;
++  }
++
++  AgentRouteResult Execute(const AgentRouteRequest& request) {
++    return service_.ExecuteRoute(browser(), request);
++  }
++
++  AgentTarget TargetFor(tabs::TabInterface* tab) {
++    AgentTarget target;
++    target.window_session_id = browser()->GetSessionID().id();
++    target.tab_handle = tab->GetHandle();
++    return target;
++  }
++
++ protected:
++  AgentSessionRegistry registry_{4, base::Minutes(5)};
++  PrometheusAgentService service_{&registry_};
++};
++
++IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
++                       ListTabsAndOpenTabClaimsOwnership) {
++  const std::string session_id = CreateSession("Agent A");
++  ASSERT_FALSE(session_id.empty());
++
++  AgentRouteResult list_result =
++      Execute(Request(AgentRouteName::kListTabs, session_id));
++  ASSERT_TRUE(list_result.ok) << list_result.message;
++  EXPECT_EQ(tab_strip_model()->count(),
++            static_cast<int>(list_result.changed_state.size()));
++  EXPECT_TRUE(HasChangedStatePrefix(list_result, "tab:"));
++
++  const int original_tab_count = tab_strip_model()->count();
++  AgentRouteRequest open_request =
++      Request(AgentRouteName::kOpenTab, session_id);
++  open_request.url = GURL("about:blank#prometheus-open");
++
++  AgentRouteResult open_result = Execute(open_request);
++  ASSERT_TRUE(open_result.ok) << open_result.message;
++  EXPECT_TRUE(HasChangedState(open_result, "tab_opened"));
++  EXPECT_EQ(original_tab_count + 1, tab_strip_model()->count());
++
++  tabs::TabInterface* opened_tab = open_result.target.tab_handle.Get();
++  ASSERT_TRUE(opened_tab);
++  EXPECT_EQ(opened_tab, active_tab());
++
++  PrometheusAgentTabData* tab_data = PrometheusAgentTabData::From(opened_tab);
++  ASSERT_TRUE(tab_data);
++  EXPECT_EQ(session_id, tab_data->owner_session_id());
++  EXPECT_EQ("Agent A", tab_data->owner_label());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
++                       CrossSessionDeniedAndActivateUsesTargetHandle) {
++  const std::string session_a = CreateSession("Agent A");
++  const std::string session_b = CreateSession("Agent B");
++  ASSERT_FALSE(session_a.empty());
++  ASSERT_FALSE(session_b.empty());
++
++  tabs::TabInterface* original_tab = active_tab();
++  AgentRouteRequest open_request = Request(AgentRouteName::kOpenTab, session_a);
++  open_request.url = GURL("about:blank#owned-by-a");
++  AgentRouteResult open_result = Execute(open_request);
++  ASSERT_TRUE(open_result.ok) << open_result.message;
++  tabs::TabInterface* opened_tab = open_result.target.tab_handle.Get();
++  ASSERT_TRUE(opened_tab);
++  ASSERT_NE(original_tab, opened_tab);
++
++  AgentRouteRequest activate_original =
++      Request(AgentRouteName::kActivateTab, session_a);
++  activate_original.target = TargetFor(original_tab);
++  AgentRouteResult activate_original_result = Execute(activate_original);
++  ASSERT_TRUE(activate_original_result.ok) << activate_original_result.message;
++  EXPECT_EQ(original_tab, active_tab());
++
++  AgentRouteRequest activate_opened =
++      Request(AgentRouteName::kActivateTab, session_a);
++  activate_opened.target = TargetFor(opened_tab);
++  AgentRouteResult activate_opened_result = Execute(activate_opened);
++  ASSERT_TRUE(activate_opened_result.ok) << activate_opened_result.message;
++  EXPECT_TRUE(HasChangedState(activate_opened_result, "tab_activated"));
++  EXPECT_EQ(opened_tab, active_tab());
++
++  const int tab_count = tab_strip_model()->count();
++  AgentRouteRequest denied_close =
++      Request(AgentRouteName::kCloseTab, session_b);
++  denied_close.target = TargetFor(opened_tab);
++  AgentRouteResult denied_close_result = Execute(denied_close);
++  EXPECT_FALSE(denied_close_result.ok);
++  EXPECT_EQ(AgentErrorCode::kTabNotOwned, denied_close_result.error_code);
++  EXPECT_EQ(
++      "TAB_NOT_OWNED",
++      std::string(AgentErrorCodeToString(denied_close_result.error_code)));
++  EXPECT_EQ(tab_count, tab_strip_model()->count());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
++                       NavigateReloadBackAndForwardAffectOwnedTab) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const GURL url1 = embedded_test_server()->GetURL("/title1.html");
++  const GURL url2 = embedded_test_server()->GetURL("/title2.html");
++  const std::string session_id = CreateSession("Agent A");
++  ASSERT_FALSE(session_id.empty());
++
++  AgentRouteRequest open_request =
++      Request(AgentRouteName::kOpenTab, session_id);
++  open_request.url = GURL("about:blank#navigation-target");
++  AgentRouteResult open_result = Execute(open_request);
++  ASSERT_TRUE(open_result.ok) << open_result.message;
++  tabs::TabInterface* target_tab = open_result.target.tab_handle.Get();
++  ASSERT_TRUE(target_tab);
++
++  AgentRouteRequest navigate1 = Request(AgentRouteName::kNavigate, session_id);
++  navigate1.target = TargetFor(target_tab);
++  navigate1.url = url1;
++  content::TestNavigationObserver navigate1_observer(target_tab->GetContents());
++  AgentRouteResult navigate1_result = Execute(navigate1);
++  ASSERT_TRUE(navigate1_result.ok) << navigate1_result.message;
++  EXPECT_TRUE(HasChangedState(navigate1_result, "navigation_started"));
++  navigate1_observer.Wait();
++  EXPECT_EQ(url1, target_tab->GetContents()->GetLastCommittedURL());
++
++  AgentRouteRequest navigate2 = Request(AgentRouteName::kNavigate, session_id);
++  navigate2.target = TargetFor(target_tab);
++  navigate2.url = url2;
++  content::TestNavigationObserver navigate2_observer(target_tab->GetContents());
++  AgentRouteResult navigate2_result = Execute(navigate2);
++  ASSERT_TRUE(navigate2_result.ok) << navigate2_result.message;
++  navigate2_observer.Wait();
++  EXPECT_EQ(url2, target_tab->GetContents()->GetLastCommittedURL());
++
++  AgentRouteRequest back_request = Request(AgentRouteName::kGoBack, session_id);
++  back_request.target = TargetFor(target_tab);
++  content::TestNavigationObserver back_observer(target_tab->GetContents());
++  AgentRouteResult back_result = Execute(back_request);
++  ASSERT_TRUE(back_result.ok) << back_result.message;
++  EXPECT_TRUE(HasChangedState(back_result, "history_back"));
++  back_observer.Wait();
++  EXPECT_EQ(url1, target_tab->GetContents()->GetLastCommittedURL());
++
++  AgentRouteRequest forward_request =
++      Request(AgentRouteName::kGoForward, session_id);
++  forward_request.target = TargetFor(target_tab);
++  content::TestNavigationObserver forward_observer(target_tab->GetContents());
++  AgentRouteResult forward_result = Execute(forward_request);
++  ASSERT_TRUE(forward_result.ok) << forward_result.message;
++  EXPECT_TRUE(HasChangedState(forward_result, "history_forward"));
++  forward_observer.Wait();
++  EXPECT_EQ(url2, target_tab->GetContents()->GetLastCommittedURL());
++
++  AgentRouteRequest reload_request =
++      Request(AgentRouteName::kReload, session_id);
++  reload_request.target = TargetFor(target_tab);
++  content::TestNavigationObserver reload_observer(target_tab->GetContents());
++  AgentRouteResult reload_result = Execute(reload_request);
++  ASSERT_TRUE(reload_result.ok) << reload_result.message;
++  EXPECT_TRUE(HasChangedState(reload_result, "tab_reloaded"));
++  reload_observer.Wait();
++  EXPECT_EQ(url2, target_tab->GetContents()->GetLastCommittedURL());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
++                       DuplicateMoveAndCloseMutateExpectedTabs) {
++  const std::string session_id = CreateSession("Agent A");
++  ASSERT_FALSE(session_id.empty());
++
++  AgentRouteRequest open_request =
++      Request(AgentRouteName::kOpenTab, session_id);
++  open_request.url = GURL("about:blank#move-source");
++  AgentRouteResult open_result = Execute(open_request);
++  ASSERT_TRUE(open_result.ok) << open_result.message;
++  tabs::TabInterface* opened_tab = open_result.target.tab_handle.Get();
++  ASSERT_TRUE(opened_tab);
++  const int tab_count_after_open = tab_strip_model()->count();
++
++  AgentRouteRequest duplicate_request =
++      Request(AgentRouteName::kDuplicateTab, session_id);
++  duplicate_request.target = TargetFor(opened_tab);
++  AgentRouteResult duplicate_result = Execute(duplicate_request);
++  ASSERT_TRUE(duplicate_result.ok) << duplicate_result.message;
++  EXPECT_TRUE(HasChangedState(duplicate_result, "tab_duplicated"));
++  EXPECT_EQ(tab_count_after_open + 1, tab_strip_model()->count());
++  tabs::TabInterface* duplicated_tab = duplicate_result.target.tab_handle.Get();
++  ASSERT_TRUE(duplicated_tab);
++  EXPECT_NE(opened_tab, duplicated_tab);
++  ASSERT_TRUE(PrometheusAgentTabData::From(duplicated_tab));
++  EXPECT_EQ(session_id,
++            PrometheusAgentTabData::From(duplicated_tab)->owner_session_id());
++
++  AgentRouteRequest close_request =
++      Request(AgentRouteName::kCloseTab, session_id);
++  close_request.target = TargetFor(duplicated_tab);
++  AgentRouteResult close_result = Execute(close_request);
++  ASSERT_TRUE(close_result.ok) << close_result.message;
++  EXPECT_TRUE(HasChangedState(close_result, "tab_closed"));
++  EXPECT_EQ(tab_count_after_open, tab_strip_model()->count());
++
++  const size_t browser_count =
++      GlobalBrowserCollection::GetInstance()->GetSize();
++  const int source_tab_count = tab_strip_model()->count();
++  AgentRouteRequest move_request =
++      Request(AgentRouteName::kMoveTabToNewWindow, session_id);
++  move_request.target = TargetFor(opened_tab);
++
++  ui_test_utils::BrowserCreatedObserver browser_created_observer;
++  AgentRouteResult move_result = Execute(move_request);
++  ASSERT_TRUE(move_result.ok) << move_result.message;
++  EXPECT_TRUE(HasChangedState(move_result, "tab_moved_to_window"));
++  Browser* const new_browser = browser_created_observer.Wait();
++  ui_test_utils::WaitUntilBrowserBecomeActive(new_browser);
++
++  EXPECT_NE(new_browser, browser());
++  EXPECT_EQ(browser_count + 1,
++            GlobalBrowserCollection::GetInstance()->GetSize());
++  EXPECT_EQ(source_tab_count - 1, tab_strip_model()->count());
++  EXPECT_EQ(1, new_browser->tab_strip_model()->count());
++  ASSERT_TRUE(move_result.target.browser_session_id.has_value());
++  EXPECT_EQ(new_browser->GetSessionID().id(),
++            *move_result.target.browser_session_id);
++  EXPECT_EQ(opened_tab, TabListInterface::From(new_browser)->GetActiveTab());
++  EXPECT_EQ(opened_tab->GetHandle().raw_value(),
++            move_result.target.tab_handle.raw_value());
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 6494d8d2e4..8a8f5300c4 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -53,6 +53,7 @@ source_set("browser_tests") {
+   testonly = true
+   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+   sources = [
++    "../../../prometheus/prometheus_agent_service_browsertest.cc",
+     "../../../prometheus/prometheus_tab_commands_browsertest.cc",
+     "../../webui/prometheus/prometheus_web_ui_browsertest.cc",
+     "prometheus_compact_chrome_browsertest.cc",
+@@ -64,6 +65,10 @@ source_set("browser_tests") {
+     ":prometheus",
+     ":side_panel",
+     "//base/test:test_support",
++    "//chrome/browser/prometheus:prometheus_agent_route",
++    "//chrome/browser/prometheus:prometheus_agent_service",
++    "//chrome/browser/prometheus:prometheus_agent_session",
++    "//chrome/browser/prometheus:prometheus_agent_tab_data",
+     "//chrome/browser/prometheus:prometheus_chrome_mode",
+     "//chrome/browser/prometheus:prometheus_tab_commands",
+     "//chrome/browser/themes",
+-- 
+2.50.1 (Apple Git-155)
+

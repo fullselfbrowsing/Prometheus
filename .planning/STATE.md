@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
-stopped_at: Phase 17 Plan 17-05 completed
-last_updated: "2026-07-07T09:22:47Z"
-last_activity: 2026-07-07 -- Completed Phase 17 Plan 17-05
+stopped_at: Phase 17 completed
+last_updated: "2026-07-07T09:29:34Z"
+last_activity: 2026-07-07 -- Completed Phase 17
 progress:
   total_phases: 15
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 37
-  completed_plans: 36
-  percent: 97
+  completed_plans: 37
+  percent: 100
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-23)
 
 **Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** Phase 17 — native-agent-command-service-and-tab-ownership
+**Current focus:** Phase 18 — page-adapter-dom-snapshot-and-action-verification
 
 ## Current Position
 
-Phase: 17 (native-agent-command-service-and-tab-ownership) — EXECUTING
-Plan: 6 of 6
-Status: Executing Phase 17
-Last activity: 2026-07-07 -- Completed Phase 17 Plan 17-05
+Phase: 18 (page-adapter-dom-snapshot-and-action-verification) — READY
+Plan: context required
+Status: Phase 17 complete; Phase 18 next for autonomous discuss/plan/execute
+Last activity: 2026-07-07 -- Completed Phase 17
 
 ## Performance Metrics
 
@@ -212,6 +212,12 @@ Recent decisions affecting current work:
 - [Phase 16-05]: Prometheus WebUI iteration remains package-backed by default and is gated by `verify-prometheus-webui-resources.sh`; disk-loaded WebUI is deferred until it can satisfy the same gates.
 - [Phase 16-06]: Phase 16 WebUI automated gates passed: build, full `prometheus_unittests`, full Phase 16 `browser_tests` filter, WebUI resource scanner, Chromium env/GPL/isolation gates, and 9-patch export from `a4423116ff..HEAD`.
 - [Phase 16-06]: Preservation evidence now covers Phase 16 WebUI shells while desktop visual UAT and Phase 20 runtime/provider/vault data checks remain carry-forward.
+- [Phase 17-01]: Prometheus agent routes use an allowlisted browser-process route schema with typed route results and recovery guidance.
+- [Phase 17-02]: Agent sessions are browser-assigned and token-authenticated; caller-provided labels do not grant authority.
+- [Phase 17-03]: Tab ownership is keyed by stable Prometheus tab IDs stored on WebContents user data, not mutable tab indices.
+- [Phase 17-04]: PrometheusAgentService owns route execution and tab ownership cleanup through Chromium browser APIs and detach notifications.
+- [Phase 17-05]: Route audit records are metadata-only and reject prompt, secret, page text, DOM text, vault, provider-key, and raw-URL fields.
+- [Phase 17-06]: Phase 17 gates passed and six Chromium patches were exported from `b46e7a5d1e..ad736125ee`; the review fix added profile-scoped window targeting, unsafe URL-scheme rejection, and internal-surface tab ownership coverage; Phase 18+ page/MCP/runtime/supervision/extension parity remains carry-forward.
 
 ### Roadmap Evolution
 

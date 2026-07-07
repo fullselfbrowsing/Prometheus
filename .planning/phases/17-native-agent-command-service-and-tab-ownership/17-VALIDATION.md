@@ -1,7 +1,7 @@
 ---
 phase: 17
 slug: native-agent-command-service-and-tab-ownership
-status: draft
+status: passed
 nyquist_compliant: true
 wave_0_complete: true
 created: 2026-07-07
@@ -26,12 +26,12 @@ created: 2026-07-07
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | Status |
 |---------|------|------|-------------|-----------|-------------------|--------|
-| 17-01-01 | 01 | 1 | AGENT-01, AGENT-07, AGENT-08 | unit | `autoninja -C out/Default prometheus_unittests && ./out/Default/prometheus_unittests --gtest_filter='*PrometheusAgentRoute*'` | pending |
-| 17-02-01 | 02 | 1 | AGENT-04, AGENT-06, AGENT-07 | unit | `./out/Default/prometheus_unittests --gtest_filter='*PrometheusAgentSession*'` | pending |
-| 17-03-01 | 03 | 2 | AGENT-04, AGENT-05, AGENT-08 | unit/browser | `./out/Default/prometheus_unittests --gtest_filter='*PrometheusAgentTabData*:*PrometheusTabState*'` | pending |
-| 17-04-01 | 04 | 2 | AGENT-01, AGENT-02, AGENT-03, AGENT-05, AGENT-07, AGENT-08 | browser | `./out/Default/browser_tests --gtest_filter='*PrometheusAgentService*'` | pending |
-| 17-05-01 | 05 | 3 | AGENT-03, AGENT-07, AGENT-08 | unit/browser | `./out/Default/prometheus_unittests --gtest_filter='*PrometheusAgentAudit*' && ./out/Default/browser_tests --gtest_filter='*PrometheusAgentInternalSurface*'` | pending |
-| 17-06-01 | 06 | 4 | AGENT-01..AGENT-08 | gate | full Phase 17 build/test/root gates plus patch export | pending |
+| 17-01-01 | 01 | 1 | AGENT-01, AGENT-07, AGENT-08 | unit | `autoninja -C out/Default prometheus_unittests && ./out/Default/prometheus_unittests --gtest_filter='*PrometheusAgentRoute*'` | complete |
+| 17-02-01 | 02 | 1 | AGENT-04, AGENT-06, AGENT-07 | unit | `./out/Default/prometheus_unittests --gtest_filter='*PrometheusAgentSession*'` | complete |
+| 17-03-01 | 03 | 2 | AGENT-04, AGENT-05, AGENT-08 | unit/browser | `./out/Default/prometheus_unittests --gtest_filter='*PrometheusAgentTabData*:*PrometheusTabState*'` | complete |
+| 17-04-01 | 04 | 2 | AGENT-01, AGENT-02, AGENT-03, AGENT-05, AGENT-07, AGENT-08 | browser | `./out/Default/browser_tests --gtest_filter='*PrometheusAgentService*'` | complete |
+| 17-05-01 | 05 | 3 | AGENT-03, AGENT-07, AGENT-08 | unit/browser | `./out/Default/prometheus_unittests --gtest_filter='*PrometheusAgentAudit*' && ./out/Default/browser_tests --gtest_filter='*PrometheusAgentInternalSurface*'` | complete |
+| 17-06-01 | 06 | 4 | AGENT-01..AGENT-08 | gate | full Phase 17 build/test/root gates plus patch export | complete |
 
 ## Required Assertions
 

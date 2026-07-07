@@ -1,0 +1,391 @@
+From 158351b0cb13272986da81497d17b963c4fa8b54 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 03:37:12 -0500
+Subject: [PATCH 1/6] feat(17-01): add Prometheus agent route spine
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  15 +++
+ .../prometheus/prometheus_agent_route.cc      | 124 ++++++++++++++++++
+ .../prometheus/prometheus_agent_route.h       | 101 ++++++++++++++
+ .../prometheus_agent_route_unittest.cc        |  94 +++++++++++++
+ 4 files changed, 334 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_route.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_route.h
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_route_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index dc460eb193..ca38b22d07 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -71,9 +71,23 @@ source_set("prometheus_ask_fsb_handoff") {
+   ]
+ }
+ 
++source_set("prometheus_agent_route") {
++  sources = [
++    "prometheus_agent_route.cc",
++    "prometheus_agent_route.h",
++  ]
++
++  deps = [
++    "//base",
++    "//components/tabs:public",
++    "//url",
++  ]
++}
++
+ test("prometheus_unittests") {
+   sources = [
+     "prometheus_action_unittest.cc",
++    "prometheus_agent_route_unittest.cc",
+     "prometheus_asset_resource_unittest.cc",
+     "prometheus_chrome_mode_unittest.cc",
+     "prometheus_color_mixer_unittest.cc",
+@@ -89,6 +103,7 @@ test("prometheus_unittests") {
+ 
+   deps = [
+     ":prometheus_action",
++    ":prometheus_agent_route",
+     ":prometheus_ask_fsb_handoff",
+     ":prometheus_chrome_mode",
+     ":prometheus_tab_state",
+diff --git a/chrome/browser/prometheus/prometheus_agent_route.cc b/chrome/browser/prometheus/prometheus_agent_route.cc
+new file mode 100644
+index 0000000000..a08f21b8ab
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_route.cc
+@@ -0,0 +1,124 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_route.h"
++
++#include <utility>
++
++namespace prometheus {
++
++namespace {
++
++struct RouteNameEntry {
++  std::string_view name;
++  AgentRouteName route_name;
++};
++
++constexpr RouteNameEntry kRouteNameEntries[] = {
++    {"list_tabs", AgentRouteName::kListTabs},
++    {"list_windows", AgentRouteName::kListWindows},
++    {"open_tab", AgentRouteName::kOpenTab},
++    {"activate_tab", AgentRouteName::kActivateTab},
++    {"close_tab", AgentRouteName::kCloseTab},
++    {"navigate", AgentRouteName::kNavigate},
++    {"reload", AgentRouteName::kReload},
++    {"go_back", AgentRouteName::kGoBack},
++    {"go_forward", AgentRouteName::kGoForward},
++    {"duplicate_tab", AgentRouteName::kDuplicateTab},
++    {"move_tab_to_new_window", AgentRouteName::kMoveTabToNewWindow},
++    {"open_prometheus_new_tab", AgentRouteName::kOpenPrometheusNewTab},
++    {"open_prometheus_side_panel", AgentRouteName::kOpenPrometheusSidePanel},
++    {"open_prometheus_control_panel",
++     AgentRouteName::kOpenPrometheusControlPanel},
++    {"unsupported_page_action", AgentRouteName::kUnsupportedPageAction},
++};
++
++}  // namespace
++
++AgentTarget::AgentTarget() = default;
++AgentTarget::AgentTarget(const AgentTarget&) = default;
++AgentTarget& AgentTarget::operator=(const AgentTarget&) = default;
++AgentTarget::~AgentTarget() = default;
++
++AgentRouteRequest::AgentRouteRequest() = default;
++AgentRouteRequest::AgentRouteRequest(const AgentRouteRequest&) = default;
++AgentRouteRequest& AgentRouteRequest::operator=(const AgentRouteRequest&) =
++    default;
++AgentRouteRequest::~AgentRouteRequest() = default;
++
++AgentRouteResult::AgentRouteResult() = default;
++AgentRouteResult::AgentRouteResult(const AgentRouteResult&) = default;
++AgentRouteResult& AgentRouteResult::operator=(const AgentRouteResult&) =
++    default;
++AgentRouteResult::~AgentRouteResult() = default;
++
++// static
++AgentRouteResult AgentRouteResult::Success(
++    std::vector<std::string> changed_state) {
++  AgentRouteResult result;
++  result.ok = true;
++  result.error_code = AgentErrorCode::kNone;
++  result.changed_state = std::move(changed_state);
++  return result;
++}
++
++// static
++AgentRouteResult AgentRouteResult::Failure(AgentErrorCode error_code,
++                                           std::string message,
++                                           std::string recovery) {
++  AgentRouteResult result;
++  result.ok = false;
++  result.error_code = error_code;
++  result.message = std::move(message);
++  result.recovery = std::move(recovery);
++  return result;
++}
++
++std::optional<AgentRouteName> AgentRouteNameFromString(
++    std::string_view route_name) {
++  for (const auto& entry : kRouteNameEntries) {
++    if (entry.name == route_name) {
++      return entry.route_name;
++    }
++  }
++  return std::nullopt;
++}
++
++std::string_view AgentRouteNameToString(AgentRouteName route_name) {
++  for (const auto& entry : kRouteNameEntries) {
++    if (entry.route_name == route_name) {
++      return entry.name;
++    }
++  }
++  return "unsupported_page_action";
++}
++
++std::string_view AgentErrorCodeToString(AgentErrorCode error_code) {
++  switch (error_code) {
++    case AgentErrorCode::kNone:
++      return "NONE";
++    case AgentErrorCode::kInvalidRoute:
++      return "INVALID_ROUTE";
++    case AgentErrorCode::kUnauthorized:
++      return "UNAUTHORIZED";
++    case AgentErrorCode::kAgentCapReached:
++      return "AGENT_CAP_REACHED";
++    case AgentErrorCode::kTabNotOwned:
++      return "TAB_NOT_OWNED";
++    case AgentErrorCode::kTabOutOfScope:
++      return "TAB_OUT_OF_SCOPE";
++    case AgentErrorCode::kPermissionBlocked:
++      return "PERMISSION_BLOCKED";
++    case AgentErrorCode::kUnsupportedRoute:
++      return "UNSUPPORTED_ROUTE";
++    case AgentErrorCode::kStaleTarget:
++      return "STALE_TARGET";
++    case AgentErrorCode::kBrowserShuttingDown:
++      return "BROWSER_SHUTTING_DOWN";
++    case AgentErrorCode::kInvalidTarget:
++      return "INVALID_TARGET";
++  }
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_route.h b/chrome/browser/prometheus/prometheus_agent_route.h
+new file mode 100644
+index 0000000000..cda1e0b1ed
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_route.h
+@@ -0,0 +1,101 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_ROUTE_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_ROUTE_H_
++
++#include <optional>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "base/time/time.h"
++#include "components/tabs/public/tab_interface.h"
++#include "url/gurl.h"
++
++namespace prometheus {
++
++enum class AgentRouteName {
++  kListTabs,
++  kListWindows,
++  kOpenTab,
++  kActivateTab,
++  kCloseTab,
++  kNavigate,
++  kReload,
++  kGoBack,
++  kGoForward,
++  kDuplicateTab,
++  kMoveTabToNewWindow,
++  kOpenPrometheusNewTab,
++  kOpenPrometheusSidePanel,
++  kOpenPrometheusControlPanel,
++  kUnsupportedPageAction,
++};
++
++enum class AgentErrorCode {
++  kNone,
++  kInvalidRoute,
++  kUnauthorized,
++  kAgentCapReached,
++  kTabNotOwned,
++  kTabOutOfScope,
++  kPermissionBlocked,
++  kUnsupportedRoute,
++  kStaleTarget,
++  kBrowserShuttingDown,
++  kInvalidTarget,
++};
++
++struct AgentTarget {
++  AgentTarget();
++  AgentTarget(const AgentTarget&);
++  AgentTarget& operator=(const AgentTarget&);
++  ~AgentTarget();
++
++  std::optional<int32_t> browser_session_id;
++  std::optional<int32_t> window_session_id;
++  tabs::TabHandle tab_handle;
++};
++
++struct AgentRouteRequest {
++  AgentRouteRequest();
++  AgentRouteRequest(const AgentRouteRequest&);
++  AgentRouteRequest& operator=(const AgentRouteRequest&);
++  ~AgentRouteRequest();
++
++  AgentRouteName route_name = AgentRouteName::kUnsupportedPageAction;
++  std::string session_id;
++  AgentTarget target;
++  std::optional<GURL> url;
++};
++
++struct AgentRouteResult {
++  AgentRouteResult();
++  AgentRouteResult(const AgentRouteResult&);
++  AgentRouteResult& operator=(const AgentRouteResult&);
++  ~AgentRouteResult();
++
++  static AgentRouteResult Success(std::vector<std::string> changed_state);
++  static AgentRouteResult Failure(AgentErrorCode error_code,
++                                  std::string message,
++                                  std::string recovery);
++
++  bool ok = false;
++  AgentErrorCode error_code = AgentErrorCode::kNone;
++  std::string message;
++  std::string recovery;
++  base::TimeDelta elapsed;
++  std::vector<std::string> changed_state;
++  AgentTarget target;
++};
++
++std::optional<AgentRouteName> AgentRouteNameFromString(
++    std::string_view route_name);
++std::string_view AgentRouteNameToString(AgentRouteName route_name);
++std::string_view AgentErrorCodeToString(AgentErrorCode error_code);
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_ROUTE_H_
+diff --git a/chrome/browser/prometheus/prometheus_agent_route_unittest.cc b/chrome/browser/prometheus/prometheus_agent_route_unittest.cc
+new file mode 100644
+index 0000000000..18ec2ab992
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_route_unittest.cc
+@@ -0,0 +1,94 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_route.h"
++
++#include <optional>
++#include <string_view>
++
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++
++namespace {
++
++TEST(PrometheusAgentRouteTest, ParsesKnownRouteStrings) {
++  EXPECT_EQ(AgentRouteName::kListTabs,
++            *AgentRouteNameFromString("list_tabs"));
++  EXPECT_EQ(AgentRouteName::kOpenTab, *AgentRouteNameFromString("open_tab"));
++  EXPECT_EQ(AgentRouteName::kActivateTab,
++            *AgentRouteNameFromString("activate_tab"));
++  EXPECT_EQ(AgentRouteName::kNavigate, *AgentRouteNameFromString("navigate"));
++  EXPECT_EQ(AgentRouteName::kOpenPrometheusNewTab,
++            *AgentRouteNameFromString("open_prometheus_new_tab"));
++  EXPECT_EQ(AgentRouteName::kOpenPrometheusSidePanel,
++            *AgentRouteNameFromString("open_prometheus_side_panel"));
++  EXPECT_EQ(AgentRouteName::kOpenPrometheusControlPanel,
++            *AgentRouteNameFromString("open_prometheus_control_panel"));
++}
++
++TEST(PrometheusAgentRouteTest, RejectsUnknownRouteStrings) {
++  EXPECT_EQ(std::nullopt, AgentRouteNameFromString("read_dom"));
++  EXPECT_EQ(std::nullopt, AgentRouteNameFromString("click"));
++  EXPECT_EQ(std::nullopt, AgentRouteNameFromString("run_arbitrary_command"));
++}
++
++TEST(PrometheusAgentRouteTest, SerializesRouteNames) {
++  EXPECT_EQ("list_tabs",
++            AgentRouteNameToString(AgentRouteName::kListTabs));
++  EXPECT_EQ("move_tab_to_new_window",
++            AgentRouteNameToString(AgentRouteName::kMoveTabToNewWindow));
++  EXPECT_EQ(
++      "unsupported_page_action",
++      AgentRouteNameToString(AgentRouteName::kUnsupportedPageAction));
++}
++
++TEST(PrometheusAgentRouteTest, SerializesErrorCodes) {
++  EXPECT_EQ("NONE", AgentErrorCodeToString(AgentErrorCode::kNone));
++  EXPECT_EQ("INVALID_ROUTE",
++            AgentErrorCodeToString(AgentErrorCode::kInvalidRoute));
++  EXPECT_EQ("UNAUTHORIZED",
++            AgentErrorCodeToString(AgentErrorCode::kUnauthorized));
++  EXPECT_EQ("AGENT_CAP_REACHED",
++            AgentErrorCodeToString(AgentErrorCode::kAgentCapReached));
++  EXPECT_EQ("TAB_NOT_OWNED",
++            AgentErrorCodeToString(AgentErrorCode::kTabNotOwned));
++  EXPECT_EQ("TAB_OUT_OF_SCOPE",
++            AgentErrorCodeToString(AgentErrorCode::kTabOutOfScope));
++  EXPECT_EQ("PERMISSION_BLOCKED",
++            AgentErrorCodeToString(AgentErrorCode::kPermissionBlocked));
++  EXPECT_EQ("UNSUPPORTED_ROUTE",
++            AgentErrorCodeToString(AgentErrorCode::kUnsupportedRoute));
++  EXPECT_EQ("STALE_TARGET",
++            AgentErrorCodeToString(AgentErrorCode::kStaleTarget));
++  EXPECT_EQ("BROWSER_SHUTTING_DOWN",
++            AgentErrorCodeToString(AgentErrorCode::kBrowserShuttingDown));
++  EXPECT_EQ("INVALID_TARGET",
++            AgentErrorCodeToString(AgentErrorCode::kInvalidTarget));
++}
++
++TEST(PrometheusAgentRouteTest, SuccessResultCarriesChangedState) {
++  AgentRouteResult result = AgentRouteResult::Success({"tab_opened"});
++
++  EXPECT_TRUE(result.ok);
++  EXPECT_EQ(AgentErrorCode::kNone, result.error_code);
++  ASSERT_EQ(1u, result.changed_state.size());
++  EXPECT_EQ("tab_opened", result.changed_state[0]);
++}
++
++TEST(PrometheusAgentRouteTest, FailureResultCarriesStableErrorAndRecovery) {
++  AgentRouteResult result = AgentRouteResult::Failure(
++      AgentErrorCode::kTabNotOwned, "Tab owned by another session",
++      "Switch sessions or choose an unowned tab");
++
++  EXPECT_FALSE(result.ok);
++  EXPECT_EQ(AgentErrorCode::kTabNotOwned, result.error_code);
++  EXPECT_EQ("TAB_NOT_OWNED", AgentErrorCodeToString(result.error_code));
++  EXPECT_EQ("Tab owned by another session", result.message);
++  EXPECT_EQ("Switch sessions or choose an unowned tab", result.recovery);
++}
++
++}  // namespace
++
++}  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

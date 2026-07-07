@@ -1,0 +1,919 @@
+From 5f73b8a84d2dc2c7a794e395c1c717fe13b5096e Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 04:22:37 -0500
+Subject: [PATCH 5/6] feat(17-05): audit agent routes and internal surfaces
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  16 ++
+ .../prometheus/prometheus_agent_audit.cc      |  86 +++++++
+ .../prometheus/prometheus_agent_audit.h       |  57 +++++
+ .../prometheus_agent_audit_unittest.cc        |  85 +++++++
+ .../prometheus/prometheus_agent_service.cc    | 212 ++++++++++++++----
+ .../prometheus/prometheus_agent_service.h     |  16 ++
+ .../prometheus_agent_service_browsertest.cc   | 118 ++++++++++
+ 7 files changed, 545 insertions(+), 45 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_audit.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_audit.h
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_audit_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 703602f2ac..195c673a3a 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -51,6 +51,18 @@ source_set("prometheus_agent_tab_data") {
+   ]
+ }
+ 
++source_set("prometheus_agent_audit") {
++  sources = [
++    "prometheus_agent_audit.cc",
++    "prometheus_agent_audit.h",
++  ]
++
++  deps = [
++    ":prometheus_agent_route",
++    "//base",
++  ]
++}
++
+ source_set("prometheus_tab_state") {
+   sources = [
+     "prometheus_tab_state.cc",
+@@ -120,6 +132,7 @@ source_set("prometheus_agent_service") {
+   ]
+ 
+   deps = [
++    ":prometheus_agent_audit",
+     ":prometheus_agent_route",
+     ":prometheus_agent_session",
+     ":prometheus_agent_tab_data",
+@@ -128,6 +141,7 @@ source_set("prometheus_agent_service") {
+     "//chrome/browser/tab_list",
+     "//chrome/browser/ui",
+     "//chrome/browser/ui/browser_window",
++    "//chrome/browser/ui/views/prometheus:side_panel",
+     "//components/sessions:session_id",
+     "//components/tabs:public",
+     "//content/public/browser",
+@@ -138,6 +152,7 @@ source_set("prometheus_agent_service") {
+ test("prometheus_unittests") {
+   sources = [
+     "prometheus_action_unittest.cc",
++    "prometheus_agent_audit_unittest.cc",
+     "prometheus_agent_route_unittest.cc",
+     "prometheus_agent_session_unittest.cc",
+     "prometheus_agent_tab_data_unittest.cc",
+@@ -156,6 +171,7 @@ test("prometheus_unittests") {
+ 
+   deps = [
+     ":prometheus_action",
++    ":prometheus_agent_audit",
+     ":prometheus_agent_route",
+     ":prometheus_agent_session",
+     ":prometheus_agent_tab_data",
+diff --git a/chrome/browser/prometheus/prometheus_agent_audit.cc b/chrome/browser/prometheus/prometheus_agent_audit.cc
+new file mode 100644
+index 0000000000..9b417bd7c1
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_audit.cc
+@@ -0,0 +1,86 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_audit.h"
++
++#include <array>
++#include <string>
++#include <utility>
++
++#include "base/strings/string_util.h"
++
++namespace prometheus {
++
++namespace {
++
++constexpr auto kDisallowedAuditMetadataTerms =
++    std::to_array<std::string_view>({"prompt", "secret", "page_text", "vault",
++                                     "provider_key", "raw_url", "dom_text"});
++
++}  // namespace
++
++AgentRouteAuditRecord::AgentRouteAuditRecord() = default;
++AgentRouteAuditRecord::AgentRouteAuditRecord(const AgentRouteAuditRecord&) =
++    default;
++AgentRouteAuditRecord& AgentRouteAuditRecord::operator=(
++    const AgentRouteAuditRecord&) = default;
++AgentRouteAuditRecord::~AgentRouteAuditRecord() = default;
++
++bool IsAgentRouteAuditMetadataSafe(std::string_view value) {
++  const std::string lowercase_value = base::ToLowerASCII(value);
++  for (std::string_view disallowed : kDisallowedAuditMetadataTerms) {
++    if (lowercase_value.find(disallowed) != std::string::npos) {
++      return false;
++    }
++  }
++  return true;
++}
++
++bool IsAgentRouteAuditRecordSafe(const AgentRouteAuditRecord& record) {
++  if (!IsAgentRouteAuditMetadataSafe(
++          AgentRouteNameToString(record.route_name))) {
++    return false;
++  }
++  if (!IsAgentRouteAuditMetadataSafe(
++          AgentErrorCodeToString(record.error_code))) {
++    return false;
++  }
++  for (const std::string& changed_state : record.changed_state) {
++    if (!IsAgentRouteAuditMetadataSafe(changed_state)) {
++      return false;
++    }
++  }
++  return true;
++}
++
++AgentRouteAuditLog::AgentRouteAuditLog(size_t max_records)
++    : max_records_(max_records) {}
++
++AgentRouteAuditLog::~AgentRouteAuditLog() = default;
++
++bool AgentRouteAuditLog::Append(AgentRouteAuditRecord record) {
++  if (!IsAgentRouteAuditRecordSafe(record)) {
++    return false;
++  }
++  if (max_records_ == 0) {
++    records_.clear();
++    return true;
++  }
++  while (records_.size() >= max_records_) {
++    records_.pop_front();
++  }
++  records_.push_back(std::move(record));
++  return true;
++}
++
++std::vector<AgentRouteAuditRecord>
++AgentRouteAuditLog::GetRecentRecordsForTesting() const {
++  return std::vector<AgentRouteAuditRecord>(records_.begin(), records_.end());
++}
++
++size_t AgentRouteAuditLog::size() const {
++  return records_.size();
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_audit.h b/chrome/browser/prometheus/prometheus_agent_audit.h
+new file mode 100644
+index 0000000000..8d94e9170e
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_audit.h
+@@ -0,0 +1,57 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_AUDIT_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_AUDIT_H_
++
++#include <deque>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "base/time/time.h"
++#include "chrome/browser/prometheus/prometheus_agent_route.h"
++
++namespace prometheus {
++
++struct AgentRouteAuditRecord {
++  AgentRouteAuditRecord();
++  AgentRouteAuditRecord(const AgentRouteAuditRecord&);
++  AgentRouteAuditRecord& operator=(const AgentRouteAuditRecord&);
++  ~AgentRouteAuditRecord();
++
++  AgentRouteName route_name = AgentRouteName::kUnsupportedPageAction;
++  std::string session_id;
++  std::optional<int32_t> browser_session_id;
++  std::optional<int32_t> window_session_id;
++  std::optional<int32_t> tab_handle;
++  AgentErrorCode error_code = AgentErrorCode::kNone;
++  base::TimeDelta elapsed;
++  std::vector<std::string> changed_state;
++  base::Time timestamp;
++};
++
++bool IsAgentRouteAuditMetadataSafe(std::string_view value);
++bool IsAgentRouteAuditRecordSafe(const AgentRouteAuditRecord& record);
++
++class AgentRouteAuditLog {
++ public:
++  explicit AgentRouteAuditLog(size_t max_records = 256);
++  AgentRouteAuditLog(const AgentRouteAuditLog&) = delete;
++  AgentRouteAuditLog& operator=(const AgentRouteAuditLog&) = delete;
++  ~AgentRouteAuditLog();
++
++  bool Append(AgentRouteAuditRecord record);
++  std::vector<AgentRouteAuditRecord> GetRecentRecordsForTesting() const;
++  size_t size() const;
++
++ private:
++  size_t max_records_;
++  std::deque<AgentRouteAuditRecord> records_;
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_AUDIT_H_
+diff --git a/chrome/browser/prometheus/prometheus_agent_audit_unittest.cc b/chrome/browser/prometheus/prometheus_agent_audit_unittest.cc
+new file mode 100644
+index 0000000000..49a652bdfb
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_audit_unittest.cc
+@@ -0,0 +1,85 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_audit.h"
++
++#include "base/time/time.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++
++class PrometheusAgentAuditTest : public testing::Test {};
++
++TEST_F(PrometheusAgentAuditTest, RejectsUnsafeMetadataTerms) {
++  EXPECT_FALSE(IsAgentRouteAuditMetadataSafe("prompt"));
++  EXPECT_FALSE(IsAgentRouteAuditMetadataSafe("contains_secret"));
++  EXPECT_FALSE(IsAgentRouteAuditMetadataSafe("page_text"));
++  EXPECT_FALSE(IsAgentRouteAuditMetadataSafe("vault"));
++  EXPECT_FALSE(IsAgentRouteAuditMetadataSafe("provider_key"));
++  EXPECT_FALSE(IsAgentRouteAuditMetadataSafe("raw_url"));
++  EXPECT_FALSE(IsAgentRouteAuditMetadataSafe("dom_text"));
++
++  EXPECT_TRUE(IsAgentRouteAuditMetadataSafe("tab_opened"));
++  EXPECT_TRUE(IsAgentRouteAuditMetadataSafe("navigation_started"));
++}
++
++TEST_F(PrometheusAgentAuditTest, BoundsAndPreservesRecentRecordsInOrder) {
++  AgentRouteAuditLog log(2);
++
++  AgentRouteAuditRecord first;
++  first.route_name = AgentRouteName::kListTabs;
++  first.changed_state = {"tab:first"};
++  AgentRouteAuditRecord second;
++  second.route_name = AgentRouteName::kOpenTab;
++  second.changed_state = {"tab_opened"};
++  AgentRouteAuditRecord third;
++  third.route_name = AgentRouteName::kCloseTab;
++  third.changed_state = {"tab_closed"};
++
++  EXPECT_TRUE(log.Append(first));
++  EXPECT_TRUE(log.Append(second));
++  EXPECT_TRUE(log.Append(third));
++
++  EXPECT_EQ(2u, log.size());
++  const std::vector<AgentRouteAuditRecord> records =
++      log.GetRecentRecordsForTesting();
++  ASSERT_EQ(2u, records.size());
++  EXPECT_EQ(AgentRouteName::kOpenTab, records[0].route_name);
++  EXPECT_EQ(AgentRouteName::kCloseTab, records[1].route_name);
++}
++
++TEST_F(PrometheusAgentAuditTest, RejectsUnsafeChangedStateValues) {
++  AgentRouteAuditLog log(4);
++  AgentRouteAuditRecord record;
++  record.route_name = AgentRouteName::kUnsupportedPageAction;
++  record.changed_state = {"prompt:do-not-store"};
++
++  EXPECT_FALSE(log.Append(record));
++  EXPECT_EQ(0u, log.size());
++}
++
++TEST_F(PrometheusAgentAuditTest, StoresStableErrorAndTargetMetadata) {
++  AgentRouteAuditLog log(4);
++  AgentRouteAuditRecord record;
++  record.route_name = AgentRouteName::kUnsupportedPageAction;
++  record.session_id = "browser-issued-session";
++  record.browser_session_id = 11;
++  record.window_session_id = 11;
++  record.tab_handle = 42;
++  record.error_code = AgentErrorCode::kUnsupportedRoute;
++  record.elapsed = base::Milliseconds(7);
++  record.timestamp = base::Time::UnixEpoch();
++
++  EXPECT_TRUE(log.Append(record));
++  const std::vector<AgentRouteAuditRecord> records =
++      log.GetRecentRecordsForTesting();
++  ASSERT_EQ(1u, records.size());
++  EXPECT_EQ(AgentErrorCode::kUnsupportedRoute, records[0].error_code);
++  EXPECT_EQ(11, records[0].browser_session_id);
++  EXPECT_EQ(11, records[0].window_session_id);
++  EXPECT_EQ(42, records[0].tab_handle);
++  EXPECT_EQ(base::Milliseconds(7), records[0].elapsed);
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.cc b/chrome/browser/prometheus/prometheus_agent_service.cc
+index ba81116893..2f9212b4fb 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service.cc
+@@ -18,9 +18,16 @@
+ #include "chrome/browser/ui/browser_window/public/browser_collection.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "chrome/browser/ui/side_panel/side_panel_enums.h"
++#include "chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.h"
++#include "chrome/common/webui_url_constants.h"
+ #include "components/sessions/core/session_id.h"
+ #include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/page_navigator.h"
+ #include "content/public/browser/web_contents.h"
++#include "content/public/common/referrer.h"
++#include "ui/base/page_transition_types.h"
++#include "ui/base/window_open_disposition.h"
+ #include "url/gurl.h"
+ 
+ namespace prometheus {
+@@ -114,17 +121,20 @@ AgentRouteResult PrometheusAgentService::CloseSession(
+ AgentRouteResult PrometheusAgentService::ExecuteRoute(
+     BrowserWindowInterface* browser,
+     const AgentRouteRequest& request) {
++  const base::Time timestamp = Now();
++  const base::TimeTicks started_at = base::TimeTicks::Now();
+   AgentSessionResult session_result =
+-      session_registry_->ValidateSession(request.session_id, Now());
++      session_registry_->ValidateSession(request.session_id, timestamp);
+   if (!session_result.route_result.ok) {
+-    return session_result.route_result;
++    return FinishRoute(request, timestamp, started_at,
++                       session_result.route_result);
+   }
+   CHECK(session_result.session.has_value());
+ 
+   AgentRouteResult touch_result =
+       session_registry_->TouchSession(request.session_id, Now());
+   if (!touch_result.ok) {
+-    return touch_result;
++    return FinishRoute(request, timestamp, started_at, touch_result);
+   }
+ 
+   ResolvedTarget resolved;
+@@ -133,178 +143,212 @@ AgentRouteResult PrometheusAgentService::ExecuteRoute(
+       AgentRouteResult resolved_result = ResolveTarget(
+           browser, request.target, /*require_tab=*/false, &resolved);
+       if (!resolved_result.ok) {
+-        return resolved_result;
++        return FinishRoute(request, timestamp, started_at, resolved_result);
+       }
+-      return SuccessForTarget(ListTabMetadata(resolved.tab_list),
+-                              resolved.browser, nullptr);
++      return FinishRoute(request, timestamp, started_at,
++                         SuccessForTarget(ListTabMetadata(resolved.tab_list),
++                                          resolved.browser, nullptr));
+     }
+     case AgentRouteName::kListWindows:
+-      return AgentRouteResult::Success(ListWindowMetadata());
++      return FinishRoute(request, timestamp, started_at,
++                         AgentRouteResult::Success(ListWindowMetadata()));
+     case AgentRouteName::kOpenTab: {
+       AgentRouteResult resolved_result = ResolveTarget(
+           browser, request.target, /*require_tab=*/false, &resolved);
+       if (!resolved_result.ok) {
+-        return resolved_result;
++        return FinishRoute(request, timestamp, started_at, resolved_result);
+       }
+       tabs::TabInterface* opened_tab = resolved.tab_list->OpenTab(
+           request.url.value_or(GURL("about:blank")), /*index=*/-1,
+           /*foreground=*/true);
+       if (!opened_tab) {
+-        return StaleTarget("Failed to open a new tab");
++        return FinishRoute(request, timestamp, started_at,
++                           StaleTarget("Failed to open a new tab"));
+       }
+       AgentRouteResult claim =
+           EnsureCanControl(opened_tab, *session_result.session);
+       if (!claim.ok) {
+-        return claim;
++        return FinishRoute(request, timestamp, started_at, claim);
+       }
+-      return SuccessForTarget({"tab_opened"}, resolved.browser, opened_tab);
++      return FinishRoute(
++          request, timestamp, started_at,
++          SuccessForTarget({"tab_opened"}, resolved.browser, opened_tab));
+     }
+     case AgentRouteName::kActivateTab: {
+       AgentRouteResult resolved_result = ResolveTarget(
+           browser, request.target, /*require_tab=*/true, &resolved);
+       if (!resolved_result.ok) {
+-        return resolved_result;
++        return FinishRoute(request, timestamp, started_at, resolved_result);
+       }
+       AgentRouteResult control =
+           EnsureCanControl(resolved.tab, *session_result.session);
+       if (!control.ok) {
+-        return control;
++        return FinishRoute(request, timestamp, started_at, control);
+       }
+       resolved.tab_list->ActivateTab(resolved.tab->GetHandle());
+-      return SuccessForTarget({"tab_activated"}, resolved.browser,
+-                              resolved.tab);
++      return FinishRoute(
++          request, timestamp, started_at,
++          SuccessForTarget({"tab_activated"}, resolved.browser, resolved.tab));
+     }
+     case AgentRouteName::kCloseTab: {
+       AgentRouteResult resolved_result = ResolveTarget(
+           browser, request.target, /*require_tab=*/true, &resolved);
+       if (!resolved_result.ok) {
+-        return resolved_result;
++        return FinishRoute(request, timestamp, started_at, resolved_result);
+       }
+       AgentRouteResult control =
+           EnsureCanControl(resolved.tab, *session_result.session);
+       if (!control.ok) {
+-        return control;
++        return FinishRoute(request, timestamp, started_at, control);
+       }
+       const int32_t handle = resolved.tab->GetHandle().raw_value();
+       tab_data_.erase(handle);
+       resolved.tab_list->CloseTab(resolved.tab->GetHandle());
+-      return SuccessForTarget({"tab_closed"}, resolved.browser, nullptr);
++      return FinishRoute(
++          request, timestamp, started_at,
++          SuccessForTarget({"tab_closed"}, resolved.browser, nullptr));
+     }
+     case AgentRouteName::kNavigate: {
+       AgentRouteResult resolved_result = ResolveTarget(
+           browser, request.target, /*require_tab=*/true, &resolved);
+       if (!resolved_result.ok) {
+-        return resolved_result;
++        return FinishRoute(request, timestamp, started_at, resolved_result);
+       }
+       if (!request.url.has_value() || !request.url->is_valid()) {
+-        return InvalidTarget("Navigate route requires a valid URL");
++        return FinishRoute(
++            request, timestamp, started_at,
++            InvalidTarget("Navigate route requires a valid URL"));
+       }
+       AgentRouteResult control =
+           EnsureCanControl(resolved.tab, *session_result.session);
+       if (!control.ok) {
+-        return control;
++        return FinishRoute(request, timestamp, started_at, control);
+       }
+       content::NavigationController::LoadURLParams params(*request.url);
+       resolved.tab->GetContents()->GetController().LoadURLWithParams(
+           std::move(params));
+-      return SuccessForTarget({"navigation_started"}, resolved.browser,
+-                              resolved.tab);
++      return FinishRoute(request, timestamp, started_at,
++                         SuccessForTarget({"navigation_started"},
++                                          resolved.browser, resolved.tab));
+     }
+     case AgentRouteName::kReload: {
+       AgentRouteResult resolved_result = ResolveTarget(
+           browser, request.target, /*require_tab=*/true, &resolved);
+       if (!resolved_result.ok) {
+-        return resolved_result;
++        return FinishRoute(request, timestamp, started_at, resolved_result);
+       }
+       AgentRouteResult control =
+           EnsureCanControl(resolved.tab, *session_result.session);
+       if (!control.ok) {
+-        return control;
++        return FinishRoute(request, timestamp, started_at, control);
+       }
+       resolved.tab->GetContents()->GetController().Reload(
+           content::ReloadType::NORMAL, /*check_for_repost=*/false);
+-      return SuccessForTarget({"tab_reloaded"}, resolved.browser, resolved.tab);
++      return FinishRoute(
++          request, timestamp, started_at,
++          SuccessForTarget({"tab_reloaded"}, resolved.browser, resolved.tab));
+     }
+     case AgentRouteName::kGoBack:
+     case AgentRouteName::kGoForward: {
+       AgentRouteResult resolved_result = ResolveTarget(
+           browser, request.target, /*require_tab=*/true, &resolved);
+       if (!resolved_result.ok) {
+-        return resolved_result;
++        return FinishRoute(request, timestamp, started_at, resolved_result);
+       }
+       AgentRouteResult control =
+           EnsureCanControl(resolved.tab, *session_result.session);
+       if (!control.ok) {
+-        return control;
++        return FinishRoute(request, timestamp, started_at, control);
+       }
+       content::NavigationController& controller =
+           resolved.tab->GetContents()->GetController();
+       if (request.route_name == AgentRouteName::kGoBack) {
+         if (!controller.CanGoBack()) {
+-          return InvalidTarget("Target tab cannot go back");
++          return FinishRoute(request, timestamp, started_at,
++                             InvalidTarget("Target tab cannot go back"));
+         }
+         controller.GoBack();
+-        return SuccessForTarget({"history_back"}, resolved.browser,
+-                                resolved.tab);
++        return FinishRoute(
++            request, timestamp, started_at,
++            SuccessForTarget({"history_back"}, resolved.browser, resolved.tab));
+       }
+       if (!controller.CanGoForward()) {
+-        return InvalidTarget("Target tab cannot go forward");
++        return FinishRoute(request, timestamp, started_at,
++                           InvalidTarget("Target tab cannot go forward"));
+       }
+       controller.GoForward();
+-      return SuccessForTarget({"history_forward"}, resolved.browser,
+-                              resolved.tab);
++      return FinishRoute(request, timestamp, started_at,
++                         SuccessForTarget({"history_forward"}, resolved.browser,
++                                          resolved.tab));
+     }
+     case AgentRouteName::kDuplicateTab: {
+       AgentRouteResult resolved_result = ResolveTarget(
+           browser, request.target, /*require_tab=*/true, &resolved);
+       if (!resolved_result.ok) {
+-        return resolved_result;
++        return FinishRoute(request, timestamp, started_at, resolved_result);
+       }
+       AgentRouteResult control =
+           EnsureCanControl(resolved.tab, *session_result.session);
+       if (!control.ok) {
+-        return control;
++        return FinishRoute(request, timestamp, started_at, control);
+       }
+       tabs::TabInterface* duplicated =
+           resolved.tab_list->DuplicateTab(resolved.tab->GetHandle());
+       if (!duplicated) {
+-        return StaleTarget("Failed to duplicate target tab");
++        return FinishRoute(request, timestamp, started_at,
++                           StaleTarget("Failed to duplicate target tab"));
+       }
+       AgentRouteResult claim =
+           EnsureCanControl(duplicated, *session_result.session);
+       if (!claim.ok) {
+-        return claim;
++        return FinishRoute(request, timestamp, started_at, claim);
+       }
+-      return SuccessForTarget({"tab_duplicated"}, resolved.browser, duplicated);
++      return FinishRoute(
++          request, timestamp, started_at,
++          SuccessForTarget({"tab_duplicated"}, resolved.browser, duplicated));
+     }
+     case AgentRouteName::kMoveTabToNewWindow: {
+       AgentRouteResult resolved_result = ResolveTarget(
+           browser, request.target, /*require_tab=*/true, &resolved);
+       if (!resolved_result.ok) {
+-        return resolved_result;
++        return FinishRoute(request, timestamp, started_at, resolved_result);
+       }
+       AgentRouteResult control =
+           EnsureCanControl(resolved.tab, *session_result.session);
+       if (!control.ok) {
+-        return control;
++        return FinishRoute(request, timestamp, started_at, control);
+       }
+       if (!ExecutePrometheusTabCommand(resolved.browser,
+                                        PrometheusTabCommand::kMoveToNewWindow,
+                                        resolved.tab_index)) {
+-        return StaleTarget("Failed to move tab to a new window");
++        return FinishRoute(request, timestamp, started_at,
++                           StaleTarget("Failed to move tab to a new window"));
+       }
+       BrowserWindowInterface* moved_browser =
+           resolved.tab->GetBrowserWindowInterface();
+       BrowserWindowInterface* result_browser =
+           moved_browser ? moved_browser : resolved.browser.get();
+-      return SuccessForTarget({"tab_moved_to_window"}, result_browser,
+-                              resolved.tab);
++      return FinishRoute(request, timestamp, started_at,
++                         SuccessForTarget({"tab_moved_to_window"},
++                                          result_browser, resolved.tab));
+     }
+     case AgentRouteName::kOpenPrometheusNewTab:
++      return FinishRoute(
++          request, timestamp, started_at,
++          OpenPrometheusInternalUrl(browser, request.target,
++                                    GURL(chrome::kChromeUIPrometheusNewTabURL),
++                                    "prometheus_new_tab_opened"));
+     case AgentRouteName::kOpenPrometheusSidePanel:
++      return FinishRoute(request, timestamp, started_at,
++                         OpenPrometheusSidePanel(browser, request.target));
+     case AgentRouteName::kOpenPrometheusControlPanel:
++      return FinishRoute(request, timestamp, started_at,
++                         OpenPrometheusInternalUrl(
++                             browser, request.target,
++                             GURL(chrome::kChromeUIPrometheusControlPanelURL),
++                             "prometheus_control_panel_opened"));
+     case AgentRouteName::kUnsupportedPageAction:
+-      return UnsupportedRoute();
++      return FinishRoute(request, timestamp, started_at, UnsupportedRoute());
+   }
+ }
+ 
+@@ -420,6 +464,49 @@ void PrometheusAgentService::OnTabWillDetach(
+   }
+ }
+ 
++AgentRouteResult PrometheusAgentService::OpenPrometheusInternalUrl(
++    BrowserWindowInterface* browser,
++    const AgentTarget& target,
++    const GURL& url,
++    std::string changed_state) {
++  ResolvedTarget resolved;
++  AgentRouteResult resolved_result =
++      ResolveTarget(browser, target, /*require_tab=*/false, &resolved);
++  if (!resolved_result.ok) {
++    return resolved_result;
++  }
++
++  content::OpenURLParams params(url, content::Referrer(),
++                                WindowOpenDisposition::NEW_FOREGROUND_TAB,
++                                ui::PAGE_TRANSITION_AUTO_BOOKMARK,
++                                /*is_renderer_initiated=*/false);
++  content::WebContents* web_contents =
++      resolved.browser->OpenURL(params, base::NullCallback());
++  if (!web_contents) {
++    return StaleTarget("Failed to open Prometheus internal surface");
++  }
++
++  return SuccessForTarget(
++      {std::move(changed_state)}, resolved.browser,
++      tabs::TabInterface::MaybeGetFromContents(web_contents));
++}
++
++AgentRouteResult PrometheusAgentService::OpenPrometheusSidePanel(
++    BrowserWindowInterface* browser,
++    const AgentTarget& target) {
++  ResolvedTarget resolved;
++  AgentRouteResult resolved_result =
++      ResolveTarget(browser, target, /*require_tab=*/false, &resolved);
++  if (!resolved_result.ok) {
++    return resolved_result;
++  }
++
++  ShowPrometheusSidePanel(resolved.browser,
++                          SidePanelOpenTrigger::kToolbarButton);
++  return SuccessForTarget({"prometheus_side_panel_opened"}, resolved.browser,
++                          nullptr);
++}
++
+ AgentRouteResult PrometheusAgentService::SuccessForTarget(
+     std::vector<std::string> changed_state,
+     BrowserWindowInterface* browser,
+@@ -435,4 +522,39 @@ AgentRouteResult PrometheusAgentService::SuccessForTarget(
+   return result;
+ }
+ 
++AgentRouteResult PrometheusAgentService::FinishRoute(
++    const AgentRouteRequest& request,
++    base::Time timestamp,
++    base::TimeTicks started_at,
++    AgentRouteResult result) {
++  result.elapsed = base::TimeTicks::Now() - started_at;
++  RecordAudit(request, result, timestamp);
++  return result;
++}
++
++void PrometheusAgentService::RecordAudit(const AgentRouteRequest& request,
++                                         const AgentRouteResult& result,
++                                         base::Time timestamp) {
++  AgentRouteAuditRecord record;
++  record.route_name = request.route_name;
++  record.session_id = request.session_id;
++  record.browser_session_id = result.target.browser_session_id.has_value()
++                                  ? result.target.browser_session_id
++                                  : request.target.browser_session_id;
++  record.window_session_id = result.target.window_session_id.has_value()
++                                 ? result.target.window_session_id
++                                 : request.target.window_session_id;
++  tabs::TabHandle audit_tab_handle = IsNullTabHandle(result.target.tab_handle)
++                                         ? request.target.tab_handle
++                                         : result.target.tab_handle;
++  if (!IsNullTabHandle(audit_tab_handle)) {
++    record.tab_handle = audit_tab_handle.raw_value();
++  }
++  record.error_code = result.error_code;
++  record.elapsed = result.elapsed;
++  record.changed_state = result.changed_state;
++  record.timestamp = timestamp;
++  audit_log_.Append(std::move(record));
++}
++
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.h b/chrome/browser/prometheus/prometheus_agent_service.h
+index 893ffca835..b685e58398 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_service.h
+@@ -15,6 +15,7 @@
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/time/time.h"
++#include "chrome/browser/prometheus/prometheus_agent_audit.h"
+ #include "chrome/browser/prometheus/prometheus_agent_route.h"
+ #include "chrome/browser/prometheus/prometheus_agent_session.h"
+ 
+@@ -44,6 +45,7 @@ class PrometheusAgentService {
+   AgentRouteResult CloseSession(std::string_view session_id);
+   AgentRouteResult ExecuteRoute(BrowserWindowInterface* browser,
+                                 const AgentRouteRequest& request);
++  const AgentRouteAuditLog& audit_log_for_testing() const { return audit_log_; }
+ 
+  private:
+   struct OwnedTabData;
+@@ -66,12 +68,26 @@ class PrometheusAgentService {
+   void OnTabWillDetach(tabs::TabHandle tab_handle,
+                        tabs::TabInterface* tab,
+                        tabs::TabInterface::DetachReason reason);
++  AgentRouteResult OpenPrometheusInternalUrl(BrowserWindowInterface* browser,
++                                             const AgentTarget& target,
++                                             const GURL& url,
++                                             std::string changed_state);
++  AgentRouteResult OpenPrometheusSidePanel(BrowserWindowInterface* browser,
++                                           const AgentTarget& target);
+   AgentRouteResult SuccessForTarget(std::vector<std::string> changed_state,
+                                     BrowserWindowInterface* browser,
+                                     tabs::TabInterface* tab) const;
++  AgentRouteResult FinishRoute(const AgentRouteRequest& request,
++                               base::Time timestamp,
++                               base::TimeTicks started_at,
++                               AgentRouteResult result);
++  void RecordAudit(const AgentRouteRequest& request,
++                   const AgentRouteResult& result,
++                   base::Time timestamp);
+ 
+   raw_ptr<AgentSessionRegistry> session_registry_;
+   NowCallback now_callback_;
++  AgentRouteAuditLog audit_log_;
+   std::map<int32_t, std::unique_ptr<OwnedTabData>> tab_data_;
+   base::WeakPtrFactory<PrometheusAgentService> weak_factory_{this};
+ };
+diff --git a/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc
+index 6bf638e72c..3632192452 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc
+@@ -7,18 +7,29 @@
+ #include <string>
+ #include <string_view>
+ 
++#include "base/test/run_until.h"
+ #include "base/time/time.h"
++#include "chrome/browser/prometheus/prometheus_agent_audit.h"
+ #include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
+ #include "chrome/browser/tab_list/tab_list_interface.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "chrome/browser/ui/side_panel/side_panel_entry.h"
++#include "chrome/browser/ui/side_panel/side_panel_ui.h"
++#include "chrome/browser/ui/side_panel/side_panel_ui_provider.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/side_panel/side_panel.h"
++#include "chrome/common/webui_url_constants.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+ #include "chrome/test/base/ui_test_utils.h"
+ #include "components/tabs/public/tab_interface.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
+ #include "content/public/test/test_navigation_observer.h"
++#include "ui/views/controls/webview/webview.h"
++#include "ui/views/view_utils.h"
+ #include "url/gurl.h"
+ 
+ namespace prometheus {
+@@ -44,6 +55,21 @@ bool HasChangedStatePrefix(const AgentRouteResult& result,
+   return false;
+ }
+ 
++views::WebView* FindWebView(views::View* view) {
++  if (!view) {
++    return nullptr;
++  }
++  if (auto* const web_view = views::AsViewClass<views::WebView>(view)) {
++    return web_view;
++  }
++  for (views::View* child : view->children()) {
++    if (auto* const web_view = FindWebView(child)) {
++      return web_view;
++    }
++  }
++  return nullptr;
++}
++
+ }  // namespace
+ 
+ class PrometheusAgentServiceBrowserTest : public InProcessBrowserTest {
+@@ -89,6 +115,9 @@ class PrometheusAgentServiceBrowserTest : public InProcessBrowserTest {
+   PrometheusAgentService service_{&registry_};
+ };
+ 
++class PrometheusAgentInternalSurfaceBrowserTest
++    : public PrometheusAgentServiceBrowserTest {};
++
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
+                        ListTabsAndOpenTabClaimsOwnership) {
+   const std::string session_id = CreateSession("Agent A");
+@@ -293,4 +322,93 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
+             move_result.target.tab_handle.raw_value());
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusAgentInternalSurfaceBrowserTest,
++                       NewTabAndControlPanelRoutesOpenExpectedWebUIHosts) {
++  const std::string session_id = CreateSession("Agent A");
++  ASSERT_FALSE(session_id.empty());
++
++  const GURL new_tab_url(chrome::kChromeUIPrometheusNewTabURL);
++  content::TestNavigationObserver new_tab_observer(new_tab_url);
++  new_tab_observer.StartWatchingNewWebContents();
++  AgentRouteResult new_tab_result =
++      Execute(Request(AgentRouteName::kOpenPrometheusNewTab, session_id));
++  ASSERT_TRUE(new_tab_result.ok) << new_tab_result.message;
++  EXPECT_TRUE(HasChangedState(new_tab_result, "prometheus_new_tab_opened"));
++  new_tab_observer.Wait();
++  tabs::TabInterface* new_tab = new_tab_result.target.tab_handle.Get();
++  ASSERT_TRUE(new_tab);
++  EXPECT_EQ(new_tab_url, new_tab->GetContents()->GetLastCommittedURL());
++
++  const GURL control_panel_url(chrome::kChromeUIPrometheusControlPanelURL);
++  content::TestNavigationObserver control_panel_observer(control_panel_url);
++  control_panel_observer.StartWatchingNewWebContents();
++  AgentRouteResult control_panel_result =
++      Execute(Request(AgentRouteName::kOpenPrometheusControlPanel, session_id));
++  ASSERT_TRUE(control_panel_result.ok) << control_panel_result.message;
++  EXPECT_TRUE(
++      HasChangedState(control_panel_result, "prometheus_control_panel_opened"));
++  control_panel_observer.Wait();
++  tabs::TabInterface* control_panel_tab =
++      control_panel_result.target.tab_handle.Get();
++  ASSERT_TRUE(control_panel_tab);
++  EXPECT_EQ(control_panel_url,
++            control_panel_tab->GetContents()->GetLastCommittedURL());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusAgentInternalSurfaceBrowserTest,
++                       SidePanelRouteShowsRegisteredPrometheusEntry) {
++  const std::string session_id = CreateSession("Agent A");
++  ASSERT_FALSE(session_id.empty());
++
++  SidePanelUI* side_panel_ui = SidePanelUIProvider::From(browser());
++  ASSERT_TRUE(side_panel_ui);
++  side_panel_ui->DisableAnimationsForTesting();
++  side_panel_ui->SetNoDelaysForTesting(true);
++
++  AgentRouteResult result =
++      Execute(Request(AgentRouteName::kOpenPrometheusSidePanel, session_id));
++  ASSERT_TRUE(result.ok) << result.message;
++  EXPECT_TRUE(HasChangedState(result, "prometheus_side_panel_opened"));
++
++  const SidePanelEntry::Key key(SidePanelEntry::Id::kAssistant);
++  EXPECT_TRUE(base::test::RunUntil([&]() {
++    return side_panel_ui->IsSidePanelEntryShowing(key, /*for_tab=*/false);
++  }));
++  SidePanel* side_panel =
++      BrowserView::GetBrowserViewForBrowser(browser())->side_panel();
++  ASSERT_TRUE(side_panel);
++  views::WebView* web_view = nullptr;
++  EXPECT_TRUE(base::test::RunUntil([&]() {
++    web_view = FindWebView(side_panel->GetContentParentView());
++    return web_view && web_view->web_contents();
++  }));
++  content::WebContents* web_contents = web_view->web_contents();
++  ASSERT_TRUE(content::WaitForLoadStop(web_contents));
++  EXPECT_EQ(GURL(chrome::kChromeUIPrometheusSidePanelURL),
++            web_contents->GetLastCommittedURL());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusAgentInternalSurfaceBrowserTest,
++                       UnsupportedPageRouteIsAuditedWithoutUnsafeFields) {
++  const std::string session_id = CreateSession("Agent A");
++  ASSERT_FALSE(session_id.empty());
++
++  AgentRouteResult result =
++      Execute(Request(AgentRouteName::kUnsupportedPageAction, session_id));
++  EXPECT_FALSE(result.ok);
++  EXPECT_EQ(AgentErrorCode::kUnsupportedRoute, result.error_code);
++
++  const std::vector<AgentRouteAuditRecord> records =
++      service().audit_log_for_testing().GetRecentRecordsForTesting();
++  ASSERT_FALSE(records.empty());
++  const AgentRouteAuditRecord& record = records.back();
++  EXPECT_EQ(AgentRouteName::kUnsupportedPageAction, record.route_name);
++  EXPECT_EQ(AgentErrorCode::kUnsupportedRoute, record.error_code);
++  EXPECT_TRUE(IsAgentRouteAuditRecordSafe(record));
++  EXPECT_TRUE(IsAgentRouteAuditMetadataSafe("tab_opened"));
++  EXPECT_FALSE(IsAgentRouteAuditMetadataSafe("prompt"));
++  EXPECT_FALSE(IsAgentRouteAuditMetadataSafe("secret"));
++  EXPECT_FALSE(IsAgentRouteAuditMetadataSafe("page_text"));
++}
++
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+
