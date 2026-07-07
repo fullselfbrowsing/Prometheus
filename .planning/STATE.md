@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
-stopped_at: Completed 16-02-PLAN.md
-last_updated: "2026-07-07T07:33:57Z"
-last_activity: 2026-07-07 -- Completed 16-02-PLAN.md
+stopped_at: Completed 16-03-PLAN.md
+last_updated: "2026-07-07T07:48:32Z"
+last_activity: 2026-07-07 -- Completed 16-03-PLAN.md
 progress:
   total_phases: 15
   completed_phases: 5
   total_plans: 31
-  completed_plans: 27
-  percent: 87
+  completed_plans: 28
+  percent: 90
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-06-23)
 ## Current Position
 
 Phase: 16 (prometheus-webui-surfaces-and-new-tab) — EXECUTING
-Plan: 3 of 6
+Plan: 4 of 6
 Status: Executing Phase 16
-Last activity: 2026-07-07 -- Completed 16-02-PLAN.md
+Last activity: 2026-07-07 -- Completed 16-03-PLAN.md
 
 ## Performance Metrics
 
@@ -108,6 +108,7 @@ Last activity: 2026-07-07 -- Completed 16-02-PLAN.md
 | Phase 15 P06 | 12min | 2 tasks | 14 files |
 | Phase 16 P01 | 18min | 2 tasks | 14 files |
 | Phase 16 P02 | 22min | 2 tasks | 15 files |
+| Phase 16 P03 | 15min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -200,6 +201,8 @@ Recent decisions affecting current work:
 - [Phase 16-01]: Production Prometheus WebUI hosts are `chrome://prometheus-newtab/`, `chrome://prometheus-side-panel/`, and `chrome://prometheus-control-panel/`; only the older theme preview remains DCHECK/UNKNOWN-channel gated.
 - [Phase 16-02]: Ask FSB prompts are trimmed, bounded, and stored in browser-owned Profile user data; prompts are not placed in URLs/history and only seed side-panel WebUI state until a real task runtime exists.
 - [Phase 16-02]: Prometheus side-panel entry registration is shared through a BrowserWindowInterface helper and loads `chrome://prometheus-side-panel/`; Plan 16-03 should extend this helper instead of restoring the old placeholder.
+- [Phase 16-03]: The Prometheus side-panel shell uses icon-only mode buttons with title/aria labels and local packaged Font Awesome SVG masks; inactive mode labels remain in DOM text while content visibility is mode-gated.
+- [Phase 16-03]: Toolbar side-panel regression validates the live side-panel WebView from BrowserView's side-panel content parent after opening the existing Assistant side-panel entry.
 
 ### Roadmap Evolution
 
