@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
-status: executing
-stopped_at: Completed 14-07-PLAN.md — dev WebUI preview and Chrome-owned token gallery browsertest GREEN
-last_updated: "2026-07-07T03:05:49.404Z"
+status: planning
+stopped_at: Phase 14 complete — ready to plan Phase 15
+last_updated: "2026-07-07T03:26:55.919Z"
 last_activity: 2026-07-07
 progress:
   total_phases: 15
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 19
-  completed_plans: 18
-  percent: 95
+  completed_plans: 19
+  percent: 100
 ---
 
 # Project State
@@ -21,20 +21,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-23)
 
 **Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** Phase 14 — asset-and-design-system-port
+**Current focus:** Phase 15 — chromium-ui-shell-compact-chrome-and-tab-model
 
 ## Current Position
 
-Phase: 14 (asset-and-design-system-port) — EXECUTING
-Plan: 8 of 8
-Status: Ready to execute
+Phase: 15 (chromium-ui-shell-compact-chrome-and-tab-model) — PLANNING
+Plan: Not started
+Status: Ready to plan
 Last activity: 2026-07-07
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 62
+- Total plans completed: 70
 - Average duration: 7min
 - Total execution time: 0.3 hours
 
@@ -49,6 +49,7 @@ Last activity: 2026-07-07
 | 11 | 3 | - | - |
 | 12 | 4 | - | - |
 | 13 | 4 | - | - |
+| 14 | 8 | - | - |
 
 **Recent Trend:**
 
@@ -98,6 +99,7 @@ Last activity: 2026-07-07
 | Phase 14 P14-05 | 510min | 4 tasks | 150 files |
 | Phase 14 P14-06 | 55min | 2 tasks | 8 files |
 | Phase 14 P07 | 43min | 2 tasks | 12 files |
+| Phase 14 P08 | 79min | 2 tasks | 21 files |
 
 ## Accumulated Context
 
@@ -232,8 +234,8 @@ Acknowledged at v1.0 milestone close (2026-06-17) and carried into v2.0. Phase 1
 
 ## Session Continuity
 
-Last session: 2026-07-07T03:05:49.400Z
-Stopped at: Completed 14-07-PLAN.md — dev WebUI preview and Chrome-owned token gallery browsertest GREEN
+Last session: 2026-07-07T03:24:56.089Z
+Stopped at: Phase 14 complete — ready to plan Phase 15
 Resume file: None
 
 ## Operator Next Steps

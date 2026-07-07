@@ -1,0 +1,614 @@
+From ee7552e19bcfa05845c4e49110b25b1595fb0c13 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 25 Jun 2026 03:45:49 -0500
+Subject: [PATCH 09/15] feat(14-05): prometheus_vector_icons GN target, GRIT
+ IDR constants, and PrometheusAction resolver header (DESIGN-04, D-06, D-08,
+ D-09, D-10)
+
+- chrome/browser/resources/prometheus/BUILD.gn: aggregate_vector_icons('prometheus_vector_icons') with all 72 .icon sources; no grit() target here (owned by 14-06)
+- chrome/browser/resources/prometheus/vector_icons/vector_icons.{cc,h}.template: copied from components/vector_icons per Pitfall 6 (must be physically present in icon_directory)
+- chrome/browser/resources/prometheus/prometheus_resources.grdp: IDR constants for 5 woff2 + 2 ttf (Thin+SpaceMono per D-11) + 72 FA SVGs + 7 brand mark PNGs
+- chrome/browser/prometheus/prometheus_action.h: PrometheusAction enum (72 values) + GetPrometheusActionIconMap() + GetPrometheusActionSvgPath() declarations with D-08 substitution comments
+---
+ chrome/browser/prometheus/prometheus_action.h | 124 ++++++++
+ chrome/browser/resources/prometheus/BUILD.gn  |  91 ++++++
+ .../prometheus/prometheus_resources.grdp      | 292 ++++++++++++++++++
+ .../vector_icons/vector_icons.cc.template     |  20 ++
+ .../vector_icons/vector_icons.h.template      |  30 ++
+ 5 files changed, 557 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_action.h
+ create mode 100644 chrome/browser/resources/prometheus/BUILD.gn
+ create mode 100644 chrome/browser/resources/prometheus/prometheus_resources.grdp
+ create mode 100644 chrome/browser/resources/prometheus/vector_icons/vector_icons.cc.template
+ create mode 100644 chrome/browser/resources/prometheus/vector_icons/vector_icons.h.template
+
+diff --git a/chrome/browser/prometheus/prometheus_action.h b/chrome/browser/prometheus/prometheus_action.h
+new file mode 100644
+index 0000000000..4b3941964e
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_action.h
+@@ -0,0 +1,124 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// PrometheusAction — semantic action enum and resolver functions for the
++// Prometheus design system icon pipeline. Maps each action to a
++// gfx::VectorIcon (Views) and a WebUI SVG resource path.
++//
++// D-08: One semantic-action resolver mapping PrometheusAction to both the
++//       Views VectorIcon and the WebUI SVG symbol id.
++//
++// Usage examples:
++//   Views:
++//     auto& icon_map = GetPrometheusActionIconMap();
++//     const gfx::VectorIcon* icon = icon_map.at(PrometheusAction::kBolt);
++//     ui::ImageModel img = ui::ImageModel::FromVectorIcon(
++//         *icon, kColorPrometheusAccent, kIconSize);
++//
++//   WebUI:
++//     const char* path = GetPrometheusActionSvgPath(PrometheusAction::kBolt);
++//     // -> "fa_bolt.svg" (relative to the chrome://prometheus/ resources root)
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_ACTION_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_ACTION_H_
++
++#include "base/containers/flat_map.h"
++#include "ui/gfx/vector_icon_types.h"
++
++// PrometheusAction: 72 semantic actions mapping to the curated FA Free 6.x
++// icon subset. Values are stable across builds — do not reorder.
++//
++// Substitutions (D-08):
++//   kDownload       — arrow-down-to-line not in FA Free 6 solid; uses arrow-down
++//   kSidebarFlip    — Pro-only icon; uses a hand-authored placeholder
++enum class PrometheusAction {
++  kArrowDownToLine,  // substitution: arrow-down-to-line not in FA Free 6 solid (D-08)
++  kArrowLeft,
++  kArrowRight,
++  kArrowUp,
++  kArrowUpFromBracket,
++  kBars,
++  kBolt,
++  kBookOpen,
++  kCalendarCheck,
++  kCamera,
++  kCartShopping,
++  kCheckDouble,
++  kCircleCheck,
++  kCircleHalfStroke,
++  kCircleInfo,
++  kCircleMinus,
++  kCircleNodes,
++  kCirclePlus,
++  kCircleQuestion,
++  kCircleXmark,
++  kCompass,
++  kCopy,
++  kEye,
++  kFolderPlus,
++  kHeartPulse,
++  kHighlighter,
++  kHouse,
++  kInbox,
++  kKey,
++  kKeyboard,
++  kLanguage,
++  kLayerGroup,
++  kLink,
++  kLinkSlash,
++  kLock,
++  kLockOpen,
++  kMagnifyingGlass,
++  kMicrochip,
++  kMicrophone,
++  kMoon,
++  kNoteSticky,
++  kPalette,
++  kPaste,
++  kPen,
++  kPlug,
++  kPlugCircleXmark,
++  kPlus,
++  kPuzzlePiece,
++  kRotateLeft,
++  kRotateRight,
++  kScissors,
++  kScroll,
++  kServer,
++  kShield,
++  kSidebarFlip,  // placeholder: sidebar-flip is Pro-only (D-08)
++  kSliders,
++  kStar,
++  kStarHalfStroke,
++  kStop,
++  kTable,
++  kTableCellsLarge,
++  kTag,
++  kThumbtack,
++  kTrash,
++  kTriangleExclamation,
++  kUserSecret,
++  kVault,
++  kVolumeHigh,
++  kVolumeXmark,
++  kWandMagicSparkles,
++  kWrench,
++  kXmark,
++};
++
++// Returns a map from PrometheusAction to the corresponding generated
++// gfx::VectorIcon from the prometheus_vector_icons aggregate target.
++// The map is a function-local static (initialized once; thread-safe).
++// Map contains exactly 72 entries — one per PrometheusAction value.
++const base::flat_map<PrometheusAction, const gfx::VectorIcon*>&
++GetPrometheusActionIconMap();
++
++// Returns the WebUI SVG resource path for the given action.
++// Paths are relative to the Prometheus resource root (chrome://prometheus/).
++// Returns a non-empty string for every PrometheusAction value.
++//
++// Example: GetPrometheusActionSvgPath(PrometheusAction::kBolt) -> "fa_bolt.svg"
++const char* GetPrometheusActionSvgPath(PrometheusAction action);
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_ACTION_H_
+diff --git a/chrome/browser/resources/prometheus/BUILD.gn b/chrome/browser/resources/prometheus/BUILD.gn
+new file mode 100644
+index 0000000000..0eccfcb3da
+--- /dev/null
++++ b/chrome/browser/resources/prometheus/BUILD.gn
+@@ -0,0 +1,91 @@
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++# Prometheus design system resource targets.
++# Plan 14-05: aggregate_vector_icons for the curated 72-glyph FA Free subset.
++# Plan 14-06: grit("prometheus_resources") lives there (single owner; adding it
++#             here would produce a duplicate-target build error in the shared BUILD.gn).
++
++import("//components/vector_icons/vector_icons.gni")
++
++# Aggregate all 72 FA icon files into generated vector_icons.{cc,h}.
++# Consumers dep on :prometheus_vector_icons and include the generated header.
++aggregate_vector_icons("prometheus_vector_icons") {
++  icon_directory = "vector_icons"
++
++  sources = [
++    "fa_arrow_down_to_line.icon",
++    "fa_arrow_left.icon",
++    "fa_arrow_right.icon",
++    "fa_arrow_up.icon",
++    "fa_arrow_up_from_bracket.icon",
++    "fa_bars.icon",
++    "fa_bolt.icon",
++    "fa_book_open.icon",
++    "fa_calendar_check.icon",
++    "fa_camera.icon",
++    "fa_cart_shopping.icon",
++    "fa_check_double.icon",
++    "fa_circle_check.icon",
++    "fa_circle_half_stroke.icon",
++    "fa_circle_info.icon",
++    "fa_circle_minus.icon",
++    "fa_circle_nodes.icon",
++    "fa_circle_plus.icon",
++    "fa_circle_question.icon",
++    "fa_circle_xmark.icon",
++    "fa_compass.icon",
++    "fa_copy.icon",
++    "fa_eye.icon",
++    "fa_folder_plus.icon",
++    "fa_heart_pulse.icon",
++    "fa_highlighter.icon",
++    "fa_house.icon",
++    "fa_inbox.icon",
++    "fa_key.icon",
++    "fa_keyboard.icon",
++    "fa_language.icon",
++    "fa_layer_group.icon",
++    "fa_link.icon",
++    "fa_link_slash.icon",
++    "fa_lock.icon",
++    "fa_lock_open.icon",
++    "fa_magnifying_glass.icon",
++    "fa_microchip.icon",
++    "fa_microphone.icon",
++    "fa_moon.icon",
++    "fa_note_sticky.icon",
++    "fa_palette.icon",
++    "fa_paste.icon",
++    "fa_pen.icon",
++    "fa_plug.icon",
++    "fa_plug_circle_xmark.icon",
++    "fa_plus.icon",
++    "fa_puzzle_piece.icon",
++    "fa_rotate_left.icon",
++    "fa_rotate_right.icon",
++    "fa_scissors.icon",
++    "fa_scroll.icon",
++    "fa_server.icon",
++    "fa_shield.icon",
++    "fa_sidebar_flip.icon",
++    "fa_sliders.icon",
++    "fa_star.icon",
++    "fa_star_half_stroke.icon",
++    "fa_stop.icon",
++    "fa_table.icon",
++    "fa_table_cells_large.icon",
++    "fa_tag.icon",
++    "fa_thumbtack.icon",
++    "fa_trash.icon",
++    "fa_triangle_exclamation.icon",
++    "fa_user_secret.icon",
++    "fa_vault.icon",
++    "fa_volume_high.icon",
++    "fa_volume_xmark.icon",
++    "fa_wand_magic_sparkles.icon",
++    "fa_wrench.icon",
++    "fa_xmark.icon",
++  ]
++}
+diff --git a/chrome/browser/resources/prometheus/prometheus_resources.grdp b/chrome/browser/resources/prometheus/prometheus_resources.grdp
+new file mode 100644
+index 0000000000..c4110f161f
+--- /dev/null
++++ b/chrome/browser/resources/prometheus/prometheus_resources.grdp
+@@ -0,0 +1,292 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!-- Copyright 2026 The Chromium Authors
++     Use of this source code is governed by a BSD-style license that can be
++     found in the LICENSE file. -->
++<!--
++  Prometheus resource partial (grdp) for Phase 14 assets.
++  Included by Plan 14-06's top-level prometheus_resources.grd via <part file="...">.
++  IDR names match 14-ASSET-MANIFEST.md exactly.
++-->
++<grit-part>
++
++  <!-- ================================================================ -->
++  <!-- Section 1: Fonts (woff2) — WebUI delivery via @font-face         -->
++  <!-- Source: third_party/poppins + third_party/space_mono             -->
++  <!-- ================================================================ -->
++  <include name="IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2"
++           file="fonts/Poppins-Thin.woff2"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_FONT_POPPINS_LIGHT_WOFF2"
++           file="fonts/Poppins-Light.woff2"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_FONT_POPPINS_EXTRABOLD_WOFF2"
++           file="fonts/Poppins-ExtraBold.woff2"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_FONT_POPPINS_BLACK_WOFF2"
++           file="fonts/Poppins-Black.woff2"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2"
++           file="fonts/SpaceMono-Regular.woff2"
++           type="BINDATA" />
++
++  <!-- ================================================================ -->
++  <!-- Section 2: Fonts (ttf) — Views shim D-11 (Thin + SpaceMono only) -->
++  <!-- Only 2 IDR rows: Light/ExtraBold/Black ttf are on-disk gate      -->
++  <!-- assets only, not packaged (see 14-ASSET-MANIFEST.md Section 2).  -->
++  <!-- ================================================================ -->
++  <include name="IDR_PROMETHEUS_FONT_POPPINS_THIN_TTF"
++           file="fonts/Poppins-Thin.ttf"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_FONT_SPACE_MONO_TTF"
++           file="fonts/SpaceMono-Regular.ttf"
++           type="BINDATA" />
++
++  <!-- ================================================================ -->
++  <!-- Section 3: FA Icons (svg) — WebUI raw subset (D-09)              -->
++  <!-- 72 IDR constants, one per glyph in fa-glyph-manifest.txt         -->
++  <!-- IDR pattern: IDR_PROMETHEUS_ICON_FA_<GLYPH_UPPERCASED>           -->
++  <!-- ================================================================ -->
++  <include name="IDR_PROMETHEUS_ICON_FA_ARROW_DOWN_TO_LINE"
++           file="svg/fa_arrow_down_to_line.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_ARROW_LEFT"
++           file="svg/fa_arrow_left.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_ARROW_RIGHT"
++           file="svg/fa_arrow_right.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_ARROW_UP"
++           file="svg/fa_arrow_up.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_ARROW_UP_FROM_BRACKET"
++           file="svg/fa_arrow_up_from_bracket.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_BARS"
++           file="svg/fa_bars.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_BOLT"
++           file="svg/fa_bolt.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_BOOK_OPEN"
++           file="svg/fa_book_open.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_CALENDAR_CHECK"
++           file="svg/fa_calendar_check.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_CAMERA"
++           file="svg/fa_camera.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_CART_SHOPPING"
++           file="svg/fa_cart_shopping.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_CHECK_DOUBLE"
++           file="svg/fa_check_double.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_CIRCLE_CHECK"
++           file="svg/fa_circle_check.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_CIRCLE_HALF_STROKE"
++           file="svg/fa_circle_half_stroke.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_CIRCLE_INFO"
++           file="svg/fa_circle_info.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_CIRCLE_MINUS"
++           file="svg/fa_circle_minus.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_CIRCLE_NODES"
++           file="svg/fa_circle_nodes.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_CIRCLE_PLUS"
++           file="svg/fa_circle_plus.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_CIRCLE_QUESTION"
++           file="svg/fa_circle_question.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_CIRCLE_XMARK"
++           file="svg/fa_circle_xmark.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_COMPASS"
++           file="svg/fa_compass.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_COPY"
++           file="svg/fa_copy.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_EYE"
++           file="svg/fa_eye.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_FOLDER_PLUS"
++           file="svg/fa_folder_plus.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_HEART_PULSE"
++           file="svg/fa_heart_pulse.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_HIGHLIGHTER"
++           file="svg/fa_highlighter.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_HOUSE"
++           file="svg/fa_house.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_INBOX"
++           file="svg/fa_inbox.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_KEY"
++           file="svg/fa_key.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_KEYBOARD"
++           file="svg/fa_keyboard.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_LANGUAGE"
++           file="svg/fa_language.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_LAYER_GROUP"
++           file="svg/fa_layer_group.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_LINK"
++           file="svg/fa_link.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_LINK_SLASH"
++           file="svg/fa_link_slash.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_LOCK"
++           file="svg/fa_lock.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_LOCK_OPEN"
++           file="svg/fa_lock_open.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_MAGNIFYING_GLASS"
++           file="svg/fa_magnifying_glass.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_MICROCHIP"
++           file="svg/fa_microchip.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_MICROPHONE"
++           file="svg/fa_microphone.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_MOON"
++           file="svg/fa_moon.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_NOTE_STICKY"
++           file="svg/fa_note_sticky.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_PALETTE"
++           file="svg/fa_palette.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_PASTE"
++           file="svg/fa_paste.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_PEN"
++           file="svg/fa_pen.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_PLUG"
++           file="svg/fa_plug.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_PLUG_CIRCLE_XMARK"
++           file="svg/fa_plug_circle_xmark.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_PLUS"
++           file="svg/fa_plus.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_PUZZLE_PIECE"
++           file="svg/fa_puzzle_piece.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_ROTATE_LEFT"
++           file="svg/fa_rotate_left.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_ROTATE_RIGHT"
++           file="svg/fa_rotate_right.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_SCISSORS"
++           file="svg/fa_scissors.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_SCROLL"
++           file="svg/fa_scroll.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_SERVER"
++           file="svg/fa_server.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_SHIELD"
++           file="svg/fa_shield.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_SIDEBAR_FLIP"
++           file="svg/fa_sidebar_flip.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_SLIDERS"
++           file="svg/fa_sliders.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_STAR"
++           file="svg/fa_star.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_STAR_HALF_STROKE"
++           file="svg/fa_star_half_stroke.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_STOP"
++           file="svg/fa_stop.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_TABLE"
++           file="svg/fa_table.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_TABLE_CELLS_LARGE"
++           file="svg/fa_table_cells_large.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_TAG"
++           file="svg/fa_tag.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_THUMBTACK"
++           file="svg/fa_thumbtack.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_TRASH"
++           file="svg/fa_trash.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_TRIANGLE_EXCLAMATION"
++           file="svg/fa_triangle_exclamation.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_USER_SECRET"
++           file="svg/fa_user_secret.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_VAULT"
++           file="svg/fa_vault.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_VOLUME_HIGH"
++           file="svg/fa_volume_high.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_VOLUME_XMARK"
++           file="svg/fa_volume_xmark.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_WAND_MAGIC_SPARKLES"
++           file="svg/fa_wand_magic_sparkles.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_WRENCH"
++           file="svg/fa_wrench.svg"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ICON_FA_XMARK"
++           file="svg/fa_xmark.svg"
++           type="BINDATA" />
++
++  <!-- ================================================================ -->
++  <!-- Section 4: Brand Marks (png) — PM monogram, wordmark, FSB logos  -->
++  <!-- Source: chrome/browser/resources/prometheus/images/               -->
++  <!-- ================================================================ -->
++  <include name="IDR_PROMETHEUS_ASSET_PM_MARK_DARK"
++           file="images/pm_mark_dark.png"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ASSET_PM_MARK_LIGHT"
++           file="images/pm_mark_light.png"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ASSET_WORDMARK_DARK"
++           file="images/pm_wordmark_dark.png"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ASSET_WORDMARK_LIGHT"
++           file="images/pm_wordmark_light.png"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ASSET_FSB_LOGO_DARK"
++           file="images/fsb_logo_dark.png"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ASSET_FSB_LOGO_LIGHT"
++           file="images/fsb_logo_light.png"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_ASSET_FSB_ICON"
++           file="images/fsb_icon.png"
++           type="BINDATA" />
++
++</grit-part>
+diff --git a/chrome/browser/resources/prometheus/vector_icons/vector_icons.cc.template b/chrome/browser/resources/prometheus/vector_icons/vector_icons.cc.template
+new file mode 100644
+index 0000000000..4456cc0089
+--- /dev/null
++++ b/chrome/browser/resources/prometheus/vector_icons/vector_icons.cc.template
+@@ -0,0 +1,20 @@
++// Copyright 2017 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// vector_icons.cc.template is used to generate vector_icons.cc. Edit the former
++// rather than the latter.
++
++#include "components/vector_icons/vector_icons.h"
++
++#include "components/vector_icons/cc_macros.h"
++#include "ui/gfx/vector_icon_types.h"
++
++#define DECLARE_VECTOR_COMMAND(x) using gfx::x;
++DECLARE_VECTOR_COMMANDS
++
++namespace vector_icons {
++
++TEMPLATE_PLACEHOLDER
++
++}  // namespace vector_icons
+diff --git a/chrome/browser/resources/prometheus/vector_icons/vector_icons.h.template b/chrome/browser/resources/prometheus/vector_icons/vector_icons.h.template
+new file mode 100644
+index 0000000000..0045cc8e20
+--- /dev/null
++++ b/chrome/browser/resources/prometheus/vector_icons/vector_icons.h.template
+@@ -0,0 +1,30 @@
++// Copyright 2017 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// vector_icons.h.template is used to generate vector_icons.h. Edit the former
++// rather than the latter.
++
++#ifndef COMPONENTS_VECTOR_ICONS_VECTOR_ICONS_H_
++#define COMPONENTS_VECTOR_ICONS_VECTOR_ICONS_H_
++
++namespace gfx {
++struct VectorIcon;
++}
++
++#define VECTOR_ICON_TEMPLATE_H(icon_name) \
++extern const gfx::VectorIcon icon_name;
++
++#if defined(FEATURE_MODULES) && defined(COMPONENTS_VECTOR_ICONS_IMPL)
++#define VECTOR_ICON_EXPORT __attribute__((visibility("default")))
++#endif
++
++namespace vector_icons {
++
++TEMPLATE_PLACEHOLDER
++
++}  // namespace vector_icons
++
++#undef VECTOR_ICON_TEMPLATE_H
++
++#endif  // COMPONENTS_VECTOR_ICONS_VECTOR_ICONS_H_
+-- 
+2.50.1 (Apple Git-155)
+

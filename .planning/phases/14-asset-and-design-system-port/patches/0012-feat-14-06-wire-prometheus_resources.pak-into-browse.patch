@@ -1,0 +1,304 @@
+From 2e71710165b2444696e524d53983278ae06828cc Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 1 Jul 2026 16:41:44 -0500
+Subject: [PATCH 12/15] feat(14-06): wire prometheus_resources.pak into browser
+ bundle; real pak-load font/brand tests GREEN (DESIGN-03, DESIGN-05)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Wires prometheus_resources into the production browser resource bundle:
+- chrome/BUILD.gn: packed_resources depends on prometheus_resources and
+  merges prometheus_resources.pak into additional_extra_paks.
+- chrome/browser/BUILD.gn: browser_resources grit() target depends on
+  prometheus_resources so its generated header is reachable tree-wide.
+- chrome/browser/prometheus/BUILD.gn: prometheus_unittests gains a data +
+  data_deps edge on prometheus_resources_pak so the compiled .pak sits
+  next to the test binary at runtime, plus deps on prometheus_resources
+  and //ui/base for the resource-bundle test fixture.
+
+Rewrites prometheus_asset_resource_unittest.cc from EXPECT_TRUE(false)
+RED stubs to a real pak-load fixture: SetUp() resolves
+prometheus_resources.pak via base::PathService::Get(base::DIR_ASSETS)
+and loads it with ui::ResourceBundle::AddDataPackFromPath. Each test
+asserts BOTH HasDataResource() and GetRawDataResource().size() > 0,
+table-driven over all 5 font IDRs and all 7 brand-mark IDRs from
+14-ASSET-MANIFEST.md. No static_assert, no uninitialized-bundle check —
+GREEN now proves the asset bytes are actually packaged (the HIGH review
+finding this plan exists to close). Icon IDR coverage stays owned by
+Plan 14-08 per the plan's scope.
+
+Also fixes prometheus_resources.grdp: IDR_PROMETHEUS_ASSET_WORDMARK_DARK/
+LIGHT were misnamed against 14-ASSET-MANIFEST.md, which specifies
+IDR_PROMETHEUS_ASSET_PM_WORDMARK_DARK/LIGHT (the names the new unittest
+table references) — renamed to match the manifest, the authoritative
+source of truth for IDR names.
+
+Two build-time defects surfaced only by actually running the test binary
+(not just compiling it), fixed here:
+1. Include path: the unittest included "grit/prometheus_resources.h",
+   but the grd's output_dir = "$root_gen_dir/chrome" means the header
+   physically lands at gen/chrome/grit/prometheus_resources.h. Chromium's
+   include search root is $root_gen_dir, not $root_gen_dir/chrome, so the
+   include needed the chrome/ prefix — confirmed against the identical
+   gaia_auth_host_resources.h precedent, which is included elsewhere as
+   "chrome/grit/gaia_auth_host_resources.h" with the same output_dir.
+2. Test entry point: prometheus_unittests linked //testing/gtest:gtest_main,
+   whose bare main() never calls base::CommandLine::Init(). The first real
+   ui::ResourceBundle construction in this test suite (SetUp() for the new
+   asset-resource fixture) hit ResourceBundle's constructor, which calls
+   base::CommandLine::ForCurrentProcess() and DCHECK-crashed immediately
+   at runtime, even though the target compiled and linked cleanly. Swapped
+   to //base/test:run_all_unittests (a base::TestSuite-backed main that
+   performs the CommandLine/AtExitManager init), matching 15 in-tree
+   precedents doing the same swap for the same reason (ui/native_theme,
+   crypto, gpu, dbus, among others).
+
+All 15 prometheus_unittests pass (5 asset-resource + 3 action + 4 color
+mixer + 2 CSS emission + 1 range check); check-falkon-gpl-guard.sh,
+verify-artifact-isolation.sh, and verify-asset-pipeline.sh all clean.
+---
+ chrome/BUILD.gn                               |   5 +-
+ chrome/browser/BUILD.gn                       |   1 +
+ chrome/browser/prometheus/BUILD.gn            |  19 ++-
+ .../prometheus_asset_resource_unittest.cc     | 110 +++++++++++++-----
+ .../prometheus/prometheus_resources.grdp      |   4 +-
+ 5 files changed, 102 insertions(+), 37 deletions(-)
+
+diff --git a/chrome/BUILD.gn b/chrome/BUILD.gn
+index f40bddf496..4942e908a5 100644
+--- a/chrome/BUILD.gn
++++ b/chrome/BUILD.gn
+@@ -1558,6 +1558,9 @@ group("extra_resources") {
+ 
+ if (!is_android) {
+   chrome_paks("packed_resources") {
++    additional_extra_paks = [ "$root_gen_dir/chrome/prometheus_resources.pak" ]
++    deps = [ "//chrome/browser/resources/prometheus:prometheus_resources" ]
++
+     if (is_mac) {
+       output_dir = "$root_gen_dir/repack"
+       copy_data_to_bundle = true
+@@ -1568,7 +1571,7 @@ if (!is_android) {
+ 
+     if (enable_resource_allowlist_generation) {
+       repack_allowlist = _chrome_resource_allowlist
+-      deps = [ ":resource_allowlist" ]
++      deps += [ ":resource_allowlist" ]
+     }
+   }
+ }
+diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
+index db38611586..60a23f29ca 100644
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -5875,6 +5875,7 @@ grit("resources") {
+   ]
+ 
+   deps = []
++  deps += [ "//chrome/browser/resources/prometheus:prometheus_resources" ]
+ 
+   if (is_win || is_mac || is_linux || is_chromeos) {
+     deps += [ "//services/resource_coordinator/public/mojom:mojom_js" ]
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 9abdea6da5..fef49b71b3 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -7,9 +7,9 @@
+ 
+ import("//testing/test.gni")
+ 
+-# PrometheusAction resolver source set (D-08).
+-# Maps PrometheusAction enum values to gfx::VectorIcon (Views) and SVG path (WebUI).
+-# Depends on prometheus_vector_icons for the generated icon symbols.
++# PrometheusAction resolver source set (D-08). Maps PrometheusAction enum values
++# to gfx::VectorIcon (Views) and SVG path (WebUI). Depends on
++# prometheus_vector_icons for the generated icon symbols.
+ source_set("prometheus_action") {
+   sources = [
+     "prometheus_action.cc",
+@@ -22,8 +22,8 @@ source_set("prometheus_action") {
+     "//ui/gfx",
+   ]
+ 
+-  # The generated vector_icons.h is in the gen directory; add it to include path.
+-  # GN resolves this via the prometheus_vector_icons dep's output.
++  # The generated vector_icons.h is in the gen directory; add it to include
++  # path. GN resolves this via the prometheus_vector_icons dep's output.
+ }
+ 
+ test("prometheus_unittests") {
+@@ -34,15 +34,22 @@ test("prometheus_unittests") {
+     "prometheus_css_emission_unittest.cc",
+   ]
+ 
++  data = [ "$root_out_dir/prometheus_resources.pak" ]
++
++  data_deps =
++      [ "//chrome/browser/resources/prometheus:prometheus_resources_pak" ]
++
+   deps = [
+     ":prometheus_action",
+     "//base",
++    "//base/test:run_all_unittests",
++    "//chrome/browser/resources/prometheus:prometheus_resources",
+     "//chrome/browser/resources/prometheus:prometheus_vector_icons",
+     "//chrome/browser/ui/color:color_headers",
+     "//chrome/browser/ui/color:mixers",
+     "//skia",
+     "//testing/gtest",
+-    "//testing/gtest:gtest_main",
++    "//ui/base",
+     "//ui/color",
+     "//ui/color:color_headers",
+     "//ui/gfx",
+diff --git a/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc b/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc
+index b228419ca4..5b23c5bcd8 100644
+--- a/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc
+@@ -2,43 +2,97 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-// Wave 0 RED tests: these tests verify that Prometheus resource bundle IDR
+-// constants resolve to non-null data. All tests are RED until Plans 14-04
+-// (fonts) and 14-05 (icons/marks) register the IDR constants and pak resources.
+-// Tests use EXPECT_TRUE(false) stubs to clearly fail with a descriptive message.
++#include <memory>
+ 
++#include "base/files/file_path.h"
++#include "base/path_service.h"
++#include "chrome/grit/prometheus_resources.h"
+ #include "testing/gtest/include/gtest/gtest.h"
++#include "ui/base/resource/resource_bundle.h"
++#include "ui/base/resource/resource_scale_factor.h"
+ 
+-// Font resource tests (DESIGN-03) — RED until Plan 14-04
++namespace {
+ 
+-// Verifies IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2 resolves to non-null data.
+-TEST(PrometheusAssetResourceTest, FontResourcePoppinsThinResolves) {
+-  EXPECT_TRUE(false)
+-      << "IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2 not registered yet "
+-         "-- RED until Plan 14-04 adds Poppins pak resources";
+-}
++struct PrometheusResourceExpectation {
++  int id;
++  const char* name;
++};
++
++class PrometheusAssetResourceTest : public testing::Test {
++ protected:
++  void SetUp() override {
++    resource_bundle_ = std::make_unique<ui::ResourceBundle>(nullptr);
++
++    base::FilePath pak_path;
++    ASSERT_TRUE(base::PathService::Get(base::DIR_ASSETS, &pak_path));
++    pak_path = pak_path.AppendASCII("prometheus_resources.pak");
++    resource_bundle_->AddDataPackFromPath(pak_path, ui::kScaleFactorNone);
++  }
++
++  void TearDown() override { resource_bundle_.reset(); }
++
++  void ExpectNonEmptyResource(const PrometheusResourceExpectation& resource) {
++    EXPECT_TRUE(resource_bundle_->HasDataResource(resource.id))
++        << resource.name;
++    EXPECT_GT(resource_bundle_->GetRawDataResource(resource.id).size(), 0u)
++        << resource.name;
++  }
++
++ private:
++  std::unique_ptr<ui::ResourceBundle> resource_bundle_;
++};
+ 
+-// Verifies IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2 resolves to non-null data.
+-TEST(PrometheusAssetResourceTest, FontResourceSpaceMonoResolves) {
+-  EXPECT_TRUE(false)
+-      << "IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2 not registered yet "
+-         "-- RED until Plan 14-04 adds Space Mono pak resources";
++constexpr PrometheusResourceExpectation kFontResources[] = {
++    {IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2,
++     "IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2"},
++    {IDR_PROMETHEUS_FONT_POPPINS_LIGHT_WOFF2,
++     "IDR_PROMETHEUS_FONT_POPPINS_LIGHT_WOFF2"},
++    {IDR_PROMETHEUS_FONT_POPPINS_EXTRABOLD_WOFF2,
++     "IDR_PROMETHEUS_FONT_POPPINS_EXTRABOLD_WOFF2"},
++    {IDR_PROMETHEUS_FONT_POPPINS_BLACK_WOFF2,
++     "IDR_PROMETHEUS_FONT_POPPINS_BLACK_WOFF2"},
++    {IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2,
++     "IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2"},
++};
++
++constexpr PrometheusResourceExpectation kBrandAssetResources[] = {
++    {IDR_PROMETHEUS_ASSET_PM_MARK_DARK, "IDR_PROMETHEUS_ASSET_PM_MARK_DARK"},
++    {IDR_PROMETHEUS_ASSET_PM_MARK_LIGHT, "IDR_PROMETHEUS_ASSET_PM_MARK_LIGHT"},
++    {IDR_PROMETHEUS_ASSET_PM_WORDMARK_DARK,
++     "IDR_PROMETHEUS_ASSET_PM_WORDMARK_DARK"},
++    {IDR_PROMETHEUS_ASSET_PM_WORDMARK_LIGHT,
++     "IDR_PROMETHEUS_ASSET_PM_WORDMARK_LIGHT"},
++    {IDR_PROMETHEUS_ASSET_FSB_LOGO_DARK, "IDR_PROMETHEUS_ASSET_FSB_LOGO_DARK"},
++    {IDR_PROMETHEUS_ASSET_FSB_LOGO_LIGHT,
++     "IDR_PROMETHEUS_ASSET_FSB_LOGO_LIGHT"},
++    {IDR_PROMETHEUS_ASSET_FSB_ICON, "IDR_PROMETHEUS_ASSET_FSB_ICON"},
++};
++
++}  // namespace
++
++TEST_F(PrometheusAssetResourceTest, FontResourcePoppinsThinResolves) {
++  ExpectNonEmptyResource({IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2,
++                          "IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2"});
+ }
+ 
+-// Icon resource tests (DESIGN-04) — RED until Plan 14-05
++TEST_F(PrometheusAssetResourceTest, FontResourceSpaceMonoResolves) {
++  ExpectNonEmptyResource({IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2,
++                          "IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2"});
++}
+ 
+-// Verifies IDR_PROMETHEUS_ICON_FA_BOLT resolves to non-null data.
+-TEST(PrometheusAssetResourceTest, IconResourceFaBoltResolves) {
+-  EXPECT_TRUE(false)
+-      << "IDR_PROMETHEUS_ICON_FA_BOLT not registered yet "
+-         "-- RED until Plan 14-05 adds FA icon resources";
++TEST_F(PrometheusAssetResourceTest, FontResourcesResolve) {
++  for (const auto& resource : kFontResources) {
++    ExpectNonEmptyResource(resource);
++  }
+ }
+ 
+-// Brand asset tests (DESIGN-05) — RED until Plan 14-05
++TEST_F(PrometheusAssetResourceTest, BrandAssetPmMarkDarkResolves) {
++  ExpectNonEmptyResource(
++      {IDR_PROMETHEUS_ASSET_PM_MARK_DARK, "IDR_PROMETHEUS_ASSET_PM_MARK_DARK"});
++}
+ 
+-// Verifies IDR_PROMETHEUS_ASSET_PM_MARK_DARK resolves to non-null data.
+-TEST(PrometheusAssetResourceTest, BrandAssetPmMarkDarkResolves) {
+-  EXPECT_TRUE(false)
+-      << "IDR_PROMETHEUS_ASSET_PM_MARK_DARK not registered yet "
+-         "-- RED until Plan 14-05 adds brand asset pak resources";
++TEST_F(PrometheusAssetResourceTest, BrandAssetResourcesResolve) {
++  for (const auto& resource : kBrandAssetResources) {
++    ExpectNonEmptyResource(resource);
++  }
+ }
+diff --git a/chrome/browser/resources/prometheus/prometheus_resources.grdp b/chrome/browser/resources/prometheus/prometheus_resources.grdp
+index c4110f161f..f33d970a0c 100644
+--- a/chrome/browser/resources/prometheus/prometheus_resources.grdp
++++ b/chrome/browser/resources/prometheus/prometheus_resources.grdp
+@@ -273,10 +273,10 @@
+   <include name="IDR_PROMETHEUS_ASSET_PM_MARK_LIGHT"
+            file="images/pm_mark_light.png"
+            type="BINDATA" />
+-  <include name="IDR_PROMETHEUS_ASSET_WORDMARK_DARK"
++  <include name="IDR_PROMETHEUS_ASSET_PM_WORDMARK_DARK"
+            file="images/pm_wordmark_dark.png"
+            type="BINDATA" />
+-  <include name="IDR_PROMETHEUS_ASSET_WORDMARK_LIGHT"
++  <include name="IDR_PROMETHEUS_ASSET_PM_WORDMARK_LIGHT"
+            file="images/pm_wordmark_light.png"
+            type="BINDATA" />
+   <include name="IDR_PROMETHEUS_ASSET_FSB_LOGO_DARK"
+-- 
+2.50.1 (Apple Git-155)
+

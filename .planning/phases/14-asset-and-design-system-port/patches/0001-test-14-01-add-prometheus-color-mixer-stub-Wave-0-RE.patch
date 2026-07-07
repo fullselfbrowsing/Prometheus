@@ -1,0 +1,95 @@
+From 56e2ffd1ef2119bf5a9c458c21ad9eb886ffeb6a Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 24 Jun 2026 11:41:36 -0500
+Subject: [PATCH 01/15] test(14-01): add prometheus color mixer stub (Wave 0
+ RED)
+
+- Add prometheus_color_mixer.h with AddPrometheusColorMixer declaration
+- Add prometheus_color_mixer.cc as Wave 0 stub with no token assignments
+- Tests will be RED until Plan 14-03 fills token values
+---
+ .../ui/color/prometheus_color_mixer.cc        | 43 +++++++++++++++++++
+ .../browser/ui/color/prometheus_color_mixer.h | 21 +++++++++
+ 2 files changed, 64 insertions(+)
+ create mode 100644 chrome/browser/ui/color/prometheus_color_mixer.cc
+ create mode 100644 chrome/browser/ui/color/prometheus_color_mixer.h
+
+diff --git a/chrome/browser/ui/color/prometheus_color_mixer.cc b/chrome/browser/ui/color/prometheus_color_mixer.cc
+new file mode 100644
+index 0000000000..5137a5c7f8
+--- /dev/null
++++ b/chrome/browser/ui/color/prometheus_color_mixer.cc
+@@ -0,0 +1,43 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Wave 0 stub — intentionally empty mixer so tests compile RED.
++// Token assignments are added in Plan 14-03 (GREEN phase).
++
++#include "chrome/browser/ui/color/prometheus_color_mixer.h"
++
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/color/color_mixer.h"
++#include "ui/color/color_provider.h"
++
++void AddPrometheusColorMixer(ui::ColorProvider* provider,
++                             const ui::ColorProviderKey& key) {
++  const bool dark_mode =
++      key.color_mode == ui::ColorProviderKey::ColorMode::kDark;
++  (void)dark_mode;  // intentional no-op in Wave 0
++
++  ui::ColorMixer& mixer = provider->AddMixer();
++  (void)mixer;  // intentional no-op in Wave 0
++
++  // TODO(phase-14-03): mixer[kColorPrometheusBgApp] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusChrome] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusChrome2] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusSurface] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusSurface2] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusSurface3] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusTabActive] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusTabIdle] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusTabHover] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusText] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusText2] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusText3] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusBorder] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusBorder2] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusHairline] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusAccent] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusAccent2] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusAccentSoft] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusAccentSoft2] = {...};
++  // TODO(phase-14-03): mixer[kColorPrometheusAccentGlow] = {...};
++}
+diff --git a/chrome/browser/ui/color/prometheus_color_mixer.h b/chrome/browser/ui/color/prometheus_color_mixer.h
+new file mode 100644
+index 0000000000..41f83b3244
+--- /dev/null
++++ b/chrome/browser/ui/color/prometheus_color_mixer.h
+@@ -0,0 +1,21 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_COLOR_PROMETHEUS_COLOR_MIXER_H_
++#define CHROME_BROWSER_UI_COLOR_PROMETHEUS_COLOR_MIXER_H_
++
++#include "ui/color/color_provider_key.h"
++
++namespace ui {
++class ColorProvider;
++}
++
++// Adds a color mixer that contains recipes for Prometheus design system token
++// colors to |provider| with |key|. Covers all warm dark/light palette tokens
++// (DESIGN-01) and accent tokens (DESIGN-02). Registered in
++// AddChromeColorMixers and runs last so it overrides GM3/Material defaults.
++void AddPrometheusColorMixer(ui::ColorProvider* provider,
++                             const ui::ColorProviderKey& key);
++
++#endif  // CHROME_BROWSER_UI_COLOR_PROMETHEUS_COLOR_MIXER_H_
+-- 
+2.50.1 (Apple Git-155)
+

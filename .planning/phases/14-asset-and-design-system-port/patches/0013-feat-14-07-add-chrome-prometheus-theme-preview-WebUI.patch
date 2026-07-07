@@ -1,0 +1,993 @@
+From 7671820a2b9123b5460563b8d3658193419be2cc Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 6 Jul 2026 22:03:42 -0500
+Subject: [PATCH 13/15] feat(14-07): add chrome://prometheus-theme-preview
+ WebUI dev surface
+
+- Register dev-only PrometheusThemePreviewUI on local UNKNOWN channel
+- Add preview HTML and GRIT resources for fonts and page shell
+- Wire WebUI controller through Chrome webui BUILD target
+---
+ .../prometheus/prometheus_resources.grdp      |  12 +
+ .../prometheus/prometheus_theme_preview.html  | 560 ++++++++++++++++++
+ chrome/browser/ui/webui/BUILD.gn              |   3 +
+ .../browser/ui/webui/chrome_web_ui_configs.cc |  15 +
+ chrome/browser/ui/webui/prometheus/BUILD.gn   |  31 +
+ .../prometheus/prometheus_theme_preview_ui.cc | 216 +++++++
+ .../prometheus/prometheus_theme_preview_ui.h  |  47 ++
+ 7 files changed, 884 insertions(+)
+ create mode 100644 chrome/browser/resources/prometheus/prometheus_theme_preview.html
+ create mode 100644 chrome/browser/ui/webui/prometheus/BUILD.gn
+ create mode 100644 chrome/browser/ui/webui/prometheus/prometheus_theme_preview_ui.cc
+ create mode 100644 chrome/browser/ui/webui/prometheus/prometheus_theme_preview_ui.h
+
+diff --git a/chrome/browser/resources/prometheus/prometheus_resources.grdp b/chrome/browser/resources/prometheus/prometheus_resources.grdp
+index f33d970a0c..c4337494f6 100644
+--- a/chrome/browser/resources/prometheus/prometheus_resources.grdp
++++ b/chrome/browser/resources/prometheus/prometheus_resources.grdp
+@@ -289,4 +289,16 @@
+            file="images/fsb_icon.png"
+            type="BINDATA" />
+ 
++  <!-- ================================================================ -->
++  <!-- Section 5: Plan 14-07 dev preview surface — chrome://prometheus- -->
++  <!-- theme-preview. Throwaway: Phase 16 deletes or folds this surface -->
++  <!-- into the real FSB Control Panel (D-13).                          -->
++  <!-- ================================================================ -->
++  <include name="IDR_PROMETHEUS_CSS_FONTS"
++           file="css/prometheus_fonts.css"
++           type="BINDATA" />
++  <include name="IDR_PROMETHEUS_THEME_PREVIEW_HTML"
++           file="prometheus_theme_preview.html"
++           type="BINDATA" />
++
+ </grit-part>
+diff --git a/chrome/browser/resources/prometheus/prometheus_theme_preview.html b/chrome/browser/resources/prometheus/prometheus_theme_preview.html
+new file mode 100644
+index 0000000000..1af4e27f90
+--- /dev/null
++++ b/chrome/browser/resources/prometheus/prometheus_theme_preview.html
+@@ -0,0 +1,560 @@
++<!doctype html>
++<!--
++Copyright 2026 The Chromium Authors
++Use of this source code is governed by a BSD-style license that can be
++found in the LICENSE file.
++
++chrome://prometheus-theme-preview — dev-only verification surface (D-13).
++Renders every Prometheus design-system token, font weight, bundled icon
++glyph, and the DESIGN-07 visual-state matrix so the phase has a screenshot
++evidence artifact for the auto-approved checkpoint (D-14, D-15). Explicitly
++throwaway: Phase 16 deletes or folds this page into the real FSB Control
++Panel. Registration is dev-only and channel-gated — see
++chrome/browser/ui/webui/prometheus/prometheus_theme_preview_ui.cc.
++-->
++<html>
++<head>
++  <meta charset="utf-8">
++  <title>Prometheus Theme Preview</title>
++  <!-- Pitfall 2 (14-RESEARCH.md): must request sets=chrome, not sets=ui —
++       kColorPrometheus* ids live in the "chrome" set. -->
++  <link rel="stylesheet" href="chrome://theme/colors.css?sets=chrome">
++  <link rel="stylesheet" href="prometheus_fonts.css">
++  <style>
++    body {
++      margin: 0;
++      padding: 24px 32px 64px;
++      background: var(--color-prometheus-bg-app);
++      color: var(--color-prometheus-text);
++      font-family: system-ui, sans-serif;
++    }
++    h1 {
++      font-size: 20px;
++      margin: 0 0 4px;
++    }
++    .subtitle {
++      color: var(--color-prometheus-text-2);
++      margin: 0 0 32px;
++      font-size: 13px;
++    }
++    section {
++      margin-bottom: 40px;
++    }
++    h2 {
++      font-size: 14px;
++      text-transform: uppercase;
++      letter-spacing: 0.04em;
++      color: var(--color-prometheus-text-3);
++      border-bottom: 1px solid var(--color-prometheus-border);
++      padding-bottom: 8px;
++      margin-bottom: 16px;
++    }
++
++    /* Token swatch grid */
++    .swatch-grid {
++      display: grid;
++      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
++      gap: 12px;
++    }
++    .swatch-cell {
++      background: var(--color-prometheus-surface);
++      border: 1px solid var(--color-prometheus-border);
++      border-radius: 8px;
++      overflow: hidden;
++    }
++    .swatch {
++      height: 56px;
++      border-bottom: 1px solid var(--color-prometheus-border);
++    }
++    .swatch-label {
++      padding: 8px;
++      font-size: 11px;
++      line-height: 1.4;
++    }
++    .swatch-var {
++      color: var(--color-prometheus-text-3);
++      font-family: 'Space Mono', monospace;
++    }
++
++    /* Typography section */
++    .type-row {
++      display: flex;
++      align-items: baseline;
++      gap: 16px;
++      padding: 10px 0;
++      border-bottom: 1px solid var(--color-prometheus-hairline);
++    }
++    .type-row .weight-label {
++      width: 140px;
++      flex-shrink: 0;
++      color: var(--color-prometheus-text-3);
++      font-size: 11px;
++      font-family: 'Space Mono', monospace;
++    }
++    .poppins-thin   { font-family: 'Poppins', sans-serif; font-weight: 100; font-size: 28px; }
++    .poppins-light  { font-family: 'Poppins', sans-serif; font-weight: 300; font-size: 28px; }
++    .poppins-xbold  { font-family: 'Poppins', sans-serif; font-weight: 800; font-size: 28px; }
++    .poppins-black  { font-family: 'Poppins', sans-serif; font-weight: 900; font-size: 28px; }
++    .space-mono     { font-family: 'Space Mono', monospace; font-size: 22px; }
++
++    /* PM monogram (D-05, weight-split construction) */
++    .pm-monogram {
++      font-size: 40px;
++      display: flex;
++      align-items: baseline;
++      gap: 2px;
++    }
++    .pm-monogram .p { font-family: 'Poppins', sans-serif; font-weight: 100; }
++    .pm-monogram .m { font-family: 'Poppins', sans-serif; font-weight: 900; }
++    .pm-monogram .tri {
++      font-family: 'Space Mono', monospace;
++      font-size: 16px;
++      letter-spacing: 0.45em;
++      margin-left: 8px;
++      color: var(--color-prometheus-text-2);
++    }
++    .brand-marks {
++      display: flex;
++      gap: 24px;
++      align-items: center;
++      margin-top: 20px;
++    }
++    .brand-marks img {
++      height: 40px;
++    }
++    .brand-marks .mark-cell {
++      background: var(--color-prometheus-surface);
++      border: 1px solid var(--color-prometheus-border);
++      border-radius: 8px;
++      padding: 12px 16px;
++      display: flex;
++      flex-direction: column;
++      align-items: center;
++      gap: 8px;
++    }
++    .brand-marks .mark-cell span {
++      font-size: 10px;
++      color: var(--color-prometheus-text-3);
++      font-family: 'Space Mono', monospace;
++    }
++
++    /* Icon gallery */
++    .icon-grid {
++      display: grid;
++      grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
++      gap: 8px;
++    }
++    .icon-cell {
++      display: flex;
++      flex-direction: column;
++      align-items: center;
++      gap: 6px;
++      padding: 10px 4px;
++      background: var(--color-prometheus-surface);
++      border: 1px solid var(--color-prometheus-border);
++      border-radius: 6px;
++    }
++    .icon-cell img {
++      filter: none;
++    }
++    .icon-cell span {
++      font-size: 9px;
++      color: var(--color-prometheus-text-3);
++      text-align: center;
++      word-break: break-word;
++    }
++
++    /* DESIGN-07 state matrix */
++    .state-grid {
++      display: grid;
++      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
++      gap: 16px;
++    }
++    .state-cell {
++      background: var(--color-prometheus-surface);
++      border: 1px solid var(--color-prometheus-border);
++      border-radius: 8px;
++      padding: 16px;
++    }
++    .state-cell h3 {
++      font-size: 12px;
++      margin: 0 0 10px;
++      color: var(--color-prometheus-text-2);
++    }
++    .accent-swatch-demo {
++      width: 100%;
++      height: 32px;
++      border-radius: 6px;
++      background: var(--color-prometheus-accent);
++    }
++    .focus-ring-demo {
++      display: inline-block;
++      padding: 6px 12px;
++      border-radius: 6px;
++      background: var(--color-prometheus-surface-2);
++      outline: 2px solid var(--color-prometheus-accent);
++      outline-offset: 2px;
++    }
++    .hover-demo {
++      display: inline-block;
++      padding: 6px 12px;
++      border-radius: 6px;
++      background: var(--color-prometheus-tab-hover);
++    }
++    .disabled-demo {
++      display: inline-block;
++      padding: 6px 12px;
++      border-radius: 6px;
++      background: var(--color-prometheus-surface-2);
++      opacity: 0.4;
++      pointer-events: none;
++    }
++    .truncate-demo {
++      max-width: 140px;
++      overflow: hidden;
++      text-overflow: ellipsis;
++      white-space: nowrap;
++      display: block;
++      border: 1px dashed var(--color-prometheus-border-2);
++      padding: 4px 6px;
++      border-radius: 4px;
++    }
++    .status-pill {
++      display: inline-flex;
++      align-items: center;
++      gap: 6px;
++      padding: 3px 10px;
++      border-radius: 999px;
++      font-size: 11px;
++      background: var(--color-prometheus-accent-soft);
++      color: var(--color-prometheus-accent);
++    }
++    .private-pill {
++      display: inline-flex;
++      align-items: center;
++      gap: 6px;
++      padding: 3px 10px;
++      border-radius: 999px;
++      font-size: 11px;
++      background: var(--color-prometheus-surface-3);
++      color: var(--color-prometheus-text-2);
++    }
++    .agent-pill {
++      display: inline-flex;
++      align-items: center;
++      gap: 6px;
++      padding: 3px 10px;
++      border-radius: 999px;
++      font-size: 11px;
++      background: var(--color-prometheus-accent-soft-2);
++      color: var(--color-prometheus-accent2);
++      box-shadow: 0 0 0 1px var(--color-prometheus-accent-glow);
++    }
++
++    .theme-note {
++      font-size: 12px;
++      color: var(--color-prometheus-text-3);
++      background: var(--color-prometheus-surface-2);
++      border: 1px solid var(--color-prometheus-border);
++      border-radius: 6px;
++      padding: 10px 14px;
++    }
++  </style>
++</head>
++<body>
++  <h1>Prometheus Theme Preview</h1>
++  <p class="subtitle">
++    Dev-only harness (D-13) — token swatches, typography, bundled icons, and
++    the DESIGN-07 visual-state matrix. Not shipped: Phase 16 deletes or
++    folds this page into the real FSB Control Panel.
++  </p>
++
++  <section>
++    <h2>Theme</h2>
++    <p class="theme-note">
++      Theme changes via the BrowserColorScheme pref — toggle in Prometheus
++      settings or via chrome://settings/appearance. This page re-renders
++      colors.css automatically on theme change (no reload required).
++    </p>
++  </section>
++
++  <section>
++    <h2>Token Swatches (20 kColorPrometheus* ids)</h2>
++    <div class="swatch-grid">
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-bg-app)"></div>
++          <div class="swatch-label">kColorPrometheusBgApp<br><span class="swatch-var">--color-prometheus-bg-app</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-chrome)"></div>
++          <div class="swatch-label">kColorPrometheusChrome<br><span class="swatch-var">--color-prometheus-chrome</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-chrome2)"></div>
++          <div class="swatch-label">kColorPrometheusChrome2<br><span class="swatch-var">--color-prometheus-chrome2</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-surface)"></div>
++          <div class="swatch-label">kColorPrometheusSurface<br><span class="swatch-var">--color-prometheus-surface</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-surface2)"></div>
++          <div class="swatch-label">kColorPrometheusSurface2<br><span class="swatch-var">--color-prometheus-surface2</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-surface3)"></div>
++          <div class="swatch-label">kColorPrometheusSurface3<br><span class="swatch-var">--color-prometheus-surface3</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-tab-active)"></div>
++          <div class="swatch-label">kColorPrometheusTabActive<br><span class="swatch-var">--color-prometheus-tab-active</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-tab-idle)"></div>
++          <div class="swatch-label">kColorPrometheusTabIdle<br><span class="swatch-var">--color-prometheus-tab-idle</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-tab-hover)"></div>
++          <div class="swatch-label">kColorPrometheusTabHover<br><span class="swatch-var">--color-prometheus-tab-hover</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-text)"></div>
++          <div class="swatch-label">kColorPrometheusText<br><span class="swatch-var">--color-prometheus-text</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-text2)"></div>
++          <div class="swatch-label">kColorPrometheusText2<br><span class="swatch-var">--color-prometheus-text2</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-text3)"></div>
++          <div class="swatch-label">kColorPrometheusText3<br><span class="swatch-var">--color-prometheus-text3</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-border)"></div>
++          <div class="swatch-label">kColorPrometheusBorder<br><span class="swatch-var">--color-prometheus-border</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-border2)"></div>
++          <div class="swatch-label">kColorPrometheusBorder2<br><span class="swatch-var">--color-prometheus-border2</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-hairline)"></div>
++          <div class="swatch-label">kColorPrometheusHairline<br><span class="swatch-var">--color-prometheus-hairline</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-accent)"></div>
++          <div class="swatch-label">kColorPrometheusAccent<br><span class="swatch-var">--color-prometheus-accent</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-accent2)"></div>
++          <div class="swatch-label">kColorPrometheusAccent2<br><span class="swatch-var">--color-prometheus-accent2</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-accent-soft)"></div>
++          <div class="swatch-label">kColorPrometheusAccentSoft<br><span class="swatch-var">--color-prometheus-accent-soft</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-accent-soft2)"></div>
++          <div class="swatch-label">kColorPrometheusAccentSoft2<br><span class="swatch-var">--color-prometheus-accent-soft2</span></div>
++        </div>
++        <div class="swatch-cell">
++          <div class="swatch" style="background: var(--color-prometheus-accent-glow)"></div>
++          <div class="swatch-label">kColorPrometheusAccentGlow<br><span class="swatch-var">--color-prometheus-accent-glow</span></div>
++        </div>
++    </div>
++  </section>
++
++  <section>
++    <h2>Typography</h2>
++    <div class="type-row">
++      <span class="weight-label">Poppins 100 (Thin)</span>
++      <span class="poppins-thin">Prometheus</span>
++    </div>
++    <div class="type-row">
++      <span class="weight-label">Poppins 300 (Light)</span>
++      <span class="poppins-light">Prometheus</span>
++    </div>
++    <div class="type-row">
++      <span class="weight-label">Poppins 800 (ExtraBold)</span>
++      <span class="poppins-xbold">Prometheus</span>
++    </div>
++    <div class="type-row">
++      <span class="weight-label">Poppins 900 (Black)</span>
++      <span class="poppins-black">Prometheus</span>
++    </div>
++    <div class="type-row">
++      <span class="weight-label">Space Mono 400</span>
++      <span class="space-mono">&#9661;0.1 — Powered by FSB</span>
++    </div>
++
++    <div class="pm-monogram" style="margin-top: 20px">
++      <span class="p">P</span><span class="m">M</span><span class="tri">&#9661;0.1</span>
++    </div>
++
++    <div class="brand-marks">
++      <div class="mark-cell">
++        <img src="images/pm_mark_dark.png" alt="PM mark (dark)">
++        <span>pm_mark_dark</span>
++      </div>
++      <div class="mark-cell">
++        <img src="images/pm_mark_light.png" alt="PM mark (light)">
++        <span>pm_mark_light</span>
++      </div>
++      <div class="mark-cell">
++        <img src="images/pm_wordmark_dark.png" alt="Prometheus wordmark (dark)">
++        <span>pm_wordmark_dark</span>
++      </div>
++      <div class="mark-cell">
++        <img src="images/pm_wordmark_light.png" alt="Prometheus wordmark (light)">
++        <span>pm_wordmark_light</span>
++      </div>
++      <div class="mark-cell">
++        <img src="images/fsb_logo_dark.png" alt="FSB logo (dark)">
++        <span>fsb_logo_dark</span>
++      </div>
++      <div class="mark-cell">
++        <img src="images/fsb_logo_light.png" alt="FSB logo (light)">
++        <span>fsb_logo_light</span>
++      </div>
++      <div class="mark-cell">
++        <img src="images/fsb_icon.png" alt="FSB icon">
++        <span>fsb_icon</span>
++      </div>
++    </div>
++  </section>
++
++  <section>
++    <h2>Icon Gallery (72 curated Font Awesome Free glyphs)</h2>
++    <div class="icon-grid">
++        <div class="icon-cell"><img src="svg/fa_arrow_down_to_line.svg" alt="arrow-down-to-line" width="20" height="20"><span>arrow-down-to-line</span></div>
++        <div class="icon-cell"><img src="svg/fa_arrow_left.svg" alt="arrow-left" width="20" height="20"><span>arrow-left</span></div>
++        <div class="icon-cell"><img src="svg/fa_arrow_right.svg" alt="arrow-right" width="20" height="20"><span>arrow-right</span></div>
++        <div class="icon-cell"><img src="svg/fa_arrow_up.svg" alt="arrow-up" width="20" height="20"><span>arrow-up</span></div>
++        <div class="icon-cell"><img src="svg/fa_arrow_up_from_bracket.svg" alt="arrow-up-from-bracket" width="20" height="20"><span>arrow-up-from-bracket</span></div>
++        <div class="icon-cell"><img src="svg/fa_bars.svg" alt="bars" width="20" height="20"><span>bars</span></div>
++        <div class="icon-cell"><img src="svg/fa_bolt.svg" alt="bolt" width="20" height="20"><span>bolt</span></div>
++        <div class="icon-cell"><img src="svg/fa_book_open.svg" alt="book-open" width="20" height="20"><span>book-open</span></div>
++        <div class="icon-cell"><img src="svg/fa_calendar_check.svg" alt="calendar-check" width="20" height="20"><span>calendar-check</span></div>
++        <div class="icon-cell"><img src="svg/fa_camera.svg" alt="camera" width="20" height="20"><span>camera</span></div>
++        <div class="icon-cell"><img src="svg/fa_cart_shopping.svg" alt="cart-shopping" width="20" height="20"><span>cart-shopping</span></div>
++        <div class="icon-cell"><img src="svg/fa_check_double.svg" alt="check-double" width="20" height="20"><span>check-double</span></div>
++        <div class="icon-cell"><img src="svg/fa_circle_check.svg" alt="circle-check" width="20" height="20"><span>circle-check</span></div>
++        <div class="icon-cell"><img src="svg/fa_circle_half_stroke.svg" alt="circle-half-stroke" width="20" height="20"><span>circle-half-stroke</span></div>
++        <div class="icon-cell"><img src="svg/fa_circle_info.svg" alt="circle-info" width="20" height="20"><span>circle-info</span></div>
++        <div class="icon-cell"><img src="svg/fa_circle_minus.svg" alt="circle-minus" width="20" height="20"><span>circle-minus</span></div>
++        <div class="icon-cell"><img src="svg/fa_circle_nodes.svg" alt="circle-nodes" width="20" height="20"><span>circle-nodes</span></div>
++        <div class="icon-cell"><img src="svg/fa_circle_plus.svg" alt="circle-plus" width="20" height="20"><span>circle-plus</span></div>
++        <div class="icon-cell"><img src="svg/fa_circle_question.svg" alt="circle-question" width="20" height="20"><span>circle-question</span></div>
++        <div class="icon-cell"><img src="svg/fa_circle_xmark.svg" alt="circle-xmark" width="20" height="20"><span>circle-xmark</span></div>
++        <div class="icon-cell"><img src="svg/fa_compass.svg" alt="compass" width="20" height="20"><span>compass</span></div>
++        <div class="icon-cell"><img src="svg/fa_copy.svg" alt="copy" width="20" height="20"><span>copy</span></div>
++        <div class="icon-cell"><img src="svg/fa_eye.svg" alt="eye" width="20" height="20"><span>eye</span></div>
++        <div class="icon-cell"><img src="svg/fa_folder_plus.svg" alt="folder-plus" width="20" height="20"><span>folder-plus</span></div>
++        <div class="icon-cell"><img src="svg/fa_heart_pulse.svg" alt="heart-pulse" width="20" height="20"><span>heart-pulse</span></div>
++        <div class="icon-cell"><img src="svg/fa_highlighter.svg" alt="highlighter" width="20" height="20"><span>highlighter</span></div>
++        <div class="icon-cell"><img src="svg/fa_house.svg" alt="house" width="20" height="20"><span>house</span></div>
++        <div class="icon-cell"><img src="svg/fa_inbox.svg" alt="inbox" width="20" height="20"><span>inbox</span></div>
++        <div class="icon-cell"><img src="svg/fa_key.svg" alt="key" width="20" height="20"><span>key</span></div>
++        <div class="icon-cell"><img src="svg/fa_keyboard.svg" alt="keyboard" width="20" height="20"><span>keyboard</span></div>
++        <div class="icon-cell"><img src="svg/fa_language.svg" alt="language" width="20" height="20"><span>language</span></div>
++        <div class="icon-cell"><img src="svg/fa_layer_group.svg" alt="layer-group" width="20" height="20"><span>layer-group</span></div>
++        <div class="icon-cell"><img src="svg/fa_link.svg" alt="link" width="20" height="20"><span>link</span></div>
++        <div class="icon-cell"><img src="svg/fa_link_slash.svg" alt="link-slash" width="20" height="20"><span>link-slash</span></div>
++        <div class="icon-cell"><img src="svg/fa_lock.svg" alt="lock" width="20" height="20"><span>lock</span></div>
++        <div class="icon-cell"><img src="svg/fa_lock_open.svg" alt="lock-open" width="20" height="20"><span>lock-open</span></div>
++        <div class="icon-cell"><img src="svg/fa_magnifying_glass.svg" alt="magnifying-glass" width="20" height="20"><span>magnifying-glass</span></div>
++        <div class="icon-cell"><img src="svg/fa_microchip.svg" alt="microchip" width="20" height="20"><span>microchip</span></div>
++        <div class="icon-cell"><img src="svg/fa_microphone.svg" alt="microphone" width="20" height="20"><span>microphone</span></div>
++        <div class="icon-cell"><img src="svg/fa_moon.svg" alt="moon" width="20" height="20"><span>moon</span></div>
++        <div class="icon-cell"><img src="svg/fa_note_sticky.svg" alt="note-sticky" width="20" height="20"><span>note-sticky</span></div>
++        <div class="icon-cell"><img src="svg/fa_palette.svg" alt="palette" width="20" height="20"><span>palette</span></div>
++        <div class="icon-cell"><img src="svg/fa_paste.svg" alt="paste" width="20" height="20"><span>paste</span></div>
++        <div class="icon-cell"><img src="svg/fa_pen.svg" alt="pen" width="20" height="20"><span>pen</span></div>
++        <div class="icon-cell"><img src="svg/fa_plug.svg" alt="plug" width="20" height="20"><span>plug</span></div>
++        <div class="icon-cell"><img src="svg/fa_plug_circle_xmark.svg" alt="plug-circle-xmark" width="20" height="20"><span>plug-circle-xmark</span></div>
++        <div class="icon-cell"><img src="svg/fa_plus.svg" alt="plus" width="20" height="20"><span>plus</span></div>
++        <div class="icon-cell"><img src="svg/fa_puzzle_piece.svg" alt="puzzle-piece" width="20" height="20"><span>puzzle-piece</span></div>
++        <div class="icon-cell"><img src="svg/fa_rotate_left.svg" alt="rotate-left" width="20" height="20"><span>rotate-left</span></div>
++        <div class="icon-cell"><img src="svg/fa_rotate_right.svg" alt="rotate-right" width="20" height="20"><span>rotate-right</span></div>
++        <div class="icon-cell"><img src="svg/fa_scissors.svg" alt="scissors" width="20" height="20"><span>scissors</span></div>
++        <div class="icon-cell"><img src="svg/fa_scroll.svg" alt="scroll" width="20" height="20"><span>scroll</span></div>
++        <div class="icon-cell"><img src="svg/fa_server.svg" alt="server" width="20" height="20"><span>server</span></div>
++        <div class="icon-cell"><img src="svg/fa_shield.svg" alt="shield" width="20" height="20"><span>shield</span></div>
++        <div class="icon-cell"><img src="svg/fa_sidebar_flip.svg" alt="sidebar-flip" width="20" height="20"><span>sidebar-flip</span></div>
++        <div class="icon-cell"><img src="svg/fa_sliders.svg" alt="sliders" width="20" height="20"><span>sliders</span></div>
++        <div class="icon-cell"><img src="svg/fa_star.svg" alt="star" width="20" height="20"><span>star</span></div>
++        <div class="icon-cell"><img src="svg/fa_star_half_stroke.svg" alt="star-half-stroke" width="20" height="20"><span>star-half-stroke</span></div>
++        <div class="icon-cell"><img src="svg/fa_stop.svg" alt="stop" width="20" height="20"><span>stop</span></div>
++        <div class="icon-cell"><img src="svg/fa_table.svg" alt="table" width="20" height="20"><span>table</span></div>
++        <div class="icon-cell"><img src="svg/fa_table_cells_large.svg" alt="table-cells-large" width="20" height="20"><span>table-cells-large</span></div>
++        <div class="icon-cell"><img src="svg/fa_tag.svg" alt="tag" width="20" height="20"><span>tag</span></div>
++        <div class="icon-cell"><img src="svg/fa_thumbtack.svg" alt="thumbtack" width="20" height="20"><span>thumbtack</span></div>
++        <div class="icon-cell"><img src="svg/fa_trash.svg" alt="trash" width="20" height="20"><span>trash</span></div>
++        <div class="icon-cell"><img src="svg/fa_triangle_exclamation.svg" alt="triangle-exclamation" width="20" height="20"><span>triangle-exclamation</span></div>
++        <div class="icon-cell"><img src="svg/fa_user_secret.svg" alt="user-secret" width="20" height="20"><span>user-secret</span></div>
++        <div class="icon-cell"><img src="svg/fa_vault.svg" alt="vault" width="20" height="20"><span>vault</span></div>
++        <div class="icon-cell"><img src="svg/fa_volume_high.svg" alt="volume-high" width="20" height="20"><span>volume-high</span></div>
++        <div class="icon-cell"><img src="svg/fa_volume_xmark.svg" alt="volume-xmark" width="20" height="20"><span>volume-xmark</span></div>
++        <div class="icon-cell"><img src="svg/fa_wand_magic_sparkles.svg" alt="wand-magic-sparkles" width="20" height="20"><span>wand-magic-sparkles</span></div>
++        <div class="icon-cell"><img src="svg/fa_wrench.svg" alt="wrench" width="20" height="20"><span>wrench</span></div>
++        <div class="icon-cell"><img src="svg/fa_xmark.svg" alt="xmark" width="20" height="20"><span>xmark</span></div>
++    </div>
++  </section>
++
++  <section>
++    <h2>DESIGN-07 Visual-State Matrix</h2>
++    <div class="state-grid">
++      <div class="state-cell">
++        <h3>Accent swatch</h3>
++        <div class="accent-swatch-demo"></div>
++      </div>
++      <div class="state-cell">
++        <h3>Focus ring</h3>
++        <span class="focus-ring-demo">Focused control</span>
++      </div>
++      <div class="state-cell">
++        <h3>Hover</h3>
++        <span class="hover-demo">Hovered row</span>
++      </div>
++      <div class="state-cell">
++        <h3>Disabled</h3>
++        <span class="disabled-demo">Disabled action</span>
++      </div>
++      <div class="state-cell">
++        <h3>Text fit / truncation</h3>
++        <span class="truncate-demo">A very long tab title that must truncate</span>
++      </div>
++      <div class="state-cell">
++        <h3>Warning status pill</h3>
++        <span class="status-pill">
++          <img src="svg/fa_triangle_exclamation.svg" width="12" height="12" alt="">
++          Action required
++        </span>
++      </div>
++      <div class="state-cell">
++        <h3>Private / incognito mode</h3>
++        <span class="private-pill">
++          <img src="svg/fa_user_secret.svg" width="12" height="12" alt="">
++          Private
++        </span>
++      </div>
++      <div class="state-cell">
++        <h3>Agent / supervised session</h3>
++        <span class="agent-pill">
++          <img src="svg/fa_circle_nodes.svg" width="12" height="12" alt="">
++          Agent supervised
++        </span>
++      </div>
++      <div class="state-cell">
++        <h3>Icon color states</h3>
++        <div style="display:flex; gap:12px; align-items:center;">
++          <img src="svg/fa_bolt.svg" width="18" height="18" alt="default">
++          <img src="svg/fa_bolt.svg" width="18" height="18" alt="accent"
++               style="filter: drop-shadow(0 0 0 var(--color-prometheus-accent))">
++          <img src="svg/fa_lock.svg" width="18" height="18" alt="locked">
++        </div>
++      </div>
++    </div>
++  </section>
++</body>
++</html>
+diff --git a/chrome/browser/ui/webui/BUILD.gn b/chrome/browser/ui/webui/BUILD.gn
+index b1c6b05cb7..1cf838a200 100644
+--- a/chrome/browser/ui/webui/BUILD.gn
++++ b/chrome/browser/ui/webui/BUILD.gn
+@@ -96,9 +96,11 @@ source_set("configs") {
+     "//chrome/browser/ui/webui/translate_internals",
+     "//chrome/browser/ui/webui/usb_internals",
+     "//chrome/browser/ui/webui/version",
++    "//chrome/common",
+     "//components/compose:buildflags",
+     "//components/lens:buildflags",
+     "//components/security_interstitials/content:security_interstitial_page",
++    "//components/version_info:channel",
+     "//components/webui/user_actions",
+     "//content/public/browser",
+     "//extensions/buildflags",
+@@ -133,6 +135,7 @@ source_set("configs") {
+       "//chrome/browser/ui/webui/new_tab_page_third_party:impl",
+       "//chrome/browser/ui/webui/omnibox_popup",
+       "//chrome/browser/ui/webui/personal_context",
++      "//chrome/browser/ui/webui/prometheus",
+       "//chrome/browser/ui/webui/profile_internals",
+       "//chrome/browser/ui/webui/tab_search",
+       "//chrome/browser/ui/webui/web_app_internals",
+diff --git a/chrome/browser/ui/webui/chrome_web_ui_configs.cc b/chrome/browser/ui/webui/chrome_web_ui_configs.cc
+index fbece845df..fe5b0d5b0e 100644
+--- a/chrome/browser/ui/webui/chrome_web_ui_configs.cc
++++ b/chrome/browser/ui/webui/chrome_web_ui_configs.cc
+@@ -48,6 +48,7 @@
+ #include "chrome/browser/ui/webui/personal_context_internals/personal_context_internals_ui.h"
+ #include "chrome/browser/ui/webui/policy/policy_ui.h"
+ #include "chrome/browser/ui/webui/predictors/predictors_ui.h"
++#include "chrome/browser/ui/webui/prometheus/prometheus_theme_preview_ui.h"
+ #include "chrome/browser/ui/webui/regional_capabilities_internals/regional_capabilities_internals_ui.h"
+ #include "chrome/browser/ui/webui/saved_tab_groups_unsupported/saved_tab_groups_unsupported_ui.h"
+ #include "chrome/browser/ui/webui/segmentation_internals/segmentation_internals_ui.h"
+@@ -57,10 +58,12 @@
+ #include "chrome/browser/ui/webui/translate_internals/translate_internals_ui.h"
+ #include "chrome/browser/ui/webui/usb_internals/usb_internals_ui.h"
+ #include "chrome/browser/ui/webui/version/version_ui.h"
++#include "chrome/common/channel_info.h"
+ #include "components/enterprise/buildflags/buildflags.h"
+ #include "components/safe_browsing/buildflags.h"
+ #include "components/security_interstitials/content/connection_help_ui.h"
+ #include "components/security_interstitials/content/known_interception_disclosure_ui.h"
++#include "components/version_info/channel.h"
+ #include "components/webui/user_actions/user_actions_ui.h"
+ #include "content/public/browser/webui_config_map.h"
+ #include "extensions/buildflags/buildflags.h"
+@@ -295,6 +298,18 @@ void RegisterChromeWebUIConfigs() {
+   map.AddWebUIConfig(std::make_unique<PersonalContextInternalsUIConfig>());
+   map.AddWebUIConfig(std::make_unique<PolicyUIConfig>());
+   map.AddWebUIConfig(std::make_unique<PredictorsUIConfig>());
++#if DCHECK_IS_ON()
++  // chrome://prometheus-theme-preview is a dev-only verification surface
++  // (D-13); it must not be reachable outside local developer builds.
++  // DCHECK_IS_ON() alone is insufficient because canary/dev channels can
++  // ship with DCHECK enabled (the MEDIUM review finding this guard closes:
++  // "DCHECK_IS_ON exposes preview on canary/dev"). Also require the
++  // UNKNOWN channel, which is what local/unbranded developer builds report
++  // (canary/dev/beta/stable are all excluded) (T-14-04).
++  if (chrome::GetChannel() == version_info::Channel::UNKNOWN) {
++    map.AddWebUIConfig(std::make_unique<PrometheusThemePreviewUIConfig>());
++  }
++#endif  // DCHECK_IS_ON()
+   map.AddWebUIConfig(
+       std::make_unique<private_ai::PrivateAiInternalsUIConfig>());
+   map.AddWebUIConfig(
+diff --git a/chrome/browser/ui/webui/prometheus/BUILD.gn b/chrome/browser/ui/webui/prometheus/BUILD.gn
+new file mode 100644
+index 0000000000..910a401915
+--- /dev/null
++++ b/chrome/browser/ui/webui/prometheus/BUILD.gn
+@@ -0,0 +1,31 @@
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++# chrome://prometheus-theme-preview: a dev-only WebUI verification surface
++# (D-13). Explicitly throwaway — Phase 16 deletes or folds it into the real
++# FSB Control Panel. Modeled on chrome/browser/ui/webui/internals/BUILD.gn
++# (a small self-contained source_set that chrome/browser/ui/webui:webui
++# depends on), NOT inlined into the giant chrome/browser/ui/webui aggregate
++# source list, so this controller compiles as its own linked unit (closes
++# the HIGH review finding: "WebUI .cc not wired into a GN target").
++
++source_set("prometheus") {
++  sources = [
++    "prometheus_theme_preview_ui.cc",
++    "prometheus_theme_preview_ui.h",
++  ]
++
++  public_deps = [
++    "//chrome/common",
++    "//content/public/browser",
++  ]
++
++  deps = [
++    "//base",
++    "//chrome/browser/profiles:profile",
++    "//chrome/browser/resources/prometheus:prometheus_resources",
++    "//content/public/common",
++    "//ui/webui",
++  ]
++}
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_theme_preview_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_theme_preview_ui.cc
+new file mode 100644
+index 0000000000..6425e8152a
+--- /dev/null
++++ b/chrome/browser/ui/webui/prometheus/prometheus_theme_preview_ui.cc
+@@ -0,0 +1,216 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/webui/prometheus/prometheus_theme_preview_ui.h"
++
++#if DCHECK_IS_ON()
++
++#include "chrome/browser/profiles/profile.h"
++// The prometheus_resources.grd grit() target uses
++// output_dir = "$root_gen_dir/chrome" (see chrome/browser/resources/
++// prometheus/BUILD.gn), so the generated header physically lands at
++// chrome/grit/prometheus_resources.h relative to $root_gen_dir — NOT at
++// chrome/browser/resources/prometheus/grit/prometheus_resources.h. This is
++// the same include-path convention documented in 14-06-SUMMARY.md and
++// already used by prometheus_asset_resource_unittest.cc.
++#include "chrome/grit/prometheus_resources.h"
++#include "content/public/browser/web_ui.h"
++#include "content/public/browser/web_ui_controller.h"
++#include "content/public/browser/web_ui_data_source.h"
++// content::kChromeUIScheme is declared here. The internals_ui.cc analog gets
++// it transitively via chrome/common/url_constants.h (which pulls this header
++// in at line 25), but that path also drags in chrome/common/webui_url_
++// constants.h and ash/chromeos-only headers this file has no other need for.
++// content/public/browser/webui_config.h (included via
++// prometheus_theme_preview_ui.h) only pulls in url/gurl.h, so without this
++// explicit include content::kChromeUIScheme is not visible here — this was
++// the actual build failure (a missing include, not a wrong/nonexistent
++// symbol name).
++#include "content/public/common/url_constants.h"
++
++PrometheusThemePreviewUIConfig::PrometheusThemePreviewUIConfig()
++    : DefaultWebUIConfig(content::kChromeUIScheme,
++                         "prometheus-theme-preview") {}
++
++PrometheusThemePreviewUI::PrometheusThemePreviewUI(content::WebUI* web_ui)
++    : content::WebUIController(web_ui) {
++  auto* profile = Profile::FromWebUI(web_ui);
++  auto* source = content::WebUIDataSource::CreateAndAdd(
++      profile, "prometheus-theme-preview");
++  source->SetDefaultResource(IDR_PROMETHEUS_THEME_PREVIEW_HTML);
++
++  // Make every preview-local asset the HTML references addressable so the
++  // preview never renders blank due to an unmapped path (HIGH review
++  // finding: "WebUI resources are not actually made addressable"). Keys
++  // below byte-match the relative href/src strings prometheus_theme_preview
++  // .html uses.
++
++  // Local CSS resource (loaded via <link href="prometheus_fonts.css">).
++  source->AddResourcePath("prometheus_fonts.css", IDR_PROMETHEUS_CSS_FONTS);
++
++  // Brand marks (loaded via <img src="images/...">).
++  source->AddResourcePath("images/pm_mark_dark.png",
++                          IDR_PROMETHEUS_ASSET_PM_MARK_DARK);
++  source->AddResourcePath("images/pm_mark_light.png",
++                          IDR_PROMETHEUS_ASSET_PM_MARK_LIGHT);
++  source->AddResourcePath("images/pm_wordmark_dark.png",
++                          IDR_PROMETHEUS_ASSET_PM_WORDMARK_DARK);
++  source->AddResourcePath("images/pm_wordmark_light.png",
++                          IDR_PROMETHEUS_ASSET_PM_WORDMARK_LIGHT);
++  source->AddResourcePath("images/fsb_logo_dark.png",
++                          IDR_PROMETHEUS_ASSET_FSB_LOGO_DARK);
++  source->AddResourcePath("images/fsb_logo_light.png",
++                          IDR_PROMETHEUS_ASSET_FSB_LOGO_LIGHT);
++  source->AddResourcePath("images/fsb_icon.png", IDR_PROMETHEUS_ASSET_FSB_ICON);
++
++  // 72 curated Font Awesome Free glyphs (loaded via <img src="svg/...">).
++  // One entry per row in 14-ASSET-MANIFEST.md Section 3.
++  source->AddResourcePath("svg/fa_arrow_down_to_line.svg",
++                          IDR_PROMETHEUS_ICON_FA_ARROW_DOWN_TO_LINE);
++  source->AddResourcePath("svg/fa_arrow_left.svg",
++                          IDR_PROMETHEUS_ICON_FA_ARROW_LEFT);
++  source->AddResourcePath("svg/fa_arrow_right.svg",
++                          IDR_PROMETHEUS_ICON_FA_ARROW_RIGHT);
++  source->AddResourcePath("svg/fa_arrow_up.svg", IDR_PROMETHEUS_ICON_FA_ARROW_UP);
++  source->AddResourcePath("svg/fa_arrow_up_from_bracket.svg",
++                          IDR_PROMETHEUS_ICON_FA_ARROW_UP_FROM_BRACKET);
++  source->AddResourcePath("svg/fa_bars.svg", IDR_PROMETHEUS_ICON_FA_BARS);
++  source->AddResourcePath("svg/fa_bolt.svg", IDR_PROMETHEUS_ICON_FA_BOLT);
++  source->AddResourcePath("svg/fa_book_open.svg",
++                          IDR_PROMETHEUS_ICON_FA_BOOK_OPEN);
++  source->AddResourcePath("svg/fa_calendar_check.svg",
++                          IDR_PROMETHEUS_ICON_FA_CALENDAR_CHECK);
++  source->AddResourcePath("svg/fa_camera.svg", IDR_PROMETHEUS_ICON_FA_CAMERA);
++  source->AddResourcePath("svg/fa_cart_shopping.svg",
++                          IDR_PROMETHEUS_ICON_FA_CART_SHOPPING);
++  source->AddResourcePath("svg/fa_check_double.svg",
++                          IDR_PROMETHEUS_ICON_FA_CHECK_DOUBLE);
++  source->AddResourcePath("svg/fa_circle_check.svg",
++                          IDR_PROMETHEUS_ICON_FA_CIRCLE_CHECK);
++  source->AddResourcePath("svg/fa_circle_half_stroke.svg",
++                          IDR_PROMETHEUS_ICON_FA_CIRCLE_HALF_STROKE);
++  source->AddResourcePath("svg/fa_circle_info.svg",
++                          IDR_PROMETHEUS_ICON_FA_CIRCLE_INFO);
++  source->AddResourcePath("svg/fa_circle_minus.svg",
++                          IDR_PROMETHEUS_ICON_FA_CIRCLE_MINUS);
++  source->AddResourcePath("svg/fa_circle_nodes.svg",
++                          IDR_PROMETHEUS_ICON_FA_CIRCLE_NODES);
++  source->AddResourcePath("svg/fa_circle_plus.svg",
++                          IDR_PROMETHEUS_ICON_FA_CIRCLE_PLUS);
++  source->AddResourcePath("svg/fa_circle_question.svg",
++                          IDR_PROMETHEUS_ICON_FA_CIRCLE_QUESTION);
++  source->AddResourcePath("svg/fa_circle_xmark.svg",
++                          IDR_PROMETHEUS_ICON_FA_CIRCLE_XMARK);
++  source->AddResourcePath("svg/fa_compass.svg", IDR_PROMETHEUS_ICON_FA_COMPASS);
++  source->AddResourcePath("svg/fa_copy.svg", IDR_PROMETHEUS_ICON_FA_COPY);
++  source->AddResourcePath("svg/fa_eye.svg", IDR_PROMETHEUS_ICON_FA_EYE);
++  source->AddResourcePath("svg/fa_folder_plus.svg",
++                          IDR_PROMETHEUS_ICON_FA_FOLDER_PLUS);
++  source->AddResourcePath("svg/fa_heart_pulse.svg",
++                          IDR_PROMETHEUS_ICON_FA_HEART_PULSE);
++  source->AddResourcePath("svg/fa_highlighter.svg",
++                          IDR_PROMETHEUS_ICON_FA_HIGHLIGHTER);
++  source->AddResourcePath("svg/fa_house.svg", IDR_PROMETHEUS_ICON_FA_HOUSE);
++  source->AddResourcePath("svg/fa_inbox.svg", IDR_PROMETHEUS_ICON_FA_INBOX);
++  source->AddResourcePath("svg/fa_key.svg", IDR_PROMETHEUS_ICON_FA_KEY);
++  source->AddResourcePath("svg/fa_keyboard.svg", IDR_PROMETHEUS_ICON_FA_KEYBOARD);
++  source->AddResourcePath("svg/fa_language.svg", IDR_PROMETHEUS_ICON_FA_LANGUAGE);
++  source->AddResourcePath("svg/fa_layer_group.svg",
++                          IDR_PROMETHEUS_ICON_FA_LAYER_GROUP);
++  source->AddResourcePath("svg/fa_link.svg", IDR_PROMETHEUS_ICON_FA_LINK);
++  source->AddResourcePath("svg/fa_link_slash.svg",
++                          IDR_PROMETHEUS_ICON_FA_LINK_SLASH);
++  source->AddResourcePath("svg/fa_lock.svg", IDR_PROMETHEUS_ICON_FA_LOCK);
++  source->AddResourcePath("svg/fa_lock_open.svg",
++                          IDR_PROMETHEUS_ICON_FA_LOCK_OPEN);
++  source->AddResourcePath("svg/fa_magnifying_glass.svg",
++                          IDR_PROMETHEUS_ICON_FA_MAGNIFYING_GLASS);
++  source->AddResourcePath("svg/fa_microchip.svg",
++                          IDR_PROMETHEUS_ICON_FA_MICROCHIP);
++  source->AddResourcePath("svg/fa_microphone.svg",
++                          IDR_PROMETHEUS_ICON_FA_MICROPHONE);
++  source->AddResourcePath("svg/fa_moon.svg", IDR_PROMETHEUS_ICON_FA_MOON);
++  source->AddResourcePath("svg/fa_note_sticky.svg",
++                          IDR_PROMETHEUS_ICON_FA_NOTE_STICKY);
++  source->AddResourcePath("svg/fa_palette.svg", IDR_PROMETHEUS_ICON_FA_PALETTE);
++  source->AddResourcePath("svg/fa_paste.svg", IDR_PROMETHEUS_ICON_FA_PASTE);
++  source->AddResourcePath("svg/fa_pen.svg", IDR_PROMETHEUS_ICON_FA_PEN);
++  source->AddResourcePath("svg/fa_plug.svg", IDR_PROMETHEUS_ICON_FA_PLUG);
++  source->AddResourcePath("svg/fa_plug_circle_xmark.svg",
++                          IDR_PROMETHEUS_ICON_FA_PLUG_CIRCLE_XMARK);
++  source->AddResourcePath("svg/fa_plus.svg", IDR_PROMETHEUS_ICON_FA_PLUS);
++  source->AddResourcePath("svg/fa_puzzle_piece.svg",
++                          IDR_PROMETHEUS_ICON_FA_PUZZLE_PIECE);
++  source->AddResourcePath("svg/fa_rotate_left.svg",
++                          IDR_PROMETHEUS_ICON_FA_ROTATE_LEFT);
++  source->AddResourcePath("svg/fa_rotate_right.svg",
++                          IDR_PROMETHEUS_ICON_FA_ROTATE_RIGHT);
++  source->AddResourcePath("svg/fa_scissors.svg", IDR_PROMETHEUS_ICON_FA_SCISSORS);
++  source->AddResourcePath("svg/fa_scroll.svg", IDR_PROMETHEUS_ICON_FA_SCROLL);
++  source->AddResourcePath("svg/fa_server.svg", IDR_PROMETHEUS_ICON_FA_SERVER);
++  source->AddResourcePath("svg/fa_shield.svg", IDR_PROMETHEUS_ICON_FA_SHIELD);
++  source->AddResourcePath("svg/fa_sidebar_flip.svg",
++                          IDR_PROMETHEUS_ICON_FA_SIDEBAR_FLIP);
++  source->AddResourcePath("svg/fa_sliders.svg", IDR_PROMETHEUS_ICON_FA_SLIDERS);
++  source->AddResourcePath("svg/fa_star.svg", IDR_PROMETHEUS_ICON_FA_STAR);
++  source->AddResourcePath("svg/fa_star_half_stroke.svg",
++                          IDR_PROMETHEUS_ICON_FA_STAR_HALF_STROKE);
++  source->AddResourcePath("svg/fa_stop.svg", IDR_PROMETHEUS_ICON_FA_STOP);
++  source->AddResourcePath("svg/fa_table.svg", IDR_PROMETHEUS_ICON_FA_TABLE);
++  source->AddResourcePath("svg/fa_table_cells_large.svg",
++                          IDR_PROMETHEUS_ICON_FA_TABLE_CELLS_LARGE);
++  source->AddResourcePath("svg/fa_tag.svg", IDR_PROMETHEUS_ICON_FA_TAG);
++  source->AddResourcePath("svg/fa_thumbtack.svg",
++                          IDR_PROMETHEUS_ICON_FA_THUMBTACK);
++  source->AddResourcePath("svg/fa_trash.svg", IDR_PROMETHEUS_ICON_FA_TRASH);
++  source->AddResourcePath("svg/fa_triangle_exclamation.svg",
++                          IDR_PROMETHEUS_ICON_FA_TRIANGLE_EXCLAMATION);
++  source->AddResourcePath("svg/fa_user_secret.svg",
++                          IDR_PROMETHEUS_ICON_FA_USER_SECRET);
++  source->AddResourcePath("svg/fa_vault.svg", IDR_PROMETHEUS_ICON_FA_VAULT);
++  source->AddResourcePath("svg/fa_volume_high.svg",
++                          IDR_PROMETHEUS_ICON_FA_VOLUME_HIGH);
++  source->AddResourcePath("svg/fa_volume_xmark.svg",
++                          IDR_PROMETHEUS_ICON_FA_VOLUME_XMARK);
++  source->AddResourcePath("svg/fa_wand_magic_sparkles.svg",
++                          IDR_PROMETHEUS_ICON_FA_WAND_MAGIC_SPARKLES);
++  source->AddResourcePath("svg/fa_wrench.svg", IDR_PROMETHEUS_ICON_FA_WRENCH);
++  source->AddResourcePath("svg/fa_xmark.svg", IDR_PROMETHEUS_ICON_FA_XMARK);
++
++  // NOTE on the 5 Poppins/SpaceMono woff2 fonts (MEDIUM review finding:
++  // WebUI font url() vs AddResourcePath host/path mismatch): prometheus_
++  // fonts.css (owned by Plan 14-04, intentionally NOT modified here) uses
++  // the PRODUCTION scheme url(//resources/prometheus/fonts/<File>.woff2).
++  // That protocol-relative URL resolves against the chrome://resources/
++  // SHARED origin (content::kChromeUIResourcesHost), which this checkout
++  // populates from the core ui/webui/resources/BUILD.gn "webui" grd — a
++  // tree-wide shared resource bundle consumed by every WebUI page in the
++  // browser. Registering the woff2 correctly requires adding them to that
++  // shared grd (the same mechanism that serves chrome://resources/roboto/
++  // *.woff2 for ui/webui/resources/css/roboto.css); that edit is out of
++  // this plan's file scope (see 14-07-PLAN.md files_modified) and touching
++  // it here would be a cross-cutting, unreviewed change affecting every
++  // WebUI surface in the browser, not just this throwaway dev page.
++  // Calling WebUIDataSource::CreateAndAdd(profile,
++  // content::kChromeUIResourcesHost) a second time from here would NOT
++  // merge into that source — URLDataManagerBackend keys data sources by
++  // name in a flat map (url_data_manager_backend.cc), so a second
++  // CreateAndAdd call would silently REPLACE the real chrome://resources/
++  // source and break every other WebUI page in the process. Confirmed
++  // (content/browser/webui/web_ui_data_source_impl.cc StartDataRequest)
++  // that an unmapped resource path fails closed — GotDataCallback.Run
++  // (nullptr) — not a crash, so the practical effect on this throwaway
++  // preview page is that @font-face requests for the 5 woff2 files 404
++  // and the browser falls back to a system font for the typography
++  // section; token swatches, icon glyphs, and the state matrix are
++  // unaffected. Wiring the shared origin is left as an explicit follow-up
++  // (documented in 14-07-SUMMARY.md) rather than done as an unscoped,
++  // unreviewed change to the core WebUI resource bundle.
++}
++
++PrometheusThemePreviewUI::~PrometheusThemePreviewUI() = default;
++
++WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusThemePreviewUI)
++
++#endif  // DCHECK_IS_ON()
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_theme_preview_ui.h b/chrome/browser/ui/webui/prometheus/prometheus_theme_preview_ui.h
+new file mode 100644
+index 0000000000..d5f07d04dd
+--- /dev/null
++++ b/chrome/browser/ui/webui/prometheus/prometheus_theme_preview_ui.h
+@@ -0,0 +1,47 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_WEBUI_PROMETHEUS_PROMETHEUS_THEME_PREVIEW_UI_H_
++#define CHROME_BROWSER_UI_WEBUI_PROMETHEUS_PROMETHEUS_THEME_PREVIEW_UI_H_
++
++// This WebUI page is a dev-only verification surface (D-13): it renders the
++// Prometheus token/font/icon/state harness used as visual evidence for the
++// DESIGN-07 checkpoint. It is explicitly throwaway — Phase 16 deletes or
++// folds it into the real FSB Control Panel. The entire file is compiled out
++// unless DCHECK_IS_ON(), and registration is additionally gated to the
++// UNKNOWN/dev channel (see prometheus_theme_preview_ui.cc and
++// chrome_web_ui_configs.cc) so canary/dev/beta/stable builds — which can
++// still have DCHECK_IS_ON() true — never expose chrome://prometheus-theme-
++// preview (T-14-04).
++#include "base/dcheck_is_on.h"
++
++#if DCHECK_IS_ON()
++
++#include "content/public/browser/web_ui_controller.h"
++#include "content/public/browser/webui_config.h"
++
++namespace content {
++class WebUI;
++}  // namespace content
++
++class PrometheusThemePreviewUI;
++
++class PrometheusThemePreviewUIConfig
++    : public content::DefaultWebUIConfig<PrometheusThemePreviewUI> {
++ public:
++  PrometheusThemePreviewUIConfig();
++};
++
++class PrometheusThemePreviewUI : public content::WebUIController {
++ public:
++  explicit PrometheusThemePreviewUI(content::WebUI* web_ui);
++  ~PrometheusThemePreviewUI() override;
++
++ private:
++  WEB_UI_CONTROLLER_TYPE_DECL();
++};
++
++#endif  // DCHECK_IS_ON()
++
++#endif  // CHROME_BROWSER_UI_WEBUI_PROMETHEUS_PROMETHEUS_THEME_PREVIEW_UI_H_
+-- 
+2.50.1 (Apple Git-155)
+

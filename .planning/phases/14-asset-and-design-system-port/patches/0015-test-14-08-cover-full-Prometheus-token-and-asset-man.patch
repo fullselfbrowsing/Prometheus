@@ -1,0 +1,497 @@
+From 19d1f8e0deb60d4e98d5fc5843429ba599d38ed1 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 6 Jul 2026 22:16:16 -0500
+Subject: [PATCH 15/15] test(14-08): cover full Prometheus token and asset
+ manifests
+
+---
+ .../prometheus_asset_resource_unittest.cc     | 160 +++++++++++----
+ .../prometheus_color_mixer_unittest.cc        | 188 ++++++++++++++----
+ .../prometheus_css_emission_unittest.cc       |  60 ++++--
+ 3 files changed, 307 insertions(+), 101 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc b/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc
+index 5b23c5bcd8..657d213f49 100644
+--- a/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc
+@@ -18,6 +18,117 @@ struct PrometheusResourceExpectation {
+   const char* name;
+ };
+ 
++#define PROMETHEUS_RESOURCE(id) {id, #id}
++
++constexpr PrometheusResourceExpectation kFontResources[] = {
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_FONT_POPPINS_LIGHT_WOFF2),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_FONT_POPPINS_EXTRABOLD_WOFF2),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_FONT_POPPINS_BLACK_WOFF2),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_FONT_POPPINS_THIN_TTF),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_FONT_SPACE_MONO_TTF),
++};
++
++constexpr PrometheusResourceExpectation kIconResources[] = {
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_ARROW_DOWN_TO_LINE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_ARROW_LEFT),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_ARROW_RIGHT),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_ARROW_UP),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_ARROW_UP_FROM_BRACKET),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_BARS),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_BOLT),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_BOOK_OPEN),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_CALENDAR_CHECK),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_CAMERA),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_CART_SHOPPING),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_CHECK_DOUBLE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_CIRCLE_CHECK),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_CIRCLE_HALF_STROKE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_CIRCLE_INFO),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_CIRCLE_MINUS),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_CIRCLE_NODES),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_CIRCLE_PLUS),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_CIRCLE_QUESTION),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_CIRCLE_XMARK),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_COMPASS),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_COPY),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_EYE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_FOLDER_PLUS),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_HEART_PULSE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_HIGHLIGHTER),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_HOUSE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_INBOX),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_KEY),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_KEYBOARD),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_LANGUAGE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_LAYER_GROUP),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_LINK),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_LINK_SLASH),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_LOCK),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_LOCK_OPEN),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_MAGNIFYING_GLASS),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_MICROCHIP),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_MICROPHONE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_MOON),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_NOTE_STICKY),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_PALETTE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_PASTE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_PEN),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_PLUG),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_PLUG_CIRCLE_XMARK),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_PLUS),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_PUZZLE_PIECE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_ROTATE_LEFT),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_ROTATE_RIGHT),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_SCISSORS),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_SCROLL),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_SERVER),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_SHIELD),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_SIDEBAR_FLIP),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_SLIDERS),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_STAR),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_STAR_HALF_STROKE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_STOP),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_TABLE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_TABLE_CELLS_LARGE),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_TAG),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_THUMBTACK),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_TRASH),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_TRIANGLE_EXCLAMATION),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_USER_SECRET),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_VAULT),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_VOLUME_HIGH),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_VOLUME_XMARK),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_WAND_MAGIC_SPARKLES),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_WRENCH),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ICON_FA_XMARK),
++};
++
++constexpr PrometheusResourceExpectation kBrandAssetResources[] = {
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ASSET_PM_MARK_DARK),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ASSET_PM_MARK_LIGHT),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ASSET_PM_WORDMARK_DARK),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ASSET_PM_WORDMARK_LIGHT),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ASSET_FSB_LOGO_DARK),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ASSET_FSB_LOGO_LIGHT),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_ASSET_FSB_ICON),
++};
++
++constexpr PrometheusResourceExpectation kDevSurfaceResources[] = {
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_CSS_FONTS),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_THEME_PREVIEW_HTML),
++};
++
++#undef PROMETHEUS_RESOURCE
++
++static_assert(sizeof(kFontResources) / sizeof(kFontResources[0]) == 7);
++static_assert(sizeof(kIconResources) / sizeof(kIconResources[0]) == 72);
++static_assert(sizeof(kBrandAssetResources) / sizeof(kBrandAssetResources[0]) ==
++              7);
++static_assert(sizeof(kDevSurfaceResources) / sizeof(kDevSurfaceResources[0]) ==
++              2);
++
+ class PrometheusAssetResourceTest : public testing::Test {
+  protected:
+   void SetUp() override {
+@@ -42,53 +153,18 @@ class PrometheusAssetResourceTest : public testing::Test {
+   std::unique_ptr<ui::ResourceBundle> resource_bundle_;
+ };
+ 
+-constexpr PrometheusResourceExpectation kFontResources[] = {
+-    {IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2,
+-     "IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2"},
+-    {IDR_PROMETHEUS_FONT_POPPINS_LIGHT_WOFF2,
+-     "IDR_PROMETHEUS_FONT_POPPINS_LIGHT_WOFF2"},
+-    {IDR_PROMETHEUS_FONT_POPPINS_EXTRABOLD_WOFF2,
+-     "IDR_PROMETHEUS_FONT_POPPINS_EXTRABOLD_WOFF2"},
+-    {IDR_PROMETHEUS_FONT_POPPINS_BLACK_WOFF2,
+-     "IDR_PROMETHEUS_FONT_POPPINS_BLACK_WOFF2"},
+-    {IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2,
+-     "IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2"},
+-};
+-
+-constexpr PrometheusResourceExpectation kBrandAssetResources[] = {
+-    {IDR_PROMETHEUS_ASSET_PM_MARK_DARK, "IDR_PROMETHEUS_ASSET_PM_MARK_DARK"},
+-    {IDR_PROMETHEUS_ASSET_PM_MARK_LIGHT, "IDR_PROMETHEUS_ASSET_PM_MARK_LIGHT"},
+-    {IDR_PROMETHEUS_ASSET_PM_WORDMARK_DARK,
+-     "IDR_PROMETHEUS_ASSET_PM_WORDMARK_DARK"},
+-    {IDR_PROMETHEUS_ASSET_PM_WORDMARK_LIGHT,
+-     "IDR_PROMETHEUS_ASSET_PM_WORDMARK_LIGHT"},
+-    {IDR_PROMETHEUS_ASSET_FSB_LOGO_DARK, "IDR_PROMETHEUS_ASSET_FSB_LOGO_DARK"},
+-    {IDR_PROMETHEUS_ASSET_FSB_LOGO_LIGHT,
+-     "IDR_PROMETHEUS_ASSET_FSB_LOGO_LIGHT"},
+-    {IDR_PROMETHEUS_ASSET_FSB_ICON, "IDR_PROMETHEUS_ASSET_FSB_ICON"},
+-};
+-
+ }  // namespace
+ 
+-TEST_F(PrometheusAssetResourceTest, FontResourcePoppinsThinResolves) {
+-  ExpectNonEmptyResource({IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2,
+-                          "IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2"});
+-}
+-
+-TEST_F(PrometheusAssetResourceTest, FontResourceSpaceMonoResolves) {
+-  ExpectNonEmptyResource({IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2,
+-                          "IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2"});
+-}
+-
+ TEST_F(PrometheusAssetResourceTest, FontResourcesResolve) {
+   for (const auto& resource : kFontResources) {
+     ExpectNonEmptyResource(resource);
+   }
+ }
+ 
+-TEST_F(PrometheusAssetResourceTest, BrandAssetPmMarkDarkResolves) {
+-  ExpectNonEmptyResource(
+-      {IDR_PROMETHEUS_ASSET_PM_MARK_DARK, "IDR_PROMETHEUS_ASSET_PM_MARK_DARK"});
++TEST_F(PrometheusAssetResourceTest, IconResourcesResolve) {
++  for (const auto& resource : kIconResources) {
++    ExpectNonEmptyResource(resource);
++  }
+ }
+ 
+ TEST_F(PrometheusAssetResourceTest, BrandAssetResourcesResolve) {
+@@ -96,3 +172,9 @@ TEST_F(PrometheusAssetResourceTest, BrandAssetResourcesResolve) {
+     ExpectNonEmptyResource(resource);
+   }
+ }
++
++TEST_F(PrometheusAssetResourceTest, DevSurfaceResourcesResolve) {
++  for (const auto& resource : kDevSurfaceResources) {
++    ExpectNonEmptyResource(resource);
++  }
++}
+diff --git a/chrome/browser/prometheus/prometheus_color_mixer_unittest.cc b/chrome/browser/prometheus/prometheus_color_mixer_unittest.cc
+index 5420cfcc00..2a67d705e7 100644
+--- a/chrome/browser/prometheus/prometheus_color_mixer_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_color_mixer_unittest.cc
+@@ -2,12 +2,6 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-// Wave 0 RED tests (Plans 14-01/14-02): these tests fail until Plan 14-03
+-// fills token values in AddPrometheusColorMixer. The test binary must compile
+-// and run; assertions will fail until the mixer stub is populated.
+-// Plan 14-03 GREEN: DarkModeAccentResolvesToFsbOrange, LightModeBgAppToken,
+-// DarkModeBgAppToken, AccentSwatchConstantsDefined now pass.
+-
+ #include "chrome/browser/ui/color/prometheus_color_mixer.h"
+ 
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+@@ -16,54 +10,162 @@
+ #include "ui/color/color_provider.h"
+ #include "ui/color/color_provider_key.h"
+ 
+-// GREEN in Plan 14-03: mixer sets kColorPrometheusAccent = FSB Orange.
+-TEST(PrometheusColorMixerTest, DarkModeAccentResolvesToFsbOrange) {
++namespace {
++
++struct PrometheusColorExpectation {
++  ui::ColorId id;
++  SkColor color;
++  const char* name;
++};
++
++constexpr PrometheusColorExpectation kDarkTokenExpectations[] = {
++    {kColorPrometheusBgApp, SkColorSetRGB(0x0d, 0x0a, 0x09),
++     "kColorPrometheusBgApp"},
++    {kColorPrometheusChrome, SkColorSetRGB(0x1d, 0x18, 0x16),
++     "kColorPrometheusChrome"},
++    {kColorPrometheusChrome2, SkColorSetRGB(0x18, 0x13, 0x11),
++     "kColorPrometheusChrome2"},
++    {kColorPrometheusSurface, SkColorSetRGB(0x14, 0x11, 0x10),
++     "kColorPrometheusSurface"},
++    {kColorPrometheusSurface2, SkColorSetRGB(0x1d, 0x18, 0x16),
++     "kColorPrometheusSurface2"},
++    {kColorPrometheusSurface3, SkColorSetRGB(0x26, 0x20, 0x1d),
++     "kColorPrometheusSurface3"},
++    {kColorPrometheusTabActive, SkColorSetRGB(0x2a, 0x22, 0x1e),
++     "kColorPrometheusTabActive"},
++    {kColorPrometheusTabIdle, SK_ColorTRANSPARENT, "kColorPrometheusTabIdle"},
++    {kColorPrometheusTabHover, SkColorSetARGB(15, 0xff, 0xf1, 0xe8),
++     "kColorPrometheusTabHover"},
++    {kColorPrometheusText, SkColorSetRGB(0xf6, 0xef, 0xe9),
++     "kColorPrometheusText"},
++    {kColorPrometheusText2, SkColorSetRGB(0xd2, 0xc1, 0xb4),
++     "kColorPrometheusText2"},
++    {kColorPrometheusText3, SkColorSetRGB(0xa9, 0x92, 0x83),
++     "kColorPrometheusText3"},
++    {kColorPrometheusBorder, SkColorSetARGB(25, 0xff, 0xf1, 0xe8),
++     "kColorPrometheusBorder"},
++    {kColorPrometheusBorder2, SkColorSetARGB(45, 0xff, 0xf1, 0xe8),
++     "kColorPrometheusBorder2"},
++    {kColorPrometheusHairline, SkColorSetARGB(15, 0xff, 0xf1, 0xe8),
++     "kColorPrometheusHairline"},
++    {kColorPrometheusAccent, SkColorSetRGB(0xff, 0x6b, 0x35),
++     "kColorPrometheusAccent"},
++    {kColorPrometheusAccent2, SkColorSetRGB(0xff, 0x8c, 0x42),
++     "kColorPrometheusAccent2"},
++    {kColorPrometheusAccentSoft, SkColorSetARGB(30, 0xff, 0x6b, 0x35),
++     "kColorPrometheusAccentSoft"},
++    {kColorPrometheusAccentSoft2, SkColorSetARGB(45, 0xff, 0x6b, 0x35),
++     "kColorPrometheusAccentSoft2"},
++    {kColorPrometheusAccentGlow, SkColorSetARGB(61, 0xff, 0x6b, 0x35),
++     "kColorPrometheusAccentGlow"},
++};
++
++constexpr PrometheusColorExpectation kLightTokenExpectations[] = {
++    {kColorPrometheusBgApp, SkColorSetRGB(0xe9, 0xe2, 0xda),
++     "kColorPrometheusBgApp"},
++    {kColorPrometheusChrome, SkColorSetRGB(0xf3, 0xed, 0xe6),
++     "kColorPrometheusChrome"},
++    {kColorPrometheusChrome2, SkColorSetRGB(0xec, 0xe4, 0xdb),
++     "kColorPrometheusChrome2"},
++    {kColorPrometheusSurface, SkColorSetRGB(0xff, 0xfd, 0xfb),
++     "kColorPrometheusSurface"},
++    {kColorPrometheusSurface2, SkColorSetRGB(0xf8, 0xf4, 0xef),
++     "kColorPrometheusSurface2"},
++    {kColorPrometheusSurface3, SkColorSetRGB(0xf1, 0xeb, 0xe4),
++     "kColorPrometheusSurface3"},
++    {kColorPrometheusTabActive, SkColorSetRGB(0xff, 0xfd, 0xfb),
++     "kColorPrometheusTabActive"},
++    {kColorPrometheusTabIdle, SK_ColorTRANSPARENT, "kColorPrometheusTabIdle"},
++    {kColorPrometheusTabHover, SkColorSetARGB(12, 0x29, 0x1d, 0x14),
++     "kColorPrometheusTabHover"},
++    {kColorPrometheusText, SkColorSetRGB(0x1f, 0x1a, 0x17),
++     "kColorPrometheusText"},
++    {kColorPrometheusText2, SkColorSetRGB(0x6a, 0x58, 0x4d),
++     "kColorPrometheusText2"},
++    {kColorPrometheusText3, SkColorSetRGB(0x8d, 0x7a, 0x6e),
++     "kColorPrometheusText3"},
++    {kColorPrometheusBorder, SkColorSetARGB(25, 0x29, 0x1d, 0x14),
++     "kColorPrometheusBorder"},
++    {kColorPrometheusBorder2, SkColorSetARGB(40, 0x29, 0x1d, 0x14),
++     "kColorPrometheusBorder2"},
++    {kColorPrometheusHairline, SkColorSetARGB(20, 0x29, 0x1d, 0x14),
++     "kColorPrometheusHairline"},
++    {kColorPrometheusAccent, SkColorSetRGB(0xff, 0x6b, 0x35),
++     "kColorPrometheusAccent"},
++    {kColorPrometheusAccent2, SkColorSetRGB(0xff, 0x8c, 0x42),
++     "kColorPrometheusAccent2"},
++    {kColorPrometheusAccentSoft, SkColorSetARGB(30, 0xff, 0x6b, 0x35),
++     "kColorPrometheusAccentSoft"},
++    {kColorPrometheusAccentSoft2, SkColorSetARGB(45, 0xff, 0x6b, 0x35),
++     "kColorPrometheusAccentSoft2"},
++    {kColorPrometheusAccentGlow, SkColorSetARGB(61, 0xff, 0x6b, 0x35),
++     "kColorPrometheusAccentGlow"},
++};
++
++constexpr ui::ColorId kPrometheusColorIds[] = {
++    kColorPrometheusBgApp,       kColorPrometheusChrome,
++    kColorPrometheusChrome2,     kColorPrometheusSurface,
++    kColorPrometheusSurface2,    kColorPrometheusSurface3,
++    kColorPrometheusTabActive,   kColorPrometheusTabIdle,
++    kColorPrometheusTabHover,    kColorPrometheusText,
++    kColorPrometheusText2,       kColorPrometheusText3,
++    kColorPrometheusBorder,      kColorPrometheusBorder2,
++    kColorPrometheusHairline,    kColorPrometheusAccent,
++    kColorPrometheusAccent2,     kColorPrometheusAccentSoft,
++    kColorPrometheusAccentSoft2, kColorPrometheusAccentGlow,
++};
++
++static_assert(sizeof(kDarkTokenExpectations) /
++                  sizeof(kDarkTokenExpectations[0]) ==
++              20);
++static_assert(sizeof(kLightTokenExpectations) /
++                  sizeof(kLightTokenExpectations[0]) ==
++              20);
++static_assert(sizeof(kPrometheusColorIds) / sizeof(kPrometheusColorIds[0]) ==
++              20);
++
++void AddMixer(ui::ColorProvider& provider,
++              ui::ColorProviderKey::ColorMode color_mode) {
+   ui::ColorProviderKey key;
+-  key.color_mode = ui::ColorProviderKey::ColorMode::kDark;
+-  ui::ColorProvider provider;
++  key.color_mode = color_mode;
++
+   AddPrometheusColorMixer(&provider, key);
+-  // FSB Orange #ff6b35 (DESIGN-02 default accent)
+-  EXPECT_EQ(SkColorSetRGB(0xff, 0x6b, 0x35),
+-            provider.GetColor(kColorPrometheusAccent));
+ }
+ 
+-// GREEN in Plan 14-03: light mode bg token now set.
+-TEST(PrometheusColorMixerTest, LightModeBgAppToken) {
+-  ui::ColorProviderKey key;
+-  key.color_mode = ui::ColorProviderKey::ColorMode::kLight;
++void ExpectColors(const ui::ColorProvider& provider,
++                  const PrometheusColorExpectation (&expectations)[20]) {
++  for (const auto& expectation : expectations) {
++    EXPECT_EQ(expectation.color, provider.GetColor(expectation.id))
++        << expectation.name;
++  }
++}
++
++}  // namespace
++
++TEST(PrometheusColorMixerTest, DarkModeTokensMatchManifest) {
+   ui::ColorProvider provider;
+-  AddPrometheusColorMixer(&provider, key);
+-  // Light bg-app #e9e2da (DESIGN-01 warm light palette)
+-  EXPECT_EQ(SkColorSetRGB(0xe9, 0xe2, 0xda),
+-            provider.GetColor(kColorPrometheusBgApp));
++  AddMixer(provider, ui::ColorProviderKey::ColorMode::kDark);
++
++  ExpectColors(provider, kDarkTokenExpectations);
+ }
+ 
+-// GREEN in Plan 14-03: dark mode bg token now set.
+-TEST(PrometheusColorMixerTest, DarkModeBgAppToken) {
+-  ui::ColorProviderKey key;
+-  key.color_mode = ui::ColorProviderKey::ColorMode::kDark;
++TEST(PrometheusColorMixerTest, LightModeTokensMatchManifest) {
+   ui::ColorProvider provider;
+-  AddPrometheusColorMixer(&provider, key);
+-  // Dark bg-app #0d0a09 (DESIGN-01 warm dark palette)
+-  EXPECT_EQ(SkColorSetRGB(0x0d, 0x0a, 0x09),
+-            provider.GetColor(kColorPrometheusBgApp));
++  AddMixer(provider, ui::ColorProviderKey::ColorMode::kLight);
++
++  ExpectColors(provider, kLightTokenExpectations);
+ }
+ 
+-// GREEN in Plan 14-03: asserts all four D-05 named swatch constants equal their
+-// locked hex values. Makes "Lock all four swatch hexes as named constants now"
+-// a verified GREEN fact; evidence for 14-08 before tagging VIS-09-04.
+-TEST(PrometheusColorMixerTest, AccentSwatchConstantsDefined) {
++TEST(PrometheusColorMixerTest, AccentSwatchConstantsMatchManifest) {
+   EXPECT_EQ(kPrometheusAccentFsbOrange, SkColorSetRGB(0xff, 0x6b, 0x35));
+-  EXPECT_EQ(kPrometheusAccentIndigo,    SkColorSetRGB(0x63, 0x66, 0xf1));
+-  EXPECT_EQ(kPrometheusAccentTeal,      SkColorSetRGB(0x14, 0xb8, 0xa6));
+-  EXPECT_EQ(kPrometheusAccentRose,      SkColorSetRGB(0xf4, 0x3f, 0x5e));
++  EXPECT_EQ(kPrometheusAccentIndigo, SkColorSetRGB(0x63, 0x66, 0xf1));
++  EXPECT_EQ(kPrometheusAccentTeal, SkColorSetRGB(0x14, 0xb8, 0xa6));
++  EXPECT_EQ(kPrometheusAccentRose, SkColorSetRGB(0xf4, 0x3f, 0x5e));
+ }
+ 
+-// Tests that kColorPrometheus* ids fall within kChromeColorsStart..kChromeColorsEnd.
+-// This verifies DESIGN-06 range compliance. Tests GREEN once IDs are declared.
+-TEST(PrometheusColorMixerTest, ColorIdRangeInChromeBounds) {
+-  EXPECT_GE(static_cast<ui::ColorId>(kColorPrometheusBgApp),
+-            static_cast<ui::ColorId>(kChromeColorsStart));
+-  EXPECT_LT(static_cast<ui::ColorId>(kColorPrometheusAccentGlow),
+-            static_cast<ui::ColorId>(kChromeColorsEnd));
++TEST(PrometheusColorMixerTest, ColorIdsAreChromeColorIds) {
++  for (const ui::ColorId id : kPrometheusColorIds) {
++    EXPECT_GE(id, static_cast<ui::ColorId>(kChromeColorsStart));
++    EXPECT_LT(id, static_cast<ui::ColorId>(kChromeColorsEnd));
++  }
+ }
+diff --git a/chrome/browser/prometheus/prometheus_css_emission_unittest.cc b/chrome/browser/prometheus/prometheus_css_emission_unittest.cc
+index c8f76f5578..f2be45551f 100644
+--- a/chrome/browser/prometheus/prometheus_css_emission_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_css_emission_unittest.cc
+@@ -2,29 +2,51 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-// Wave 0 RED tests: these tests verify CSS custom-property name emission for
+-// kColorPrometheus* ids via ConvertColorProviderColorIdToCSSColorId.
+-// Tests will be RED until Plan 14-02 adds kColorPrometheus* ids to
+-// COMMON_CHROME_COLOR_IDS (which happens in this wave via chrome_color_id.h).
+-// CSS name emission is verified here once the ids exist.
+-
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/color/chrome_color_provider_utils.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ #include "ui/color/color_provider_utils.h"
+ 
+-// Verifies kColorPrometheusAccent emits --color-prometheus-accent CSS property.
+-// ConvertColorProviderColorIdToCSSColorId converts kColorPrometheusAccent via
+-// ChromeColorIdName("kColorPrometheusAccent") -> "--color-prometheus-accent"
+-TEST(PrometheusColorCssEmissionTest, AccentIdHasCorrectCssName) {
+-  EXPECT_EQ("--color-prometheus-accent",
+-            ui::ConvertColorProviderColorIdToCSSColorId(
+-                ChromeColorIdName(kColorPrometheusAccent)));
+-}
++namespace {
++
++struct PrometheusCssExpectation {
++  ui::ColorId id;
++  const char* css_name;
++};
++
++constexpr PrometheusCssExpectation kPrometheusCssExpectations[] = {
++    {kColorPrometheusBgApp, "--color-prometheus-bg-app"},
++    {kColorPrometheusChrome, "--color-prometheus-chrome"},
++    {kColorPrometheusChrome2, "--color-prometheus-chrome2"},
++    {kColorPrometheusSurface, "--color-prometheus-surface"},
++    {kColorPrometheusSurface2, "--color-prometheus-surface2"},
++    {kColorPrometheusSurface3, "--color-prometheus-surface3"},
++    {kColorPrometheusTabActive, "--color-prometheus-tab-active"},
++    {kColorPrometheusTabIdle, "--color-prometheus-tab-idle"},
++    {kColorPrometheusTabHover, "--color-prometheus-tab-hover"},
++    {kColorPrometheusText, "--color-prometheus-text"},
++    {kColorPrometheusText2, "--color-prometheus-text2"},
++    {kColorPrometheusText3, "--color-prometheus-text3"},
++    {kColorPrometheusBorder, "--color-prometheus-border"},
++    {kColorPrometheusBorder2, "--color-prometheus-border2"},
++    {kColorPrometheusHairline, "--color-prometheus-hairline"},
++    {kColorPrometheusAccent, "--color-prometheus-accent"},
++    {kColorPrometheusAccent2, "--color-prometheus-accent2"},
++    {kColorPrometheusAccentSoft, "--color-prometheus-accent-soft"},
++    {kColorPrometheusAccentSoft2, "--color-prometheus-accent-soft2"},
++    {kColorPrometheusAccentGlow, "--color-prometheus-accent-glow"},
++};
++
++static_assert(sizeof(kPrometheusCssExpectations) /
++                  sizeof(kPrometheusCssExpectations[0]) ==
++              20);
++
++}  // namespace
+ 
+-// Verifies kColorPrometheusBgApp emits --color-prometheus-bg-app CSS property.
+-TEST(PrometheusColorCssEmissionTest, BgAppIdHasCorrectCssName) {
+-  EXPECT_EQ("--color-prometheus-bg-app",
+-            ui::ConvertColorProviderColorIdToCSSColorId(
+-                ChromeColorIdName(kColorPrometheusBgApp)));
++TEST(PrometheusColorCssEmissionTest, TokenIdsEmitChromeCssNames) {
++  for (const auto& expectation : kPrometheusCssExpectations) {
++    EXPECT_EQ(expectation.css_name, ui::ConvertColorProviderColorIdToCSSColorId(
++                                        ChromeColorIdName(expectation.id)))
++        << ChromeColorIdName(expectation.id);
++  }
+ }
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,246 @@
+From 3415ff1dbc426427e3a103d82ef8754f0e1917d2 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 24 Jun 2026 11:44:00 -0500
+Subject: [PATCH 02/15] test(14-01): add RED prometheus unit test stubs and
+ BUILD.gn target (Wave 0)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Add chrome/browser/prometheus/BUILD.gn with prometheus_unittests test() target
+- Add prometheus_color_mixer_unittest.cc: 4 RED tests (DarkModeAccent, LightModeBg,
+  DarkModeBg, ColorIdRangeInChromeBounds) — RED until Plan 14-03 populates mixer
+- Add prometheus_css_emission_unittest.cc: 2 RED tests verifying --color-prometheus-*
+  CSS property emission via ConvertColorProviderColorIdToCSSColorId
+- Add prometheus_asset_resource_unittest.cc: 4 EXPECT_TRUE(false) stubs for
+  font/icon/brand IDR constants — RED until Plans 14-04/14-05
+- Add kColorPrometheus* (20 ids) to chrome_color_id.h COMMON_CHROME_COLOR_IDS so
+  tests compile (prerequisite for Wave 0 test target to build)
+---
+ chrome/browser/prometheus/BUILD.gn            | 26 +++++++++
+ .../prometheus_asset_resource_unittest.cc     | 44 ++++++++++++++
+ .../prometheus_color_mixer_unittest.cc        | 57 +++++++++++++++++++
+ .../prometheus_css_emission_unittest.cc       | 30 ++++++++++
+ chrome/browser/ui/color/chrome_color_id.h     | 21 +++++++
+ 5 files changed, 178 insertions(+)
+ create mode 100644 chrome/browser/prometheus/BUILD.gn
+ create mode 100644 chrome/browser/prometheus/prometheus_asset_resource_unittest.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_color_mixer_unittest.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_css_emission_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+new file mode 100644
+index 0000000000..089686bb7d
+--- /dev/null
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -0,0 +1,26 @@
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++# Wave 0: Prometheus unit test target.
++# All tests start RED — populated incrementally by Plans 14-02 through 14-06.
++# Modeled on chrome/browser/ui/color/BUILD.gn source_set pattern.
++
++test("prometheus_unittests") {
++  sources = [
++    "prometheus_asset_resource_unittest.cc",
++    "prometheus_color_mixer_unittest.cc",
++    "prometheus_css_emission_unittest.cc",
++  ]
++
++  deps = [
++    "//base",
++    "//chrome/browser/ui/color:color_headers",
++    "//chrome/browser/ui/color:mixers",
++    "//testing/gtest:gtest_main",
++    "//third_party/skia",
++    "//ui/color",
++    "//ui/color:color_headers",
++    "//ui/gfx",
++  ]
++}
+diff --git a/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc b/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc
+new file mode 100644
+index 0000000000..b228419ca4
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc
+@@ -0,0 +1,44 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Wave 0 RED tests: these tests verify that Prometheus resource bundle IDR
++// constants resolve to non-null data. All tests are RED until Plans 14-04
++// (fonts) and 14-05 (icons/marks) register the IDR constants and pak resources.
++// Tests use EXPECT_TRUE(false) stubs to clearly fail with a descriptive message.
++
++#include "testing/gtest/include/gtest/gtest.h"
++
++// Font resource tests (DESIGN-03) — RED until Plan 14-04
++
++// Verifies IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2 resolves to non-null data.
++TEST(PrometheusAssetResourceTest, FontResourcePoppinsThinResolves) {
++  EXPECT_TRUE(false)
++      << "IDR_PROMETHEUS_FONT_POPPINS_THIN_WOFF2 not registered yet "
++         "-- RED until Plan 14-04 adds Poppins pak resources";
++}
++
++// Verifies IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2 resolves to non-null data.
++TEST(PrometheusAssetResourceTest, FontResourceSpaceMonoResolves) {
++  EXPECT_TRUE(false)
++      << "IDR_PROMETHEUS_FONT_SPACE_MONO_WOFF2 not registered yet "
++         "-- RED until Plan 14-04 adds Space Mono pak resources";
++}
++
++// Icon resource tests (DESIGN-04) — RED until Plan 14-05
++
++// Verifies IDR_PROMETHEUS_ICON_FA_BOLT resolves to non-null data.
++TEST(PrometheusAssetResourceTest, IconResourceFaBoltResolves) {
++  EXPECT_TRUE(false)
++      << "IDR_PROMETHEUS_ICON_FA_BOLT not registered yet "
++         "-- RED until Plan 14-05 adds FA icon resources";
++}
++
++// Brand asset tests (DESIGN-05) — RED until Plan 14-05
++
++// Verifies IDR_PROMETHEUS_ASSET_PM_MARK_DARK resolves to non-null data.
++TEST(PrometheusAssetResourceTest, BrandAssetPmMarkDarkResolves) {
++  EXPECT_TRUE(false)
++      << "IDR_PROMETHEUS_ASSET_PM_MARK_DARK not registered yet "
++         "-- RED until Plan 14-05 adds brand asset pak resources";
++}
+diff --git a/chrome/browser/prometheus/prometheus_color_mixer_unittest.cc b/chrome/browser/prometheus/prometheus_color_mixer_unittest.cc
+new file mode 100644
+index 0000000000..6a32a4e08b
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_color_mixer_unittest.cc
+@@ -0,0 +1,57 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Wave 0 RED tests: these tests fail until Plan 14-03 fills token values in
++// AddPrometheusColorMixer. The test binary must compile and run; assertions
++// will fail until the mixer stub is populated.
++
++#include "chrome/browser/ui/color/prometheus_color_mixer.h"
++
++#include "chrome/browser/ui/color/chrome_color_id.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/color/color_provider.h"
++#include "ui/color/color_provider_key.h"
++
++// RED until Plan 14-03: mixer stub has no token assignments.
++TEST(PrometheusColorMixerTest, DarkModeAccentResolvesToFsbOrange) {
++  ui::ColorProviderKey key;
++  key.color_mode = ui::ColorProviderKey::ColorMode::kDark;
++  ui::ColorProvider provider;
++  AddPrometheusColorMixer(&provider, key);
++  // FSB Orange #ff6b35 (DESIGN-02 default accent)
++  EXPECT_EQ(SkColorSetRGB(0xff, 0x6b, 0x35),
++            provider.GetColor(kColorPrometheusAccent));
++}
++
++// RED until Plan 14-03: light mode bg token not set in stub.
++TEST(PrometheusColorMixerTest, LightModeBgAppToken) {
++  ui::ColorProviderKey key;
++  key.color_mode = ui::ColorProviderKey::ColorMode::kLight;
++  ui::ColorProvider provider;
++  AddPrometheusColorMixer(&provider, key);
++  // Light bg-app #e9e2da (DESIGN-01 warm light palette)
++  EXPECT_EQ(SkColorSetRGB(0xe9, 0xe2, 0xda),
++            provider.GetColor(kColorPrometheusBgApp));
++}
++
++// RED until Plan 14-03: dark mode bg token not set in stub.
++TEST(PrometheusColorMixerTest, DarkModeBgAppToken) {
++  ui::ColorProviderKey key;
++  key.color_mode = ui::ColorProviderKey::ColorMode::kDark;
++  ui::ColorProvider provider;
++  AddPrometheusColorMixer(&provider, key);
++  // Dark bg-app #0d0a09 (DESIGN-01 warm dark palette)
++  EXPECT_EQ(SkColorSetRGB(0x0d, 0x0a, 0x09),
++            provider.GetColor(kColorPrometheusBgApp));
++}
++
++// Tests that kColorPrometheus* ids fall within kChromeColorsStart..kChromeColorsEnd.
++// This verifies DESIGN-06 range compliance. Tests GREEN once IDs are declared.
++TEST(PrometheusColorMixerTest, ColorIdRangeInChromeBounds) {
++  EXPECT_GE(static_cast<ui::ColorId>(kColorPrometheusBgApp),
++            static_cast<ui::ColorId>(kChromeColorsStart));
++  EXPECT_LT(static_cast<ui::ColorId>(kColorPrometheusAccentGlow),
++            static_cast<ui::ColorId>(kChromeColorsEnd));
++}
+diff --git a/chrome/browser/prometheus/prometheus_css_emission_unittest.cc b/chrome/browser/prometheus/prometheus_css_emission_unittest.cc
+new file mode 100644
+index 0000000000..c8f76f5578
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_css_emission_unittest.cc
+@@ -0,0 +1,30 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Wave 0 RED tests: these tests verify CSS custom-property name emission for
++// kColorPrometheus* ids via ConvertColorProviderColorIdToCSSColorId.
++// Tests will be RED until Plan 14-02 adds kColorPrometheus* ids to
++// COMMON_CHROME_COLOR_IDS (which happens in this wave via chrome_color_id.h).
++// CSS name emission is verified here once the ids exist.
++
++#include "chrome/browser/ui/color/chrome_color_id.h"
++#include "chrome/browser/ui/color/chrome_color_provider_utils.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "ui/color/color_provider_utils.h"
++
++// Verifies kColorPrometheusAccent emits --color-prometheus-accent CSS property.
++// ConvertColorProviderColorIdToCSSColorId converts kColorPrometheusAccent via
++// ChromeColorIdName("kColorPrometheusAccent") -> "--color-prometheus-accent"
++TEST(PrometheusColorCssEmissionTest, AccentIdHasCorrectCssName) {
++  EXPECT_EQ("--color-prometheus-accent",
++            ui::ConvertColorProviderColorIdToCSSColorId(
++                ChromeColorIdName(kColorPrometheusAccent)));
++}
++
++// Verifies kColorPrometheusBgApp emits --color-prometheus-bg-app CSS property.
++TEST(PrometheusColorCssEmissionTest, BgAppIdHasCorrectCssName) {
++  EXPECT_EQ("--color-prometheus-bg-app",
++            ui::ConvertColorProviderColorIdToCSSColorId(
++                ChromeColorIdName(kColorPrometheusBgApp)));
++}
+diff --git a/chrome/browser/ui/color/chrome_color_id.h b/chrome/browser/ui/color/chrome_color_id.h
+index 047787844d..8f6d4b1c7d 100644
+--- a/chrome/browser/ui/color/chrome_color_id.h
++++ b/chrome/browser/ui/color/chrome_color_id.h
+@@ -1128,6 +1128,27 @@
+   /* Window control button background colors. */ \
+   E_CPONLY(kColorWindowControlButtonBackgroundActive) \
+   E_CPONLY(kColorWindowControlButtonBackgroundInactive) \
++  /* Prometheus design system token colors (Phase 14). */ \
++  E_CPONLY(kColorPrometheusBgApp) \
++  E_CPONLY(kColorPrometheusChrome) \
++  E_CPONLY(kColorPrometheusChrome2) \
++  E_CPONLY(kColorPrometheusSurface) \
++  E_CPONLY(kColorPrometheusSurface2) \
++  E_CPONLY(kColorPrometheusSurface3) \
++  E_CPONLY(kColorPrometheusTabActive) \
++  E_CPONLY(kColorPrometheusTabIdle) \
++  E_CPONLY(kColorPrometheusTabHover) \
++  E_CPONLY(kColorPrometheusText) \
++  E_CPONLY(kColorPrometheusText2) \
++  E_CPONLY(kColorPrometheusText3) \
++  E_CPONLY(kColorPrometheusBorder) \
++  E_CPONLY(kColorPrometheusBorder2) \
++  E_CPONLY(kColorPrometheusHairline) \
++  E_CPONLY(kColorPrometheusAccent) \
++  E_CPONLY(kColorPrometheusAccent2) \
++  E_CPONLY(kColorPrometheusAccentSoft) \
++  E_CPONLY(kColorPrometheusAccentSoft2) \
++  E_CPONLY(kColorPrometheusAccentGlow)
+ 
+ #if BUILDFLAG(IS_CHROMEOS)
+ #define CHROME_PLATFORM_SPECIFIC_COLOR_IDS \
+-- 
+2.50.1 (Apple Git-155)
+

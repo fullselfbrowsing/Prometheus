@@ -14,7 +14,7 @@ Prometheus keeps its product, design, and agent-native control thesis, but retir
 - [x] **Phase 11: Preservation Contract and Falkon Freeze** — Save every v1 decision, behavior, asset, test, source reference, and legal boundary before removing the active Falkon tree. (completed 2026-06-23)
 - [x] **Phase 12: Chromium Checkout, Build, and Patch Discipline** — Bring in upstream Chromium with depot_tools, build it cleanly on macOS, and establish source/layout rules that keep the root repo clean. (completed 2026-06-24)
 - [x] **Phase 13: Product Identity, Branding, and Legal Baseline** — Turn the Chromium baseline into a Prometheus-owned app identity with correct attribution and no unwanted Chrome/Chromium/Falkon/KDE-facing product surfaces. (completed 2026-06-24)
-- [ ] **Phase 14: Asset and Design System Port** — Port warm tokens, PM/FSB assets, Poppins, Space Mono, Font Awesome, dark/light themes, and visual state rules into Chromium resources.
+- [x] **Phase 14: Asset and Design System Port** — Port warm tokens, PM/FSB assets, Poppins, Space Mono, Font Awesome, dark/light themes, and visual state rules into Chromium resources. (completed 2026-07-07)
 - [ ] **Phase 15: Chromium UI Shell, Compact Chrome, and Tab Model** — Rebuild the compact browser chrome and advanced tab workflows using Chromium-native UI architecture.
 - [ ] **Phase 16: Prometheus WebUI Surfaces and New Tab** — Build Prometheus start page, side panel surfaces, and FSB Control Panel as Chromium WebUI/browser-backed surfaces.
 - [ ] **Phase 17: Native Agent Command Service and Tab Ownership** — Rebuild the core native command router as a Chromium browser-process service with authenticated sessions and stable tab ownership.
@@ -131,7 +131,7 @@ Plans:
 - Add asset/license validation script.
 - Preserve accent swatches: FSB Orange, Indigo, Teal, Rose.
 
-**Plans:** 7/8 plans executed
+**Plans:** 8/8 plans complete
 
 Plans:
 **Wave 1**
@@ -150,7 +150,7 @@ Plans:
 - [x] 14-07-PLAN.md — Build chrome://prometheus-theme-preview WebUI dev surface + PrometheusTokenGalleryView
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 14-08-PLAN.md — Full gate run; tag VIS satisfied-by-Ph14-harness; export Phase 14 patches
+- [x] 14-08-PLAN.md — Full gate run; tag VIS satisfied-by-Ph14-harness; export Phase 14 patches
 
 
 ### Phase 15: Chromium UI Shell, Compact Chrome, and Tab Model
@@ -394,7 +394,7 @@ Plans:
 | 11. Preservation Contract and Falkon Freeze | v2.0 | 3/3 | Complete   | 2026-06-23 |
 | 12. Chromium Checkout, Build, and Patch Discipline | v2.0 | 4/4 | Complete    | 2026-06-24 |
 | 13. Product Identity, Branding, and Legal Baseline | v2.0 | 4/4 | Complete    | 2026-06-24 |
-| 14. Asset and Design System Port | v2.0 | 7/8 | In Progress|  |
+| 14. Asset and Design System Port | v2.0 | 8/8 | Complete    | 2026-07-07 |
 | 15. Chromium UI Shell, Compact Chrome, and Tab Model | v2.0 | UX-01..UX-07 | Planned | — |
 | 16. Prometheus WebUI Surfaces and New Tab | v2.0 | WEBUI-01..WEBUI-07 | Planned | — |
 | 17. Native Agent Command Service and Tab Ownership | v2.0 | AGENT-01..AGENT-08 | Planned | — |
