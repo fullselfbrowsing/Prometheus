@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 18
 current_phase_name: Page Adapter, DOM Snapshot, and Action Verification
-current_plan: 7
+current_plan: 8
 status: executing
-stopped_at: Completed 18-06-PLAN.md
-last_updated: "2026-07-12T14:10:38.000Z"
+stopped_at: Completed 18-07-PLAN.md
+last_updated: "2026-07-12T14:42:25.000Z"
 last_activity: 2026-07-12
 progress:
   total_phases: 14
   completed_phases: 7
   total_plans: 45
-  completed_plans: 43
-  percent: 96
+  completed_plans: 44
+  percent: 98
 ---
 
 # Project State
@@ -24,27 +24,27 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-07-12)
 
 **Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** Phase 18 page-settle waits, repeated-action detection, and browser-authoritative action verification.
+**Current focus:** Phase 18 action-route wiring, compact verification reports, repeated-action errors, and typed drag/file-drop denials.
 
 ## Current Position
 
 **Current Phase:** 18
 **Current Phase Name:** Page Adapter, DOM Snapshot, and Action Verification
 **Total Phases:** 14
-**Current Plan:** 7
+**Current Plan:** 8
 **Total Plans in Phase:** 8
-**Status:** Ready to execute
+**Status:** Executing
 **Last Activity:** 2026-07-12
-**Last Activity Description:** Completed `18-06-PLAN.md` with exact-frame ref resolution and reentrancy-safe public-Blink page actions.
-**Progress:** [██████████] 96%
+**Last Activity Description:** Completed `18-07-PLAN.md` with lifecycle-safe page-settle waits and bounded repeated-action detection.
+**Progress:** [██████████] 98%
 
-Milestone progress: 43 of 45 plans summarized (96%). Cumulative progress: 94 of 96 plans summarized (98%).
+Milestone progress: 44 of 45 plans summarized (98%). Cumulative progress: 95 of 96 plans summarized (99%).
 
 ## Performance Metrics
 
-- Completed v2.0 plans: 43
-- Current phase: 6 of 8 plans complete
-- Most recent plan: 18-06, completed in 18 minutes (3 tasks, 7 files)
+- Completed v2.0 plans: 44
+- Current phase: 7 of 8 plans complete
+- Most recent plan: 18-07, completed in 16 minutes (3 tasks, 7 files)
 
 ## Decisions Made
 
@@ -61,6 +61,8 @@ Milestone progress: 43 of 45 plans summarized (96%). Cumulative progress: 94 of 
 | 18 | Retain one executor per asynchronous request | Ref-counted ownership and one completion path make response, timeout, disconnect, and navigation races exactly-once. |
 | 18 | Keep browser APC authoritative for action refs | Renderer token syntax plus connected exact-frame ownership prevents local confusion, while fresh APC re-resolution must precede mutation. |
 | 18 | Treat page action APIs as reentrant destruction boundaries | Weak checks and fresh frame/widget/node lookup prevent stale renderer dereferences after handlers navigate or replace DOM. |
+| 18 | Make page-settle waits one-shot and always asynchronous | A separate WebContents observer, independent timeout, and posted completion keep destruction and late callbacks typed and exactly once. |
+| 18 | Bound repeated-action history at every level | Detection uses the last 10 actions while storage caps each target at 50 entries and the global session/tab map at 256 LRU keys. |
 
 ## Pending Todos
 
@@ -79,10 +81,10 @@ None.
 
 ## Session
 
-**Last Date:** 2026-07-12T14:10:38.000Z
-**Stopped At:** Completed 18-06-PLAN.md
+**Last Date:** 2026-07-12T14:42:25.000Z
+**Stopped At:** Completed 18-07-PLAN.md
 **Resume File:** None
 
 ## Operator Next Steps
 
-Execute `18-07-PLAN.md` next to add page-settle waiting and repeated-action detection. Keep `PAGE-05` open until Plan 18-08 performs fresh browser APC re-resolution and wires verified action routes plus typed drag/file-drop denials.
+Execute `18-08-PLAN.md` next to wire fresh browser APC re-resolution, retained page-settle operations, compact change reports, repeated-action errors, and typed drag/file-drop denials. Keep all PAGE requirements open until full Phase 18 verification.
