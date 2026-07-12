@@ -43,7 +43,8 @@ patterns-established:
   - "Frame/element identity contracts (AgentFrameTarget, AgentElementTarget) are labeled in comments as untrusted, per-snapshot, per-frame data requiring re-resolution at use time — future plans reading this header get the security boundary inline."
   - "Audit denylist extension for new content categories is verified with both direct IsAgentRouteAuditMetadataSafe() term checks and full AgentRouteAuditLog::Append() rejection tests, covering the two call sites content could otherwise leak through."
 
-requirements-completed: [PAGE-01, PAGE-02, PAGE-03, PAGE-04, PAGE-05, PAGE-06, PAGE-07, PAGE-08]
+requirements-completed: []
+requirements-progressed: [PAGE-01, PAGE-02, PAGE-03, PAGE-04, PAGE-05, PAGE-06, PAGE-07, PAGE-08]
 
 # Metrics
 duration: 4min

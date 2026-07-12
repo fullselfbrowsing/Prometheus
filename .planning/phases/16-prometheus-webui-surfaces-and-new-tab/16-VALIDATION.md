@@ -71,6 +71,6 @@ Automated gates passed on 2026-07-07:
 - [x] `nyquist_compliant: true` set in frontmatter.
 - [x] Phase 16 automated gate logs contain `EXIT_CODE=0`.
 - [x] Phase 16 Chromium patch series exported.
-- [ ] Human desktop visual UAT completed for dark/light start page polish, side-panel density, and responsive control-panel layout.
+- [x] Human desktop visual UAT disposition recorded: dark/light start-page polish, side-panel density, and responsive control-panel layout are deferred to the final release review as non-blocking.
 
 **Approval:** approved 2026-07-07

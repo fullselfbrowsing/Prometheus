@@ -97,8 +97,8 @@ token-gallery browsertest.
 
 | Item | Deferred To | Reason |
 |------|-------------|--------|
-| Live `chrome://prometheus-theme-preview` screenshot | A local dev build with `DCHECK_IS_ON()` or later Phase 16/24 visual validation | Current `out/Default` has `is_debug=false`, so the DCHECK-gated dev WebUI is intentionally compiled out. The attempted headless screenshot exited 124 after the explicit timeout and wrote no PNG. |
-| VIS checks outside the Phase 14 asset/token harness | Later owner phases per preservation ledger | VIS-09-02, VIS-09-04, VIS-09-06, VIS-08-*, VIS-10-01..06, and VIS-10-08 remain `carry_forward`. |
+| Live `chrome://prometheus-theme-preview` screenshot | Final release review (non-blocking) | Current `out/Default` has `is_debug=false`, so the DCHECK-gated dev WebUI is intentionally compiled out. The attempted headless screenshot exited 124 after the explicit timeout and wrote no PNG. |
+| VIS checks outside the Phase 14 asset/token harness | Automated owner-phase gates plus final release review | VIS-09-02, VIS-09-04, VIS-09-06, VIS-08-*, VIS-10-01..06, and VIS-10-08 remain `carry_forward`; any human screenshot review is non-blocking and consolidated at release. |
 
 ## Gaps Summary
 

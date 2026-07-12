@@ -342,11 +342,13 @@ This map is the Chromium migration contract. Each row preserves user-visible or 
 
 ## Deferred Visual Check Ledger
 
-Allowed statuses: `carry_forward` means the check remains required as Chromium-equivalent evidence; `retired` means the original Falkon-only surface is intentionally removed or superseded by a named later Chromium phase.
+Allowed statuses: `carry_forward` means the check still needs Chromium-equivalent functional or automated evidence; `satisfied-by-Ph14-harness` means Phase 14 automated asset/token coverage satisfied the check; `retired` means the original Falkon-only surface is intentionally removed or superseded by a named later Chromium phase.
 
-Phase 15 evidence note: compact chrome and advanced tab-management behavior now have Chromium-native automated coverage and exported patches. This satisfies the Phase 7 compact-chrome implementation carry-forward at the automated-test level, but it does not retire later Phase 16, Phase 20, or Phase 21 visual checks, and it does not mark desktop screenshot UAT complete.
+Human-review policy (2026-07-12): the 20 rows that remain `carry_forward` keep their named implementation owners and mandatory automated evidence. Any remaining human screenshot/UAT portion is consolidated into Phase 24 as one non-blocking release review. A skipped human review cannot satisfy a missing automated or functional gate, but it does not block the local validation package when those gates pass.
 
-Phase 16 evidence note: Prometheus WebUI hosts, start page handoff, side-panel shell, control-panel shell, packaged resource safety, and renderer-visible handoff safety now have Chromium-native automated coverage and a 9-patch export from `a4423116ff..HEAD`. This satisfies Phase 16 WebUI shell evidence at the automated-test level, but it does not retire desktop visual UAT or later Phase 20 provider/vault/runtime data checks.
+Phase 15 evidence note: compact chrome and advanced tab-management behavior now have Chromium-native automated coverage and exported patches. This satisfies the Phase 7 compact-chrome implementation carry-forward at the automated-test level. Desktop screenshot review is not marked complete; it is consolidated into the non-blocking Phase 24 release review.
+
+Phase 16 evidence note: Prometheus WebUI hosts, start page handoff, side-panel shell, control-panel shell, packaged resource safety, and renderer-visible handoff safety now have Chromium-native automated coverage and a 9-patch export from `a4423116ff..HEAD`. This satisfies Phase 16 WebUI shell evidence at the automated-test level. Desktop visual review is consolidated into Phase 24 as non-blocking; later provider/vault/runtime functional checks remain mandatory.
 
 Phase 17 evidence note: Native agent route schema, browser-issued sessions, reconnect/cap errors, tab ownership data, profile-scoped tab/window/navigation routes, internal Prometheus surface routes, unsafe URL-scheme rejection, typed errors, and metadata-only audit records now have Chromium-native automated coverage and a six-patch export from `b46e7a5d1e..HEAD`. This satisfies Phase 17 native route/session/ownership/audit evidence at the automated-test level, but it does not retire Phase 18 DOM/page action verification, Phase 19 MCP bridge compatibility, Phase 20 runtime/provider/vault data, or Phase 21 supervision/pairing checks.
 

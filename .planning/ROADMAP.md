@@ -5,6 +5,10 @@
 - Complete **v1.0 MVP** — Phases 1-10 (shipped 2026-06-17; archived under `.planning/milestones/`)
 - Active **v2.0 Chromium Engine Migration** — Phases 11-24
 
+## v2.0 Chromium Engine Migration
+
+**Status:** In progress — Phase 18, Plan 2 of 8.
+
 ## Milestone Thesis
 
 Prometheus keeps its product, design, and agent-native control thesis, but retires Falkon/QtWebEngine as the production base. v2.0 starts by preserving the v1 source reference and design/behavior decisions, then removes the active Falkon tree, checks out Chromium, establishes a reproducible Chromium baseline, and rebuilds Prometheus on Chromium-native primitives: Views/browser UI, WebUI, browser-process services, WebContents/RenderFrameHost/page adapters, local MCP bridge, extension support, secure runtime storage, supervision, and release validation.
@@ -62,6 +66,8 @@ Plans:
 **Goal:** Establish a clean upstream Chromium baseline that builds locally and can survive rebases.
 
 **Requirements:** CHROM-01, CHROM-02, CHROM-03, CHROM-04, CHROM-05, CHROM-06, CHROM-07, CHROM-08
+
+**Plans:** 4/4 plans complete
 
 **Success criteria:**
 
@@ -159,13 +165,15 @@ Plans:
 
 **Requirements:** UX-01, UX-02, UX-03, UX-04, UX-05, UX-06, UX-07
 
+**Plans:** 6/6 plans complete
+
 **Success criteria:**
 
 1. Compact chrome places tabs in the toolbar and makes the active tab address/search field.
 2. Separate/conventional layout remains available.
 3. Tab groups, overview/search, quick switch, close/restore, unload/suspend, duplicate, detach, and reorder paths work.
 4. Agent ownership, automation, supervision, tab health, audio/private/security, and extension state are visible without clutter.
-5. macOS visual and keyboard behavior are acceptable across narrow, standard, and wide windows.
+5. Automated geometry, reachability, keyboard, and platform-behavior gates pass; human desktop screenshot UAT is consolidated into Phase 24 as non-blocking review.
 
 **Planned work:**
 
@@ -180,6 +188,8 @@ Plans:
 **Goal:** Build browser-backed Prometheus WebUI pages for start, side panel, and control center.
 
 **Requirements:** WEBUI-01, WEBUI-02, WEBUI-03, WEBUI-04, WEBUI-05, WEBUI-06, WEBUI-07
+
+**Plans:** 6/6 plans complete
 
 **Success criteria:**
 
@@ -204,6 +214,8 @@ Plans:
 
 **Requirements:** AGENT-01, AGENT-02, AGENT-03, AGENT-04, AGENT-05, AGENT-06, AGENT-07, AGENT-08
 
+**Plans:** 6/6 plans complete
+
 **Success criteria:**
 
 1. Native service validates route input and returns structured route results.
@@ -226,6 +238,18 @@ Plans:
 **Goal:** Restore page understanding and actions on Chromium content primitives.
 
 **Requirements:** PAGE-01, PAGE-02, PAGE-03, PAGE-04, PAGE-05, PAGE-06, PAGE-07, PAGE-08
+
+**Plans:** 1/8 plans complete
+
+Plans:
+- [x] 18-01-PLAN.md — Extend page-route contracts and harden content-safe audit metadata.
+- [ ] 18-02-PLAN.md — Add deterministic page-adapter fixtures and browser-test harness.
+- [ ] 18-03-PLAN.md — Implement frame policy and `read_page` over Chromium text extraction.
+- [ ] 18-04-PLAN.md — Add the permissioned renderer/Mojo JavaScript execution seam.
+- [ ] 18-05-PLAN.md — Build bounded DOM and compact snapshots from Annotated Page Content.
+- [ ] 18-06-PLAN.md — Add renderer-side safe page actions and ref resolution.
+- [ ] 18-07-PLAN.md — Add page-settle waiting and repeated-action detection.
+- [ ] 18-08-PLAN.md — Wire action routes, verification reports, and typed drag/file-drop denials.
 
 **Success criteria:**
 
@@ -341,7 +365,7 @@ Plans:
 
 1. Parity matrix maps every v1 capability and FSB category to Missing, Partial, Parity, Better, Blocked, or Verified.
 2. Security review covers route auth, tab ownership, JS execution, internal WebUI mutation, extension boundaries, vault, provider secrets, remote pairing, logs, and telemetry.
-3. Visual verification covers chrome, side panel, control panel, start page, themes, fonts, icons, extension surfaces, and macOS packaging.
+3. Automated visual, layout, resource, and packaging verification covers chrome, side panel, control panel, start page, themes, fonts, icons, extension surfaces, and macOS packaging.
 4. Build or validation fails on active `falkon/`, Qt/Falkon build script dependency, Falkon product strings in primary UI, or unreviewed GPL-derived source.
 5. Migration blockers are either fixed or explicitly carried to v2.1.
 
@@ -350,14 +374,14 @@ Plans:
 - Build new `FSB-PARITY.md` for Chromium.
 - Port release validation checks and add de-Falkon static checks.
 - Run code review/security review.
-- Run visual UAT for all major surfaces.
+- Assemble automated visual/layout evidence for all major surfaces and carry remaining human screenshot review to Phase 24 as non-blocking.
 - Remove or quarantine leftover legacy assumptions.
 
 ### Phase 24: Packaging, Release Validation, and Handoff
 
 **Goal:** Produce a coherent Chromium-based Prometheus validation package and next-step handoff.
 
-**Requirements:** REL-01, REL-05, REL-06
+**Requirements:** REL-01, REL-04, REL-05, REL-06
 
 **Success criteria:**
 
@@ -366,19 +390,21 @@ Plans:
 3. Release validation script passes build, smoke, chrome, WebUI, MCP, agent control, page adapters, extension support, security, branding, assets, legal notices, and parity gates.
 4. README and handoff docs explain Chromium base, revision, supported platforms, known limitations, extension support, MCP setup, and safety model.
 5. v2.1 backlog is explicit: Linux/Windows, Lattice, hosted/fleet control, notarization/update channel, enterprise policy.
+6. Remaining human visual UAT is offered as a consolidated, non-blocking release review; skipping screenshots does not block the local validation package when automated gates pass.
 
 **Planned work:**
 
 - Package Chromium-based app as Prometheus for local macOS validation.
 - Add release docs and source guidance.
 - Run all validation gates.
+- Offer the consolidated human visual review and record it as passed, skipped, or findings-reported without making it a packaging gate.
 - Archive v2.0 milestone artifacts.
 - Prepare next milestone candidates.
 
 ## Progress
 
-| Phase | Milestone | Requirements | Status | Completed |
-|-------|-----------|--------------|--------|-----------|
+| Phase | Milestone | Plans | Status | Completed |
+|-------|-----------|-------|--------|-----------|
 | 11. Preservation Contract and Falkon Freeze | v2.0 | 3/3 | Complete   | 2026-06-23 |
 | 12. Chromium Checkout, Build, and Patch Discipline | v2.0 | 4/4 | Complete    | 2026-06-24 |
 | 13. Product Identity, Branding, and Legal Baseline | v2.0 | 4/4 | Complete    | 2026-06-24 |
@@ -387,16 +413,16 @@ Plans:
 | 16. Prometheus WebUI Surfaces and New Tab | v2.0 | 6/6 | Complete | 2026-07-07 |
 | 17. Native Agent Command Service and Tab Ownership | v2.0 | 6/6 | Complete | 2026-07-07 |
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 1/8 | In Progress|  |
-| 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | MCP-01..MCP-07 | Planned | — |
-| 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | FSB-01..FSB-08 | Planned | — |
-| 21. Supervision, Pairing, and Remote Control | v2.0 | SUP-01..SUP-05 | Planned | — |
-| 22. Chrome Extension Ecosystem and Policy | v2.0 | EXT-01..EXT-06 | Planned | — |
-| 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | REL-01, REL-02, REL-03, REL-04, REL-07 | Planned | — |
-| 24. Packaging, Release Validation, and Handoff | v2.0 | REL-01, REL-05, REL-06 | Planned | — |
+| 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 0 | Planned | — |
+| 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 0 | Planned | — |
+| 21. Supervision, Pairing, and Remote Control | v2.0 | 0 | Planned | — |
+| 22. Chrome Extension Ecosystem and Policy | v2.0 | 0 | Planned | — |
+| 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
+| 24. Packaging, Release Validation, and Handoff | v2.0 | 0 | Planned | — |
 
-**Totals:** 15 phases, 7 complete; 37/37 planned implementation summaries complete through Phase 17.
+**Totals:** 14 phases, 7 complete; 38/45 current-milestone plans summarized, with Phase 18 at 1/8.
 
-## Deferred Beyond v2.0
+## Future Work Beyond Current Milestone
 
 - Linux and Windows Chromium-based builds after macOS-first validation.
 - Lattice integration if it materially simplifies provider routing, receipts, policy, or agent runtime.

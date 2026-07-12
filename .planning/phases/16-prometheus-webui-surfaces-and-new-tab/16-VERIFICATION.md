@@ -50,7 +50,7 @@ score: 7/7 must-haves verified
 
 ## Human Verification Required
 
-None for the Phase 16 automated gate. Desktop visual UAT for dark/light start page polish, side-panel density at narrow widths, and responsive control-panel layout remains tracked in `16-VALIDATION.md` and the preservation ledger.
+None for the Phase 16 automated gate. Desktop visual UAT for dark/light start-page polish, side-panel density at narrow widths, and responsive control-panel layout is consolidated into the final release review as non-blocking; its absence does not invalidate the passing Phase 16 automated gate.
 
 ## Deferred Items
 
@@ -58,7 +58,7 @@ None for the Phase 16 automated gate. Desktop visual UAT for dark/light start pa
 |------|-------------|--------|
 | Runtime provider/vault/log/memory data population | Phase 20 | Phase 16 owns WebUI shells and safety gates; Phase 20 owns live FSB runtime data. |
 | Native command routing and tab ownership | Phase 17 | Phase 16 seeds side-panel UI state only. |
-| Desktop visual approval screenshots | Phase 23/24 validation or human-run session | Prior native screenshot capture was unreliable in Conductor; automated DOM/browser coverage passed. |
+| Desktop visual approval screenshots | Final release review (non-blocking) | Prior native screenshot capture was unreliable in Conductor; automated DOM/browser coverage passed and remains mandatory. |
 
 ## Gaps Summary
 

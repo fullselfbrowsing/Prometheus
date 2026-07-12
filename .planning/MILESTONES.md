@@ -12,6 +12,8 @@
 - Establish a clean upstream Chromium checkout/build baseline and record the exact revision.
 - Rebuild product identity, design system, chrome, WebUI surfaces, native agent service, page adapters, MCP bridge, FSB runtime, supervision, and extension policy on Chromium.
 - Complete parity, security, legal, visual, and release validation before calling the migration complete.
+- Keep Claude Code and other agent tools external through the stdio MCP bridge; do not bundle an in-browser terminal or third-party agent CLI runtime.
+- Consolidate remaining human visual UAT into a non-blocking Phase 24 release review while keeping automated acceptance gates mandatory.
 
 **Primary artifacts:**
 
@@ -21,7 +23,7 @@
 - `.context/falkon-preservation/falkon-prometheus-v1.bundle`
 - `.context/falkon-preservation/patches/`
 
-**Status:** Phase 11 preservation artifacts started; implementation not yet migrated.
+**Status:** Phases 11-17 complete. Phase 18 is executing at Plan 2 of 8; Phase 19 is next after page-adapter completion.
 
 ---
 

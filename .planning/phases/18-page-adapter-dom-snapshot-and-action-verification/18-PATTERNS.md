@@ -1103,4 +1103,4 @@ Unsafe changed-state examples: selector strings, page snippets, typed text, JS s
 
 **Pattern extraction date:** 2026-07-07
 
-**Planner guidance:** Keep Phase 18 under `chrome/browser/prometheus/` for browser-process service/schema logic; use `chrome/browser/ui/views/prometheus/BUILD.gn` only for browser-test inclusion; avoid editing `.planning/phases/20.1-embedded-xterm-js-terminal-with-bundled-claude-code-agentic-/` and do not update `ROADMAP.md`.
+**Planner guidance:** Keep Phase 18 under `chrome/browser/prometheus/` for browser-process service/schema logic; use `chrome/browser/ui/views/prometheus/BUILD.gn` only for browser-test inclusion; update `ROADMAP.md` only through the normal Phase 18 progress workflow.

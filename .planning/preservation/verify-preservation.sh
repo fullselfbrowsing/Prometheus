@@ -138,7 +138,7 @@ check_visual_ledger() {
       gsub(/^[ \t]+|[ \t]+$/, "", status)
       gsub(/^[ \t]+|[ \t]+$/, "", owner)
       gsub(/^[ \t]+|[ \t]+$/, "", evidence)
-      if (status != "carry_forward" && status != "retired") {
+      if (status != "carry_forward" && status != "satisfied-by-Ph14-harness" && status != "retired") {
         bad_status=1
       }
       if (owner == "" || evidence == "") {

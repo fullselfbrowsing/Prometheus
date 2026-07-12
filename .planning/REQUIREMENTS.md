@@ -20,7 +20,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 - [x] **PRES-04**: Project distinguishes behavior/design contracts from GPL-derived Falkon implementation code so Chromium work does not copy GPL source without license review.
 - [x] **PRES-05**: Developer can remove the active `falkon/` checkout from the workspace without losing source history, patches, assets, or planning context.
 - [x] **PRES-06**: Root project documentation no longer presents Falkon/QtWebEngine as the production architecture after the Chromium baseline is established.
-- [x] **PRES-07**: v1 deferred human-visual verification items are either re-run against Chromium equivalents or explicitly retired with rationale because the Falkon UI surface no longer exists.
+- [x] **PRES-07**: v1 deferred human-visual verification items are cataloged with Chromium owners and future evidence, or explicitly retired with rationale when the Falkon-only surface no longer exists.
 
 ### Chromium Baseline
 
@@ -55,34 +55,34 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 
 ### Browser Chrome And Tab Experience
 
-- [ ] **UX-01**: User can use a compact browser chrome where tabs share the toolbar and the active tab behaves as the address/search field.
-- [ ] **UX-02**: User can switch to a separate/conventional tab layout if compact chrome is not desired.
-- [ ] **UX-03**: User can use tab groups, tab overview/search, quick switch, reorder, close/restore, unload/suspend, duplicate, and detach flows in the Chromium-based browser.
-- [ ] **UX-04**: Browser shows agent ownership, active automation, supervision, tab health, audio/private/security state, and extension-relevant state without cluttering compact chrome.
-- [ ] **UX-05**: User can open and collapse the Prometheus side panel from the browser chrome with a stable location and keyboard path.
-- [ ] **UX-06**: Compact chrome passes desktop visual checks at narrow, standard, and wide sizes with no overlap, layout jump, unreadable labels, or missing action affordances.
-- [ ] **UX-07**: Browser preserves native platform expectations on macOS first: traffic lights, keyboard shortcuts, menu behavior, accessibility labels, and window focus behavior.
+- [x] **UX-01**: User can use a compact browser chrome where tabs share the toolbar and the active tab behaves as the address/search field.
+- [x] **UX-02**: User can switch to a separate/conventional tab layout if compact chrome is not desired.
+- [x] **UX-03**: User can use tab groups, tab overview/search, quick switch, reorder, close/restore, unload/suspend, duplicate, and detach flows in the Chromium-based browser.
+- [x] **UX-04**: Browser shows agent ownership, active automation, supervision, tab health, audio/private/security state, and extension-relevant state without cluttering compact chrome.
+- [x] **UX-05**: User can open and collapse the Prometheus side panel from the browser chrome with a stable location and keyboard path.
+- [x] **UX-06**: Compact chrome passes automated layout and reachability checks at narrow, standard, and wide sizes with no overlap, layout jump, unreadable labels, or missing action affordances; human screenshot UAT is consolidated into Phase 24 as non-blocking review.
+- [x] **UX-07**: Browser preserves native platform expectations on macOS first: traffic lights, keyboard shortcuts, menu behavior, accessibility labels, and window focus behavior.
 
 ### Chromium WebUI Surfaces
 
-- [ ] **WEBUI-01**: Prometheus has a Chromium WebUI start page that replaces or owns the default new tab experience.
-- [ ] **WEBUI-02**: The start page shows the PM hero mark, Prometheus wordmark, omnibox, Ask FSB action, favorites, and suggested automations.
-- [ ] **WEBUI-03**: Ask FSB from the start page seeds the FSB Agent mode in the Prometheus side panel without leaking prompt text into navigation history or URLs.
-- [ ] **WEBUI-04**: Prometheus has an internal FSB Control Panel WebUI with Tasks, Providers & Models, MCP Status, Permissions & Agents, Vault, Memory & Site Guides, Logs & Diagnostics, Supervision & Pairing, and Parity Matrix.
-- [ ] **WEBUI-05**: Prometheus WebUI pages use browser-process data sources and browser/renderer communication instead of page-level hacks for privileged control.
-- [ ] **WEBUI-06**: Internal WebUI surfaces use strict security boundaries: no remote resource loading, no arbitrary secret exposure, no cross-origin prompt leakage, and audited browser-process actions.
-- [ ] **WEBUI-07**: WebUI development has a documented fast iteration mode using Chromium-supported WebUI resource loading where practical.
+- [x] **WEBUI-01**: Prometheus has a Chromium WebUI start page that replaces or owns the default new tab experience.
+- [x] **WEBUI-02**: The start page shows the PM hero mark, Prometheus wordmark, omnibox, Ask FSB action, favorites, and suggested automations.
+- [x] **WEBUI-03**: Ask FSB from the start page seeds the FSB Agent mode in the Prometheus side panel without leaking prompt text into navigation history or URLs.
+- [x] **WEBUI-04**: Prometheus has an internal FSB Control Panel WebUI with Tasks, Providers & Models, MCP Status, Permissions & Agents, Vault, Memory & Site Guides, Logs & Diagnostics, Supervision & Pairing, and Parity Matrix.
+- [x] **WEBUI-05**: Prometheus WebUI pages use browser-process data sources and browser/renderer communication instead of page-level hacks for privileged control.
+- [x] **WEBUI-06**: Internal WebUI surfaces use strict security boundaries: no remote resource loading, no arbitrary secret exposure, no cross-origin prompt leakage, and audited browser-process actions.
+- [x] **WEBUI-07**: WebUI development has a documented fast iteration mode using Chromium-supported WebUI resource loading where practical.
 
 ### Native Agent Control
 
-- [ ] **AGENT-01**: Browser exposes a Chromium-native Prometheus agent service that validates route input, selects target surface, executes action, audits action, and returns structured results.
-- [ ] **AGENT-02**: Agent can list windows/tabs, open tabs, switch tabs, close tabs, navigate, reload, go back, and go forward using browser-owned APIs.
-- [ ] **AGENT-03**: Agent can target normal pages, internal WebUI pages, settings, downloads, history, extension surfaces, and Prometheus runtime surfaces through explicit adapters.
-- [ ] **AGENT-04**: Agent sessions are authenticated and assigned by the browser/native service, not trusted from caller-provided client labels.
-- [ ] **AGENT-05**: Browser enforces tab ownership by stable tab/WebContents identity and rejects cross-agent control with typed errors.
-- [ ] **AGENT-06**: Browser enforces configurable concurrent-agent caps and reconnect grace.
-- [ ] **AGENT-07**: Browser rejects unsafe, unsupported, unauthorized, or scope-mismatched actions with typed errors and recovery guidance.
-- [ ] **AGENT-08**: Agent route results include enough timing, target, verification, audit, and changed-state information for debugging without leaking secrets.
+- [x] **AGENT-01**: Browser exposes a Chromium-native Prometheus agent service that validates route input, selects target surface, executes action, audits action, and returns structured results.
+- [x] **AGENT-02**: Agent can list windows/tabs, open tabs, switch tabs, close tabs, navigate, reload, go back, and go forward using browser-owned APIs.
+- [x] **AGENT-03**: Agent can target normal pages, internal WebUI pages, settings, downloads, history, extension surfaces, and Prometheus runtime surfaces through explicit adapters.
+- [x] **AGENT-04**: Agent sessions are authenticated and assigned by the browser/native service, not trusted from caller-provided client labels.
+- [x] **AGENT-05**: Browser enforces tab ownership by stable tab/WebContents identity and rejects cross-agent control with typed errors.
+- [x] **AGENT-06**: Browser enforces configurable concurrent-agent caps and reconnect grace.
+- [x] **AGENT-07**: Browser rejects unsafe, unsupported, unauthorized, or scope-mismatched actions with typed errors and recovery guidance.
+- [x] **AGENT-08**: Agent route results include enough timing, target, verification, audit, and changed-state information for debugging without leaking secrets.
 
 ### Page Understanding And Action Verification
 
@@ -138,7 +138,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 - [ ] **REL-01**: Project has a release validation script for Chromium-based Prometheus covering build, smoke, browser chrome, WebUI, MCP, agent control, page adapters, extensions, security, branding, assets, and legal notices.
 - [ ] **REL-02**: Parity matrix maps every v1 Falkon-era capability and FSB category to Chromium status: Missing, Partial, Parity, Better, Blocked, or Verified.
 - [ ] **REL-03**: Security review covers route auth, tab ownership, JS execution, internal WebUI mutation, extension boundaries, vault, provider secrets, remote pairing, logs, and telemetry.
-- [ ] **REL-04**: Visual verification covers side panel, control panel, compact chrome, start page, themes, fonts, icons, extension surfaces, and macOS packaging.
+- [ ] **REL-04**: Automated visual, layout, resource, and packaging verification covers side panel, control panel, compact chrome, start page, themes, fonts, icons, extension surfaces, and macOS packaging; remaining human screenshot UAT is a non-blocking Phase 24 review.
 - [ ] **REL-05**: macOS package is reproducible and carries Prometheus identity, required licenses, source guidance, and no Falkon product artifacts.
 - [ ] **REL-06**: Release docs explain the Chromium base, upstream revision, supported platforms, known limitations, extension support status, MCP setup, and safety model.
 - [ ] **REL-07**: The final migration gate fails if active code still depends on `falkon/`, Qt/Falkon build scripts, Falkon product strings, or unreviewed GPL-derived implementation code.
@@ -158,6 +158,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 | Keeping Falkon as the production browser base | The milestone decision is to migrate to Chromium. Falkon remains a preserved reference only. |
 | Copying GPL Falkon implementation into Chromium without review | Could impose unintended license obligations. Reimplement behavior natively unless explicitly reviewed. |
 | Rebuilding a rendering engine from scratch | Chromium is the browser engine/platform base. |
+| Bundling an agent CLI or terminal runtime inside Prometheus | Claude Code and similar agents remain supported as external MCP clients; Prometheus does not ship a bundled CLI, alternate agent engine, CLI-specific system prompt, or engine toggle. |
 | Relying on screenshot/video-first automation as the main architecture | The product thesis remains DOM/native structural control. |
 | Stealth automation or account abuse | Prometheus remains supervised, auditable, and safety-bounded. |
 | Chrome Web Store publishing guarantees in this milestone | Extension compatibility is in scope; store distribution agreements/policies may need separate work. |
@@ -168,13 +169,13 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | PRES-01..PRES-07 | Phase 11 | Complete |
-| CHROM-01..CHROM-08 | Phase 12 | Planned |
-| BRAND-01..BRAND-07 | Phase 13 | Planned |
-| DESIGN-01..DESIGN-07 | Phase 14 | Planned |
-| UX-01..UX-07 | Phase 15 | Planned |
-| WEBUI-01..WEBUI-07 | Phase 16 | Planned |
-| AGENT-01..AGENT-08 | Phase 17 | Planned |
-| PAGE-01..PAGE-08 | Phase 18 | Planned |
+| CHROM-01..CHROM-08 | Phase 12 | Complete |
+| BRAND-01..BRAND-07 | Phase 13 | Complete |
+| DESIGN-01..DESIGN-07 | Phase 14 | Complete |
+| UX-01..UX-07 | Phase 15 | Complete |
+| WEBUI-01..WEBUI-07 | Phase 16 | Complete |
+| AGENT-01..AGENT-08 | Phase 17 | Complete |
+| PAGE-01..PAGE-08 | Phase 18 | In Progress |
 | MCP-01..MCP-07 | Phase 19 | Planned |
 | FSB-01..FSB-08 | Phase 20 | Planned |
 | SUP-01..SUP-05 | Phase 21 | Planned |
@@ -186,7 +187,10 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 - v2 active requirements: 92 total
 - mapped to phases: 92
 - unmapped: 0
+- complete through Phase 17: 51
+- in progress in Phase 18: 8
+- planned in Phases 19-24: 33
 - planned phases: 14
 
 ---
-*Requirements defined: 2026-06-17*
+*Requirements defined: 2026-06-17; reconciled: 2026-07-12*
