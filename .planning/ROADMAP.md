@@ -7,7 +7,7 @@
 
 ## v2.0 Chromium Engine Migration
 
-**Status:** In progress — Phase 18, Plan 2 of 8.
+**Status:** In progress — Phase 18, Plan 3 of 8.
 
 ## Milestone Thesis
 
@@ -239,11 +239,11 @@ Plans:
 
 **Requirements:** PAGE-01, PAGE-02, PAGE-03, PAGE-04, PAGE-05, PAGE-06, PAGE-07, PAGE-08
 
-**Plans:** 1/8 plans complete
+**Plans:** 2/8 plans executed
 
 Plans:
 - [x] 18-01-PLAN.md — Extend page-route contracts and harden content-safe audit metadata.
-- [ ] 18-02-PLAN.md — Add deterministic page-adapter fixtures and browser-test harness.
+- [x] 18-02-PLAN.md — Add deterministic page-adapter fixtures and browser-test harness.
 - [ ] 18-03-PLAN.md — Implement frame policy and `read_page` over Chromium text extraction.
 - [ ] 18-04-PLAN.md — Add the permissioned renderer/Mojo JavaScript execution seam.
 - [ ] 18-05-PLAN.md — Build bounded DOM and compact snapshots from Annotated Page Content.
@@ -412,7 +412,7 @@ Plans:
 | 15. Chromium UI Shell, Compact Chrome, and Tab Model | v2.0 | 6/6 | Complete   | 2026-07-07 |
 | 16. Prometheus WebUI Surfaces and New Tab | v2.0 | 6/6 | Complete | 2026-07-07 |
 | 17. Native Agent Command Service and Tab Ownership | v2.0 | 6/6 | Complete | 2026-07-07 |
-| 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 1/8 | In Progress|  |
+| 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 2/8 | In Progress|  |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 0 | Planned | — |
 | 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 0 | Planned | — |
 | 21. Supervision, Pairing, and Remote Control | v2.0 | 0 | Planned | — |
@@ -420,7 +420,7 @@ Plans:
 | 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
 | 24. Packaging, Release Validation, and Handoff | v2.0 | 0 | Planned | — |
 
-**Totals:** 14 phases, 7 complete; 38/45 current-milestone plans summarized, with Phase 18 at 1/8.
+**Totals:** 14 phases, 7 complete; 39/45 current-milestone plans summarized, with Phase 18 at 2/8.
 
 ## Future Work Beyond Current Milestone
 
