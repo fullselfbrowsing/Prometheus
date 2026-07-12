@@ -370,7 +370,7 @@ report their true later-phase state, not fake empty success or overall failure.
 No token, page text, secret, profile path, script, or raw prompt is diagnostic
 data.
 
-## Test Strategy
+## Validation Architecture
 
 ### Fast Node tests
 
