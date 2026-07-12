@@ -6,8 +6,8 @@ current_phase: 19
 current_phase_name: MCP Bridge and Multi-Agent Runtime Compatibility
 current_plan: Not started
 status: planning
-stopped_at: Phase 18 verified and complete; Phase 19 ready for discussion
-last_updated: "2026-07-12T18:53:56.221Z"
+stopped_at: Phase 19 context and research complete; ready for planning
+last_updated: "2026-07-12T19:19:13.000Z"
 last_activity: 2026-07-12
 progress:
   total_phases: 14
@@ -34,8 +34,8 @@ See: `.planning/PROJECT.md` (updated 2026-07-12)
 **Completed Phases:** 8
 **Current Plan:** Not started
 **Plans in Current Phase:** 0 (unplanned)
-**Status:** Ready to discuss and plan
-**Last Activity:** Phase 18 passed independent verification at 8/8 and was completed.
+**Status:** Ready to plan
+**Last Activity:** Phase 19 external-client boundary, clean-room compatibility inventory, production wiring gap, and secure transport architecture were researched and locked.
 
 Phase progress: 8 of 14 phases complete (57%). Planned-work progress: 45 of 45 v2.0 plans summarized (100%). Cumulative project progress: 96 of 96 plans summarized.
 
@@ -55,6 +55,8 @@ Phase progress: 8 of 14 phases complete (57%). Planned-work progress: 45 of 45 v
 | 18 | Keep page content out of audit metadata | Text, DOM, scripts, selectors, values, paths, prompts, and secrets stay in bounded result payloads only. |
 | 18 | Treat snapshot refs as ephemeral document identities | Fresh APC re-resolution and live-frame checks precede mutation. |
 | 18 | Verify declared JS mutations in the browser | Exact-document bounded APC fingerprints bracket one isolated-world execution and a settlement wait. |
+| 19 | Keep MCP protocol glue external and browser authority native | A Prometheus-owned stdio adapter forwards to an authenticated loopback service; it never hosts an agent CLI/runtime. |
+| 19 | Reimplement compatibility clean-room | Preserved GPL/BUSL sources define observable contracts only; new C++/Node code follows the official MCP specification and fixture-locked schemas. |
 
 ## Pending Todos
 
@@ -73,10 +75,10 @@ None.
 
 ## Session
 
-**Last Date:** 2026-07-12T18:53:56.221Z
-**Stopped At:** Phase 18 complete; Phase 19 ready for autonomous discussion and planning
+**Last Date:** 2026-07-12T19:19:13.000Z
+**Stopped At:** Phase 19 context and research complete; ready for planning
 **Resume File:** None
 
 ## Operator Next Steps
 
-Run Phase 19 discussion in autonomous/default mode, then plan the external stdio MCP compatibility bridge. Preserve the no-embedded-runtime boundary and keep all authorization in the Chromium browser process.
+Create and verify the Phase 19 execution plans from `19-CONTEXT.md` and `19-RESEARCH.md`, then execute them autonomously. Preserve the clean-room and no-embedded-runtime boundaries.
