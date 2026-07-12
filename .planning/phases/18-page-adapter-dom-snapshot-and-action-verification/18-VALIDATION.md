@@ -3,7 +3,7 @@ phase: 18
 slug: page-adapter-dom-snapshot-and-action-verification
 status: approved
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-07-07
 ---
 
@@ -39,14 +39,14 @@ Per-phase validation contract for page reads, DOM snapshots, JS execution, page 
 
 | Requirement | Behavior | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |-------------|----------|------------|-----------------|-----------|-------------------|-------------|--------|
-| PAGE-01 | `read_page` returns bounded visible text for the active or owned tab and fails stale or restricted targets. | T-18-01 / T-18-04 | Target resolution stays profile-scoped and content output is bounded. | browser + unit | `./out/Default/browser_tests --gtest_filter='*Prometheus*ReadPage*'` | No - Wave 0 | pending |
-| PAGE-02 | `get_dom_snapshot` returns refs, selectors, form state, ARIA fields, text snippets, attributes, frame context, and actionability hints. | T-18-02 / T-18-03 | Refs are snapshot-scoped and document-bound; output is truncated with metadata. | unit + browser | `./out/Default/prometheus_unittests --gtest_filter='*PrometheusPageSnapshot*'` | No - Wave 0 | pending |
-| PAGE-03 | `get_page_snapshot` returns compact action-oriented page state with omitted/truncated metadata. | T-18-02 / T-18-03 | Compact output cannot become an unbounded page dump or durable authority. | unit + browser | `./out/Default/prometheus_unittests --gtest_filter='*PrometheusPageSnapshot*Compact*'` | No - Wave 0 | pending |
-| PAGE-04 | `execute_js` requires explicit permission, captures result/error, blocks internal pages, and verifies mutation. | T-18-02 / T-18-04 / T-18-05 | Normal-page JS uses a permissioned renderer seam and avoids privileged WebUI surfaces. | browser + unit | `./out/Default/browser_tests --gtest_filter='*Prometheus*ExecuteJs*'` | No - Wave 0 | pending |
-| PAGE-05 | Click, type, key, scroll, hover, select, clear, drag, and drop-file routes work where safe or return typed unsupported denial. | T-18-03 / T-18-06 / T-18-07 | Actions re-resolve targets at time of use and deny unsafe file paths. | browser + unit | `./out/Default/browser_tests --gtest_filter='*Prometheus*PageAction*'` | No - Wave 0 | pending |
-| PAGE-06 | Mutating routes wait for load, stability, visible state change, value/focus update, scroll change, or timeout. | T-18-04 / T-18-07 | Waits do not rely on fixed sleeps alone and return explicit timeout status. | browser | `./out/Default/browser_tests --gtest_filter='*Prometheus*PageWait*'` | No - Wave 0 | pending |
-| PAGE-07 | Mutating routes return compact change reports and detect repeated or stuck action patterns. | T-18-05 / T-18-07 | Audit and change metadata excludes page text, DOM, scripts, typed text, and file paths. | unit + browser | `./out/Default/prometheus_unittests --gtest_filter='*PrometheusPageActionHistory*:*PrometheusPageChangeReport*'` | No - Wave 0 | pending |
-| PAGE-08 | Same-origin frames work; cross-origin, sandboxed, fenced, detached, prerendered, crashed, and restricted targets fail explicitly. | T-18-02 / T-18-04 | Frame policy never silently falls back to another frame or leaks restricted content. | browser | `./out/Default/browser_tests --gtest_filter='*Prometheus*Frame*'` | No - Wave 0 | pending |
+| PAGE-01 | `read_page` returns bounded visible text for the active or owned tab and fails stale or restricted targets. | T-18-01 / T-18-04 | Target resolution stays profile-scoped and content output is bounded. | browser + unit | `./out/Default/browser_tests --gtest_filter='*Prometheus*ReadPage*'` | Yes | passed |
+| PAGE-02 | `get_dom_snapshot` returns refs, selectors, form state, ARIA fields, text snippets, attributes, frame context, and actionability hints. | T-18-02 / T-18-03 | Refs are snapshot-scoped and document-bound; output is truncated with metadata. | unit + browser | `./out/Default/prometheus_unittests --gtest_filter='*PrometheusPageSnapshot*'` | Yes | passed |
+| PAGE-03 | `get_page_snapshot` returns compact action-oriented page state with omitted/truncated metadata. | T-18-02 / T-18-03 | Compact output cannot become an unbounded page dump or durable authority. | unit + browser | `./out/Default/prometheus_unittests --gtest_filter='*PrometheusPageSnapshot*Compact*'` | Yes | passed |
+| PAGE-04 | `execute_js` requires explicit permission, captures result/error, blocks internal pages, and verifies mutation. | T-18-02 / T-18-04 / T-18-05 | Normal-page JS uses a permissioned renderer seam and avoids privileged WebUI surfaces. | browser + unit | `./out/Default/browser_tests --gtest_filter='*Prometheus*ExecuteJs*'` | Yes | passed |
+| PAGE-05 | Click, type, key, scroll, hover, select, clear, drag, and drop-file routes work where safe or return typed unsupported denial. | T-18-03 / T-18-06 / T-18-07 | Actions re-resolve targets at time of use and deny unsafe file paths. | browser + unit | `./out/Default/browser_tests --gtest_filter='*Prometheus*PageAction*'` | Yes | passed |
+| PAGE-06 | Mutating routes wait for load, stability, visible state change, value/focus update, scroll change, or timeout. | T-18-04 / T-18-07 | Waits do not rely on fixed sleeps alone and return explicit timeout status. | browser + unit | `./out/Default/prometheus_unittests --gtest_filter='*PrometheusPageWaiter*' && ./out/Default/browser_tests --gtest_filter='*Prometheus*PageAction*:*ExecuteJs*'` | Yes | passed |
+| PAGE-07 | Mutating routes return compact change reports and detect repeated or stuck action patterns. | T-18-05 / T-18-07 | Audit and change metadata excludes page text, DOM, scripts, typed text, and file paths. | unit + browser | `./out/Default/prometheus_unittests --gtest_filter='*PrometheusPageActionHistory*:*PrometheusPageActionDispatcher*'` | Yes | passed |
+| PAGE-08 | Same-origin frames work; cross-origin, sandboxed, fenced, detached, prerendered, crashed, and restricted targets fail explicitly. | T-18-02 / T-18-04 | Frame policy never silently falls back to another frame or leaks restricted content. | browser | `./out/Default/browser_tests --gtest_filter='*Prometheus*Frame*'` | Yes | passed |
 
 ---
 
@@ -66,11 +66,11 @@ Per-phase validation contract for page reads, DOM snapshots, JS execution, page 
 
 ## Wave 0 Requirements
 
-- [ ] Add `chrome/browser/prometheus/prometheus_page_adapter_unittest.cc` for route parsing, bounds, refs, typed errors, audit-safe change strings, and stuck-action fingerprints.
-- [ ] Add `chrome/browser/prometheus/prometheus_page_snapshot_unittest.cc` or equivalent if snapshot compaction is split from adapter logic.
-- [ ] Add `chrome/browser/prometheus/prometheus_page_adapter_browsertest.cc` or extend `prometheus_agent_service_browsertest.cc` for end-to-end route behavior.
-- [ ] Add local fixtures under `chrome/test/data/prometheus/page_adapter/` for visible text, forms, ARIA labels, dynamic DOM, same-origin iframe, cross-origin iframe, sandbox/restricted frame, navigation click, typing, selection, scrolling, hover/focus, drag/drop if implemented, and JS success/error/read-back.
-- [ ] Wire new unit-test sources in `chrome/browser/prometheus/BUILD.gn` and browser-test sources in `chrome/browser/ui/views/prometheus/BUILD.gn` unless an existing browser-test file is extended.
+- [x] Add `chrome/browser/prometheus/prometheus_page_adapter_unittest.cc` for route parsing, bounds, refs, typed errors, audit-safe change strings, and stuck-action fingerprints.
+- [x] Add `chrome/browser/prometheus/prometheus_page_snapshot_unittest.cc` or equivalent if snapshot compaction is split from adapter logic.
+- [x] Add `chrome/browser/prometheus/prometheus_page_adapter_browsertest.cc` or extend `prometheus_agent_service_browsertest.cc` for end-to-end route behavior.
+- [x] Add local fixtures under `chrome/test/data/prometheus/page_adapter/` for visible text, forms, ARIA labels, dynamic DOM, same-origin iframe, cross-origin iframe, sandbox/restricted frame, navigation click, typing, selection, scrolling, hover/focus, drag/drop if implemented, and JS success/error/read-back.
+- [x] Wire new unit-test sources in `chrome/browser/prometheus/BUILD.gn` and browser-test sources in `chrome/browser/ui/views/prometheus/BUILD.gn` unless an existing browser-test file is extended.
 
 ---
 

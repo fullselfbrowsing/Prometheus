@@ -16,7 +16,7 @@ Agents get fast, precise, auditable control of the whole browser through DOM/nat
 
 v1.0 delivered the Prometheus product identity with the "Powered by FSB" affiliation; a native agent command router with surface adapters, permissioned JS execution, and DOM/page reads; FSB-compatible MCP tooling with multi-agent ownership, typed errors, and visual-session fields; native FSB runtime surfaces (side panel, providers, autopilot, logs, memory/site guides, secure vault); PhantomStream-style supervision, safe pairing, and a local macOS validation package; compact Safari-style chrome with advanced tab management; a native FSB-Plus control center with a release-gated feature parity matrix; an offline Font Awesome Free icon system with Poppins/Space Mono brand fonts and warm dark/light themes; and a Prometheus start page.
 
-**Active: v2.0 Chromium Engine Migration (started 2026-06-17).** Phases 11-17 are complete: the Falkon reference is preserved, Chromium builds and launches from a pinned baseline, Prometheus identity and design assets are ported, compact chrome and WebUI surfaces exist, and the native agent route/session/tab-ownership service is verified. Phase 18 is executing; Plan 18-01 established page-route contracts and content-safe audit boundaries, and Plan 18-02 is next.
+**Active: v2.0 Chromium Engine Migration (started 2026-06-17).** Phases 11-18 are complete: the Falkon reference is preserved, Chromium builds and launches from a pinned baseline, Prometheus identity and design assets are ported, compact chrome and WebUI surfaces exist, and the native agent route/session/tab-ownership service now has verified page reads, snapshots, actions, waits, and exact-document mutation readback. Phase 19 is current and will reconnect external FSB-style stdio MCP clients without bundling an agent CLI, terminal, alternate engine, or third-party runtime.
 
 ## Current Milestone: v2.0 Chromium Engine Migration
 
@@ -62,7 +62,8 @@ v1.0 delivered the Prometheus product identity with the "Powered by FSB" affilia
 
 - [x] Verify the unmodified Chromium checkout/build baseline and document patch discipline before Prometheus changes begin.
 - [x] Rebuild the Chromium product identity, design system, compact chrome, WebUI shells, and native agent-control foundation.
-- [ ] Complete page adapters, MCP compatibility, runtime, supervision, extension policy, validation, and packaging on Chromium.
+- [x] Complete Chromium page adapters, DOM snapshots, audited JavaScript, safe actions, waits, and action verification.
+- [ ] Complete MCP compatibility, runtime, supervision, extension policy, validation, and packaging on Chromium.
 - [ ] Prove parity or consciously retire each v1/FSB capability through a maintained matrix.
 
 ### Out of Scope
@@ -163,4 +164,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-12 during Phase 18 planning-state reconciliation*
+*Last updated: 2026-07-12 after Phase 18 verification and the Phase 19 transition*

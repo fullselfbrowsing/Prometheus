@@ -22,7 +22,7 @@ Prometheus keeps its product, design, and agent-native control thesis, but retir
 - [x] **Phase 15: Chromium UI Shell, Compact Chrome, and Tab Model** — Rebuild the compact browser chrome and advanced tab workflows using Chromium-native UI architecture. (completed 2026-07-07)
 - [x] **Phase 16: Prometheus WebUI Surfaces and New Tab** — Build Prometheus start page, side panel surfaces, and FSB Control Panel as Chromium WebUI/browser-backed surfaces. (completed 2026-07-07)
 - [x] **Phase 17: Native Agent Command Service and Tab Ownership** — Rebuild the core native command router as a Chromium browser-process service with authenticated sessions and stable tab ownership. (completed 2026-07-07)
-- [ ] **Phase 18: Page Adapter, DOM Snapshot, and Action Verification** — Rebuild page reads, DOM snapshots, JS execution, action tools, waits, and verification on Chromium WebContents/frame primitives.
+- [x] **Phase 18: Page Adapter, DOM Snapshot, and Action Verification** — Rebuild page reads, DOM snapshots, JS execution, action tools, waits, and verification on Chromium WebContents/frame primitives. (completed 2026-07-12)
 - [ ] **Phase 19: MCP Bridge and Multi-Agent Runtime Compatibility** — Reconnect existing FSB-style MCP clients to the Chromium-native service with multi-agent policy and typed compatibility errors.
 - [ ] **Phase 20: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel** — Restore provider-backed tasks, logs, memory/site guides, vault boundaries, diagnostics, and dense operator controls.
 - [ ] **Phase 21: Supervision, Pairing, and Remote Control** — Rebuild PhantomStream-style supervision and safe dashboard pairing on Chromium sessions.
@@ -239,7 +239,7 @@ Plans:
 
 **Requirements:** PAGE-01, PAGE-02, PAGE-03, PAGE-04, PAGE-05, PAGE-06, PAGE-07, PAGE-08
 
-**Plans:** 7/8 plans executed
+**Plans:** 8/8 plans complete
 
 Plans:
 - [x] 18-01-PLAN.md — Extend page-route contracts and harden content-safe audit metadata.
@@ -249,7 +249,7 @@ Plans:
 - [x] 18-05-PLAN.md — Build bounded DOM and compact snapshots from Annotated Page Content.
 - [x] 18-06-PLAN.md — Add renderer-side safe page actions and ref resolution.
 - [x] 18-07-PLAN.md — Add page-settle waiting and repeated-action detection.
-- [ ] 18-08-PLAN.md — Wire action routes, verification reports, and typed drag/file-drop denials.
+- [x] 18-08-PLAN.md — Wire action routes, verification reports, and typed drag/file-drop denials.
 
 **Success criteria:**
 
@@ -412,7 +412,7 @@ Plans:
 | 15. Chromium UI Shell, Compact Chrome, and Tab Model | v2.0 | 6/6 | Complete   | 2026-07-07 |
 | 16. Prometheus WebUI Surfaces and New Tab | v2.0 | 6/6 | Complete | 2026-07-07 |
 | 17. Native Agent Command Service and Tab Ownership | v2.0 | 6/6 | Complete | 2026-07-07 |
-| 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 7/8 | In Progress|  |
+| 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 8/8 | Complete    | 2026-07-12 |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 0 | Planned | — |
 | 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 0 | Planned | — |
 | 21. Supervision, Pairing, and Remote Control | v2.0 | 0 | Planned | — |
@@ -420,7 +420,7 @@ Plans:
 | 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
 | 24. Packaging, Release Validation, and Handoff | v2.0 | 0 | Planned | — |
 
-**Totals:** 14 phases, 7 complete; 44/45 current-milestone plans summarized, with Phase 18 at 7/8.
+**Totals:** 14 phases, 8 complete; all 45 currently planned v2.0 plans summarized. Phase 19 is the next unplanned phase.
 
 ## Future Work Beyond Current Milestone
 

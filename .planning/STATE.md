@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Chromium Engine Migration
-current_phase: 18
-current_phase_name: Page Adapter, DOM Snapshot, and Action Verification
-current_plan: 8
-status: executing
-stopped_at: Completed 18-07-PLAN.md
-last_updated: "2026-07-12T14:42:25.000Z"
+current_phase: 19
+current_phase_name: MCP Bridge and Multi-Agent Runtime Compatibility
+current_plan: Not started
+status: planning
+stopped_at: Phase 18 verified and complete; Phase 19 ready for discussion
+last_updated: "2026-07-12T18:53:56.221Z"
 last_activity: 2026-07-12
 progress:
   total_phases: 14
-  completed_phases: 7
+  completed_phases: 8
   total_plans: 45
-  completed_plans: 44
-  percent: 98
+  completed_plans: 45
+  percent: 100
 ---
 
 # Project State
@@ -24,45 +24,37 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-07-12)
 
 **Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** Phase 18 action-route wiring, compact verification reports, repeated-action errors, and typed drag/file-drop denials.
+**Current focus:** Connect external stdio MCP clients to the Chromium-native route service with compatible tools, typed errors, multi-agent ownership, and health diagnostics.
+**Product boundary:** Claude Code, Cursor, Codex, and similar tools remain external MCP clients. Prometheus does not bundle an agent CLI, in-browser terminal, alternate engine, or embedded third-party runtime.
 
 ## Current Position
 
-**Current Phase:** 18
-**Current Phase Name:** Page Adapter, DOM Snapshot, and Action Verification
+**Current Phase:** 19 — MCP Bridge and Multi-Agent Runtime Compatibility
 **Total Phases:** 14
-**Current Plan:** 8
-**Total Plans in Phase:** 8
-**Status:** Executing
-**Last Activity:** 2026-07-12
-**Last Activity Description:** Completed `18-07-PLAN.md` with lifecycle-safe page-settle waits and bounded repeated-action detection.
-**Progress:** [██████████] 98%
+**Completed Phases:** 8
+**Current Plan:** Not started
+**Plans in Current Phase:** 0 (unplanned)
+**Status:** Ready to discuss and plan
+**Last Activity:** Phase 18 passed independent verification at 8/8 and was completed.
 
-Milestone progress: 44 of 45 plans summarized (98%). Cumulative progress: 95 of 96 plans summarized (99%).
+Phase progress: 8 of 14 phases complete (57%). Planned-work progress: 45 of 45 v2.0 plans summarized (100%). Cumulative project progress: 96 of 96 plans summarized.
 
 ## Performance Metrics
 
-- Completed v2.0 plans: 44
-- Current phase: 7 of 8 plans complete
-- Most recent plan: 18-07, completed in 16 minutes (3 tasks, 7 files)
+- Completed v2.0 plans: 45
+- Most recent plan: 18-08, completed in 3h49m with 7 nested Chromium commits
+- Latest gates: build; 67 browser-process units; 2 renderer units; 37 browser tests; preservation/security checks
 
 ## Decisions Made
 
 | Phase | Summary | Rationale |
 |-------|---------|-----------|
-| Milestone | Keep agent CLIs external | Claude Code, Cursor, Codex, and similar tools use the stdio MCP bridge; Prometheus does not bundle an in-browser CLI or alternate engine. |
-| 17 | Browser-issued sessions own stable tab identities | Caller labels cannot grant authority, and cross-session mutation returns typed errors. |
-| 18 | Extend the existing agent-service route spine | Page access remains behind session, profile, target, ownership, permission, and audit checks. |
-| 18 | Keep page content out of audit metadata | Text, DOM, scripts, selectors, typed values, file paths, prompts, and secrets stay in bounded payloads only. |
-| 18 | Keep page route execution callback-based | Chromium page extraction is asynchronous; production dispatch never blocks on a nested run loop, while tests synchronize with TestFuture. |
-| 18 | Keep snapshot refs document-scoped and ephemeral | Refs encode document token plus DOM node id and must re-resolve through fresh APC before mutation. |
-| 18 | Preserve valid JSON at output bounds | Snapshot byte limits remove tail nodes and reserialize instead of cutting JSON strings. |
-| 18 | Execute authorized scripts in a dedicated Prometheus isolated world | A Prometheus-owned Mojo seam avoids restricted/test-only browser APIs and isolates automation from page globals. |
-| 18 | Retain one executor per asynchronous request | Ref-counted ownership and one completion path make response, timeout, disconnect, and navigation races exactly-once. |
-| 18 | Keep browser APC authoritative for action refs | Renderer token syntax plus connected exact-frame ownership prevents local confusion, while fresh APC re-resolution must precede mutation. |
-| 18 | Treat page action APIs as reentrant destruction boundaries | Weak checks and fresh frame/widget/node lookup prevent stale renderer dereferences after handlers navigate or replace DOM. |
-| 18 | Make page-settle waits one-shot and always asynchronous | A separate WebContents observer, independent timeout, and posted completion keep destruction and late callbacks typed and exactly once. |
-| 18 | Bound repeated-action history at every level | Detection uses the last 10 actions while storage caps each target at 50 entries and the global session/tab map at 256 LRU keys. |
+| Milestone | Keep agent CLIs external | External clients use the stdio MCP bridge; no bundled CLI, terminal, alternate engine, or embedded runtime. |
+| 17 | Browser-issued sessions own stable tab identities | Caller labels cannot grant authority; cross-session mutation returns typed errors. |
+| 18 | Keep the browser route service authoritative | Page access remains behind session, profile, ownership, permission, frame, and audit checks. |
+| 18 | Keep page content out of audit metadata | Text, DOM, scripts, selectors, values, paths, prompts, and secrets stay in bounded result payloads only. |
+| 18 | Treat snapshot refs as ephemeral document identities | Fresh APC re-resolution and live-frame checks precede mutation. |
+| 18 | Verify declared JS mutations in the browser | Exact-document bounded APC fingerprints bracket one isolated-world execution and a settlement wait. |
 
 ## Pending Todos
 
@@ -76,15 +68,15 @@ None.
 
 | Category | Item | Status |
 |----------|------|--------|
-| human review | Remaining desktop visual UAT | Consolidated into the final release review as non-blocking; automated phase gates remain mandatory. |
+| human review | Remaining desktop visual UAT | Non-blocking final release review; automated phase gates remain mandatory. |
 | release | Signed/notarized public distribution | Deferred beyond the local v2.0 validation package. |
 
 ## Session
 
-**Last Date:** 2026-07-12T14:42:25.000Z
-**Stopped At:** Completed 18-07-PLAN.md
+**Last Date:** 2026-07-12T18:53:56.221Z
+**Stopped At:** Phase 18 complete; Phase 19 ready for autonomous discussion and planning
 **Resume File:** None
 
 ## Operator Next Steps
 
-Execute `18-08-PLAN.md` next to wire fresh browser APC re-resolution, retained page-settle operations, compact change reports, repeated-action errors, and typed drag/file-drop denials. Keep all PAGE requirements open until full Phase 18 verification.
+Run Phase 19 discussion in autonomous/default mode, then plan the external stdio MCP compatibility bridge. Preserve the no-embedded-runtime boundary and keep all authorization in the Chromium browser process.

@@ -86,14 +86,14 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 
 ### Page Understanding And Action Verification
 
-- [ ] **PAGE-01**: Agent can read visible text from the active or owned target page.
-- [ ] **PAGE-02**: Agent can request DOM snapshots with stable refs, selectors, forms, ARIA labels, text, attributes, frame context, and actionability hints.
-- [ ] **PAGE-03**: Agent can request compact page snapshots suitable for planning the next action.
-- [ ] **PAGE-04**: Agent can execute audited JavaScript on normal web pages with explicit permission, result capture, and read-back verification.
-- [ ] **PAGE-05**: Agent can click, type, press keys, scroll, hover, select options, clear inputs, drag, and drop files where Chromium permits the action safely.
-- [ ] **PAGE-06**: Browser waits for page load, DOM stability, visible state change, or target-specific readiness after mutating actions.
-- [ ] **PAGE-07**: Browser returns change reports for mutating actions and identifies repeated/stuck action patterns.
-- [ ] **PAGE-08**: Page adapters work across same-origin frames, cross-origin frames where browser privileges permit, and failure cases where the target is sandboxed or restricted.
+- [x] **PAGE-01**: Agent can read visible text from the active or owned target page.
+- [x] **PAGE-02**: Agent can request DOM snapshots with stable refs, selectors, forms, ARIA labels, text, attributes, frame context, and actionability hints.
+- [x] **PAGE-03**: Agent can request compact page snapshots suitable for planning the next action.
+- [x] **PAGE-04**: Agent can execute audited JavaScript on normal web pages with explicit permission, result capture, and read-back verification.
+- [x] **PAGE-05**: Agent can click, type, press keys, scroll, hover, select options, clear inputs, drag, and drop files where Chromium permits the action safely.
+- [x] **PAGE-06**: Browser waits for page load, DOM stability, visible state change, or target-specific readiness after mutating actions.
+- [x] **PAGE-07**: Browser returns change reports for mutating actions and identifies repeated/stuck action patterns.
+- [x] **PAGE-08**: Page adapters work across same-origin frames, cross-origin frames where browser privileges permit, and failure cases where the target is sandboxed or restricted.
 
 ### MCP Compatibility And Multi-Agent Runtime
 
@@ -175,7 +175,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 | UX-01..UX-07 | Phase 15 | Complete |
 | WEBUI-01..WEBUI-07 | Phase 16 | Complete |
 | AGENT-01..AGENT-08 | Phase 17 | Complete |
-| PAGE-01..PAGE-08 | Phase 18 | In Progress |
+| PAGE-01..PAGE-08 | Phase 18 | Complete |
 | MCP-01..MCP-07 | Phase 19 | Planned |
 | FSB-01..FSB-08 | Phase 20 | Planned |
 | SUP-01..SUP-05 | Phase 21 | Planned |
@@ -187,8 +187,8 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 - v2 active requirements: 92 total
 - mapped to phases: 92
 - unmapped: 0
-- complete through Phase 17: 51
-- in progress in Phase 18: 8
+- complete through Phase 18: 59
+- in progress: 0
 - planned in Phases 19-24: 33
 - planned phases: 14
 

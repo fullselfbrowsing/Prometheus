@@ -23,7 +23,7 @@
 - `.context/falkon-preservation/falkon-prometheus-v1.bundle`
 - `.context/falkon-preservation/patches/`
 
-**Status:** Phases 11-17 complete. Phase 18 is executing at Plan 2 of 8; Phase 19 is next after page-adapter completion.
+**Status:** Phases 11-18 complete. Phase 19 is current and ready for autonomous discussion and planning; it reconnects external stdio MCP clients without bundling an agent CLI, terminal, alternate engine, or third-party runtime.
 
 ---
 
