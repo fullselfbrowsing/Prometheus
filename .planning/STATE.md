@@ -4,10 +4,10 @@ milestone: v2.0
 milestone_name: - Linux and Windows Chromium-based builds after macOS-first validation.
 status: executing
 stopped_at: Completed 18-01-PLAN.md
-last_updated: "2026-07-07T15:55:45.777Z"
+last_updated: "2026-07-12T11:13:22.748Z"
 last_activity: 2026-07-07
 progress:
-  total_phases: 15
+  total_phases: 14
   completed_phases: 7
   total_plans: 45
   completed_plans: 38

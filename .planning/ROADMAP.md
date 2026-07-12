@@ -287,18 +287,6 @@ Plans:
 - Populate control panel sections.
 - Add tests for provider config, secret redaction, memory/site-guide CRUD, logs, and runtime status.
 
-### Phase 20.1: Embedded Terminal and Bundled Claude Code Runtime (INSERTED)
-
-**Goal:** Embed an xterm.js terminal in the Prometheus browser with a bundled, pinned Claude Code CLI, a Prometheus-specific CLAUDE.md as its system context, and an auto-installed MCP bridge (Phase 19) so the side panel can route messages to Claude Code in agentic mode as an alternative to FSB's own provider engine — toggleable per-user in Settings, both engines coexist.
-**Requirements**: TBD
-**Depends on:** Phase 19 (MCP Bridge), Phase 20 (Control Panel/Providers, for the engine toggle)
-**Plans:** 0 plans
-
-**Open item (must resolve before the bundling task ships):** Verify Anthropic's current Claude Code redistribution/license terms permit bundling the CLI inside a downloadable third-party installer. Prometheus's own MIT license does not extend to a separately-licensed third-party tool. User has directed the phase to proceed regardless (2026-07-01); this note exists so the bundling task doesn't silently skip that check.
-
-Plans:
-- [ ] TBD (run /gsd-plan-phase 20.1 to break down)
-
 ### Phase 21: Supervision, Pairing, and Remote Control
 
 **Goal:** Rebuild DOM-native supervision and safe dashboard pairing on Chromium sessions.
