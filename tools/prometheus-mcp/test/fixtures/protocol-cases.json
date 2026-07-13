@@ -1,0 +1,81 @@
+{
+  "transport": {
+    "newline": {
+      "encoded": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n",
+      "message": { "jsonrpc": "2.0", "id": 1, "method": "ping" }
+    },
+    "content_length": {
+      "encoded": "Content-Length: 40\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}",
+      "body_bytes": 40,
+      "message": { "jsonrpc": "2.0", "id": 2, "method": "ping" }
+    },
+    "malformed": "{not-json}\n",
+    "oversized_input_bytes": 1048577
+  },
+  "protocol": {
+    "initialize": {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {},
+          "clientInfo": { "name": "fixture-client", "version": "1.0" }
+        }
+      },
+      "result": {
+        "protocolVersion": "2025-11-25",
+        "capabilities": { "tools": { "listChanged": false } },
+        "serverInfo": { "name": "prometheus-mcp", "version": "2.0.0" }
+      }
+    },
+    "tool_success": {
+      "content": [{ "type": "text", "text": "{\"ok\":true}" }],
+      "structuredContent": { "ok": true },
+      "isError": false
+    },
+    "tool_error": {
+      "content": [{ "type": "text", "text": "{\"ok\":false,\"error\":{\"code\":\"NOT_READY\"}}" }],
+      "structuredContent": { "ok": false, "error": { "code": "NOT_READY" } },
+      "isError": true
+    },
+    "cancellation": {
+      "jsonrpc": "2.0",
+      "method": "notifications/cancelled",
+      "params": { "requestId": 9, "reason": "fixture cancellation" }
+    }
+  },
+  "native": {
+    "descriptor": {
+      "protocol": "prometheus-agent-v1",
+      "endpoint": "http://127.0.0.1:43119",
+      "pid": 4242,
+      "instance_nonce": "fixture-instance-nonce",
+      "bearer": "fixture-only-bearer"
+    },
+    "authorization": "Bearer fixture-only-bearer",
+    "endpoints": [
+      "POST /v1/session/create",
+      "POST /v1/session/resume",
+      "POST /v1/session/touch",
+      "POST /v1/session/close",
+      "POST /v1/agent/command",
+      "GET /v1/health"
+    ]
+  },
+  "diagnostics": {
+    "components": [
+      { "key": "browser", "status": "ready" },
+      { "key": "bridge", "status": "ready" },
+      { "key": "active_tab", "status": "ready" },
+      { "key": "content_adapter", "status": "ready" },
+      { "key": "internal_adapter", "status": "ready" },
+      { "key": "webui_adapter", "status": "ready" },
+      { "key": "vault", "status": "not_ready" },
+      { "key": "provider", "status": "not_ready" },
+      { "key": "supervision", "status": "not_ready" },
+      { "key": "extensions", "status": "not_ready" }
+    ]
+  }
+}
