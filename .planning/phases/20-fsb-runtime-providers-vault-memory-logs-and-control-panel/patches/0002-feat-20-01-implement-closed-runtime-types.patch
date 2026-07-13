@@ -1,0 +1,501 @@
+From bfe5e5250035cb3777a48f2276feb90dbb59edda Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 09:02:18 -0500
+Subject: [PATCH] feat(20-01): implement closed runtime types
+
+---
+ .../prometheus/prometheus_runtime_types.cc    | 365 ++++++++++++++++--
+ .../prometheus/prometheus_runtime_types.h     |   2 +
+ .../prometheus_runtime_types_unittest.cc      |  40 ++
+ 3 files changed, 379 insertions(+), 28 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types.cc b/chrome/browser/prometheus/prometheus_runtime_types.cc
+index 3eda143132..08b89487d4 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_types.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_types.cc
+@@ -4,81 +4,390 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_runtime_types.h"
+ 
++#include <algorithm>
++#include <limits>
++
++#include "base/strings/string_util.h"
++
+ namespace prometheus {
+ 
++namespace {
++
++int64_t ClampLimit(int64_t value, int64_t default_value, int64_t hard_limit) {
++  if (value <= 0) {
++    return default_value;
++  }
++  return std::min(value, hard_limit);
++}
++
++bool AddWithoutOverflow(int64_t left, int64_t right, int64_t* result) {
++  if (left < 0 || right < 0 ||
++      left > std::numeric_limits<int64_t>::max() - right) {
++    return false;
++  }
++  *result = left + right;
++  return true;
++}
++
++}  // namespace
++
+ std::optional<RuntimeTaskOrigin> RuntimeTaskOriginFromString(
+-    std::string_view) {
++    std::string_view value) {
++  if (value == "side_panel") {
++    return RuntimeTaskOrigin::kSidePanel;
++  }
++  if (value == "mcp") {
++    return RuntimeTaskOrigin::kMcp;
++  }
+   return std::nullopt;
+ }
+ 
+-std::string_view RuntimeTaskOriginToString(RuntimeTaskOrigin) {
+-  return "";
++std::string_view RuntimeTaskOriginToString(RuntimeTaskOrigin value) {
++  switch (value) {
++    case RuntimeTaskOrigin::kSidePanel:
++      return "side_panel";
++    case RuntimeTaskOrigin::kMcp:
++      return "mcp";
++  }
++  return "side_panel";
+ }
+ 
+ std::optional<RequestedExecution> RequestedExecutionFromString(
+-    std::string_view) {
++    std::string_view value) {
++  if (value == "auto") {
++    return RequestedExecution::kAuto;
++  }
++  if (value == "provider") {
++    return RequestedExecution::kProvider;
++  }
++  if (value == "local") {
++    return RequestedExecution::kLocal;
++  }
+   return std::nullopt;
+ }
+ 
+-std::string_view RequestedExecutionToString(RequestedExecution) {
+-  return "";
++std::string_view RequestedExecutionToString(RequestedExecution value) {
++  switch (value) {
++    case RequestedExecution::kAuto:
++      return "auto";
++    case RequestedExecution::kProvider:
++      return "provider";
++    case RequestedExecution::kLocal:
++      return "local";
++  }
++  return "auto";
+ }
+ 
+ std::optional<EffectiveExecution> EffectiveExecutionFromString(
+-    std::string_view) {
++    std::string_view value) {
++  if (value == "hosted") {
++    return EffectiveExecution::kHosted;
++  }
++  if (value == "routed") {
++    return EffectiveExecution::kRouted;
++  }
++  if (value == "local") {
++    return EffectiveExecution::kLocal;
++  }
+   return std::nullopt;
+ }
+ 
+-std::string_view EffectiveExecutionToString(EffectiveExecution) {
+-  return "";
++std::string_view EffectiveExecutionToString(EffectiveExecution value) {
++  switch (value) {
++    case EffectiveExecution::kHosted:
++      return "hosted";
++    case EffectiveExecution::kRouted:
++      return "routed";
++    case EffectiveExecution::kLocal:
++      return "local";
++  }
++  return "hosted";
+ }
+ 
+ std::optional<RuntimeTaskState> RuntimeTaskStateFromString(
+-    std::string_view) {
++    std::string_view value) {
++  if (value == "queued") {
++    return RuntimeTaskState::kQueued;
++  }
++  if (value == "running") {
++    return RuntimeTaskState::kRunning;
++  }
++  if (value == "waiting_confirmation") {
++    return RuntimeTaskState::kWaitingConfirmation;
++  }
++  if (value == "cancelling") {
++    return RuntimeTaskState::kCancelling;
++  }
++  if (value == "succeeded") {
++    return RuntimeTaskState::kSucceeded;
++  }
++  if (value == "failed") {
++    return RuntimeTaskState::kFailed;
++  }
++  if (value == "cancelled") {
++    return RuntimeTaskState::kCancelled;
++  }
+   return std::nullopt;
+ }
+ 
+-std::string_view RuntimeTaskStateToString(RuntimeTaskState) {
+-  return "";
++std::string_view RuntimeTaskStateToString(RuntimeTaskState value) {
++  switch (value) {
++    case RuntimeTaskState::kQueued:
++      return "queued";
++    case RuntimeTaskState::kRunning:
++      return "running";
++    case RuntimeTaskState::kWaitingConfirmation:
++      return "waiting_confirmation";
++    case RuntimeTaskState::kCancelling:
++      return "cancelling";
++    case RuntimeTaskState::kSucceeded:
++      return "succeeded";
++    case RuntimeTaskState::kFailed:
++      return "failed";
++    case RuntimeTaskState::kCancelled:
++      return "cancelled";
++  }
++  return "failed";
+ }
+ 
+ std::optional<RuntimeErrorCode> RuntimeErrorCodeFromString(
+-    std::string_view) {
++    std::string_view value) {
++  if (value == "NONE") {
++    return RuntimeErrorCode::kNone;
++  }
++  if (value == "INVALID_REQUEST") {
++    return RuntimeErrorCode::kInvalidRequest;
++  }
++  if (value == "REQUEST_TOO_LARGE") {
++    return RuntimeErrorCode::kRequestTooLarge;
++  }
++  if (value == "INVALID_TRANSITION") {
++    return RuntimeErrorCode::kInvalidTransition;
++  }
++  if (value == "POLICY_BLOCKED") {
++    return RuntimeErrorCode::kPolicyBlocked;
++  }
++  if (value == "LOCAL_UI_REQUIRED") {
++    return RuntimeErrorCode::kLocalUiRequired;
++  }
++  if (value == "PROVIDER_UNAVAILABLE") {
++    return RuntimeErrorCode::kProviderUnavailable;
++  }
++  if (value == "PROVIDER_AUTH") {
++    return RuntimeErrorCode::kProviderAuth;
++  }
++  if (value == "PROVIDER_RATE_LIMITED") {
++    return RuntimeErrorCode::kProviderRateLimited;
++  }
++  if (value == "PROVIDER_INVALID_RESPONSE") {
++    return RuntimeErrorCode::kProviderInvalidResponse;
++  }
++  if (value == "TOOL_DENIED") {
++    return RuntimeErrorCode::kToolDenied;
++  }
++  if (value == "TARGET_LOST") {
++    return RuntimeErrorCode::kTargetLost;
++  }
++  if (value == "CONFIRMATION_REQUIRED") {
++    return RuntimeErrorCode::kConfirmationRequired;
++  }
++  if (value == "CANCELLED") {
++    return RuntimeErrorCode::kCancelled;
++  }
++  if (value == "TIMEOUT") {
++    return RuntimeErrorCode::kTimeout;
++  }
++  if (value == "INTERNAL") {
++    return RuntimeErrorCode::kInternal;
++  }
+   return std::nullopt;
+ }
+ 
+-std::string_view RuntimeErrorCodeToString(RuntimeErrorCode) {
+-  return "";
++std::string_view RuntimeErrorCodeToString(RuntimeErrorCode value) {
++  switch (value) {
++    case RuntimeErrorCode::kNone:
++      return "NONE";
++    case RuntimeErrorCode::kInvalidRequest:
++      return "INVALID_REQUEST";
++    case RuntimeErrorCode::kRequestTooLarge:
++      return "REQUEST_TOO_LARGE";
++    case RuntimeErrorCode::kInvalidTransition:
++      return "INVALID_TRANSITION";
++    case RuntimeErrorCode::kPolicyBlocked:
++      return "POLICY_BLOCKED";
++    case RuntimeErrorCode::kLocalUiRequired:
++      return "LOCAL_UI_REQUIRED";
++    case RuntimeErrorCode::kProviderUnavailable:
++      return "PROVIDER_UNAVAILABLE";
++    case RuntimeErrorCode::kProviderAuth:
++      return "PROVIDER_AUTH";
++    case RuntimeErrorCode::kProviderRateLimited:
++      return "PROVIDER_RATE_LIMITED";
++    case RuntimeErrorCode::kProviderInvalidResponse:
++      return "PROVIDER_INVALID_RESPONSE";
++    case RuntimeErrorCode::kToolDenied:
++      return "TOOL_DENIED";
++    case RuntimeErrorCode::kTargetLost:
++      return "TARGET_LOST";
++    case RuntimeErrorCode::kConfirmationRequired:
++      return "CONFIRMATION_REQUIRED";
++    case RuntimeErrorCode::kCancelled:
++      return "CANCELLED";
++    case RuntimeErrorCode::kTimeout:
++      return "TIMEOUT";
++    case RuntimeErrorCode::kInternal:
++      return "INTERNAL";
++  }
++  return "INTERNAL";
+ }
+ 
+-bool IsLegalRuntimeTaskTransition(RuntimeTaskState, RuntimeTaskState) {
++bool IsLegalRuntimeTaskTransition(RuntimeTaskState from,
++                                  RuntimeTaskState to) {
++  if (IsTerminalRuntimeTaskState(from) || from == to) {
++    return false;
++  }
++
++  switch (from) {
++    case RuntimeTaskState::kQueued:
++      return to == RuntimeTaskState::kRunning ||
++             to == RuntimeTaskState::kCancelling ||
++             to == RuntimeTaskState::kFailed;
++    case RuntimeTaskState::kRunning:
++      return to == RuntimeTaskState::kWaitingConfirmation ||
++             to == RuntimeTaskState::kCancelling ||
++             to == RuntimeTaskState::kSucceeded ||
++             to == RuntimeTaskState::kFailed;
++    case RuntimeTaskState::kWaitingConfirmation:
++      return to == RuntimeTaskState::kRunning ||
++             to == RuntimeTaskState::kCancelling ||
++             to == RuntimeTaskState::kFailed;
++    case RuntimeTaskState::kCancelling:
++      return to == RuntimeTaskState::kCancelled;
++    case RuntimeTaskState::kSucceeded:
++    case RuntimeTaskState::kFailed:
++    case RuntimeTaskState::kCancelled:
++      return false;
++  }
+   return false;
+ }
+ 
+-bool IsTerminalRuntimeTaskState(RuntimeTaskState) {
+-  return false;
++bool IsTerminalRuntimeTaskState(RuntimeTaskState state) {
++  return state == RuntimeTaskState::kSucceeded ||
++         state == RuntimeTaskState::kFailed ||
++         state == RuntimeTaskState::kCancelled;
+ }
+ 
+ RuntimeLimits ClampRuntimeLimits(const RuntimeLimits& limits) {
+-  return limits;
++  return RuntimeLimits{
++      .max_prompt_bytes = ClampLimit(limits.max_prompt_bytes,
++                                     kDefaultRuntimePromptBytes,
++                                     kHardRuntimePromptBytes),
++      .max_result_bytes = ClampLimit(limits.max_result_bytes,
++                                     kDefaultRuntimeResultBytes,
++                                     kHardRuntimeResultBytes),
++      .max_turns = ClampLimit(limits.max_turns, kDefaultRuntimeTurns,
++                              kHardRuntimeTurns),
++      .max_total_tokens = ClampLimit(limits.max_total_tokens,
++                                     kDefaultRuntimeTokens,
++                                     kHardRuntimeTokens),
++      .max_duration_ms = ClampLimit(limits.max_duration_ms,
++                                    kDefaultRuntimeDurationMs,
++                                    kHardRuntimeDurationMs),
++      .max_concurrent_tasks = ClampLimit(limits.max_concurrent_tasks,
++                                         kDefaultRuntimeConcurrentTasks,
++                                         kHardRuntimeConcurrentTasks),
++  };
+ }
+ 
+-bool IsValidRuntimeUsage(const RuntimeUsage&) {
+-  return false;
++bool IsValidRuntimeUsage(const RuntimeUsage& usage) {
++  if (usage.input_tokens < 0 || usage.output_tokens < 0 ||
++      usage.tool_calls < 0 || usage.duration_ms < 0 ||
++      usage.input_tokens > kHardRuntimeTokens ||
++      usage.output_tokens > kHardRuntimeTokens ||
++      usage.input_tokens > kHardRuntimeTokens - usage.output_tokens ||
++      usage.tool_calls > kHardRuntimeTurns ||
++      usage.duration_ms > kHardRuntimeDurationMs) {
++    return false;
++  }
++  return !usage.cost_microunits.has_value() ||
++         (*usage.cost_microunits >= 0 &&
++          *usage.cost_microunits <= kHardRuntimeCostMicrounits);
+ }
+ 
+-std::optional<RuntimeUsage> AddRuntimeUsage(const RuntimeUsage&,
+-                                            const RuntimeUsage&) {
+-  return std::nullopt;
++std::optional<RuntimeUsage> AddRuntimeUsage(const RuntimeUsage& left,
++                                            const RuntimeUsage& right) {
++  if (!IsValidRuntimeUsage(left) || !IsValidRuntimeUsage(right)) {
++    return std::nullopt;
++  }
++
++  RuntimeUsage result;
++  if (!AddWithoutOverflow(left.input_tokens, right.input_tokens,
++                          &result.input_tokens) ||
++      !AddWithoutOverflow(left.output_tokens, right.output_tokens,
++                          &result.output_tokens) ||
++      !AddWithoutOverflow(left.tool_calls, right.tool_calls,
++                          &result.tool_calls) ||
++      !AddWithoutOverflow(left.duration_ms, right.duration_ms,
++                          &result.duration_ms)) {
++    return std::nullopt;
++  }
++
++  if (left.cost_microunits.has_value() &&
++      right.cost_microunits.has_value()) {
++    int64_t cost = 0;
++    if (!AddWithoutOverflow(*left.cost_microunits, *right.cost_microunits,
++                            &cost)) {
++      return std::nullopt;
++    }
++    result.cost_microunits = cost;
++  }
++
++  if (!IsValidRuntimeUsage(result)) {
++    return std::nullopt;
++  }
++  return result;
+ }
+ 
+-bool IsBoundedRuntimeUtf8(std::string_view, size_t) {
+-  return false;
++bool IsBoundedRuntimeUtf8(std::string_view value, size_t max_bytes) {
++  return value.size() <= max_bytes && base::IsStringUTF8(value);
+ }
+ 
+ std::optional<base::DictValue> RuntimeTaskSnapshotToValue(
+-    const RuntimeTaskSnapshot&) {
+-  return base::DictValue();
++    const RuntimeTaskSnapshot& snapshot) {
++  if (snapshot.task_id.empty() ||
++      !IsBoundedRuntimeUtf8(snapshot.task_id, kMaxRuntimeTaskIdBytes) ||
++      snapshot.created_at_ms < 0 ||
++      snapshot.updated_at_ms < snapshot.created_at_ms ||
++      !IsValidRuntimeUsage(snapshot.usage)) {
++    return std::nullopt;
++  }
++
++  base::DictValue usage;
++  usage.Set("input_tokens", static_cast<int>(snapshot.usage.input_tokens));
++  usage.Set("output_tokens", static_cast<int>(snapshot.usage.output_tokens));
++  usage.Set("tool_calls", static_cast<int>(snapshot.usage.tool_calls));
++  usage.Set("duration_ms", static_cast<int>(snapshot.usage.duration_ms));
++  usage.Set("cost_known", snapshot.usage.cost_microunits.has_value());
++  if (snapshot.usage.cost_microunits.has_value()) {
++    usage.Set("cost_microunits",
++              static_cast<int>(*snapshot.usage.cost_microunits));
++  }
++
++  base::DictValue value;
++  value.Set("task_id", snapshot.task_id);
++  value.Set("origin", RuntimeTaskOriginToString(snapshot.origin));
++  value.Set("requested_execution",
++            RequestedExecutionToString(snapshot.requested_execution));
++  if (snapshot.effective_execution.has_value()) {
++    value.Set("effective_execution",
++              EffectiveExecutionToString(*snapshot.effective_execution));
++  }
++  value.Set("state", RuntimeTaskStateToString(snapshot.state));
++  value.Set("error_code", RuntimeErrorCodeToString(snapshot.error_code));
++  value.Set("created_at_ms", static_cast<double>(snapshot.created_at_ms));
++  value.Set("updated_at_ms", static_cast<double>(snapshot.updated_at_ms));
++  value.Set("usage", std::move(usage));
++  return value;
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types.h b/chrome/browser/prometheus/prometheus_runtime_types.h
+index 344d2a14b8..f81ef4e7d8 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_types.h
++++ b/chrome/browser/prometheus/prometheus_runtime_types.h
+@@ -74,6 +74,8 @@ inline constexpr int64_t kHardRuntimeDurationMs = 10 * 60 * 1000;
+ inline constexpr int64_t kDefaultRuntimeConcurrentTasks = 2;
+ inline constexpr int64_t kHardRuntimeConcurrentTasks = 8;
+ inline constexpr int64_t kRuntimeToolsPerTurn = 1;
++inline constexpr int64_t kHardRuntimeCostMicrounits = 1000 * 1000 * 1000;
++inline constexpr size_t kMaxRuntimeTaskIdBytes = 128;
+ 
+ struct RuntimeLimits {
+   int64_t max_prompt_bytes = kDefaultRuntimePromptBytes;
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
+index 825dafd18a..873236575b 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
+@@ -50,6 +50,46 @@ TEST_F(PrometheusRuntimeTypesTest, RoundTripsClosedEnums) {
+   EXPECT_EQ(std::nullopt, RequestedExecutionFromString("mcp"));
+   EXPECT_EQ(std::nullopt, EffectiveExecutionFromString("mcp"));
+   EXPECT_EQ(std::nullopt, RuntimeTaskOriginFromString("terminal"));
++
++  const std::vector<std::pair<std::string_view, RuntimeTaskState>> states = {
++      {"queued", RuntimeTaskState::kQueued},
++      {"running", RuntimeTaskState::kRunning},
++      {"waiting_confirmation", RuntimeTaskState::kWaitingConfirmation},
++      {"cancelling", RuntimeTaskState::kCancelling},
++      {"succeeded", RuntimeTaskState::kSucceeded},
++      {"failed", RuntimeTaskState::kFailed},
++      {"cancelled", RuntimeTaskState::kCancelled},
++  };
++  for (const auto& [name, value] : states) {
++    ASSERT_EQ(value, RuntimeTaskStateFromString(name));
++    EXPECT_EQ(name, RuntimeTaskStateToString(value));
++  }
++
++  const std::vector<std::pair<std::string_view, RuntimeErrorCode>> errors = {
++      {"NONE", RuntimeErrorCode::kNone},
++      {"INVALID_REQUEST", RuntimeErrorCode::kInvalidRequest},
++      {"REQUEST_TOO_LARGE", RuntimeErrorCode::kRequestTooLarge},
++      {"INVALID_TRANSITION", RuntimeErrorCode::kInvalidTransition},
++      {"POLICY_BLOCKED", RuntimeErrorCode::kPolicyBlocked},
++      {"LOCAL_UI_REQUIRED", RuntimeErrorCode::kLocalUiRequired},
++      {"PROVIDER_UNAVAILABLE", RuntimeErrorCode::kProviderUnavailable},
++      {"PROVIDER_AUTH", RuntimeErrorCode::kProviderAuth},
++      {"PROVIDER_RATE_LIMITED", RuntimeErrorCode::kProviderRateLimited},
++      {"PROVIDER_INVALID_RESPONSE",
++       RuntimeErrorCode::kProviderInvalidResponse},
++      {"TOOL_DENIED", RuntimeErrorCode::kToolDenied},
++      {"TARGET_LOST", RuntimeErrorCode::kTargetLost},
++      {"CONFIRMATION_REQUIRED", RuntimeErrorCode::kConfirmationRequired},
++      {"CANCELLED", RuntimeErrorCode::kCancelled},
++      {"TIMEOUT", RuntimeErrorCode::kTimeout},
++      {"INTERNAL", RuntimeErrorCode::kInternal},
++  };
++  for (const auto& [name, value] : errors) {
++    ASSERT_EQ(value, RuntimeErrorCodeFromString(name));
++    EXPECT_EQ(name, RuntimeErrorCodeToString(value));
++  }
++  EXPECT_EQ(std::nullopt, RuntimeTaskStateFromString("paused"));
++  EXPECT_EQ(std::nullopt, RuntimeErrorCodeFromString("RAW_PROVIDER_ERROR"));
+ }
+ 
+ TEST_F(PrometheusRuntimeTypesTest, EnforcesLegalStateGraph) {
+-- 
+2.50.1 (Apple Git-155)
+
