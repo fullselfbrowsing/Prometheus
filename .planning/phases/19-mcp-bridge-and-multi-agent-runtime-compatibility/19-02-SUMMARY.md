@@ -56,11 +56,12 @@ completed: 2026-07-12
 1. `1a22d6e56516155b387dd3352ae7260c34f3b961` — `test(19-02): specify native MCP transport contracts`
 2. `d6ee3978a5d71762edfaaaee3a2cad1b985ec13b` — `feat(19-02): extend native MCP route contracts`
 3. `71f3fae9632ca233bc271b8f75db39c21e71a947` — `feat(19-02): add strict native MCP JSON codec`
+4. `bd9e23b20ef22e492775deffb4b937643a123c98` — `fix(19-02): align numeric coercion contracts`
 
 ## Verification
 
 - `autoninja -C out/Default prometheus_unittests` — passed.
-- `*PrometheusAgentTransport*:*PrometheusAgentRoute*:*PrometheusAgentAudit*` — 36/36 passed: 14 transport, 14 route, 8 audit.
+- `*PrometheusAgentTransport*:*PrometheusAgentRoute*:*PrometheusAgentAudit*` — 37/37 passed.
 - Static boundary scan — no JSON or `base::Value` parameter reaches `PrometheusAgentService`.
 - Nested `git diff --check` — passed; nested worktree clean.
 
@@ -68,14 +69,16 @@ completed: 2026-07-12
 
 The four new route enums made existing service/page-adapter switches non-exhaustive under `-Werror`. The codec commit therefore adds minimal typed-unsupported placeholder cases in `prometheus_agent_service.cc` and `prometheus_page_adapter.cc`. They return no empty success and carry nonempty recovery. Plan 19-04 replaces the page-read/internal-surface placeholders; Plan 19-05 replaces diagnostics.
 
+Post-review also found that the first C++ parser accepted only digit-only integer strings while the Node compatibility normalizer correctly accepted finite decimal/scientific notation with an exact integer value. `bd9e23b20e` aligns the native boundary: `42.0`, `4.2e1`, `1e2`, and `+42` are accepted when in int32 range; fractional, malformed, hex, nonfinite, and out-of-range inputs remain rejected.
+
 ## Next Plan Readiness
 
 Plan 19-03 can build profile-keyed production lifetime on the closed request/result types. Plans 19-04 through 19-06 can replace the explicit placeholders without changing the transport envelope.
 
 ## Self-Check: PASSED
 
-- FOUND: all three nested commits.
-- VERIFIED: production build target and 36 focused tests.
+- FOUND: all four nested commits.
+- VERIFIED: production build target and 37 focused tests.
 - VERIFIED: strict target, visual, diagnostic, internal-surface, and size-bound behavior.
 
 ---

@@ -76,6 +76,7 @@ completed: 2026-07-12
 2. **Task 2: Implement clean-room catalog, schema normalizer, and compatibility errors** - `a4584902c` (feat)
 3. **Task 2 correction: Allow zero-based mutable tab indices** - `64c9d9118` (fix)
 4. **Task 3: Add Wave 0 protocol/native/diagnostic fixtures** - `76d03933b` (test)
+5. **Post-review: Cover finite exact decimal/scientific integer coercion** - `f99f46b54` (test)
 
 **Plan metadata:** (this commit)
 
@@ -111,10 +112,18 @@ completed: 2026-07-12
 - **Verification:** Catalog regression accepts string `"0"`, rejects `-1`, and all focused tests pass.
 - **Committed in:** `64c9d9118`
 
+**2. Numeric compatibility accepts exact integer values in decimal notation**
+
+- **Found during:** Cross-language codec review after Plan 19-02.
+- **Issue:** Node already accepted finite decimal/scientific strings whose value is an exact integer, but the parity case was not explicit in the catalog tests.
+- **Fix:** Added coverage for `"42.0"` and `"1e2"`; the native codec received matching coverage and behavior.
+- **Verification:** Focused Node tests pass 14/14; native route/transport/audit tests pass 37/37.
+- **Committed in:** `f99f46b54` (Node) and nested `bd9e23b20e` (C++).
+
 ---
 
-**Total deviations:** 1 auto-fixed correctness issue.  
-**Impact on plan:** The correction aligns Node normalization with the native call-time tab-index contract and adds no scope.
+**Total deviations:** 2 auto-fixed compatibility issues.  
+**Impact on plan:** Both corrections align Node and native normalization with the locked compatibility contract and add no scope.
 
 ## Issues Encountered
 
@@ -140,7 +149,7 @@ Plans 19-02 through 19-06 can consume one stable catalog/schema/error vocabulary
 ## Self-Check: PASSED
 
 - FOUND: all 13 production/test/package files under `tools/prometheus-mcp/`
-- FOUND: commits `de02db75d`, `a4584902c`, `64c9d9118`, and `76d03933b`
+- FOUND: commits `de02db75d`, `a4584902c`, `64c9d9118`, `76d03933b`, and `f99f46b54`
 - VERIFIED: exact 90-name catalog, zero unmapped names, zero test failures
 
 ---
