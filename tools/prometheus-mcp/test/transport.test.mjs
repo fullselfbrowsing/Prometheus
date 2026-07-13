@@ -44,7 +44,7 @@ const legacyFrame = (message, header = 'Content-Length') => {
 
 test('newline framing accepts fragmented UTF-8 and multiple messages', () => {
   const parser = new FramingParser();
-  const first = request(1, 'ping');
+  const first = request(1, 'ping', { value: '\ud83e\udd80' });
   const second = request(2, 'tools/list');
   const bytes = Buffer.from(
     `${JSON.stringify(first)}\r\n\n${JSON.stringify(second)}\n`,
@@ -198,8 +198,11 @@ test('cancellation aborts only the matching request and emits no late response',
   let release;
   let aborted = false;
   const protocol = new McpProtocol({
-    callTool: (_params, { signal }) => new Promise((resolve) => {
-      signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+    callTool: (_params, { signal }) => new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        aborted = true;
+        reject(new DOMException('cancelled private work', 'AbortError'));
+      }, { once: true });
       release = () => resolve({ content: [], structuredContent: { ok: true }, isError: false });
     }),
   });
@@ -218,7 +221,6 @@ test('cancellation aborts only the matching request and emits no late response',
     params: { requestId: 9, reason: 'private cancellation reason' },
   }, emit);
   assert.equal(aborted, true);
-  release();
   await pending;
   assert.deepEqual(output, []);
 
