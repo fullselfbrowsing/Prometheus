@@ -273,14 +273,14 @@ Plans:
 
 **Requirements:** MCP-01, MCP-02, MCP-03, MCP-04, MCP-05, MCP-06, MCP-07
 
-**Plans:** 4/7 plans executed
+**Plans:** 5/7 plans executed
 
 Plans:
 - [x] 19-01-PLAN.md — Freeze the clean-room 90-name compatibility catalog, schemas, typed errors, and Wave 0 fixtures.
 - [x] 19-02-PLAN.md — Add closed native route/result contracts and a strict bounded JSON transport codec.
 - [x] 19-03-PLAN.md — Add regular-profile keyed session lifetime, opaque resume, cap, expiry, and ownership cleanup.
 - [x] 19-04-PLAN.md — Add structured/background tab compatibility, safe internal surfaces, and exact-frame element reads.
-- [ ] 19-05-PLAN.md — Add the authenticated loopback gateway, secure descriptor, and browser-process lifetime wiring.
+- [x] 19-05-PLAN.md — Add the authenticated loopback gateway, secure descriptor, and browser-process lifetime wiring.
 - [ ] 19-06-PLAN.md — Implement the dependency-free external stdio MCP bridge and all manifest-backed tool behavior.
 - [ ] 19-07-PLAN.md — Run live browser-to-stdio smoke, full automated gates, patch export, and truthful documentation closeout.
 
@@ -424,7 +424,7 @@ Plans:
 | 16. Prometheus WebUI Surfaces and New Tab | v2.0 | 6/6 | Complete | 2026-07-07 |
 | 17. Native Agent Command Service and Tab Ownership | v2.0 | 6/6 | Complete | 2026-07-07 |
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 8/8 | Complete    | 2026-07-12 |
-| 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 4/7 | In Progress|  |
+| 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 5/7 | In Progress|  |
 | 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 0 | Planned | — |
 | 21. Supervision, Pairing, and Remote Control | v2.0 | 0 | Planned | — |
 | 22. Chrome Extension Ecosystem and Policy | v2.0 | 0 | Planned | — |
