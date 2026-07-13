@@ -1,0 +1,147 @@
+From bd9e23b20ef22e492775deffb4b937643a123c98 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sun, 12 Jul 2026 21:04:18 -0500
+Subject: [PATCH 04/19] fix(19-02): align numeric coercion contracts
+
+---
+ .../prometheus_agent_transport_codec.cc       | 63 ++++++++++++++++---
+ .../prometheus_agent_transport_unittest.cc    | 30 +++++++--
+ 2 files changed, 81 insertions(+), 12 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_transport_codec.cc b/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
+index fa62418273..b6fad99966 100644
+--- a/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
++++ b/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <cmath>
+ #include <cstdint>
+ #include <initializer_list>
+ #include <limits>
+@@ -94,16 +95,62 @@ std::optional<int32_t> ParseInt32(const base::Value* value) {
+   if (value->is_int()) {
+     return value->GetInt();
+   }
+-  if (!value->is_string()) {
+-    return std::nullopt;
+-  }
+-  const std::string trimmed(base::TrimWhitespaceASCII(
+-      value->GetString(), base::TrimPositions::TRIM_ALL));
+-  if (trimmed.empty()) {
++  double parsed = 0;
++  if (value->is_double()) {
++    parsed = value->GetDouble();
++  } else if (value->is_string()) {
++    const std::string_view trimmed = base::TrimWhitespaceASCII(
++        value->GetString(), base::TrimPositions::TRIM_ALL);
++    if (trimmed.empty()) {
++      return std::nullopt;
++    }
++
++    size_t position = 0;
++    if (trimmed[position] == '+' || trimmed[position] == '-') {
++      ++position;
++    }
++    bool has_mantissa_digit = false;
++    while (position < trimmed.size() && base::IsAsciiDigit(trimmed[position])) {
++      has_mantissa_digit = true;
++      ++position;
++    }
++    if (position < trimmed.size() && trimmed[position] == '.') {
++      ++position;
++      while (position < trimmed.size() &&
++             base::IsAsciiDigit(trimmed[position])) {
++        has_mantissa_digit = true;
++        ++position;
++      }
++    }
++    if (!has_mantissa_digit) {
++      return std::nullopt;
++    }
++    if (position < trimmed.size() &&
++        (trimmed[position] == 'e' || trimmed[position] == 'E')) {
++      ++position;
++      if (position < trimmed.size() &&
++          (trimmed[position] == '+' || trimmed[position] == '-')) {
++        ++position;
++      }
++      const size_t exponent_start = position;
++      while (position < trimmed.size() &&
++             base::IsAsciiDigit(trimmed[position])) {
++        ++position;
++      }
++      if (position == exponent_start) {
++        return std::nullopt;
++      }
++    }
++    if (position != trimmed.size() || !base::StringToDouble(trimmed, &parsed)) {
++      return std::nullopt;
++    }
++  } else {
+     return std::nullopt;
+   }
+-  int parsed = 0;
+-  if (!base::StringToInt(trimmed, &parsed)) {
++
++  if (!std::isfinite(parsed) || std::trunc(parsed) != parsed ||
++      parsed < std::numeric_limits<int32_t>::min() ||
++      parsed > std::numeric_limits<int32_t>::max()) {
+     return std::nullopt;
+   }
+   return static_cast<int32_t>(parsed);
+diff --git a/chrome/browser/prometheus/prometheus_agent_transport_unittest.cc b/chrome/browser/prometheus/prometheus_agent_transport_unittest.cc
+index 81b687554d..5a225e7fc1 100644
+--- a/chrome/browser/prometheus/prometheus_agent_transport_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_transport_unittest.cc
+@@ -171,20 +171,42 @@ TEST(PrometheusAgentTransportTest, RejectsAmbiguousTargets) {
+       AgentErrorCode::kInvalidTarget);
+ }
+ 
+-TEST(PrometheusAgentTransportTest, CoercesOnlyStrictInt32Strings) {
++TEST(PrometheusAgentTransportTest, CoercesExactFiniteInt32Numbers) {
++  for (std::string_view value : {"42", "42.0", "4.2e1", " 42 ", "+42"}) {
++    AgentRouteRequest request = ParseRequest(
++        std::string("{\"route\":\"activate_tab\",\"session_id\":\"s\","
++                    "\"target\":{\"tab_id\":\"") +
++        std::string(value) + "\"}}");
++    EXPECT_EQ(42, request.target.tab_handle.raw_value());
++  }
+   EXPECT_EQ(
+       42,
+       ParseRequest(
+-          R"({"route":"activate_tab","session_id":"s","target":{"tab_id":"42"}})")
++          R"({"route":"activate_tab","session_id":"s","target":{"tab_id":42.0}})")
++          .target.tab_handle.raw_value());
++  EXPECT_EQ(
++      100,
++      ParseRequest(
++          R"({"route":"activate_tab","session_id":"s","target":{"tab_id":1e2}})")
+           .target.tab_handle.raw_value());
+-  for (std::string_view value : {"", " ", "+", "NaN", "Infinity", "1.5", "1e2",
+-                                 "2147483648", "-2147483649"}) {
++}
++
++TEST(PrometheusAgentTransportTest, RejectsInvalidInt32Numbers) {
++  for (std::string_view value :
++       {"", " ", "+", ".", "NaN", "Infinity", "1.5", "1e-1", "1e309", "1e",
++        "--1", "0x2a", "2147483648", "-2147483649"}) {
+     ExpectParseError(
+         std::string("{\"route\":\"activate_tab\",\"session_id\":\"s\","
+                     "\"target\":{\"tab_id\":\"") +
+             std::string(value) + "\"}}",
+         AgentErrorCode::kInvalidTarget);
+   }
++  ExpectParseError(
++      R"({"route":"activate_tab","session_id":"s","target":{"tab_id":1.5}})",
++      AgentErrorCode::kInvalidTarget);
++  ExpectParseError(
++      R"({"route":"activate_tab","session_id":"s","target":{"tab_id":2147483648}})",
++      AgentErrorCode::kInvalidTarget);
+ }
+ 
+ TEST(PrometheusAgentTransportTest, AcceptsIndependentVisualFields) {
+-- 
+2.50.1 (Apple Git-155)
+

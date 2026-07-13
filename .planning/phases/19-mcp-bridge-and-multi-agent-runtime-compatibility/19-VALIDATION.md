@@ -1,9 +1,9 @@
 ---
 phase: 19
 slug: mcp-bridge-and-multi-agent-runtime-compatibility
-status: approved
+status: passed
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-07-12
 ---
 
@@ -42,13 +42,13 @@ route gateway, profile/session/ownership lifetime, and external stdio bridge.
 
 | Requirement | Planned behavior | Threat Ref | Secure behavior | Test type | Automated command | File exists | Status |
 |-------------|------------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| MCP-01 | External MCP host launches a standards-compliant stdio bridge that creates a browser-issued session and reaches the real Chromium service. | T-19-01 / T-19-02 / T-19-07 | Loopback-only, authenticated native hop; external adapter never launches an agent CLI/runtime. | Node + browser + live smoke | `node --test tools/prometheus-mcp/test/transport.test.mjs && bash tools/prometheus-mcp/smoke-browser.sh` | ❌ W0 | pending |
-| MCP-02 | Compatible tab/navigation/page/action names and aliases call native routes; unsupported coordinate/mutation names stay discoverable with typed guidance. | T-19-03 / T-19-06 | Closed manifest disposition and native allowlist; no arbitrary route or false-success fallback. | Node + C++ unit + browser | `node --test tools/prometheus-mcp/test/catalog.test.mjs tools/prometheus-mcp/test/tools.test.mjs` | ❌ W0 | pending |
-| MCP-03 | Page/text/attribute/snapshot/tab reads work; later runtime/memory/site-guide reads return truthful typed owner results. | T-19-03 / T-19-05 / T-19-06 | Exact frame/ref, bounded output, restricted-frame no-fallback, and no secret-bearing Node synthesis. | C++ unit + renderer + browser + Node | `cd .context/chromium/src && ./out/Default/browser_tests --gtest_filter='*Prometheus*ElementRead*:*Prometheus*Page*' --test-launcher-jobs=1` | ❌ W0 additions | pending |
-| MCP-04 | Optional `visual_reason`, `client`, and `is_final` survive aliases and the native envelope. | T-19-03 / T-19-05 | Fields are bounded presentation metadata, supplied badges are normalized/allowlisted, and reason content never enters audit/logs. | Node + C++ unit + browser | `node --test tools/prometheus-mcp/test/visual-session.test.mjs` | ❌ W0 | pending |
-| MCP-05 | Changed, unavailable, and removed tools return stable compatibility codes, replacements, owner phase, and recovery. | T-19-06 | No name disappears and no deferred capability returns empty success. | Node fixture + C++ codec | `node --test tools/prometheus-mcp/test/catalog.test.mjs tools/prometheus-mcp/test/errors.test.mjs` | ❌ W0 | pending |
-| MCP-06 | Diagnostics report all ten required layers with honest closed states and no token/content/secret leakage. | T-19-01 / T-19-05 / T-19-06 | Authenticated bounded health; later systems remain `not_ready`; token/profile paths/page data absent. | C++ unit + browser + Node | `node --test tools/prometheus-mcp/test/diagnostics.test.mjs` | ❌ W0 | pending |
-| MCP-07 | Lifecycle, cap, resume/grace, ownership, background targeting, numeric coercion, visual compatibility, and recovery are regression-tested. | T-19-02 / T-19-03 / T-19-04 | Opaque session authority, orphan-owner cleanup, stable handles, exact numeric bounds, and active-tab non-theft. | Node + C++ unit + browser + live smoke | `node --test tools/prometheus-mcp/test/*.test.mjs` plus focused Phase 19 browser filters | ❌ W0 | pending |
+| MCP-01 | External MCP host launches a standards-compliant stdio bridge that creates a browser-issued session and reaches the real Chromium service. | T-19-01 / T-19-02 / T-19-07 | Loopback-only, authenticated native hop; external adapter never launches an agent CLI/runtime. | Node + browser + live smoke | `node --test tools/prometheus-mcp/test/transport.test.mjs && bash tools/prometheus-mcp/smoke-browser.sh` | ✅ | passed |
+| MCP-02 | Compatible tab/navigation/page/action names and aliases call native routes; unsupported coordinate/mutation names stay discoverable with typed guidance. | T-19-03 / T-19-06 | Closed manifest disposition and native allowlist; no arbitrary route or false-success fallback. | Node + C++ unit + browser | `node --test tools/prometheus-mcp/test/catalog.test.mjs tools/prometheus-mcp/test/tools.test.mjs` | ✅ | passed |
+| MCP-03 | Page/text/attribute/snapshot/tab reads work; later runtime/memory/site-guide reads return truthful typed owner results. | T-19-03 / T-19-05 / T-19-06 | Exact frame/ref, bounded output, restricted-frame no-fallback, and no secret-bearing Node synthesis. | C++ unit + renderer + browser + Node | `cd .context/chromium/src && ./out/Default/browser_tests --gtest_filter='*Prometheus*ElementRead*:*Prometheus*Page*' --test-launcher-jobs=1` | ✅ | passed |
+| MCP-04 | Optional `visual_reason`, `client`, and `is_final` survive aliases and the native envelope. | T-19-03 / T-19-05 | Fields are bounded presentation metadata, supplied badges are normalized/allowlisted, and reason content never enters audit/logs. | Node + C++ unit + browser | `node --test tools/prometheus-mcp/test/visual-session.test.mjs` | ✅ | passed |
+| MCP-05 | Changed, unavailable, and removed tools return stable compatibility codes, replacements, owner phase, and recovery. | T-19-06 | No name disappears and no deferred capability returns empty success. | Node fixture + C++ codec | `node --test tools/prometheus-mcp/test/catalog.test.mjs tools/prometheus-mcp/test/errors.test.mjs` | ✅ | passed |
+| MCP-06 | Diagnostics report all ten required layers with honest closed states and no token/content/secret leakage. | T-19-01 / T-19-05 / T-19-06 | Authenticated bounded health; later systems remain `not_ready`; token/profile paths/page data absent. | C++ unit + browser + Node | `node --test tools/prometheus-mcp/test/diagnostics.test.mjs` | ✅ | passed |
+| MCP-07 | Lifecycle, cap, resume/grace, ownership, background targeting, numeric coercion, visual compatibility, and recovery are regression-tested. | T-19-02 / T-19-03 / T-19-04 | Opaque session authority, orphan-owner cleanup, stable handles, exact numeric bounds, and active-tab non-theft. | Node + C++ unit + browser + live smoke | `node --test tools/prometheus-mcp/test/*.test.mjs` plus focused Phase 19 browser filters | ✅ | passed |
 
 ## Threat References
 
@@ -64,15 +64,45 @@ route gateway, profile/session/ownership lifetime, and external stdio bridge.
 
 ## Wave 0 Requirements
 
-- [ ] `tools/prometheus-mcp/test/catalog.test.mjs` — frozen 46/current 59 union coverage, dispositions, schemas, aliases, and typed stubs.
-- [ ] `tools/prometheus-mcp/test/transport.test.mjs` — newline and archived framing, lifecycle, stdout cleanliness, bounds, and cancellation fixtures.
-- [ ] `tools/prometheus-mcp/test/native-client.test.mjs` — endpoint discovery, bearer, session heartbeat/resume/close, and mock native errors.
-- [ ] `tools/prometheus-mcp/test/visual-session.test.mjs` — exact field preservation, optional compatibility, normalization, denial, and no-log checks.
-- [ ] `tools/prometheus-mcp/test/diagnostics.test.mjs` — ten-layer schema and secret/content exclusion.
-- [ ] `chrome/browser/prometheus/prometheus_agent_transport_unittest.cc` — strict codec, target aliases, bounds, visual metadata, and diagnostic serialization.
-- [ ] `chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc` — real auth/profile/session/route/shutdown behavior.
-- [ ] Extend `chrome/browser/prometheus/prometheus_page_adapter_browsertest.cc` and renderer units for exact-frame element reads.
-- [ ] `tools/prometheus-mcp/smoke-browser.sh` plus a Node smoke client — real built-browser-to-stdio integration.
+- [x] `tools/prometheus-mcp/test/catalog.test.mjs` — frozen 46/current 59 union coverage, dispositions, schemas, aliases, and typed stubs.
+- [x] `tools/prometheus-mcp/test/transport.test.mjs` — newline and archived framing, lifecycle, stdout cleanliness, bounds, and cancellation fixtures.
+- [x] `tools/prometheus-mcp/test/native-client.test.mjs` — endpoint discovery, bearer, session heartbeat/resume/close, and mock native errors.
+- [x] `tools/prometheus-mcp/test/visual-session.test.mjs` — exact field preservation, optional compatibility, normalization, denial, and no-log checks.
+- [x] `tools/prometheus-mcp/test/diagnostics.test.mjs` — ten-layer schema and secret/content exclusion.
+- [x] `chrome/browser/prometheus/prometheus_agent_transport_unittest.cc` — strict codec, target aliases, bounds, visual metadata, and diagnostic serialization.
+- [x] `chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc` — real auth/profile/session/route/shutdown behavior.
+- [x] Extended `chrome/browser/prometheus/prometheus_page_adapter_browsertest.cc` and renderer units for exact-frame element reads.
+- [x] `tools/prometheus-mcp/smoke-browser.sh` plus a Node smoke client — real built-browser-to-stdio integration.
+
+## Final Automated Evidence
+
+All fresh closeout logs live under `.context/chromium/src/out/Default/` and
+end with `EXIT_CODE=0`:
+
+- `phase19-07-build.log` — `chrome`, `browser_tests`,
+  `prometheus_unittests`, and `prometheus_action_dispatcher_unittests` built.
+- `phase19-07-node-tests.log` — 64/64 passed; zero failed, cancelled,
+  skipped, or TODO.
+- `phase19-07-focused-units.log` — 34/34 focused gateway, session,
+  transport, and compatibility units passed.
+- `phase19-07-renderer-units.log` — 7/7 renderer units passed.
+- `phase19-07-phase19-browser.log` — 32/32 gateway, profile, element-read,
+  and consolidated MCP browser tests passed serially.
+- `phase19-07-phase17-18-regression.log` — 53/53 prior native-service,
+  page, action, and frame regressions passed serially.
+- `phase19-07-live-smoke.log` — the built Prometheus app, real owner-only
+  descriptor, authenticated gateway, and separately spawned stdio bridge
+  passed end to end.
+- `phase19-07-manifest-inventory.log` — 46 frozen, 59 current, 15 overlap,
+  90 union, and 90/90 dispositions.
+- `phase19-07-patch-inventory.log` — the exact Phase 18-tip range contains 19
+  commits and exports 19 nonempty source-only patches.
+- `phase19-07-static-boundary-audit.log` — 65 production files scanned with
+  no embedded agent runtime, terminal/engine surface, wildcard listener,
+  unauthenticated health, or secret-bearing logging.
+- Environment, GPL, artifact-isolation, preservation, and both repository
+  diff checks passed in their corresponding `phase19-07-*.log` files;
+  `phase19-07-doc-consistency.log` also rejects obsolete readiness/UAT claims.
 
 ## Manual-Only Verifications
 

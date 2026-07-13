@@ -45,17 +45,16 @@ Prometheus is a Chromium-based agent-native browser built by Full Self Browsing.
 
 Where a Chrome extension can only reach the page, Prometheus owns the browser. Agents drive normal web pages and the surfaces an extension can never touch: settings, tabs, downloads, history, and internal pages. Every action runs through a typed native command router with tab ownership, permission boundaries, change reports, and an audit log.
 
-> **Status:** v2.0 Chromium migration is active. The Chromium-based engine baseline is established (Phase 12 complete: checkout, build, unmodified launch, and artifact isolation all verified). Active work rebuilds the same product, MCP, runtime, supervision, and design contracts on Chromium-native primitives. The v1.0 Falkon/QtWebEngine bootstrap is preserved as a reference at `.context/falkon-preservation/`.
+> **Status:** v2.0 Chromium migration is active. Phases 11–19 are complete: the Chromium baseline, product identity, design assets, browser shell, Prometheus WebUI shells, native agent service, page adapter, and external MCP bridge have automated evidence. Phase 20 is next and owns the live FSB runtime, providers, vault, memory, logs, and control-panel data. The v1.0 Falkon/QtWebEngine bootstrap is preserved only as a reference at `.context/falkon-preservation/`.
 
 ### What it does
 
-* Drives the live DOM through a native command router: read structure, run page scripts, click, type, scroll, and verify what changed.
-* Controls browser owned surfaces, not just the page, including settings, tabs, downloads, history, and internal pages.
-* Exposes a dependency free stdio MCP bridge so Claude Code, Cursor, VS Code, Codex, and other MCP clients can drive the browser.
-* Enforces multi agent tab ownership with typed recovery errors so several agents can share one browser safely.
-* Ships a native sidebar with Task, Providers, Logs, Memory, and Vault panels, keeping provider and vault secrets off the agent transports.
-* Mirrors supervised sessions as structured DOM snapshots and hash diffs rather than pixel or video streaming.
-* Keeps provider flexibility: xAI, Gemini, OpenAI, Anthropic, OpenRouter, LM Studio, and custom OpenAI compatible endpoints.
+* Drives the live DOM through a native command router: read structure, run permissioned page scripts, click, type, scroll, and verify what changed.
+* Controls stable tabs, windows, navigation, Prometheus internal surfaces, and normal-page content through browser-owned authority.
+* Exposes a dependency-free stdio MCP bridge so Claude Code, Cursor, VS Code, Codex, and other external MCP clients can drive the browser.
+* Enforces browser-issued sessions and multi-agent tab ownership with typed recovery errors.
+* Provides the Prometheus side-panel and control-panel shells; Phase 20 owns their live task/provider/vault/memory/log data.
+* Keeps supervision, remote pairing, and extension policy as explicit later work in Phases 21 and 22 instead of claiming unavailable behavior.
 
 ## Why DOM First
 
@@ -82,83 +81,97 @@ Prometheus puts the control layer inside the browser process, so an agent can re
 * **Browser owned pages** through `open_internal_surface`, including settings and internal views.
 * **Tabs and windows** through native tab and window APIs rather than page level guesses.
 * **Direct page scripts** through `execute_js`, with DOM snapshots for read back and verification.
-* **Runtime and supervision state** through the same router that drives the page, so tasks, logs, and live mirrors share one contract.
+* **Prometheus-owned internal surfaces** through closed native routes. Live runtime data arrives in Phase 20 and supervision in Phase 21.
 
 ---
 
 ## Architecture
 
-Prometheus is a layered control spine. An MCP client talks to a small stdio bridge, the bridge forwards each call to a native JSON router on a loopback port, and the router selects a surface adapter, acts, waits, verifies, and returns a typed result.
+Prometheus is a layered control spine. An external MCP host launches a small
+Prometheus-owned stdio bridge. The bridge discovers the running browser's
+owner-only endpoint descriptor, obtains a browser-issued session, and forwards
+closed native calls over an authenticated ephemeral IPv4-loopback connection.
 
 ```mermaid
 graph LR
     subgraph Clients["MCP clients"]
         CC["Claude Code, Cursor, VS Code, Codex"]
     end
-    subgraph Bridge["Stdio MCP bridge"]
-        MJS["server.mjs forwards tools/call"]
+    subgraph Bridge["Prometheus stdio bridge"]
+        MJS["prometheus-mcp.mjs"]
     end
-    subgraph Native["Prometheus native router (127.0.0.1:17880)"]
-        ROUTER["validate, ownership, permissions, audit"]
+    subgraph Native["Prometheus browser process"]
+        GATE["authenticated 127.0.0.1 gateway"]
+        SESS["profile session + tab ownership"]
+        ROUTER["closed native command service"]
         WEB["Web page adapter"]
         INT["Browser surface adapter"]
-        SUP["Supervision adapter"]
-    end
-    subgraph Runtime["AgentRuntime"]
-        STATE["tasks, providers, logs, memory, vault"]
     end
 
     CC --> MJS
-    MJS --> ROUTER
+    MJS --> GATE
+    GATE --> SESS
+    SESS --> ROUTER
     ROUTER --> WEB
     ROUTER --> INT
-    ROUTER --> SUP
-    ROUTER --> STATE
 ```
 
-Every command follows the same lifecycle: validate the tool, enforce permissions and tab ownership, select a surface adapter, execute the action, wait for observable state, verify the result, and return a normalized change report. The router speaks a small structured protocol: `POST /agent/command` with `tool`, an optional `id`, and optional `params`, returning an `{ ok, id, tool, result }` envelope or a typed `error`, with each call written to a JSONL audit log under the active profile.
+Every native command validates the route and schema, pins the regular profile,
+enforces session and tab ownership, selects a surface adapter, waits for
+observable state when required, verifies mutations, and returns a bounded typed
+result. Six closed `/v1/` endpoints cover session create/resume/touch/close,
+command dispatch, and health. Every endpoint—including health—requires the
+process-fresh bearer published only in the mode-0600 descriptor.
 
-The loopback command server is disabled by default and only listens when `PROMETHEUS_AGENT_PORT` is set, so the browser carries no open agent surface until you ask for one.
+The gateway never accepts a wildcard interface, caller-selected profile,
+caller-supplied authority, arbitrary route, or credential on the command line.
 
 ---
 
 ## Features
 
-| Area | What it does |
-|------|--------------|
-| Native command router | Validates tools, enforces ownership and permissions, returns typed errors and change reports, and writes a JSONL audit log. |
-| Whole browser control | Drives web pages plus browser owned surfaces such as settings, tabs, downloads, history, and internal pages. |
-| Direct page scripts | Runs `execute_js` against the live page with DOM snapshot read back and verification. |
-| Structural reads | Captures DOM snapshots, page snapshots, text, and attributes for selectors, forms, ARIA labels, and hidden controls. |
-| Multi agent ownership | Assigns server side agent identities, enforces tab ownership on mutating tools, and returns typed recovery errors. |
-| MCP bridge | A dependency free Node stdio bridge that maps the MCP tool contract onto native routes. |
-| Native sidebar | Task, Providers, Logs, Memory, and Vault panels that keep secrets off the agent and MCP transports. |
-| Provider flexibility | xAI, Gemini, OpenAI, Anthropic, OpenRouter, LM Studio, and custom OpenAI compatible endpoints, with live model discovery. |
-| Vault | Native, confirmation gated credential and autofill flows for supervised use. |
-| Memory and site guides | Stores past sites, workflows, and guidance the runtime can recall. |
-| DOM native supervision | Mirrors supervised sessions as structured snapshots and hash diffs, addressed by stable identity, instead of video. |
-| Compact native chrome | An optional Safari style compact layout where tabs share the toolbar and the active tab becomes the address and search field. |
-| Advanced tab management | Tab groups, overview and search, quick switch, restore, unload and suspend, duplicate, detach, and reorder. |
-| Offline icons and themes | Bundled offline Font Awesome Free assets and minimal Prometheus themes that do not depend on the network or host theme. |
+| Area | Status | What it does |
+|------|--------|--------------|
+| Native command service | Ready | Validates closed routes, enforces browser-issued sessions and ownership, returns typed errors/change reports, and writes metadata-only audit records. |
+| Page adapter | Ready | Reads bounded text, attributes, DOM/page snapshots, exact same-origin frames, and executes permissioned scripts and verified actions. |
+| Multi-agent ownership | Ready | Caps active sessions, pins profiles, preserves stable tab identity, releases ownership on close/expiry, and returns typed recovery errors. |
+| MCP bridge | Ready | Dependency-free Node 20 stdio adapter exposing the exact 90-name compatibility inventory to external MCP hosts. |
+| Prometheus WebUI shells | Ready | Side panel, control-panel shell, and new-tab handoff are browser-owned; live runtime data is not yet populated. |
+| Runtime, providers, vault, memory, logs | Phase 20 | Later-phase tools remain discoverable but return truthful `NOT_READY` results. |
+| Supervision and pairing | Phase 21 | Compatibility names remain discoverable but do not claim a working remote-control path. |
+| Extension policy and health | Phase 22 | Diagnostic state remains `not_ready` until the extension authority boundary is implemented. |
+| Compact chrome and tab management | Ready | Chromium-native compact/separate layouts, tab groups/search, switching, restore, suspend, duplicate, detach, and reorder. |
+| Offline icons and themes | Ready | Bundled Font Awesome Free subset, Prometheus assets, typography, and warm dark/light tokens without network dependencies. |
 
 ---
 
 ## Native Control Surface
 
-The native router and MCP bridge expose 46 tools across the browser, the runtime, and supervision.
+The bridge exposes the exact 90-name union of the frozen Prometheus v1 and
+current FSB compatibility catalogs. Discoverability is not a readiness claim:
+every name has exactly one explicit disposition.
 
-| Group | Tools |
-|-------|-------|
-| Tabs and navigation | `list_tabs`, `new_tab`, `switch_tab`, `navigate`, `reload`, `close_tab`, `wait_for_load` |
+| Disposition | Count | Behavior |
+|-------------|------:|----------|
+| Native | 22 | Calls a closed Chromium-native route. |
+| Alias | 8 | Normalizes to a closed native route. |
+| Typed stub | 22 | Returns explicit unsupported or not-yet-safe guidance. |
+| Later phase | 36 | Returns `NOT_READY` with its Phase 20 or 21 owner. |
+| Removed | 2 | Returns `TOOL_REMOVED` with replacement metadata. |
+
+The ready native surface is:
+
+| Group | Native names |
+|-------|--------------|
+| Tabs and navigation | `list_tabs`, `open_tab`, `navigate`, `reload`, `go_back`, `go_forward`, `close_tab` |
 | Reading and snapshots | `read_page`, `get_text`, `get_attribute`, `get_dom_snapshot`, `get_page_snapshot` |
-| Page actions | `execute_js`, `click`, `type`, `press_key`, `scroll`, `hover`, `select`, `clear`, `drag_drop` |
-| Browser surfaces | `open_internal_surface`, `diagnostics` |
-| Tasks and runtime | `submit_task`, `cancel_task`, `task_status`, `list_tasks` |
-| Providers | `get_provider_config`, `list_providers`, `discover_models`, `set_provider_config` |
-| Observability | `list_runtime_logs`, `action_history`, `runtime_diagnostics` |
-| Memory and site guides | `save_memory`, `list_memory`, `save_site_guide`, `list_site_guides` |
-| Vault | `create_vault_entry`, `list_vault_entries`, `vault_autofill` |
-| Supervision | `create_supervision_pairing`, `start_supervision_session`, `get_supervision_snapshot`, `get_supervision_diff`, `end_supervision_session` |
+| Page actions | `execute_js`, `click`, `type_text`, `press_key`, `scroll`, `hover`, `select_option`, `clear` |
+| Browser surfaces and health | `open_internal_surface`, `diagnostics` |
+
+The eight ready aliases are `new_tab`, `switch_tab`, `refresh`, `back`,
+`type`, `press_enter`, `select`, and `clear_input`. Unsupported coordinate,
+drag, sheet, file-drop, and similar names remain discoverable but cannot fall
+through to an arbitrary browser route or return empty success.
 
 ### Multi agent safety
 
@@ -166,24 +179,59 @@ Several agents can share one browser. Mutating tools require tab ownership, and 
 
 | Error | Meaning |
 |-------|---------|
-| `TAB_OWNED_BY_OTHER_AGENT` | A mutating tool targeted a tab owned by a different agent. |
-| `AGENT_CAP_REACHED` / `PROMETHEUS_AGENT_CAP` | The concurrent agent limit was reached. |
-| `ELEMENT_NOT_FOUND` | The target element could not be resolved on the page. |
-| `NO_BROWSER_TARGET` | No browser window or tab was available to act on. |
-| `SECRET_TRANSPORT_BLOCKED` | A tool tried to move provider or vault secrets across an agent transport. |
-| `VAULT_NATIVE_CONFIRMATION_REQUIRED` | A vault action needs native user confirmation before it proceeds. |
-| `STALE_SUPERVISION_SESSION` | A supervision read used an unknown or expired session. |
-| `SUPERVISION_TARGET_MISMATCH` | A supervision read targeted a tab the session does not own. |
+| `TAB_NOT_OWNED` | A mutating tool targeted a tab owned by another browser-issued session. |
+| `AGENT_CAP_REACHED` | The active session cap was reached. |
+| `STALE_TARGET` | A tab, document, frame, or element handle is no longer current. |
+| `FRAME_RESTRICTED` | The requested document is outside the exact allowed frame boundary. |
+| `PERMISSION_DENIED` | The route requires an explicit browser-owned permission. |
+| `UNSUPPORTED_ROUTE` / `CAPABILITY_NOT_READY` | A typed stub has no safe native route yet. |
+| `NOT_READY` | A discoverable tool belongs to Phase 20 or 21. |
+| `TOOL_REMOVED` | A legacy call has per-action replacement metadata. |
 
-Visual session intent travels with each call through the implicit `client`, `visual_reason`, and `is_final` fields, and the browser surfaces the current action in its status bar.
+Optional `client`, `visual_reason`, and `is_final` presentation metadata travels
+independently with compatible actions. These fields never grant identity,
+authentication, profile selection, or tab ownership.
 
 ---
 
 ## MCP Bridge
 
-The v1 bridge contract is preserved: MCP clients speak over stdio, calls are forwarded to a browser-owned loopback router, and each tool returns a normalized result or typed error. During the Chromium migration, that contract is tracked in `.planning/preservation/FALKON-TO-CHROMIUM-PRESERVATION.md` and reimplemented in Phase 19 instead of using the archived Falkon bridge as active source.
+Phase 19 reimplemented the bridge as a dependency-free Node 20 stdio adapter.
+It does not import or execute the archived Falkon implementation. Start the
+built Prometheus browser first, then configure an external MCP host to launch:
 
-The intended Chromium shape is unchanged: the same `POST /agent/command` route family backs direct local integrations and the stdio MCP bridge, with browser-owned authentication, tab ownership, audit logs, and visual-session fields.
+```sh
+node /absolute/path/to/Prometheus/tools/prometheus-mcp/bin/prometheus-mcp.mjs
+```
+
+A generic host configuration has this shape:
+
+```json
+{
+  "mcpServers": {
+    "prometheus": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/Prometheus/tools/prometheus-mcp/bin/prometheus-mcp.mjs"
+      ]
+    }
+  }
+}
+```
+
+Claude Code, Cursor, Codex, VS Code, and similar products are external MCP
+hosts; use the host's own MCP settings UI or configuration format around the
+same command. Prometheus never bundles or launches a third-party agent CLI or
+runtime. It has no embedded terminal, alternate-agent engine selector,
+prompt provisioner, or `CLAUDE.md` provisioning path.
+
+Normal bridge processes create a new browser-issued session. The
+`PROMETHEUS_MCP_RESUME_SESSION_ID` environment variable is an advanced
+operator/test seam for an already-known opaque id inside the ten-second grace
+window. Session ids are intentionally absent from MCP results and logs, so this
+is not an automatic user-facing handoff. Abruptly abandoned ownership is
+released when the browser expires the session; graceful bridge exit closes it
+immediately.
 
 ---
 
@@ -195,17 +243,26 @@ The active workspace is in v2.0 migration mode. Use the Chromium handoff and pre
 - Falkon v1 preserved reference, migration map, visual ledger, and freeze rules: `.planning/preservation/FALKON-TO-CHROMIUM-PRESERVATION.md`
 - Preservation verifier: `bash .planning/preservation/verify-preservation.sh`
 
-Unmodified Chromium launch verification remains Phase 12 scope before Prometheus patches begin. The Falkon v1 bundle can be restored for reference from `.context/falkon-preservation/`, but it must not be recreated as a long-lived production workspace.
+The Chromium handoff records the active checkout, build arguments, app bundle,
+and launch procedure. The Falkon v1 bundle can be restored for reference from
+`.context/falkon-preservation/`, but it must not be recreated as a long-lived
+production workspace or used as active v2 source.
 
-Provider and vault secrets are entered through the native sidebar and stored in the macOS Keychain on the first platform, never through the agent or MCP transports.
+Provider and vault implementation is Phase 20 work. Those compatibility tools
+currently return `NOT_READY`; secrets must remain browser-native and must never
+enter agent or MCP transports when that phase is implemented.
 
 ---
 
 ## Supervision
 
-Prometheus mirrors a supervised session the same way Full Self Browsing thinks about pages: as structure. A session captures one structured DOM snapshot and then small hash addressed diffs, so a remote viewer follows the live page at a fraction of the cost of streaming pixels, and every node stays queryable and addressable.
+Supervision and remote pairing remain a Phase 21 product contract. The intended
+model uses identity-bound structured snapshots and hash-addressed diffs rather
+than a bundled third-party agent runtime or indiscriminate video stream.
 
-Supervision reads require a session created through `create_supervision_pairing` and `start_supervision_session`. The router rejects unknown, expired, or target mismatched sessions with typed errors, so a stale viewer can never read or corrupt the wrong tab.
+The five supervision compatibility names are discoverable today but return
+truthful Phase 21 `NOT_READY` results. No pairing, remote-control, or supervision
+read path is claimed ready by Phase 19.
 
 ---
 

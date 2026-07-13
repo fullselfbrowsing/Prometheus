@@ -1,0 +1,139 @@
+From 460caac2f9e7deecd9fa6294c41d13e5a6dd6115 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 06:27:21 -0500
+Subject: [PATCH 19/19] fix(19-07): bound retired session metadata
+
+---
+ .../prometheus/prometheus_agent_gateway.cc       | 16 ++++++++++++++++
+ .../prometheus/prometheus_agent_gateway.h        |  1 +
+ .../prometheus_agent_profile_service.cc          |  5 +++++
+ .../prometheus_agent_profile_service.h           |  1 +
+ .../prometheus/prometheus_agent_session.cc       | 16 +++++++++++-----
+ .../prometheus/prometheus_agent_session.h        |  1 +
+ 6 files changed, 35 insertions(+), 5 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.cc b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+index 0f7ff9d6cf..493f415efe 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+@@ -597,10 +597,26 @@ std::string PrometheusAgentGateway::SerializeRouteFailure(
+              : R"({"ok":false,"error_code":"INVALID_REQUEST"})";
+ }
+ 
++void PrometheusAgentGateway::PruneSessionBindings() {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  for (auto it = session_bindings_.begin(); it != session_bindings_.end();) {
++    Profile* const profile = it->second.profile.get();
++    PrometheusAgentProfileService* const service =
++        profile ? PrometheusAgentProfileServiceFactory::GetForProfile(profile)
++                : nullptr;
++    if (!service || !service->HasSession(it->first)) {
++      it = session_bindings_.erase(it);
++    } else {
++      ++it;
++    }
++  }
++}
++
+ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+                                                  std::string_view body,
+                                                  ResponseCallback callback) {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  PruneSessionBindings();
+ 
+   if (path == "/v1/health") {
+     AgentRouteResult health = AgentRouteResult::Success({});
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.h b/chrome/browser/prometheus/prometheus_agent_gateway.h
+index db171b7ef8..f2c02944da 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.h
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.h
+@@ -123,6 +123,7 @@ class PrometheusAgentGateway {
+   void OnDescriptorDeleted(base::OnceClosure callback, bool deleted);
+ 
+   Profile* SelectProfileForNewSession();
++  void PruneSessionBindings();
+   std::string SerializeSessionResult(const std::string& session_id) const;
+   std::string SerializeRouteFailure(AgentErrorCode error_code,
+                                     std::string message,
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.cc b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+index b3102afe9a..a3222c7418 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+@@ -62,6 +62,11 @@ AgentRouteResult PrometheusAgentProfileService::CloseSession(
+   return agent_service_.CloseSession(session_id);
+ }
+ 
++bool PrometheusAgentProfileService::HasSession(std::string_view session_id) {
++  SweepExpiredSessions();
++  return sessions_.HasSession(session_id);
++}
++
+ void PrometheusAgentProfileService::ExecuteRoute(
+     const AgentRouteRequest& request,
+     PrometheusAgentService::RouteCallback callback) {
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.h b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+index 879ec931ba..ffa653037b 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+@@ -34,6 +34,7 @@ class PrometheusAgentProfileService : public KeyedService {
+   AgentSessionResult ResumeSession(std::string_view session_id);
+   AgentRouteResult TouchSession(std::string_view session_id);
+   AgentRouteResult CloseSession(std::string_view session_id);
++  bool HasSession(std::string_view session_id);
+   void ExecuteRoute(const AgentRouteRequest& request,
+                     PrometheusAgentService::RouteCallback callback);
+ 
+diff --git a/chrome/browser/prometheus/prometheus_agent_session.cc b/chrome/browser/prometheus/prometheus_agent_session.cc
+index 9fd2a9cb81..3f6d048015 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session.cc
++++ b/chrome/browser/prometheus/prometheus_agent_session.cc
+@@ -121,7 +121,7 @@ AgentRouteResult AgentSessionRegistry::CloseSession(
+         "Create a new browser-issued agent session and retry");
+   }
+ 
+-  it->second.active = false;
++  sessions_.erase(it);
+   return AgentRouteResult::Success({"session_closed"});
+ }
+ 
+@@ -131,15 +131,21 @@ std::vector<std::string> AgentSessionRegistry::ExpireSessions(base::Time now) {
+     return expired_ids;
+   }
+ 
+-  for (auto& [id, session] : sessions_) {
+-    if (session.active && !IsWithinReconnectGrace(session, now)) {
+-      session.active = false;
+-      expired_ids.push_back(id);
++  for (auto it = sessions_.begin(); it != sessions_.end();) {
++    if (it->second.active && !IsWithinReconnectGrace(it->second, now)) {
++      expired_ids.push_back(it->first);
++      it = sessions_.erase(it);
++    } else {
++      ++it;
+     }
+   }
+   return expired_ids;
+ }
+ 
++bool AgentSessionRegistry::HasSession(std::string_view session_id) const {
++  return sessions_.contains(session_id);
++}
++
+ size_t AgentSessionRegistry::active_session_count() const {
+   size_t count = 0;
+   for (const auto& [id, session] : sessions_) {
+diff --git a/chrome/browser/prometheus/prometheus_agent_session.h b/chrome/browser/prometheus/prometheus_agent_session.h
+index 862c4063df..6bdc31a546 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session.h
++++ b/chrome/browser/prometheus/prometheus_agent_session.h
+@@ -67,6 +67,7 @@ class AgentSessionRegistry {
+   AgentRouteResult CloseSession(std::string_view session_id);
+   std::vector<std::string> ExpireSessions(base::Time now);
+ 
++  bool HasSession(std::string_view session_id) const;
+   size_t active_session_count() const;
+   size_t stored_session_count_for_testing() const { return sessions_.size(); }
+   void set_max_active_sessions_for_testing(size_t max_active_sessions);
+-- 
+2.50.1 (Apple Git-155)
+

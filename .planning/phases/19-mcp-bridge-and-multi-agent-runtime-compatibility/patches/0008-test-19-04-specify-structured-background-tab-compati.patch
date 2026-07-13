@@ -1,0 +1,263 @@
+From 9b4ac38c376d93b9177e193d4d2bdefac9ec11b3 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 02:44:03 -0500
+Subject: [PATCH 08/19] test(19-04): specify structured background tab
+ compatibility
+
+---
+ .../prometheus_agent_service_browsertest.cc   | 211 ++++++++++++++++--
+ 1 file changed, 195 insertions(+), 16 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc
+index 15d3b23365..598cf969a7 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc
+@@ -46,14 +46,24 @@ bool HasChangedState(const AgentRouteResult& result, std::string_view state) {
+   return false;
+ }
+ 
+-bool HasChangedStatePrefix(const AgentRouteResult& result,
+-                           std::string_view prefix) {
+-  for (const std::string& changed_state : result.changed_state) {
+-    if (changed_state.starts_with(prefix)) {
+-      return true;
++const AgentTabMetadata* FindTabMetadata(const AgentRouteResult& result,
++                                        int32_t tab_id) {
++  for (const AgentTabMetadata& tab : result.tabs) {
++    if (tab.tab_id == tab_id) {
++      return &tab;
+     }
+   }
+-  return false;
++  return nullptr;
++}
++
++const AgentWindowMetadata* FindWindowMetadata(const AgentRouteResult& result,
++                                              int32_t window_id) {
++  for (const AgentWindowMetadata& window : result.windows) {
++    if (window.window_id == window_id) {
++      return &window;
++    }
++  }
++  return nullptr;
+ }
+ 
+ views::WebView* FindWebView(views::View* view) {
+@@ -130,13 +140,14 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
+       Execute(Request(AgentRouteName::kListTabs, session_id));
+   ASSERT_TRUE(list_result.ok) << list_result.message;
+   EXPECT_EQ(tab_strip_model()->count(),
+-            static_cast<int>(list_result.changed_state.size()));
+-  EXPECT_TRUE(HasChangedStatePrefix(list_result, "tab:"));
++            static_cast<int>(list_result.tabs.size()));
++  EXPECT_TRUE(list_result.changed_state.empty());
+ 
+   const int original_tab_count = tab_strip_model()->count();
+   AgentRouteRequest open_request =
+       Request(AgentRouteName::kOpenTab, session_id);
+   open_request.url = GURL("about:blank#prometheus-open");
++  open_request.foreground = true;
+ 
+   AgentRouteResult open_result = Execute(open_request);
+   ASSERT_TRUE(open_result.ok) << open_result.message;
+@@ -165,14 +176,13 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
+   AgentRouteResult list_result =
+       Execute(Request(AgentRouteName::kListWindows, session_id));
+   ASSERT_TRUE(list_result.ok) << list_result.message;
+-  EXPECT_TRUE(HasChangedState(
+-      list_result, "window:" + std::to_string(browser()->GetSessionID().id())));
+-  EXPECT_TRUE(HasChangedState(
+-      list_result,
+-      "window:" + std::to_string(same_profile_browser->GetSessionID().id())));
+-  EXPECT_FALSE(HasChangedState(
+-      list_result,
+-      "window:" + std::to_string(incognito_browser->GetSessionID().id())));
++  EXPECT_TRUE(list_result.changed_state.empty());
++  EXPECT_TRUE(FindWindowMetadata(list_result,
++                                 browser()->GetSessionID().id()));
++  EXPECT_TRUE(FindWindowMetadata(list_result,
++                                 same_profile_browser->GetSessionID().id()));
++  EXPECT_FALSE(FindWindowMetadata(list_result,
++                                  incognito_browser->GetSessionID().id()));
+ 
+   AgentRouteRequest same_profile_open =
+       Request(AgentRouteName::kOpenTab, session_id);
+@@ -195,6 +205,175 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
+   EXPECT_EQ(AgentErrorCode::kTabOutOfScope, cross_profile_result.error_code);
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
++                       ListTabsReturnsStructuredStableMetadata) {
++  const std::string session_id = CreateSession("Structured tabs");
++  ASSERT_FALSE(session_id.empty());
++
++  AgentRouteRequest first_open = Request(AgentRouteName::kOpenTab, session_id);
++  first_open.url = GURL("about:blank#structured-first");
++  first_open.foreground = true;
++  AgentRouteResult first_result = Execute(first_open);
++  ASSERT_TRUE(first_result.ok) << first_result.message;
++  tabs::TabInterface* first = first_result.target.tab_handle.Get();
++  ASSERT_TRUE(first);
++
++  AgentRouteRequest second_open = Request(AgentRouteName::kOpenTab, session_id);
++  second_open.url = GURL("about:blank#structured-second");
++  second_open.foreground = true;
++  AgentRouteResult second_result = Execute(second_open);
++  ASSERT_TRUE(second_result.ok) << second_result.message;
++  tabs::TabInterface* second = second_result.target.tab_handle.Get();
++  ASSERT_TRUE(second);
++
++  AgentRouteResult before =
++      Execute(Request(AgentRouteName::kListTabs, session_id));
++  ASSERT_TRUE(before.ok) << before.message;
++  EXPECT_TRUE(before.changed_state.empty());
++  ASSERT_EQ(tab_strip_model()->count(), static_cast<int>(before.tabs.size()));
++  const AgentTabMetadata* first_before =
++      FindTabMetadata(before, first->GetHandle().raw_value());
++  const AgentTabMetadata* second_before =
++      FindTabMetadata(before, second->GetHandle().raw_value());
++  ASSERT_TRUE(first_before);
++  ASSERT_TRUE(second_before);
++  const int first_index = first_before->index;
++  const int second_index = second_before->index;
++  EXPECT_EQ(browser()->GetSessionID().id(), first_before->window_id);
++  EXPECT_TRUE(first_before->owned_by_session);
++  EXPECT_TRUE(second_before->owned_by_session);
++  EXPECT_FALSE(first_before->active);
++  EXPECT_TRUE(second_before->active);
++  EXPECT_LE(first_before->title.size(), 512u);
++  EXPECT_LE(first_before->url.spec().size(), 4096u);
++
++  tab_list()->MoveTab(second->GetHandle(), 0);
++  AgentRouteResult after =
++      Execute(Request(AgentRouteName::kListTabs, session_id));
++  ASSERT_TRUE(after.ok) << after.message;
++  EXPECT_TRUE(after.changed_state.empty());
++  const AgentTabMetadata* first_after =
++      FindTabMetadata(after, first->GetHandle().raw_value());
++  const AgentTabMetadata* second_after =
++      FindTabMetadata(after, second->GetHandle().raw_value());
++  ASSERT_TRUE(first_after);
++  ASSERT_TRUE(second_after);
++  EXPECT_EQ(first->GetHandle().raw_value(), first_after->tab_id);
++  EXPECT_EQ(second->GetHandle().raw_value(), second_after->tab_id);
++  EXPECT_NE(first_index, first_after->index);
++  EXPECT_NE(second_index, second_after->index);
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
++                       OpenTabDefaultsToBackground) {
++  const std::string session_id = CreateSession("Background open");
++  ASSERT_FALSE(session_id.empty());
++  tabs::TabInterface* original_active = active_tab();
++  ASSERT_TRUE(original_active);
++
++  AgentRouteRequest request = Request(AgentRouteName::kOpenTab, session_id);
++  request.url = GURL("about:blank#background-default");
++  AgentRouteResult result = Execute(request);
++  ASSERT_TRUE(result.ok) << result.message;
++  tabs::TabInterface* opened = result.target.tab_handle.Get();
++  ASSERT_TRUE(opened);
++  EXPECT_NE(original_active->GetHandle().raw_value(),
++            opened->GetHandle().raw_value());
++  EXPECT_EQ(original_active, active_tab());
++  ASSERT_TRUE(PrometheusAgentTabData::From(opened));
++  EXPECT_EQ(session_id,
++            PrometheusAgentTabData::From(opened)->owner_session_id());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
++                       OpenTabForegroundIsExplicit) {
++  const std::string session_id = CreateSession("Foreground open");
++  ASSERT_FALSE(session_id.empty());
++  tabs::TabInterface* original_active = active_tab();
++
++  AgentRouteRequest request = Request(AgentRouteName::kOpenTab, session_id);
++  request.url = GURL("about:blank#foreground-explicit");
++  request.foreground = true;
++  AgentRouteResult result = Execute(request);
++  ASSERT_TRUE(result.ok) << result.message;
++  tabs::TabInterface* opened = result.target.tab_handle.Get();
++  ASSERT_TRUE(opened);
++  EXPECT_NE(original_active, opened);
++  EXPECT_EQ(opened, active_tab());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
++                       ExplicitBackgroundPageRouteDoesNotActivate) {
++  const std::string session_id = CreateSession("Background target");
++  ASSERT_FALSE(session_id.empty());
++
++  AgentRouteRequest open = Request(AgentRouteName::kOpenTab, session_id);
++  open.url = GURL("about:blank#background-route");
++  AgentRouteResult open_result = Execute(open);
++  ASSERT_TRUE(open_result.ok) << open_result.message;
++  tabs::TabInterface* background = open_result.target.tab_handle.Get();
++  ASSERT_TRUE(background);
++  tabs::TabInterface* foreground = active_tab();
++  ASSERT_NE(background, foreground);
++
++  AgentRouteRequest navigate = Request(AgentRouteName::kNavigate, session_id);
++  navigate.target = TargetFor(background);
++  navigate.url = GURL("about:blank#background-route-navigated");
++  AgentRouteResult navigate_result = Execute(navigate);
++  ASSERT_TRUE(navigate_result.ok) << navigate_result.message;
++  EXPECT_EQ(foreground, active_tab());
++
++  AgentRouteRequest by_index = Request(AgentRouteName::kReload, session_id);
++  by_index.target.window_session_id = browser()->GetSessionID().id();
++  by_index.target.tab_index = tab_list()->GetIndexOfTab(background->GetHandle());
++  AgentRouteResult by_index_result = Execute(by_index);
++  ASSERT_TRUE(by_index_result.ok) << by_index_result.message;
++  EXPECT_EQ(foreground, active_tab());
++
++  AgentRouteRequest conflict = Request(AgentRouteName::kReload, session_id);
++  conflict.target = TargetFor(background);
++  conflict.target.tab_index =
++      tab_list()->GetIndexOfTab(foreground->GetHandle());
++  AgentRouteResult conflict_result = Execute(conflict);
++  EXPECT_FALSE(conflict_result.ok);
++  EXPECT_EQ(AgentErrorCode::kInvalidTarget, conflict_result.error_code);
++  EXPECT_EQ(foreground, active_tab());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
++                       OpenInternalSurfaceUsesClosedEnum) {
++  const std::string session_id = CreateSession("Closed internal surfaces");
++  ASSERT_FALSE(session_id.empty());
++
++  const AgentInternalSurface surfaces[] = {
++      AgentInternalSurface::kNewTab,
++      AgentInternalSurface::kSidePanel,
++      AgentInternalSurface::kControlPanel,
++  };
++  for (AgentInternalSurface surface : surfaces) {
++    AgentRouteRequest request =
++        Request(AgentRouteName::kOpenInternalSurface, session_id);
++    request.internal_surface = surface;
++    AgentRouteResult result = Execute(request);
++    EXPECT_TRUE(result.ok) << AgentInternalSurfaceToString(surface) << ": "
++                           << result.message;
++  }
++
++  AgentRouteRequest missing =
++      Request(AgentRouteName::kOpenInternalSurface, session_id);
++  EXPECT_FALSE(Execute(missing).ok);
++
++  AgentRouteRequest unknown =
++      Request(AgentRouteName::kOpenInternalSurface, session_id);
++  unknown.internal_surface = static_cast<AgentInternalSurface>(999);
++  EXPECT_FALSE(Execute(unknown).ok);
++
++  AgentRouteRequest arbitrary =
++      Request(AgentRouteName::kOpenInternalSurface, session_id);
++  arbitrary.url = GURL("chrome://version/");
++  EXPECT_FALSE(Execute(arbitrary).ok);
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
+                        CrossSessionDeniedAndActivateUsesTargetHandle) {
+   const std::string session_a = CreateSession("Agent A");
+-- 
+2.50.1 (Apple Git-155)
+

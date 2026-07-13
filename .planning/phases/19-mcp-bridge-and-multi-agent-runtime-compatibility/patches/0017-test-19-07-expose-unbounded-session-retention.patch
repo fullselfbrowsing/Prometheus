@@ -1,0 +1,83 @@
+From 4318f13eaf6988f42348a029b966083a79020ba0 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 06:24:12 -0500
+Subject: [PATCH 17/19] test(19-07): expose unbounded session retention
+
+---
+ chrome/browser/prometheus/prometheus_agent_gateway.h          | 3 +++
+ chrome/browser/prometheus/prometheus_agent_session.h          | 1 +
+ .../browser/prometheus/prometheus_agent_session_unittest.cc   | 4 ++++
+ .../prometheus/prometheus_mcp_integration_browsertest.cc      | 2 ++
+ 4 files changed, 10 insertions(+)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.h b/chrome/browser/prometheus/prometheus_agent_gateway.h
+index f227024f30..db171b7ef8 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.h
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.h
+@@ -97,6 +97,9 @@ class PrometheusAgentGateway {
+   size_t terminal_request_count_for_testing() const {
+     return terminal_request_count_.load();
+   }
++  size_t session_binding_count_for_testing() const {
++    return session_bindings_.size();
++  }
+ 
+  private:
+   class IOThreadData;
+diff --git a/chrome/browser/prometheus/prometheus_agent_session.h b/chrome/browser/prometheus/prometheus_agent_session.h
+index 6a5c988571..862c4063df 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session.h
++++ b/chrome/browser/prometheus/prometheus_agent_session.h
+@@ -68,6 +68,7 @@ class AgentSessionRegistry {
+   std::vector<std::string> ExpireSessions(base::Time now);
+ 
+   size_t active_session_count() const;
++  size_t stored_session_count_for_testing() const { return sessions_.size(); }
+   void set_max_active_sessions_for_testing(size_t max_active_sessions);
+ 
+   const AgentSession* GetSessionForTesting(std::string_view session_id) const;
+diff --git a/chrome/browser/prometheus/prometheus_agent_session_unittest.cc b/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
+index 812aa6ed85..6d49ddce86 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
+@@ -137,6 +137,8 @@ TEST_F(PrometheusAgentSessionTest, ExpiredSessionReturnsTypedDenial) {
+   EXPECT_FALSE(expired.route_result.ok);
+   EXPECT_EQ(AgentErrorCode::kUnauthorized, expired.route_result.error_code);
+   EXPECT_EQ(0u, registry.active_session_count());
++  EXPECT_EQ(0u, registry.stored_session_count_for_testing());
++  EXPECT_EQ(nullptr, registry.GetSessionForTesting(created.session->id));
+   EXPECT_TRUE(
+       registry
+           .ExpireSessions(now() + kAgentReconnectGrace + base::Microseconds(2))
+@@ -207,6 +209,8 @@ TEST_F(PrometheusAgentSessionTest, GracefulCloseCannotBeRepeatedOrResumed) {
+   EXPECT_EQ(AgentErrorCode::kUnauthorized, repeated_close.error_code);
+   EXPECT_FALSE(resume.route_result.ok);
+   EXPECT_EQ(AgentErrorCode::kUnauthorized, resume.route_result.error_code);
++  EXPECT_EQ(0u, registry.stored_session_count_for_testing());
++  EXPECT_EQ(nullptr, registry.GetSessionForTesting(created.session->id));
+ }
+ 
+ TEST_F(PrometheusAgentSessionTest, TouchSessionUpdatesLastSeenTime) {
+diff --git a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+index 3b1d42c9c4..aa7cd69697 100644
+--- a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+@@ -467,6 +467,7 @@ IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
+   EXPECT_TRUE(SessionOperation("/v1/session/close", graceful)
+                   .FindBool("ok")
+                   .value_or(false));
++  EXPECT_EQ(1u, gateway_->session_binding_count_for_testing());
+   EXPECT_TRUE(Command(peer, "activate_tab",
+                       Target(first, browser()->GetSessionID().id()))
+                   .FindBool("ok")
+@@ -483,6 +484,7 @@ IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
+   now_ += base::Seconds(11);
+   const std::string reclaimer = SessionId(CreateSession("Reclaimer"));
+   ASSERT_FALSE(reclaimer.empty());
++  EXPECT_EQ(1u, gateway_->session_binding_count_for_testing());
+   ExpectCode(SessionOperation("/v1/session/touch", abrupt), "UNAUTHORIZED");
+   EXPECT_TRUE(Command(reclaimer, "activate_tab",
+                       Target(second, browser()->GetSessionID().id()))
+-- 
+2.50.1 (Apple Git-155)
+

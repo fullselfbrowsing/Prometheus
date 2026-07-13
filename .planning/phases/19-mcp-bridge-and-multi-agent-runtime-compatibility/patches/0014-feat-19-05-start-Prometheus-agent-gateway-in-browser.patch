@@ -1,0 +1,318 @@
+From 9d8b12487081a3323036fda33e253127057b8dd8 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 04:23:53 -0500
+Subject: [PATCH 14/19] feat(19-05): start Prometheus agent gateway in browser
+ lifetime
+
+---
+ chrome/browser/BUILD.gn                       |  1 +
+ chrome/browser/chrome_browser_main.cc         | 11 ++++
+ chrome/browser/prometheus/BUILD.gn            |  8 ++-
+ .../prometheus_agent_gateway_browsertest.cc   | 63 +++++++++++++++++++
+ .../prometheus_browser_main_extra_parts.cc    | 58 +++++++++++++++++
+ .../prometheus_browser_main_extra_parts.h     | 36 +++++++++++
+ 6 files changed, 175 insertions(+), 2 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
+
+diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
+index 60a23f29ca..97785d81ef 100644
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -1397,6 +1397,7 @@ source_set("core") {
+       "//chrome/browser/device_api",
+       "//chrome/browser/device_api:impl",
+       "//chrome/browser/direct_sockets",
++      "//chrome/browser/prometheus:prometheus_agent_gateway",
+       "//chrome/browser/ui:browser_actions_impl",
+       "//chrome/browser/ui/lens",
+       "//chrome/browser/ui/tabs/tab_drag_api/desktop_tab_drag_impl",
+diff --git a/chrome/browser/chrome_browser_main.cc b/chrome/browser/chrome_browser_main.cc
+index 87f2346f9a..db82751bc6 100644
+--- a/chrome/browser/chrome_browser_main.cc
++++ b/chrome/browser/chrome_browser_main.cc
+@@ -58,6 +58,9 @@
+ #include "chrome/browser/policy/chrome_browser_policy_connector.h"
+ #include "chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.h"
+ #include "chrome/browser/profiles/profile.h"
++#if !BUILDFLAG(IS_ANDROID)
++#include "chrome/browser/prometheus/prometheus_browser_main_extra_parts.h"
++#endif
+ 
+ #if BUILDFLAG(ENABLE_DOWNGRADE_PROCESSING)
+ #include "chrome/browser/downgrade/downgrade_manager_delegate_impl.h"  // nogncheck
+@@ -755,6 +758,14 @@ std::unique_ptr<content::BrowserMainParts> ChromeBrowserMainParts::Create(
+       std::make_unique<ChromeBrowserMainExtraPartsThreadNotifier>(
+           std::move(threads_ready_closure)));
+ 
++#if !BUILDFLAG(IS_ANDROID)
++  // This must precede profile extra parts so the authenticated gateway stops
++  // and removes its descriptor before profile services are torn down.
++  main_parts->AddParts(
++      std::make_unique<prometheus::PrometheusBrowserMainExtraParts>(
++          is_integration_test));
++#endif
++
+   bool add_profiles_extra_parts = true;
+ #if BUILDFLAG(IS_ANDROID)
+   if (startup_data->HasBuiltProfilePrefService()) {
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 2fb7f881d1..760767caf6 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -269,6 +269,8 @@ source_set("prometheus_agent_gateway") {
+   sources = [
+     "prometheus_agent_gateway.cc",
+     "prometheus_agent_gateway.h",
++    "prometheus_browser_main_extra_parts.cc",
++    "prometheus_browser_main_extra_parts.h",
+   ]
+ 
+   deps = [
+@@ -278,8 +280,10 @@ source_set("prometheus_agent_gateway") {
+     ":prometheus_agent_transport_codec",
+     ":prometheus_endpoint_descriptor",
+     "//base",
++    "//chrome/browser:main_extra_parts",
+     "//chrome/browser/profiles",
+     "//chrome/browser/ui/browser_window",
++    "//chrome/common",
+     "//net",
+   ]
+ }
+@@ -288,9 +292,9 @@ test("prometheus_unittests") {
+   sources = [
+     "prometheus_action_unittest.cc",
+     "prometheus_agent_audit_unittest.cc",
++    "prometheus_agent_gateway_unittest.cc",
+     "prometheus_agent_route_unittest.cc",
+     "prometheus_agent_session_unittest.cc",
+-    "prometheus_agent_gateway_unittest.cc",
+     "prometheus_agent_tab_data_unittest.cc",
+     "prometheus_agent_transport_unittest.cc",
+     "prometheus_asset_resource_unittest.cc",
+@@ -320,9 +324,9 @@ test("prometheus_unittests") {
+     ":prometheus_agent_session",
+     ":prometheus_agent_tab_data",
+     ":prometheus_agent_transport_codec",
+-    ":prometheus_endpoint_descriptor",
+     ":prometheus_ask_fsb_handoff",
+     ":prometheus_chrome_mode",
++    ":prometheus_endpoint_descriptor",
+     ":prometheus_page_action_history",
+     ":prometheus_page_adapter",
+     ":prometheus_page_waiter",
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+index c18b248a63..1efe3d0f6d 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+@@ -24,17 +24,21 @@
+ #include "base/numerics/safe_conversions.h"
+ #include "base/run_loop.h"
+ #include "base/strings/string_number_conversions.h"
++#include "base/test/run_until.h"
+ #include "base/test/test_future.h"
+ #include "base/threading/thread.h"
+ #include "base/threading/thread_restrictions.h"
+ #include "base/time/time.h"
+ #include "chrome/browser/browser_process.h"
++#include "chrome/browser/chrome_browser_main.h"
++#include "chrome/browser/chrome_browser_main_extra_parts.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/profiles/profile_manager.h"
+ #include "chrome/browser/profiles/profile_test_util.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
+ #include "chrome/browser/ui/browser.h"
++#include "chrome/common/chrome_switches.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+ #include "content/public/test/browser_test.h"
+ #include "net/base/address_list.h"
+@@ -220,6 +224,19 @@ std::optional<PrometheusEndpointDescriptorData> ReadDescriptorForTesting(
+   return ReadPrometheusEndpointDescriptor(path);
+ }
+ 
++class DescriptorDeletionObserver final : public ChromeBrowserMainExtraParts {
++ public:
++  explicit DescriptorDeletionObserver(base::FilePath descriptor_path)
++      : descriptor_path_(std::move(descriptor_path)) {}
++
++  void PostMainMessageLoopRun() override {
++    EXPECT_FALSE(DescriptorExistsForTesting(descriptor_path_));
++  }
++
++ private:
++  const base::FilePath descriptor_path_;
++};
++
+ std::string MakeRequest(std::string_view method,
+                         std::string_view path,
+                         int port,
+@@ -309,6 +326,30 @@ class PrometheusAgentGatewayBrowserTest : public InProcessBrowserTest {
+   std::unique_ptr<PrometheusAgentGateway> gateway_;
+ };
+ 
++class PrometheusAgentGatewayLifecycleBrowserTest : public InProcessBrowserTest {
++ public:
++  void SetUpCommandLine(base::CommandLine* command_line) override {
++    InProcessBrowserTest::SetUpCommandLine(command_line);
++    ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
++    descriptor_path_ = temp_dir_.GetPath().AppendASCII("endpoint.json");
++    command_line->AppendSwitchPath(switches::kPrometheusAgentEndpointDescriptor,
++                                   descriptor_path_);
++  }
++
++  void CreatedBrowserMainParts(content::BrowserMainParts* parts) override {
++    InProcessBrowserTest::CreatedBrowserMainParts(parts);
++    static_cast<ChromeBrowserMainParts*>(parts)->AddParts(
++        std::make_unique<DescriptorDeletionObserver>(descriptor_path_));
++  }
++
++ protected:
++  const base::FilePath& descriptor_path() const { return descriptor_path_; }
++
++ private:
++  base::ScopedTempDir temp_dir_;
++  base::FilePath descriptor_path_;
++};
++
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+                        BindsOnlyEphemeralIpv4LoopbackAndPublishesDescriptor) {
+   const net::IPEndPoint endpoint = gateway_->endpoint_for_testing();
+@@ -582,5 +623,27 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+   EXPECT_EQ(before + 1, gateway_->terminal_request_count_for_testing());
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayLifecycleBrowserTest,
++                       ExplicitOptInPublishesAndServesAuthenticatedHealth) {
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return DescriptorExistsForTesting(descriptor_path()); }));
++  auto descriptor = ReadDescriptorForTesting(descriptor_path());
++  ASSERT_TRUE(descriptor.has_value());
++  constexpr std::string_view kEndpointPrefix = "http://127.0.0.1:";
++  ASSERT_TRUE(descriptor->endpoint.starts_with(kEndpointPrefix));
++  int port = 0;
++  ASSERT_TRUE(base::StringToInt(
++      std::string_view(descriptor->endpoint).substr(kEndpointPrefix.size()),
++      &port));
++  ASSERT_GT(port, 0);
++
++  RawHttpClient client(net::IPEndPoint(net::IPAddress::IPv4Localhost(), port));
++  client.Send(MakeRequest("GET", "/v1/health", port, descriptor->bearer, ""));
++  HttpResult health = client.ReadResponse();
++  EXPECT_EQ(200, health.status);
++  ExpectSecureResponseHeaders(health);
++  EXPECT_EQ(std::string::npos, health.body.find(descriptor->bearer));
++}
++
+ }  // namespace
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+new file mode 100644
+index 0000000000..a9af369671
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -0,0 +1,58 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_browser_main_extra_parts.h"
++
++#include <utility>
++
++#include "base/command_line.h"
++#include "base/functional/bind.h"
++#include "base/run_loop.h"
++#include "chrome/browser/prometheus/prometheus_agent_gateway.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
++#include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
++#include "chrome/common/chrome_switches.h"
++
++namespace prometheus {
++
++PrometheusBrowserMainExtraParts::PrometheusBrowserMainExtraParts(
++    bool is_integration_test)
++    : is_integration_test_(is_integration_test) {
++  PrometheusAgentProfileServiceFactory::GetInstance();
++}
++
++PrometheusBrowserMainExtraParts::~PrometheusBrowserMainExtraParts() = default;
++
++void PrometheusBrowserMainExtraParts::PostBrowserStart() {
++  const base::CommandLine& command_line =
++      *base::CommandLine::ForCurrentProcess();
++  if (is_integration_test_ &&
++      !command_line.HasSwitch(switches::kPrometheusAgentEndpointDescriptor)) {
++    return;
++  }
++
++  base::FilePath descriptor_path =
++      ResolvePrometheusEndpointDescriptorPath(command_line);
++  if (descriptor_path.empty()) {
++    return;
++  }
++
++  PrometheusAgentGateway::Options options;
++  options.descriptor_path = std::move(descriptor_path);
++  gateway_ = std::make_unique<PrometheusAgentGateway>(std::move(options));
++  gateway_->Start(
++      base::BindOnce([](bool started) { static_cast<void>(started); }));
++}
++
++void PrometheusBrowserMainExtraParts::PostMainMessageLoopRun() {
++  if (!gateway_) {
++    return;
++  }
++  base::RunLoop stopped;
++  gateway_->Shutdown(stopped.QuitClosure());
++  stopped.Run();
++  gateway_.reset();
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
+new file mode 100644
+index 0000000000..f395087e78
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
+@@ -0,0 +1,36 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_BROWSER_MAIN_EXTRA_PARTS_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_BROWSER_MAIN_EXTRA_PARTS_H_
++
++#include <memory>
++
++#include "chrome/browser/chrome_browser_main_extra_parts.h"
++
++namespace prometheus {
++
++class PrometheusAgentGateway;
++
++class PrometheusBrowserMainExtraParts final
++    : public ChromeBrowserMainExtraParts {
++ public:
++  explicit PrometheusBrowserMainExtraParts(bool is_integration_test);
++  PrometheusBrowserMainExtraParts(const PrometheusBrowserMainExtraParts&) =
++      delete;
++  PrometheusBrowserMainExtraParts& operator=(
++      const PrometheusBrowserMainExtraParts&) = delete;
++  ~PrometheusBrowserMainExtraParts() override;
++
++  void PostBrowserStart() override;
++  void PostMainMessageLoopRun() override;
++
++ private:
++  const bool is_integration_test_;
++  std::unique_ptr<PrometheusAgentGateway> gateway_;
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_BROWSER_MAIN_EXTRA_PARTS_H_
+-- 
+2.50.1 (Apple Git-155)
+
