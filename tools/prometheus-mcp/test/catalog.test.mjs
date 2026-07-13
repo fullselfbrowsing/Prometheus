@@ -118,6 +118,10 @@ test('native schemas enforce surface, field, and numeric boundaries', () => {
     normalizeToolArguments(read, { tab_id: '7', max_chars: '200000', max_nodes: '1' }),
     { target: { tab_id: 7 }, max_chars: 200000, max_nodes: 1 },
   );
+  assert.deepEqual(
+    normalizeToolArguments(read, { tab_id: '42.0', max_chars: '1e2' }),
+    { target: { tab_id: 42 }, max_chars: 100 },
+  );
   for (const invalid of ['', ' ', 'NaN', 'Infinity', '1.5', '-1', '2147483648']) {
     assert.throws(
       () => normalizeToolArguments(read, { tab_id: invalid }),
