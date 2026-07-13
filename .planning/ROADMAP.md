@@ -7,7 +7,8 @@
 
 ## v2.0 Chromium Engine Migration
 
-**Status:** In progress — Phase 19, Plan 5 of 7 ready to execute.
+**Status:** In progress — Phase 19 is complete; Phase 20 is current and ready
+for discussion and planning.
 
 ## Milestone Thesis
 
@@ -23,7 +24,7 @@ Prometheus keeps its product, design, and agent-native control thesis, but retir
 - [x] **Phase 16: Prometheus WebUI Surfaces and New Tab** — Build Prometheus start page, side panel surfaces, and FSB Control Panel as Chromium WebUI/browser-backed surfaces. (completed 2026-07-07)
 - [x] **Phase 17: Native Agent Command Service and Tab Ownership** — Rebuild the core native command router as a Chromium browser-process service with authenticated sessions and stable tab ownership. (completed 2026-07-07)
 - [x] **Phase 18: Page Adapter, DOM Snapshot, and Action Verification** — Rebuild page reads, DOM snapshots, JS execution, action tools, waits, and verification on Chromium WebContents/frame primitives. (completed 2026-07-12)
-- [ ] **Phase 19: MCP Bridge and Multi-Agent Runtime Compatibility** — Reconnect existing FSB-style MCP clients to the Chromium-native service with multi-agent policy and typed compatibility errors.
+- [x] **Phase 19: MCP Bridge and Multi-Agent Runtime Compatibility** — Reconnect existing FSB-style MCP clients to the Chromium-native service with multi-agent policy and typed compatibility errors. (completed 2026-07-13)
 - [ ] **Phase 20: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel** — Restore provider-backed tasks, logs, memory/site guides, vault boundaries, diagnostics, and dense operator controls.
 - [ ] **Phase 21: Supervision, Pairing, and Remote Control** — Rebuild PhantomStream-style supervision and safe dashboard pairing on Chromium sessions.
 - [ ] **Phase 22: Chrome Extension Ecosystem and Policy** — Preserve or enable Chromium extension support while separating extension permissions from Prometheus agent permissions.
@@ -273,7 +274,7 @@ Plans:
 
 **Requirements:** MCP-01, MCP-02, MCP-03, MCP-04, MCP-05, MCP-06, MCP-07
 
-**Plans:** 6/7 plans executed
+**Plans:** 7/7 plans complete
 
 Plans:
 - [x] 19-01-PLAN.md — Freeze the clean-room 90-name compatibility catalog, schemas, typed errors, and Wave 0 fixtures.
@@ -282,7 +283,7 @@ Plans:
 - [x] 19-04-PLAN.md — Add structured/background tab compatibility, safe internal surfaces, and exact-frame element reads.
 - [x] 19-05-PLAN.md — Add the authenticated loopback gateway, secure descriptor, and browser-process lifetime wiring.
 - [x] 19-06-PLAN.md — Implement the dependency-free external stdio MCP bridge and all manifest-backed tool behavior.
-- [ ] 19-07-PLAN.md — Run live browser-to-stdio smoke, full automated gates, patch export, and truthful documentation closeout.
+- [x] 19-07-PLAN.md — Run live browser-to-stdio smoke, full automated gates, patch export, and truthful documentation closeout.
 
 **Success criteria:**
 
@@ -424,14 +425,15 @@ Plans:
 | 16. Prometheus WebUI Surfaces and New Tab | v2.0 | 6/6 | Complete | 2026-07-07 |
 | 17. Native Agent Command Service and Tab Ownership | v2.0 | 6/6 | Complete | 2026-07-07 |
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 8/8 | Complete    | 2026-07-12 |
-| 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 6/7 | In Progress|  |
+| 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 7/7 | Complete    | 2026-07-13 |
 | 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 0 | Planned | — |
 | 21. Supervision, Pairing, and Remote Control | v2.0 | 0 | Planned | — |
 | 22. Chrome Extension Ecosystem and Policy | v2.0 | 0 | Planned | — |
 | 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
 | 24. Packaging, Release Validation, and Handoff | v2.0 | 0 | Planned | — |
 
-**Totals:** 14 phases, 8 complete; 49 of 52 planned v2.0 plans summarized. Phase 19 is current at 4/7 plans complete; Phase 20 is next.
+**Totals:** 14 phases, 9 complete; 52 of 52 existing v2.0 plans summarized.
+Phase 20 is current and unplanned; Phase 21 follows.
 
 ## Future Work Beyond Current Milestone
 

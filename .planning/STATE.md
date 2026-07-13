@@ -2,83 +2,87 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Chromium Engine Migration
-current_phase: 19
-current_phase_name: MCP Bridge and Multi-Agent Runtime Compatibility
-current_plan: 7
-status: executing
-stopped_at: Phase 19 Plan 19-06 complete; Plan 19-07 ready to execute
-last_updated: "2026-07-13T10:13:28.000Z"
+current_phase: 20
+current_phase_name: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
+current_plan: 0
+status: planning
+stopped_at: Phase 19 complete; Phase 20 ready for discussion and planning
+last_updated: "2026-07-13T11:43:33.200Z"
 last_activity: 2026-07-13
 progress:
   total_phases: 14
-  completed_phases: 8
+  completed_phases: 9
   total_plans: 52
-  completed_plans: 51
-  percent: 98
+  completed_plans: 52
+  percent: 100
 ---
 
 # Project State
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-07-12)
+See: `.planning/PROJECT.md` (updated 2026-07-13)
 
-**Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** Connect external stdio MCP clients to the Chromium-native route service with compatible tools, typed errors, multi-agent ownership, and health diagnostics.
-**Product boundary:** Claude Code, Cursor, Codex, and similar tools remain external MCP clients. Prometheus does not bundle an agent CLI, in-browser terminal, alternate engine, or embedded third-party runtime.
+**Core value:** Agents get fast, precise, auditable whole-browser control
+through DOM/native structure rather than screenshots or extension injection.
+
+**Current focus:** Build the browser-owned FSB runtime, providers, secure vault,
+memory/site guides, logs, diagnostics, and live control-panel data in Phase 20.
+
+**Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
+external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
+terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 
 ## Current Position
 
-**Current Phase:** 19 — MCP Bridge and Multi-Agent Runtime Compatibility
+**Current Phase:** 20
+**Current Phase Name:** FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
 **Total Phases:** 14
-**Completed Phases:** 8
-**Current Plan:** 7 of 7 — 19-07 ready
-**Plans in Current Phase:** 7 planned; 6 complete
-**Status:** Ready to execute
-**Last Activity:** Dependency-free external stdio MCP bridge, secure browser-session transport, and exact 90-name tool compatibility are green.
+**Completed Phases:** 9
+**Current Plan:** 0
+**Total Plans in Phase:** 0
+**Status:** Ready to plan
+**Progress:** 64%
+**Last Activity:** 2026-07-13
+**Last Activity Description:** Phase 19 verified and complete; Phase 20 is unplanned.
 
-Phase progress: 8 of 14 phases complete (57%). Planned-work progress: 51 of 52 v2.0 plans summarized (98%). Cumulative project progress: 102 of 103 plans summarized.
+Planned v2.0 work is 52 of 52 existing plans summarized (100%); cumulative
+project work is 103 of 103 existing plans summarized.
 
-## Performance Metrics
+## Latest Evidence
 
-- Completed v2.0 plans: 51
-- Most recent plan: 19-06, completed with 5 root implementation/review-fix commits
-- Latest gates: 56/56 Node checks; exact 90-name catalog; independent lifecycle, framing, permission, redirect, and leakage review
+- Phase 19 verified all seven MCP requirements at nested Chromium HEAD
+  `460caac2f9e7deecd9fa6294c41d13e5a6dd6115`.
+- Fresh gates: 64 Node, 34 focused native, 7 renderer, 32 Phase 19 browser,
+  and 53 Phase 17/18 regression tests plus the built-app stdio smoke.
+- Compatibility inventory: 90/90 names with 22 native, 8 aliases, 22 typed
+  stubs, 36 later-phase names, and 2 removed names.
+- Human UAT was not run; remaining visual review stays non-blocking in Phase 24.
 
-## Decisions Made
+## Decisions
 
-| Phase | Summary | Rationale |
-|-------|---------|-----------|
-| Milestone | Keep agent CLIs external | External clients use the stdio MCP bridge; no bundled CLI, terminal, alternate engine, or embedded runtime. |
-| 17 | Browser-issued sessions own stable tab identities | Caller labels cannot grant authority; cross-session mutation returns typed errors. |
-| 18 | Keep the browser route service authoritative | Page access remains behind session, profile, ownership, permission, frame, and audit checks. |
-| 18 | Keep page content out of audit metadata | Text, DOM, scripts, selectors, values, paths, prompts, and secrets stay in bounded result payloads only. |
-| 18 | Treat snapshot refs as ephemeral document identities | Fresh APC re-resolution and live-frame checks precede mutation. |
-| 18 | Verify declared JS mutations in the browser | Exact-document bounded APC fingerprints bracket one isolated-world execution and a settlement wait. |
-| 19 | Keep MCP protocol glue external and browser authority native | A Prometheus-owned stdio adapter forwards to an authenticated loopback service; it never hosts an agent CLI/runtime. |
-| 19 | Reimplement compatibility clean-room | Preserved GPL/BUSL sources define observable contracts only; new C++/Node code follows the official MCP specification and fixture-locked schemas. |
+| Phase | Decision |
+|-------|----------|
+| Milestone | Keep all agent CLIs external through stdio MCP. |
+| 17 | Browser-issued profile sessions own stable tab identities. |
+| 18 | Browser-owned permission, frame, wait, verification, and audit checks remain authoritative. |
+| 18 | Page content stays in bounded results and out of audit metadata. |
+| 19 | Reimplement compatibility clean-room from observable contracts and official MCP behavior. |
+| 19 | Retired sessions and gateway bindings are erased; opaque resume is valid only inside the ten-second grace. |
 
-## Pending Todos
+## Blockers and Deferred Items
 
-None.
-
-## Blockers
-
-None.
-
-## Deferred Items
-
-| Category | Item | Status |
-|----------|------|--------|
-| human review | Remaining desktop visual UAT | Non-blocking final release review; automated phase gates remain mandatory. |
-| release | Signed/notarized public distribution | Deferred beyond the local v2.0 validation package. |
+- Blockers: none.
+- Human desktop visual review: deferred to the non-blocking Phase 24 release review.
+- Signed/notarized public distribution: beyond the local v2.0 validation package.
 
 ## Session
 
-**Last Date:** 2026-07-13T05:13:28-0500
-**Stopped At:** Phase 19 Plan 19-06 complete; Plan 19-07 ready to execute
+**Last Date:** 2026-07-13
+**Stopped At:** Phase 19 complete; Phase 20 ready for discussion and planning
 **Resume File:** None
 
-## Operator Next Steps
+## Operator Next Step
 
-Execute Phase 19 Plan 19-07: real browser-to-stdio smoke, consolidated integration/security gates, patch export, preservation evidence, and truthful external-host documentation. Do not run human UAT.
+Run autonomous Phase 20 discussion/research/planning, then execute its plans
+with automated gates. Do not run human UAT.

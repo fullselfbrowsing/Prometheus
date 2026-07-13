@@ -97,13 +97,13 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 
 ### MCP Compatibility And Multi-Agent Runtime
 
-- [ ] **MCP-01**: Existing FSB-style MCP clients can connect to the Chromium-based Prometheus through a local stdio-compatible bridge.
-- [ ] **MCP-02**: Prometheus exposes compatible manual action tools including `execute_js`, navigation, interaction, scrolling, tabs, coordinate tools, and mutation tools where supported.
-- [ ] **MCP-03**: Prometheus exposes compatible read tools including `read_page`, `get_dom_snapshot`, `get_page_snapshot`, `get_text`, `get_attribute`, `list_tabs`, memory reads, and site-guide reads.
-- [ ] **MCP-04**: MCP action tools accept and preserve visual-session fields `visual_reason`, `client`, and `is_final` for existing FSB client compatibility.
-- [ ] **MCP-05**: Removed or changed legacy tools return typed compatibility errors with migration guidance rather than disappearing.
-- [ ] **MCP-06**: MCP diagnostics report browser, bridge/server, active tab, content adapter, internal adapter, WebUI adapter, vault, provider, supervision, and extension-system health.
-- [ ] **MCP-07**: Bridge tests cover client lifecycle, authorization, tab ownership, background tab routing, numeric parameter coercion, visual-session compatibility, and recovery messaging.
+- [x] **MCP-01**: Existing FSB-style MCP clients can connect to the Chromium-based Prometheus through a local stdio-compatible bridge.
+- [x] **MCP-02**: Prometheus exposes compatible manual action tools including `execute_js`, navigation, interaction, scrolling, tabs, coordinate tools, and mutation tools where supported.
+- [x] **MCP-03**: Prometheus exposes compatible read tools including `read_page`, `get_dom_snapshot`, `get_page_snapshot`, `get_text`, `get_attribute`, `list_tabs`, memory reads, and site-guide reads.
+- [x] **MCP-04**: MCP action tools accept and preserve visual-session fields `visual_reason`, `client`, and `is_final` for existing FSB client compatibility.
+- [x] **MCP-05**: Removed or changed legacy tools return typed compatibility errors with migration guidance rather than disappearing.
+- [x] **MCP-06**: MCP diagnostics report browser, bridge/server, active tab, content adapter, internal adapter, WebUI adapter, vault, provider, supervision, and extension-system health.
+- [x] **MCP-07**: Bridge tests cover client lifecycle, authorization, tab ownership, background tab routing, numeric parameter coercion, visual-session compatibility, and recovery messaging.
 
 ### FSB Runtime, Providers, Memory, Vault, And Logs
 
@@ -176,7 +176,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 | WEBUI-01..WEBUI-07 | Phase 16 | Complete |
 | AGENT-01..AGENT-08 | Phase 17 | Complete |
 | PAGE-01..PAGE-08 | Phase 18 | Complete |
-| MCP-01..MCP-07 | Phase 19 | Planned |
+| MCP-01..MCP-07 | Phase 19 | Complete |
 | FSB-01..FSB-08 | Phase 20 | Planned |
 | SUP-01..SUP-05 | Phase 21 | Planned |
 | EXT-01..EXT-06 | Phase 22 | Planned |
