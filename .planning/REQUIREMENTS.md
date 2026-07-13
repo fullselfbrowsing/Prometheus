@@ -108,7 +108,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 ### FSB Runtime, Providers, Memory, Vault, And Logs
 
 - [ ] **FSB-01**: User can submit natural-language browser tasks from the Prometheus side panel FSB Agent mode.
-- [ ] **FSB-02**: Browser can run provider-backed, local/offline, and MCP-driven task paths with visible execution mode, progress, cancellation, final result, and failure reporting.
+- [ ] **FSB-02**: Browser can run tasks through Auto-selected hosted/routed/local execution or explicit Provider/Local execution, with visible progress, cancellation, final result, and failure reporting; external MCP is a submission/provenance adapter to the same native runtime, never an execution mode or embedded engine.
 - [ ] **FSB-03**: User can configure providers for OpenAI, Anthropic, Gemini, xAI, OpenRouter, LM Studio, hosted/routed/local/custom endpoints, and fallback order.
 - [ ] **FSB-04**: Provider secrets are saved through platform/browser secure storage and never displayed after save.
 - [ ] **FSB-05**: Browser stores and displays task logs, action history, diagnostics, metrics, token/cost accounting, and task outcomes.

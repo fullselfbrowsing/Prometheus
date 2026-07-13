@@ -44,7 +44,7 @@ browser, resource, security, and compatibility gates remain mandatory.
   Cancellation, timeout, profile shutdown, and provider failure must complete a
   task callback exactly once.
 
-### Execution Modes
+### Execution Routes and Submission Provenance
 - `provider`: a direct browser-process HTTPS call to a configured model followed
   by a bounded native tool-call loop. Model-selected actions may invoke only the
   existing typed Prometheus route catalog and must pass the Phase 17 ownership,
@@ -52,9 +52,10 @@ browser, resource, security, and compatibility gates remain mandatory.
 - `local`: the same native loop against an explicitly configured loopback
   OpenAI-compatible endpoint such as LM Studio. This is the offline path; it
   does not spawn or manage a local model process.
-- `mcp`: an external MCP client submits or cancels a task through the Phase 19
-  bridge, but the task runs in the same native runtime and authority model. MCP
-  is an origin, not an embedded engine.
+- External MCP provenance: an external MCP client submits or cancels a task
+  through the Phase 19 bridge, but Auto/Provider/Local selection still resolves
+  to hosted, routed, or local execution in the same native runtime and authority
+  model. MCP is an origin/adapter, never an execution mode or embedded engine.
 - Provider output is untrusted. Validate response shape, tool name, arguments,
   turn count, byte count, and token/cost budgets before dispatch. Never execute
   arbitrary shell commands, filesystem access, or unconstrained JavaScript.
