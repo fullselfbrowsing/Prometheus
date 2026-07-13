@@ -122,7 +122,7 @@ completed: 2026-07-12
 
 ---
 
-**Total deviations:** 2 auto-fixed compatibility issues.  
+**Total deviations:** 2 auto-fixed compatibility issues.
 **Impact on plan:** Both corrections align Node and native normalization with the locked compatibility contract and add no scope.
 
 ## Issues Encountered
