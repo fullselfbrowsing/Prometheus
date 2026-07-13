@@ -29,6 +29,8 @@ export class BrowserSession {
   #diagnostic;
   #sessionId = null;
   #heartbeatTimer = null;
+  #initializePromise = null;
+  #shutdownRequested = false;
   #shutdownPromise = null;
 
   constructor({
@@ -50,10 +52,20 @@ export class BrowserSession {
     return this.#sessionId;
   }
 
-  async initialize(clientInfo = {}) {
-    if (this.#sessionId || this.#shutdownPromise) {
-      throw new NativeClientError('SESSION_INVALID');
+  initialize(clientInfo = {}) {
+    if (this.#sessionId || this.#initializePromise || this.#shutdownRequested) {
+      return Promise.reject(new NativeClientError('SESSION_INVALID'));
     }
+    const initialization = this.#initialize(clientInfo);
+    this.#initializePromise = initialization;
+    return initialization.finally(() => {
+      if (this.#initializePromise === initialization) {
+        this.#initializePromise = null;
+      }
+    });
+  }
+
+  async #initialize(clientInfo) {
     const resumeId = this.#env.PROMETHEUS_MCP_RESUME_SESSION_ID;
     let result;
     if (resumeId !== undefined && resumeId !== '') {
@@ -71,6 +83,9 @@ export class BrowserSession {
       throw new NativeClientError('SESSION_INVALID');
     }
     this.#sessionId = result.session_id;
+    if (this.#shutdownRequested) {
+      return;
+    }
     this.#heartbeatTimer = this.#setInterval(
       async () => {
         try {
@@ -108,14 +123,23 @@ export class BrowserSession {
 
   shutdown({ graceful = true } = {}) {
     if (this.#shutdownPromise) return this.#shutdownPromise;
+    this.#shutdownRequested = true;
     if (this.#heartbeatTimer) {
       this.#clearInterval(this.#heartbeatTimer);
       this.#heartbeatTimer = null;
     }
-    const sessionId = this.#sessionId;
-    this.#sessionId = null;
+    const initialization = this.#initializePromise;
     this.#shutdownPromise = Promise.resolve()
       .then(async () => {
+        if (initialization) {
+          await initialization.catch(() => {});
+        }
+        if (this.#heartbeatTimer) {
+          this.#clearInterval(this.#heartbeatTimer);
+          this.#heartbeatTimer = null;
+        }
+        const sessionId = this.#sessionId;
+        this.#sessionId = null;
         if (graceful && sessionId) {
           try {
             await this.#nativeClient.closeSession(sessionId);

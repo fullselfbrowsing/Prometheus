@@ -94,7 +94,9 @@ export class McpProtocol {
     try {
       if (message.method === 'initialize') {
         const result = await this.#initialize(message.params);
-        emit(response(message.id, result));
+        if (result !== null && this.#state !== 'closed') {
+          emit(response(message.id, result));
+        }
         return;
       }
       if (this.#state !== 'ready') {
@@ -152,8 +154,14 @@ export class McpProtocol {
     try {
       await this.#onInitialize(params.clientInfo);
     } catch {
+      if (this.#state === 'closed') {
+        return null;
+      }
       this.#state = 'new';
       throw protocolError(-32603, 'Browser session initialization failed');
+    }
+    if (this.#state === 'closed') {
+      return null;
     }
     this.#state = 'awaiting-initialized';
     return {

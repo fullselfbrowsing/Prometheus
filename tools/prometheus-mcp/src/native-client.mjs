@@ -323,7 +323,12 @@ export class NativeClient {
 
     try {
       const headers = { Authorization: `Bearer ${descriptor.bearer}` };
-      const options = { method, headers, signal: controller.signal };
+      const options = {
+        method,
+        headers,
+        signal: controller.signal,
+        redirect: 'error',
+      };
       if (body !== undefined) {
         headers['Content-Type'] = 'application/json';
         options.body = JSON.stringify(body);

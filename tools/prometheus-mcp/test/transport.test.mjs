@@ -14,6 +14,7 @@ import {
   SUPPORTED_PROTOCOL_VERSIONS,
 } from '../src/protocol.mjs';
 import { createStdioServer } from '../src/server.mjs';
+import { BrowserSession } from '../src/session.mjs';
 
 const request = (id, method, params = {}) => ({
   jsonrpc: '2.0',
@@ -228,12 +229,36 @@ test('cancellation aborts only the matching request and emits no late response',
   assert.deepEqual(output.pop().result, {});
 });
 
-test('stdio server emits protocol-only stdout, sanitized stderr, and closes on EOF', async () => {
+test('shutdown during initialize never reopens protocol state or emits a late response', async () => {
+  let releaseInitialization;
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const initialization = new Promise((resolve) => { releaseInitialization = resolve; });
+  let shutdowns = 0;
+  const output = [];
+  const protocol = new McpProtocol({
+    onInitialize: async () => {
+      markStarted();
+      await initialization;
+    },
+    onShutdown: async () => { shutdowns += 1; },
+  });
+  const pending = protocol.handle(initialize(), (message) => output.push(message));
+  await started;
+  const shutdown = protocol.shutdown('SIGTERM', { graceful: true });
+  releaseInitialization();
+  await Promise.all([pending, shutdown]);
+
+  assert.equal(protocol.ready, false);
+  assert.equal(shutdowns, 1);
+  assert.deepEqual(output, []);
+});
+
+test('stdio server emits protocol-only stdout and closes on EOF', async () => {
   const input = Readable.from([
     `${JSON.stringify(initialize())}\n`,
     `${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })}\n`,
     `${JSON.stringify(request(2, 'ping'))}\n`,
-    '{not-json}\n',
   ]);
   let stdout = '';
   let stderr = '';
@@ -244,18 +269,95 @@ test('stdio server emits protocol-only stdout, sanitized stderr, and closes on E
     input,
     output,
     errorOutput,
-    onShutdown: async ({ graceful }) => { assert.equal(graceful, true); closes += 1; },
+    onShutdown: async ({ graceful, reason }) => {
+      assert.equal(graceful, true);
+      assert.equal(reason, 'EOF');
+      closes += 1;
+    },
   });
   await server.run();
 
   const frames = stdout.trim().split('\n').map((line) => JSON.parse(line));
   assert.equal(frames[0].result.protocolVersion, NEWEST_PROTOCOL_VERSION);
   assert.deepEqual(frames[1].result, {});
-  assert.equal(frames[2].error.code, -32700);
   assert.equal(closes, 1);
   assert.doesNotMatch(stdout, /diagnostic|private|bearer|session/iu);
+  assert.equal(stderr, '');
+});
+
+test('a framing error emits once and terminates before any later legacy request', async () => {
+  const poisoned = [
+    'Content-Length: nope\r\n\r\n{}',
+    legacyFrame(initialize(), 'Content-Length'),
+  ].join('');
+  let stdout = '';
+  let stderr = '';
+  let initializes = 0;
+  let shutdownReason;
+  const server = createStdioServer({
+    input: Readable.from([poisoned]),
+    output: new Writable({ write(chunk, _encoding, done) { stdout += chunk; done(); } }),
+    errorOutput: new Writable({ write(chunk, _encoding, done) { stderr += chunk; done(); } }),
+    onInitialize: async () => { initializes += 1; },
+    onShutdown: async ({ reason }) => { shutdownReason = reason; },
+  });
+  await server.run();
+
+  const responses = new FramingParser().push(Buffer.from(stdout, 'utf8'));
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].error.code, -32700);
+  assert.equal(initializes, 0);
+  assert.equal(shutdownReason, 'protocol-error');
   assert.match(stderr, /protocol input rejected/iu);
-  assert.doesNotMatch(stderr, /\{not-json\}|private|bearer|session/iu);
+  assert.doesNotMatch(stderr, /nope|initialize|bearer|session/iu);
+});
+
+test('signal shutdown drains deferred initialization without a session, timer, or late output leak', async () => {
+  const input = new PassThrough();
+  const signalEmitter = new EventEmitter();
+  let stdout = '';
+  let releaseCreate;
+  let markCreateStarted;
+  const createStarted = new Promise((resolve) => { markCreateStarted = resolve; });
+  const createResult = new Promise((resolve) => { releaseCreate = resolve; });
+  let closes = 0;
+  let intervals = 0;
+  const session = new BrowserSession({
+    nativeClient: {
+      createSession: async () => {
+        markCreateStarted();
+        return createResult;
+      },
+      closeSession: async () => { closes += 1; return { ok: true }; },
+      touchSession: async () => ({ ok: true }),
+    },
+    env: {},
+    setInterval: () => { intervals += 1; return { unref() {} }; },
+    clearInterval: () => {},
+  });
+  const server = createStdioServer({
+    input,
+    output: new Writable({ write(chunk, _encoding, done) { stdout += chunk; done(); } }),
+    errorOutput: new PassThrough(),
+    signalEmitter,
+    onInitialize: (clientInfo) => session.initialize(clientInfo),
+    onShutdown: ({ graceful }) => session.shutdown({ graceful }),
+  });
+  let runSettled = false;
+  const done = server.run().then(() => { runSettled = true; });
+  input.write(`${JSON.stringify(initialize())}\n`);
+  await createStarted;
+  signalEmitter.emit('SIGTERM');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(runSettled, false);
+  releaseCreate({ ok: true, session_id: 'late-session' });
+  await done;
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(stdout, '');
+  assert.equal(intervals, 0);
+  assert.equal(closes, 1);
+  assert.equal(session.sessionId, null);
 });
 
 test('SIGINT and SIGTERM each request one graceful shutdown', async () => {

@@ -153,8 +153,13 @@ test('bearer and JSON boundaries apply to all six native endpoints', async () =>
       const file = path.join(directory, 'endpoint.json');
       const descriptor = descriptorFor(gateway.endpoint);
       await writeDescriptor(file, descriptor);
+      const redirectModes = [];
       const client = new NativeClient({
         env: { PROMETHEUS_MCP_ENDPOINT_DESCRIPTOR: file },
+        fetch: (url, options) => {
+          redirectModes.push(options.redirect);
+          return globalThis.fetch(url, options);
+        },
       });
       await client.createSession('fixture client');
       await client.resumeSession('browser-session-1');
@@ -166,6 +171,7 @@ test('bearer and JSON boundaries apply to all six native endpoints', async () =>
         visual: {},
       });
       await client.health();
+      assert.deepEqual(redirectModes, Array(6).fill('error'));
 
       assert.deepEqual(
         gateway.requests.map(({ method, path: requestPath }) => `${method} ${requestPath}`),
@@ -281,6 +287,53 @@ test('abrupt shutdown stops heartbeat without closing browser authority', async 
   assert.equal(closes, 0);
 });
 
+test('shutdown during session creation waits, installs no heartbeat, and applies grace policy', async () => {
+  for (const graceful of [true, false]) {
+    let releaseCreate;
+    let markCreateStarted;
+    const createStarted = new Promise((resolve) => { markCreateStarted = resolve; });
+    const createResult = new Promise((resolve) => { releaseCreate = resolve; });
+    let intervals = 0;
+    let closes = 0;
+    const session = new BrowserSession({
+      nativeClient: {
+        createSession: async () => {
+          markCreateStarted();
+          return createResult;
+        },
+        touchSession: async () => ({ ok: true }),
+        closeSession: async (sessionId) => {
+          assert.equal(sessionId, 'deferred-session');
+          closes += 1;
+          return { ok: true };
+        },
+      },
+      env: {},
+      setInterval: () => {
+        intervals += 1;
+        return { unref() {} };
+      },
+      clearInterval: () => {},
+    });
+
+    const initialization = session.initialize({ name: 'deferred client' });
+    await createStarted;
+    let shutdownSettled = false;
+    const shutdown = session.shutdown({ graceful }).then(() => {
+      shutdownSettled = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(shutdownSettled, false);
+    releaseCreate({ ok: true, session_id: 'deferred-session' });
+    await Promise.all([initialization, shutdown]);
+    await session.shutdown({ graceful });
+
+    assert.equal(intervals, 0);
+    assert.equal(closes, graceful ? 1 : 0);
+    assert.equal(session.sessionId, null);
+  }
+});
+
 test('connection loss rediscovers once after descriptor nonce rotation', async () => {
   await withTempDirectory(async (directory) => {
     const file = path.join(directory, 'endpoint.json');
@@ -297,7 +350,11 @@ test('connection loss rediscovers once after descriptor nonce rotation', async (
     const client = new NativeClient({
       env: { PROMETHEUS_MCP_ENDPOINT_DESCRIPTOR: file },
       fetch: async (url, options) => {
-        calls.push({ url, authorization: options.headers.Authorization });
+        calls.push({
+          url,
+          authorization: options.headers.Authorization,
+          redirect: options.redirect,
+        });
         if (calls.length === 1) {
           await writeDescriptor(file, second);
           throw new TypeError('connection refused');
@@ -310,8 +367,16 @@ test('connection loss rediscovers once after descriptor nonce rotation', async (
     });
     assert.deepEqual(await client.touchSession('opaque-session'), { ok: true });
     assert.deepEqual(calls, [
-      { url: 'http://127.0.0.1:41001/v1/session/touch', authorization: `Bearer ${'d'.repeat(64)}` },
-      { url: 'http://127.0.0.1:41002/v1/session/touch', authorization: `Bearer ${'f'.repeat(64)}` },
+      {
+        url: 'http://127.0.0.1:41001/v1/session/touch',
+        authorization: `Bearer ${'d'.repeat(64)}`,
+        redirect: 'error',
+      },
+      {
+        url: 'http://127.0.0.1:41002/v1/session/touch',
+        authorization: `Bearer ${'f'.repeat(64)}`,
+        redirect: 'error',
+      },
     ]);
   });
 });

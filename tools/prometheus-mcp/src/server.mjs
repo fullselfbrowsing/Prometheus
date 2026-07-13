@@ -45,6 +45,8 @@ export const createStdioServer = ({
   let finishPromise = null;
   let finishResolve;
   let stopped = false;
+  let stopResolve;
+  const stopRequested = new Promise((resolve) => { stopResolve = resolve; });
 
   const writeMessage = (message) => {
     output.write(framing.encode(message));
@@ -53,6 +55,7 @@ export const createStdioServer = ({
   const finish = (reason, graceful = true) => {
     if (finishPromise) return finishPromise;
     stopped = true;
+    stopResolve();
     finishPromise = new Promise((resolve) => { finishResolve = resolve; });
     void (async () => {
       const shutdown = protocol.shutdown(reason, { graceful });
@@ -87,13 +90,19 @@ export const createStdioServer = ({
           if (error instanceof FramingError) {
             writeMessage(jsonRpcParseError());
             safeDiagnostic(errorOutput, 'protocol input rejected');
-            continue;
+            input.destroy?.();
+            await finish('protocol-error', true);
+            return;
           }
           throw error;
         }
         for (const message of messages) {
           const handling = protocol.handle(message, writeMessage);
-          if (protocol.ready && message.method === 'tools/call') {
+          if (message?.method === 'initialize') {
+            track(handling);
+            await Promise.race([handling, stopRequested]);
+            if (stopped) break;
+          } else if (protocol.ready && message?.method === 'tools/call') {
             track(handling);
           } else {
             await handling;
