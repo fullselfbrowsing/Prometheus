@@ -137,6 +137,7 @@ test('aliases preserve independent visual fields without using them as identity'
   });
   assert.equal(Object.hasOwn(calls[0].envelope.visual, 'client'), false);
   assert.equal(Object.hasOwn(calls[0].envelope, 'session_id'), false);
+  assert.doesNotMatch(JSON.stringify(result), /must-not-be-forwarded/u);
 });
 
 test('unknown supplied badge is denied before native dispatch and private text is not logged', async () => {

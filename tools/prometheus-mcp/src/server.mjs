@@ -1,5 +1,8 @@
 import { FramingError, FramingParser } from './framing.mjs';
+import { NativeClient } from './native-client.mjs';
 import { jsonRpcParseError, McpProtocol } from './protocol.mjs';
+import { BrowserSession } from './session.mjs';
+import { createToolHandler } from './tool-handler.mjs';
 
 const SIGNALS = ['SIGINT', 'SIGTERM'];
 const SHUTDOWN_DRAIN_MS = 2_000;
@@ -117,4 +120,29 @@ export const createStdioServer = ({
     run,
     shutdown: finish,
   };
+};
+
+export const createPrometheusMcpServer = ({
+  env = process.env,
+  nativeClient: suppliedNativeClient,
+  session: suppliedSession,
+  errorOutput = process.stderr,
+  ...stdioOptions
+} = {}) => {
+  const diagnostic = (category) => safeDiagnostic(errorOutput, category);
+  const nativeClient = suppliedNativeClient ?? new NativeClient({ env });
+  const session = suppliedSession ?? new BrowserSession({
+    nativeClient,
+    env,
+    diagnostic,
+  });
+  const tools = createToolHandler({ session, diagnostic });
+  return createStdioServer({
+    ...stdioOptions,
+    errorOutput,
+    listTools: tools.listTools,
+    callTool: tools.callTool,
+    onInitialize: (clientInfo) => session.initialize(clientInfo),
+    onShutdown: ({ graceful }) => session.shutdown({ graceful }),
+  });
 };

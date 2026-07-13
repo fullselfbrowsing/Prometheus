@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 
-import { createStdioServer } from '../src/server.mjs';
+import { createPrometheusMcpServer } from '../src/server.mjs';
 
-const server = createStdioServer();
-await server.run();
+try {
+  const server = createPrometheusMcpServer();
+  await server.run();
+} catch {
+  process.stderr.write('prometheus-mcp: startup failed\n');
+  process.exitCode = 1;
+}

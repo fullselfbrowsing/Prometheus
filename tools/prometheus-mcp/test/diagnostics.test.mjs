@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { getToolDefinition } from '../src/catalog.mjs';
+import { createToolHandler } from '../src/tool-handler.mjs';
 
 const fixture = JSON.parse(
   await readFile(new URL('fixtures/protocol-cases.json', import.meta.url), 'utf8'),
@@ -50,5 +51,61 @@ test('diagnostic serialization contains no secret or page-content field names', 
   }
 });
 
-test.todo('Plan 19-05: return authenticated browser health components');
-test.todo('Plan 19-06: merge bridge readiness without exposing credentials');
+test('authenticated browser health becomes ten sanitized MCP components', async () => {
+  const privateText = 'private reason, profile, page, and token material';
+  let healthCalls = 0;
+  let commandCalls = 0;
+  const handler = createToolHandler({
+    session: {
+      health: async () => {
+        healthCalls += 1;
+        return {
+          ok: true,
+          bearer: 'never-return-this-bearer',
+          profile_path: '/private/profile/path',
+          diagnostics: expectedKeys.map((key, index) => ({
+            key,
+            status: index < 6 ? 'ready' : 'degraded',
+            reason: privateText,
+            next_action: privateText,
+            page_text: privateText,
+          })),
+        };
+      },
+      command: async () => { commandCalls += 1; },
+    },
+  });
+  const result = await handler.callTool({ name: 'diagnostics', arguments: {} });
+  assert.equal(result.isError, false);
+  assert.equal(healthCalls, 1);
+  assert.equal(commandCalls, 0);
+  const { components } = result.structuredContent;
+  assert.deepEqual(components.map(({ key }) => key), expectedKeys);
+  assert.equal(components.find(({ key }) => key === 'bridge').status, 'ready');
+  for (const key of ['vault', 'provider', 'supervision', 'extensions']) {
+    assert.equal(components.find((component) => component.key === key).status, 'not_ready');
+  }
+  for (const component of components) {
+    assert.ok(statuses.has(component.status));
+    assert.ok(component.reason.length > 0);
+    assert.ok(component.next_action.length > 0);
+  }
+  const serialized = JSON.stringify(result);
+  assert.doesNotMatch(serialized, new RegExp(privateText, 'u'));
+  assert.doesNotMatch(serialized, /never-return|private\/profile|bearer|profile_path|page_text/iu);
+});
+
+test('malformed or incomplete browser health is a typed diagnostics failure', async () => {
+  for (const health of [
+    { ok: true, diagnostics: [] },
+    { ok: true, diagnostics: expectedKeys.map((key) => ({ key, status: 'unknown' })) },
+    { ok: true, diagnostics: expectedKeys.map(() => ({ key: 'browser', status: 'ready' })) },
+  ]) {
+    const handler = createToolHandler({
+      session: { health: async () => health },
+    });
+    const result = await handler.callTool({ name: 'diagnostics', arguments: {} });
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.error.code, 'DIAGNOSTICS_INVALID');
+  }
+});

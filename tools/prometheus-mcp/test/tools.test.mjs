@@ -89,7 +89,20 @@ test('native tools and all eight aliases forward only canonical routes', async (
     visual: { client: 'Codex' },
     params: {},
   });
-  assert.deepEqual(calls[6].envelope.params, { selector: '#name', key: 'Enter' });
+  assert.deepEqual(calls[1].envelope, {
+    target: {},
+    params: { url: 'https://example.test/', foreground: false },
+    visual: {},
+  });
+  assert.deepEqual(calls[3].envelope.target, { tabIndex: 0 });
+  assert.deepEqual(calls[5].envelope.params, {
+    element: { selector: '#name' },
+    text: 'Ada',
+  });
+  assert.deepEqual(calls[6].envelope.params, {
+    element: { selector: '#name' },
+    key: 'Enter',
+  });
   assert.equal(
     COMPATIBILITY_CATALOG.some(({ nativeRoute }) => nativeRoute === 'clear_input'),
     false,
@@ -142,7 +155,7 @@ test('native validation normalizes declared numbers and rejects unknown fields',
   });
   assertParity(result, false);
   assert.deepEqual(calls[0].envelope, {
-    target: { tab_index: 0 },
+    target: { tabIndex: 0 },
     params: { max_chars: 100, max_nodes: 42 },
     visual: {},
   });
@@ -180,6 +193,138 @@ test('open_internal_surface forwards only its closed three-value enum', async ()
     assertParity(result, true);
     assert.equal(result.structuredContent.error.code, 'INVALID_ARGUMENT');
   }
+  assert.equal(calls.length, 3);
+});
+
+test('element, frame, attribute, and scroll arguments match the native codec', async () => {
+  const { calls, handler } = makeHarness();
+  const attribute = await handler.callTool({
+    name: 'get_attribute',
+    arguments: {
+      tab_id: 11,
+      ref: 'node-4',
+      selector: '#fallback',
+      document_token: 'document-9',
+      attribute: 'aria-label',
+    },
+  });
+  assertParity(attribute, false);
+  assert.deepEqual(calls[0].envelope, {
+    target: { tab_id: 11 },
+    visual: {},
+    params: {
+      element: { element_ref: 'node-4', selector: '#fallback' },
+      frame: { document_token: 'document-9' },
+      attribute_name: 'aria-label',
+    },
+  });
+
+  const scroll = await handler.callTool({
+    name: 'scroll',
+    arguments: {
+      tabIndex: '0',
+      selector: 'main',
+      delta_x: '-20',
+      delta_y: '400',
+    },
+  });
+  assertParity(scroll, false);
+  assert.deepEqual(calls[1].envelope, {
+    target: { tabIndex: 0 },
+    visual: {},
+    params: {
+      element: { selector: 'main' },
+      scroll_delta_x: -20,
+      scroll_delta_y: 400,
+    },
+  });
+  for (const envelope of calls.map(({ envelope }) => envelope)) {
+    for (const flatField of [
+      'ref',
+      'selector',
+      'document_token',
+      'attribute',
+      'delta_x',
+      'delta_y',
+    ]) {
+      assert.equal(Object.hasOwn(envelope.params, flatField), false, flatField);
+    }
+  }
+});
+
+test('execute_js forwards the browser permission and mutation-verification contract', async () => {
+  const calls = [];
+  const handler = createToolHandler({
+    session: {
+      command: async (route, envelope) => {
+        calls.push({ route, envelope });
+        if (envelope.params.javascript_permission_granted !== true) {
+          return {
+            ok: false,
+            error_code: 'PERMISSION_BLOCKED',
+            message: 'JavaScript permission is required.',
+            recovery: 'Explicitly grant JavaScript permission and retry.',
+          };
+        }
+        return { ok: true };
+      },
+    },
+  });
+
+  const absent = await handler.callTool({
+    name: 'execute_js',
+    arguments: { javascript: 'document.title' },
+  });
+  assertParity(absent, true);
+  assert.equal(absent.structuredContent.error_code, 'PERMISSION_BLOCKED');
+  assert.deepEqual(calls[0].envelope.params, { javascript: 'document.title' });
+  assert.equal(
+    Object.hasOwn(calls[0].envelope.params, 'javascript_permission_granted'),
+    false,
+  );
+
+  const denied = await handler.callTool({
+    name: 'execute_js',
+    arguments: {
+      javascript: 'document.title',
+      javascript_permission_granted: false,
+    },
+  });
+  assertParity(denied, true);
+  assert.deepEqual(calls[1].envelope.params, {
+    javascript: 'document.title',
+    javascript_permission_granted: false,
+  });
+
+  const allowed = await handler.callTool({
+    name: 'execute_js',
+    arguments: {
+      javascript: 'document.body.dataset.ready = "yes"',
+      javascript_permission_granted: true,
+      verify_mutation: true,
+    },
+  });
+  assertParity(allowed, false);
+  assert.equal(calls[2].route, 'execute_js');
+  assert.deepEqual(calls[2].envelope, {
+    target: {},
+    visual: {},
+    params: {
+      javascript: 'document.body.dataset.ready = "yes"',
+      javascript_permission_granted: true,
+      verify_mutation: true,
+    },
+  });
+
+  const invalid = await handler.callTool({
+    name: 'execute_js',
+    arguments: {
+      javascript: 'document.title',
+      javascript_permission_granted: 'yes',
+    },
+  });
+  assertParity(invalid, true);
+  assert.equal(invalid.structuredContent.error.code, 'INVALID_ARGUMENT');
   assert.equal(calls.length, 3);
 });
 

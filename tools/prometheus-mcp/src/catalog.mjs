@@ -81,7 +81,11 @@ const nativeSchemas = {
   get_dom_snapshot: targetedSchema(readLimitProperties),
   get_page_snapshot: targetedSchema(readLimitProperties),
   execute_js: targetedSchema(
-    { javascript: utf8String(20_000, 1) },
+    {
+      javascript: utf8String(20_000, 1),
+      javascript_permission_granted: { type: 'boolean' },
+      verify_mutation: { type: 'boolean' },
+    },
     ['javascript'],
     true,
   ),
