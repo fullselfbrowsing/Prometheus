@@ -17,7 +17,11 @@ const positiveTarget = {
 const targetProperties = {
   tab_id: positiveTarget,
   tabId: positiveTarget,
-  tabIndex: positiveTarget,
+  tabIndex: {
+    type: 'integer',
+    minimum: 0,
+    maximum: MAX_TARGET_ID,
+  },
 };
 
 const visualProperties = {

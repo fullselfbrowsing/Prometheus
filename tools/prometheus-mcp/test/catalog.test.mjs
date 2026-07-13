@@ -133,6 +133,13 @@ test('native schemas enforce surface, field, and numeric boundaries', () => {
     normalizeToolArguments(read, { tab_id: '2', tabId: 2 }),
     { target: { tab_id: 2 } },
   );
+  assert.deepEqual(normalizeToolArguments(read, { tabIndex: '0' }), {
+    target: { tab_index: 0 },
+  });
+  assert.throws(
+    () => normalizeToolArguments(read, { tabIndex: -1 }),
+    ({ code }) => code === 'INVALID_ARGUMENT',
+  );
   assert.throws(
     () => normalizeToolArguments(read, { tab_id: 2, tabIndex: 2 }),
     ({ code }) => code === 'INVALID_TARGET',
