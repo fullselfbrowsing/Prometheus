@@ -16,7 +16,7 @@ Agents get fast, precise, auditable control of the whole browser through DOM/nat
 
 v1.0 delivered the Prometheus product identity with the "Powered by FSB" affiliation; a native agent command router with surface adapters, permissioned JS execution, and DOM/page reads; FSB-compatible MCP tooling with multi-agent ownership, typed errors, and visual-session fields; native FSB runtime surfaces (side panel, providers, autopilot, logs, memory/site guides, secure vault); PhantomStream-style supervision, safe pairing, and a local macOS validation package; compact Safari-style chrome with advanced tab management; a native FSB-Plus control center with a release-gated feature parity matrix; an offline Font Awesome Free icon system with Poppins/Space Mono brand fonts and warm dark/light themes; and a Prometheus start page.
 
-**Active: v2.0 Chromium Engine Migration (started 2026-06-17).** Phases 11-18 are complete: the Falkon reference is preserved, Chromium builds and launches from a pinned baseline, Prometheus identity and design assets are ported, compact chrome and WebUI surfaces exist, and the native agent route/session/tab-ownership service now has verified page reads, snapshots, actions, waits, and exact-document mutation readback. Phase 19 is current and will reconnect external FSB-style stdio MCP clients without bundling an agent CLI, terminal, alternate engine, or third-party runtime.
+**Active: v2.0 Chromium Engine Migration (started 2026-06-17).** Phases 11-19 are complete: the Falkon reference is preserved, Chromium builds and launches from a pinned baseline, Prometheus identity/design/browser shells are ported, and the native agent service now has verified sessions, ownership, page reads/actions, exact-document mutation readback, an authenticated loopback gateway, and a dependency-free external stdio MCP bridge. Phase 20 is current and owns live task runtime, providers, vault, memory/site guides, logs, diagnostics, and control-panel data. No phase bundles an agent CLI, terminal, alternate engine, prompt provisioner, or third-party runtime.
 
 ## Current Milestone: v2.0 Chromium Engine Migration
 
@@ -55,6 +55,7 @@ v1.0 delivered the Prometheus product identity with the "Powered by FSB" affilia
 - ✓ Compact Safari-style chrome: tabs share the toolbar, active tab becomes the address/search field, separate layout stays optional — v1.0 (Phase 7)
 - ✓ Advanced native tab management: groups, overview/search, quick switch, close/restore, unload/suspend, duplicate, detach, ownership, health, supervision — v1.0 (Phase 7)
 - ✓ Preserve v1 Falkon/Prometheus source, patch series, decisions, design system, assets, contracts, GPL boundary, migration map, and deferred visual-check ledger before Chromium work begins — Phase 11
+- ✓ Reconnect external MCP hosts to the Chromium-native browser service with a closed 90-name catalog, authenticated browser-issued sessions, multi-agent ownership, typed compatibility errors, and truthful diagnostics without embedding an agent runtime — Phase 19
 
 ### Active
 
@@ -63,7 +64,8 @@ v1.0 delivered the Prometheus product identity with the "Powered by FSB" affilia
 - [x] Verify the unmodified Chromium checkout/build baseline and document patch discipline before Prometheus changes begin.
 - [x] Rebuild the Chromium product identity, design system, compact chrome, WebUI shells, and native agent-control foundation.
 - [x] Complete Chromium page adapters, DOM snapshots, audited JavaScript, safe actions, waits, and action verification.
-- [ ] Complete MCP compatibility, runtime, supervision, extension policy, validation, and packaging on Chromium.
+- [x] Complete external MCP compatibility and multi-agent browser-session behavior on Chromium.
+- [ ] Complete runtime, supervision, extension policy, validation, and packaging on Chromium.
 - [ ] Prove parity or consciously retire each v1/FSB capability through a maintained matrix.
 
 ### Out of Scope
@@ -144,7 +146,7 @@ FSB extension capabilities to preserve or improve include:
 | Preserve Prometheus/FSB product DNA while replacing the implementation | The value is the agent-native browser, design language, MCP contract, and supervision model, not the Falkon codebase. | v2.0 active |
 | Treat Falkon source as reference, not copy-paste implementation | Falkon is GPL-derived and Chromium is not; behavior and design can be reimplemented, but source copying requires explicit license review. | ✓ Validated — Phase 11 preservation dossier and verifier |
 | Use the preservation dossier as the Chromium migration contract | Later Chromium phases need one source of truth for v1 behavior, assets, visual checks, owner phases, parity evidence, and license boundaries. | ✓ Validated — Phase 11 |
-| Keep agent CLIs external to the browser | Prometheus should expose its local MCP bridge to Claude Code, Cursor, Codex, and similar clients without bundling a terminal, third-party CLI, alternate engine, or CLI-specific system prompt into the product. | v2.0 boundary accepted |
+| Keep agent CLIs external to the browser | Prometheus should expose its local MCP bridge to Claude Code, Cursor, Codex, and similar clients without bundling a terminal, third-party CLI, alternate engine, or CLI-specific system prompt into the product. | ✓ Validated — Phase 19 external stdio bridge and static/process gates |
 
 ## Evolution
 
@@ -164,4 +166,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-12 after Phase 18 verification and the Phase 19 transition*
+*Last updated: 2026-07-13 after Phase 19 verification and the Phase 20 transition*

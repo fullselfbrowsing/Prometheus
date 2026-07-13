@@ -23,7 +23,11 @@
 - `.context/falkon-preservation/falkon-prometheus-v1.bundle`
 - `.context/falkon-preservation/patches/`
 
-**Status:** Phases 11-18 complete. Phase 19 is current and ready for autonomous discussion and planning; it reconnects external stdio MCP clients without bundling an agent CLI, terminal, alternate engine, or third-party runtime.
+**Status:** Phases 11-19 complete. External stdio MCP compatibility is verified
+without a bundled agent CLI, terminal, alternate engine, prompt provisioner, or
+third-party runtime. Phase 20 is current and ready for autonomous discussion
+and planning of the live FSB runtime, providers, vault, memory, logs,
+diagnostics, and control-panel data.
 
 ---
 
