@@ -137,6 +137,7 @@ export class BridgeProcess {
   #stdoutBuffer = Buffer.alloc(0);
   #stderr = '';
   #transcript = [];
+  #responses = [];
   #closed = false;
   #fatalError = null;
   #capturePromise = null;
@@ -177,6 +178,14 @@ export class BridgeProcess {
 
   get capturedOutput() {
     return `${this.#transcript.map((frame) => JSON.stringify(frame)).join('\n')}\n${this.#stderr}`;
+  }
+
+  assertProtocolSafety(deniedValues, allowedToolResultValues = []) {
+    assertSafeProtocolResponses(
+      this.#responses,
+      deniedValues,
+      allowedToolResultValues,
+    );
   }
 
   async initialize() {
@@ -250,7 +259,13 @@ export class BridgeProcess {
       this.#child.kill('SIGKILL');
     }
     try {
-      await waitForExit(this.#child, 5_000);
+      const exit = await waitForExit(this.#child, 5_000);
+      if (graceful) {
+        requireCondition(
+          exit.code === 0 && exit.signal === null,
+          'Graceful bridge process did not exit cleanly.',
+        );
+      }
     } catch (error) {
       this.#child.kill('SIGKILL');
       await waitForExit(this.#child, 2_000).catch(() => {});
@@ -301,6 +316,7 @@ export class BridgeProcess {
         return;
       }
       this.#pending.delete(frame.id);
+      this.#responses.push({ method: pending.method, frame });
       this.#transcript.push({
         jsonrpc: '2.0',
         id: frame.id,
@@ -414,6 +430,36 @@ export const assertSafeCapturedOutput = (captured, deniedValues) => {
   for (const value of deniedValues) {
     if (typeof value === 'string' && value.length > 0 && captured.includes(value)) {
       throw new Error('captured output contains a denied private value.');
+    }
+  }
+};
+
+export const assertSafeProtocolResponses = (
+  responses,
+  deniedValues,
+  allowedToolResultValues = [],
+) => {
+  for (const response of responses) {
+    requireCondition(
+      isRecord(response)
+        && typeof response.method === 'string'
+        && isRecord(response.frame),
+      'Captured protocol response is invalid.',
+    );
+    const serialized = JSON.stringify(response.frame);
+    for (const value of deniedValues) {
+      if (typeof value === 'string' && value.length > 0 && serialized.includes(value)) {
+        throw new Error('protocol response contains a denied private value.');
+      }
+    }
+    for (const value of allowedToolResultValues) {
+      if (typeof value !== 'string' || value.length === 0 || !serialized.includes(value)) continue;
+      requireCondition(
+        response.method === 'tools/call'
+          && Object.hasOwn(response.frame, 'result')
+          && !Object.hasOwn(response.frame, 'error'),
+        'Requested page content escaped a successful tool result.',
+      );
     }
   }
 };
@@ -759,11 +805,31 @@ const runLiveSmoke = async () => {
     sessionIds.push(resumeId);
     const firstResume = createBridge('first resume bridge', resumeId);
     await firstResume.initialize();
-    await expectToolSuccess(firstResume, 'list_tabs', {});
+    const resumeOpen = await expectToolSuccess(firstResume, 'new_tab', {
+      url: fixtureUrl,
+      foreground: false,
+    });
+    const resumeTabId = resumeOpen.target?.tab_id;
+    requireCondition(Number.isSafeInteger(resumeTabId), 'Resume seam did not own a stable tab.');
     await firstResume.close({ graceful: false });
+    const freshDenied = await expectToolFailure(second, 'navigate', {
+      tab_id: resumeTabId,
+      url: `${fixtureUrl}#fresh-session-denied`,
+    });
+    requireCondition(
+      freshDenied.error_code === 'TAB_NOT_OWNED',
+      'A fresh bridge inherited authority from the disconnected resume seam.',
+    );
     const resumed = createBridge('resumed smoke bridge', resumeId);
     await resumed.initialize();
-    await expectToolSuccess(resumed, 'list_tabs', {});
+    const resumedNavigation = await expectToolSuccess(resumed, 'navigate', {
+      tab_id: resumeTabId,
+      url: `${fixtureUrl}#resumed-authority`,
+    });
+    requireCondition(
+      resumedNavigation.target?.tab_id === resumeTabId,
+      'Resumed bridge did not retain the original session authority.',
+    );
     await resumed.close({ graceful: true });
 
     const expiryId = await createRawSession(descriptor, 'expiry smoke seam');
@@ -778,6 +844,15 @@ const runLiveSmoke = async () => {
     requireCondition(Number.isSafeInteger(expiryTabId), 'Expiry session did not own a stable tab.');
     await expiring.close({ graceful: false });
     await new Promise((resolve) => setTimeout(resolve, expiryWait));
+    const expiredResume = createBridge('expired resume bridge', expiryId);
+    let expiredResumeDenied = false;
+    try {
+      await expiredResume.initialize();
+    } catch {
+      expiredResumeDenied = true;
+    }
+    requireCondition(expiredResumeDenied, 'Expired opaque session unexpectedly resumed.');
+    await expiredResume.close({ graceful: false });
     const reclaimedExpired = await expectToolSuccess(second, 'navigate', {
       tab_id: expiryTabId,
       url: fixtureUrl,
@@ -792,20 +867,29 @@ const runLiveSmoke = async () => {
     requireCondition(reclaimedClosed.target?.tab_id === ownedTabId, 'Graceful close did not release ownership.');
     await second.close({ graceful: true });
 
-    const deniedValues = [
+    const privateValues = [
       descriptor.bearer,
       descriptor.instance_nonce,
       ...sessionIds,
-      'Prometheus MCP fixture page text',
-      'Prometheus MCP same-origin child text',
       visualReason,
       typedText,
       profilePath,
     ];
+    const allowedToolResultValues = [
+      'Prometheus MCP fixture page text',
+      'Prometheus MCP same-origin child text',
+    ];
     for (const bridge of bridges) {
-      assertSafeCapturedOutput(bridge.capturedOutput, deniedValues);
+      bridge.assertProtocolSafety(privateValues, allowedToolResultValues);
+      assertSafeCapturedOutput(
+        bridge.capturedOutput,
+        [...privateValues, ...allowedToolResultValues],
+      );
     }
-    await writePrivateDenylist(denylistFile, deniedValues);
+    await writePrivateDenylist(
+      denylistFile,
+      [...privateValues, ...allowedToolResultValues],
+    );
     return {
       ok: true,
       tools: listed.tools.length,

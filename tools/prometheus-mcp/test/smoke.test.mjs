@@ -17,6 +17,7 @@ import {
   assertDiagnosticInventory,
   assertRemovedToolResult,
   assertSafeCapturedOutput,
+  assertSafeProtocolResponses,
 } from './smoke-client.mjs';
 
 const withTempDirectory = async (callback) => {
@@ -200,6 +201,67 @@ test('captured-output denylist rejects endpoint, session, page, reason, and prof
       /captured output/u,
     );
   }
+});
+
+test('full protocol responses keep private data out and page data inside tool results', () => {
+  const allowedPageText = 'requested fixture page text';
+  const safe = [{
+    method: 'tools/call',
+    frame: {
+      jsonrpc: '2.0',
+      id: 1,
+      result: { content: [{ type: 'text', text: allowedPageText }] },
+    },
+  }];
+  assert.doesNotThrow(() => assertSafeProtocolResponses(
+    safe,
+    ['private-bearer'],
+    [allowedPageText],
+  ));
+  assert.throws(
+    () => assertSafeProtocolResponses(
+      [{
+        method: 'tools/call',
+        frame: { jsonrpc: '2.0', id: 2, result: { token: 'private-bearer' } },
+      }],
+      ['private-bearer'],
+      [allowedPageText],
+    ),
+    /denied private value/u,
+  );
+  assert.throws(
+    () => assertSafeProtocolResponses(
+      [{
+        method: 'initialize',
+        frame: { jsonrpc: '2.0', id: 3, result: { text: allowedPageText } },
+      }],
+      ['private-bearer'],
+      [allowedPageText],
+    ),
+    /successful tool result/u,
+  );
+});
+
+test('graceful bridge close requires a zero exit without a signal', async () => {
+  await withTempDirectory(async (directory) => {
+    const bridgeEntry = path.join(directory, 'nonzero-bridge.mjs');
+    await writeFile(
+      bridgeEntry,
+      `${fakeBridgeSource}\nprocess.exitCode = 7;\n`,
+      { mode: 0o600 },
+    );
+    const bridge = new BridgeProcess({
+      bridgeEntry,
+      env: {},
+      label: 'nonzero bridge',
+      captureDirectory: directory,
+    });
+    await bridge.initialize();
+    await assert.rejects(
+      bridge.close({ graceful: true }),
+      /did not exit cleanly/u,
+    );
+  });
 });
 
 test('shell live gate pins the built app, descriptor mode, deadlines, and process boundary', async () => {
