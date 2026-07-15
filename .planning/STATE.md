@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 20
 current_phase_name: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
-current_plan: 4
+current_plan: 5
 status: executing
-stopped_at: Completed 20-03-PLAN.md
-last_updated: "2026-07-15T20:12:19.056Z"
+stopped_at: Completed 20-04-PLAN.md
+last_updated: "2026-07-15T21:03:38.210Z"
 last_activity: 2026-07-15
 progress:
   total_phases: 14
   completed_phases: 9
   total_plans: 66
-  completed_plans: 55
-  percent: 83
+  completed_plans: 56
+  percent: 85
 ---
 
 # Project State
@@ -26,8 +26,8 @@ See: `.planning/PROJECT.md` (updated 2026-07-13)
 **Core value:** Agents get fast, precise, auditable whole-browser control
 through DOM/native structure rather than screenshots or extension injection.
 
-**Current focus:** Execute Phase 20 Plan 4 of 14: OSCrypt-backed exact-origin
-secret storage and the provider registry.
+**Current focus:** Execute Phase 20 Plan 5 of 14: strict provider codecs and
+secure cancellable browser-process network transport.
 
 **Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
 external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
@@ -36,20 +36,20 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 20 (FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel) — EXECUTING
-Plan: 4 of 14
+Plan: 5 of 14
 **Current Phase:** 20
 **Current Phase Name:** FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
 **Total Phases:** 14
 **Completed Phases:** 9
-**Current Plan:** 4
+**Current Plan:** 5
 **Total Plans in Phase:** 14
 **Status:** Ready to execute
-**Progress:** [████████░░] 83%
+**Progress:** [█████████░] 85%
 **Last Activity:** 2026-07-15
-**Last Activity Description:** Completed Phase 20 Plan 3 bounded memory and exact-origin site guides
+**Last Activity Description:** Completed Phase 20 Plan 4 encrypted secrets and closed provider registry
 
-Milestone work is 55 of 66 plans complete (83%); cumulative project work is
-106 of 117 existing plans summarized (91%).
+Milestone work is 56 of 66 plans complete (85%); cumulative project work is
+107 of 117 existing plans summarized (91%).
 
 ## Latest Evidence
 
@@ -58,6 +58,9 @@ Milestone work is 55 of 66 plans complete (83%); cumulative project work is
 
 - Fresh gates: 64 Node, 34 focused native, 7 renderer, 32 Phase 19 browser,
   and 53 Phase 17/18 regression tests plus the built-app stdio smoke.
+
+- Phase 20 Plan 4: 11 encrypted-secret and 10 provider-registry tests pass;
+  the complete native `prometheus_unittests` regression is 184/184 green.
 
 - Phase 20 Plan 3: all 12 memory-store and 13 foundation tests pass; memory
   ownership is opaque and guides are bounded to exact canonical HTTP(S) origins.
@@ -84,6 +87,8 @@ Milestone work is 55 of 66 plans complete (83%); cumulative project work is
 | 20 | Persist tasks through generation-fenced exactly-once mutations with LRU task and FIFO record bounds. |
 | 20 | Persist only domain-separated caller hashes for memory ownership; never expose raw caller or gateway authority IDs. |
 | 20 | Bind guides to canonical HTTP(S) origins and revalidate the current committed document before every apply. |
+| 20 | Bind encrypted envelopes to record ID, secret kind, owner kind, and the complete canonical endpoint or site URL. |
+| 20 | Keep known providers on fixed HTTPS endpoints and permit HTTP only for explicit local kinds accepted by `net::IsLocalhost`. |
 
 ## Blockers and Deferred Items
 
@@ -93,11 +98,11 @@ Milestone work is 55 of 66 plans complete (83%); cumulative project work is
 
 ## Session
 
-**Last Date:** 2026-07-15T20:12:19.053Z
-**Stopped At:** Completed 20-03-PLAN.md
+**Last Date:** 2026-07-15T21:03:25.627Z
+**Stopped At:** Completed 20-04-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute Phase 20 Plan 4, then continue Plans 5-14 with mandatory automated
+Execute Phase 20 Plan 5, then continue Plans 6-14 with mandatory automated
 gates. Do not run human UAT.
