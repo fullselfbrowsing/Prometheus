@@ -112,7 +112,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 - [ ] **FSB-03**: User can configure providers for OpenAI, Anthropic, Gemini, xAI, OpenRouter, LM Studio, hosted/routed/local/custom endpoints, and fallback order.
 - [ ] **FSB-04**: Provider secrets are saved through platform/browser secure storage and never displayed after save.
 - [ ] **FSB-05**: Browser stores and displays task logs, action history, diagnostics, metrics, token/cost accounting, and task outcomes.
-- [ ] **FSB-06**: Browser provides memory and site-guide primitives for saving, listing, retrieving, and applying site-specific automation knowledge.
+- [x] **FSB-06**: Browser provides memory and site-guide primitives for saving, listing, retrieving, and applying site-specific automation knowledge.
 - [ ] **FSB-07**: Browser provides vault metadata and native-only secret flows with explicit confirmation for autofill-like actions.
 - [ ] **FSB-08**: User-facing settings expose internal-surface permissions, agent caps, tab ownership, background actions, telemetry, vault boundaries, and supervision pairing.
 
