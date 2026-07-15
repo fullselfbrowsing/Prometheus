@@ -306,7 +306,7 @@ Plans:
 
 **Requirements:** FSB-01, FSB-02, FSB-03, FSB-04, FSB-05, FSB-06, FSB-07, FSB-08
 
-**Plans:** 2/13 plans complete
+**Plans:** 2/14 plans complete
 
 Plans:
 - [x] 20-01-PLAN.md — Define closed native runtime contracts, profile prefs, limits, and effective policy.
@@ -314,14 +314,15 @@ Plans:
 - [ ] 20-03-PLAN.md — Implement bounded memory and exact-origin site-guide CRUD/search/apply.
 - [ ] 20-04-PLAN.md — Add OSCrypt-backed exact-origin secret storage and the provider registry.
 - [ ] 20-05-PLAN.md — Add three strict provider codec families and secure cancellable network transport.
-- [ ] 20-06-PLAN.md — Assemble the regular-profile task runtime, safe tool loop, fallback, cancellation, and evaluation seam.
-- [ ] 20-07-PLAN.md — Add vault metadata, private Agent-authority insertion, and fail-closed fresh target confirmation.
-- [ ] 20-08-PLAN.md — Expose 27 closed runtime commands through the authenticated native gateway.
-- [ ] 20-09-PLAN.md — Promote all 31 Phase 20 MCP names to 27 native routes plus four aliases and prove built-app external smoke.
-- [ ] 20-10-PLAN.md — Migrate to exact-window side-panel ownership and wire the live task UI.
-- [ ] 20-11-PLAN.md — Populate live control-panel Tasks, Providers & Models, and Logs & Diagnostics.
-- [ ] 20-12-PLAN.md — Complete Memory, Site Guides, Vault, Settings, and exact-window native secret dialogs.
-- [ ] 20-13-PLAN.md — Run the 32-case integration corpus, full gates, patch export, and evidence closeout.
+- [ ] 20-06-PLAN.md — Add safe-title persistence plus native policy and Agent-session-cap primitives.
+- [ ] 20-07-PLAN.md — Own the closed non-official provider bootstrap and assemble the regular-profile runtime, private local principal, safe tool loop, fallback, cancellation, and evaluation seam.
+- [ ] 20-08-PLAN.md — Add vault metadata, private Agent-authority insertion, and fail-closed fresh target confirmation.
+- [ ] 20-09-PLAN.md — Expose 27 closed runtime commands through the authenticated native gateway.
+- [ ] 20-10-PLAN.md — Promote all 31 Phase 20 MCP names to 27 native routes plus four aliases and prove built-app external smoke.
+- [ ] 20-11-PLAN.md — Migrate to exact-window side-panel ownership and wire the live task UI.
+- [ ] 20-12-PLAN.md — Populate live control-panel Tasks, Providers & Models, and Logs & Diagnostics.
+- [ ] 20-13-PLAN.md — Complete Memory, Site Guides, Vault, Settings, and exact-window native secret dialogs.
+- [ ] 20-14-PLAN.md — Run the 32-case integration corpus, full gates, patch export, and evidence closeout.
 
 **Success criteria:**
 
