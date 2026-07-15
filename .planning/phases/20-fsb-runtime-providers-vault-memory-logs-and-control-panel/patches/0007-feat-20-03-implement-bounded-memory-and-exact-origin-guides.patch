@@ -1,0 +1,1530 @@
+From 55325eca9922edaf0b0d3008e89e8950d590d5c5 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 15 Jul 2026 15:09:17 -0500
+Subject: [PATCH] feat(20-03): implement bounded memory and exact-origin guides
+
+- Persist strict caller-filtered memory and guide records with opaque IDs
+- Enforce Unicode search, fixed limits, deterministic LRU, and restart repair
+- Revalidate exact committed-document origins and retain safe apply metadata
+---
+ chrome/browser/prometheus/BUILD.gn            |    3 +
+ .../prometheus/prometheus_memory_store.cc     | 1060 ++++++++++++++++-
+ .../prometheus/prometheus_memory_store.h      |   29 +-
+ .../prometheus_memory_store_unittest.cc       |  199 +++-
+ 4 files changed, 1212 insertions(+), 79 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index cd91f642e2..24f011caef 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -294,8 +294,11 @@ source_set("prometheus_memory_store") {
+   ]
+ 
+   deps = [
++    ":prometheus_runtime_types",
+     "//base",
++    "//base:i18n",
+     "//components/prefs",
++    "//crypto",
+     "//url",
+   ]
+ }
+diff --git a/chrome/browser/prometheus/prometheus_memory_store.cc b/chrome/browser/prometheus/prometheus_memory_store.cc
+index c194576e55..d76f53a39b 100644
+--- a/chrome/browser/prometheus/prometheus_memory_store.cc
++++ b/chrome/browser/prometheus/prometheus_memory_store.cc
+@@ -4,16 +4,537 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_memory_store.h"
+ 
++#include <algorithm>
++#include <cmath>
++#include <optional>
++#include <set>
++#include <string>
+ #include <utility>
+ 
+ #include "base/check.h"
++#include "base/i18n/case_conversion.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
++#include "base/strings/utf_string_conversions.h"
++#include "base/uuid.h"
++#include "base/values.h"
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
++#include "chrome/browser/prometheus/prometheus_runtime_types.h"
++#include "components/prefs/pref_service.h"
++#include "crypto/hash.h"
++#include "url/origin.h"
+ 
+ namespace prometheus {
+ 
++namespace {
++
++constexpr int kMemoryStoreSchemaVersion = 1;
++constexpr int64_t kMaxExactJsonInteger = 9'007'199'254'740'991;
++constexpr size_t kMaxMemoryCallerIdBytes = 256;
++
++constexpr char kDataKey[] = "data";
++constexpr char kMemoryStoreKey[] = "memory_store";
++constexpr char kSchemaVersionKey[] = "schema_version";
++constexpr char kAccessSequenceKey[] = "access_sequence";
++constexpr char kMemoriesKey[] = "memories";
++constexpr char kSiteGuidesKey[] = "site_guides";
++constexpr char kGuideApplicationsKey[] = "guide_applications";
++
++constexpr char kMemoryIdKey[] = "memory_id";
++constexpr char kGuideIdKey[] = "guide_id";
++constexpr char kOwnerKey[] = "owner_key";
++constexpr char kTitleKey[] = "title";
++constexpr char kTextKey[] = "text";
++constexpr char kInstructionsKey[] = "instructions";
++constexpr char kTagsKey[] = "tags";
++constexpr char kVisibilityKey[] = "visibility";
++constexpr char kCanonicalOriginKey[] = "canonical_origin";
++constexpr char kCreatedAtKey[] = "created_at_ms";
++constexpr char kUpdatedAtKey[] = "updated_at_ms";
++constexpr char kByteCountKey[] = "byte_count";
++constexpr char kOutcomeKey[] = "outcome";
++constexpr char kTimestampKey[] = "timestamp_ms";
++
++struct ParsedMemoryRecord {
++  MemoryRecord record;
++  std::string owner_key;
++  uint64_t access_sequence = 0;
++};
++
++struct ParsedSiteGuideRecord {
++  SiteGuideRecord record;
++  std::string owner_key;
++  uint64_t access_sequence = 0;
++};
++
++bool IsValidTimestamp(int64_t timestamp_ms) {
++  return timestamp_ms >= 0 && timestamp_ms <= kMaxExactJsonInteger;
++}
++
++bool IsValidStoredInteger(double value, bool require_positive) {
++  return std::isfinite(value) && std::floor(value) == value &&
++         value >= (require_positive ? 1.0 : 0.0) &&
++         value <= static_cast<double>(kMaxExactJsonInteger);
++}
++
++MemoryStoreBounds ClampMemoryStoreBounds(const MemoryStoreBounds& bounds) {
++  return MemoryStoreBounds{
++      .max_memories =
++          std::clamp(bounds.max_memories, size_t{1}, kMaxStoredMemories),
++      .max_site_guides =
++          std::clamp(bounds.max_site_guides, size_t{1}, kMaxStoredSiteGuides),
++      .max_guide_applications =
++          std::clamp(bounds.max_guide_applications, size_t{1},
++                     kMaxStoredGuideApplications),
++      .max_total_utf8_bytes = std::clamp(bounds.max_total_utf8_bytes, size_t{1},
++                                         kMaxMemoryStoreBytes),
++  };
++}
++
++std::string NewOpaqueId() {
++  return base::Uuid::GenerateRandomV4().AsLowercaseString();
++}
++
++bool IsValidRecordId(std::string_view record_id) {
++  return record_id.size() <= kMaxRuntimeTaskIdBytes &&
++         base::Uuid::ParseLowercase(record_id).is_valid();
++}
++
++bool IsValidCallerId(std::string_view caller_id) {
++  return !caller_id.empty() &&
++         IsBoundedRuntimeUtf8(caller_id, kMaxMemoryCallerIdBytes);
++}
++
++std::string OwnerKeyForCaller(std::string_view caller_id) {
++  std::string scoped_input = "prometheus-memory-owner-v1:";
++  scoped_input.append(caller_id);
++  return base::HexEncodeLower(crypto::hash::Sha256(scoped_input));
++}
++
++bool IsValidOwnerKey(std::string_view owner_key) {
++  return owner_key.size() == crypto::hash::kSha256Size * 2 &&
++         std::ranges::all_of(owner_key, [](char value) {
++           return (value >= '0' && value <= '9') ||
++                  (value >= 'a' && value <= 'f');
++         });
++}
++
++bool IsValidVisibility(MemoryVisibility visibility) {
++  return visibility == MemoryVisibility::kCallerOwned ||
++         visibility == MemoryVisibility::kProfileShared;
++}
++
++std::string_view MemoryVisibilityToString(MemoryVisibility visibility) {
++  switch (visibility) {
++    case MemoryVisibility::kCallerOwned:
++      return "caller_owned";
++    case MemoryVisibility::kProfileShared:
++      return "profile_shared";
++  }
++}
++
++std::optional<MemoryVisibility> MemoryVisibilityFromString(
++    std::string_view visibility) {
++  if (visibility == "caller_owned") {
++    return MemoryVisibility::kCallerOwned;
++  }
++  if (visibility == "profile_shared") {
++    return MemoryVisibility::kProfileShared;
++  }
++  return std::nullopt;
++}
++
++std::string_view SiteGuideApplyOutcomeToString(SiteGuideApplyOutcome outcome) {
++  switch (outcome) {
++    case SiteGuideApplyOutcome::kApplied:
++      return "applied";
++    case SiteGuideApplyOutcome::kNotFound:
++      return "not_found";
++    case SiteGuideApplyOutcome::kDenied:
++      return "denied";
++    case SiteGuideApplyOutcome::kOriginMismatch:
++      return "origin_mismatch";
++    case SiteGuideApplyOutcome::kDocumentChanged:
++      return "document_changed";
++    case SiteGuideApplyOutcome::kNotCurrentDocument:
++      return "not_current_document";
++  }
++}
++
++std::optional<SiteGuideApplyOutcome> SiteGuideApplyOutcomeFromString(
++    std::string_view outcome) {
++  if (outcome == "applied") {
++    return SiteGuideApplyOutcome::kApplied;
++  }
++  if (outcome == "not_found") {
++    return SiteGuideApplyOutcome::kNotFound;
++  }
++  if (outcome == "denied") {
++    return SiteGuideApplyOutcome::kDenied;
++  }
++  if (outcome == "origin_mismatch") {
++    return SiteGuideApplyOutcome::kOriginMismatch;
++  }
++  if (outcome == "document_changed") {
++    return SiteGuideApplyOutcome::kDocumentChanged;
++  }
++  if (outcome == "not_current_document") {
++    return SiteGuideApplyOutcome::kNotCurrentDocument;
++  }
++  return std::nullopt;
++}
++
++std::optional<std::vector<std::string>> NormalizeTags(
++    const std::vector<std::string>& tags) {
++  if (tags.size() > kMaxMemoryTags) {
++    return std::nullopt;
++  }
++
++  std::vector<std::string> normalized;
++  for (const std::string& tag : tags) {
++    if (!IsBoundedRuntimeUtf8(tag, kMaxMemoryTagBytes)) {
++      return std::nullopt;
++    }
++    std::string trimmed(
++        base::TrimWhitespaceASCII(tag, base::TrimPositions::TRIM_ALL));
++    if (trimmed.empty()) {
++      continue;
++    }
++    std::string folded =
++        base::UTF16ToUTF8(base::i18n::FoldCase(base::UTF8ToUTF16(trimmed)));
++    if (folded.empty() || !IsBoundedRuntimeUtf8(folded, kMaxMemoryTagBytes)) {
++      return std::nullopt;
++    }
++    if (!std::ranges::contains(normalized, folded)) {
++      normalized.push_back(std::move(folded));
++    }
++  }
++  return normalized;
++}
++
++bool IsValidTitleAndBody(std::string_view title, std::string_view body) {
++  return !title.empty() && !body.empty() &&
++         IsBoundedRuntimeUtf8(title, kMaxMemoryTitleBytes) &&
++         IsBoundedRuntimeUtf8(body, kMaxMemoryTextBytes);
++}
++
++size_t TagsByteCount(const std::vector<std::string>& tags) {
++  size_t bytes = 0;
++  for (const std::string& tag : tags) {
++    bytes += tag.size();
++  }
++  return bytes;
++}
++
++size_t MemoryContentBytes(std::string_view title,
++                          std::string_view text,
++                          const std::vector<std::string>& tags) {
++  return title.size() + text.size() + TagsByteCount(tags);
++}
++
++size_t SiteGuideContentBytes(std::string_view title,
++                             std::string_view instructions,
++                             const std::vector<std::string>& tags,
++                             std::string_view canonical_origin) {
++  return title.size() + instructions.size() + TagsByteCount(tags) +
++         canonical_origin.size();
++}
++
++std::optional<std::string> CanonicalExactOrigin(const GURL& url) {
++  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS() || url.has_username() ||
++      url.has_password() || url.has_query() || url.has_ref() ||
++      (url.has_path() && url.path() != "/")) {
++    return std::nullopt;
++  }
++  url::Origin origin = url::Origin::Create(url);
++  if (origin.opaque()) {
++    return std::nullopt;
++  }
++  return origin.Serialize();
++}
++
++std::optional<std::string> CanonicalCommittedOrigin(const GURL& url) {
++  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS() || url.has_username() ||
++      url.has_password()) {
++    return std::nullopt;
++  }
++  url::Origin origin = url::Origin::Create(url);
++  if (origin.opaque()) {
++    return std::nullopt;
++  }
++  return origin.Serialize();
++}
++
++bool IsCanonicalStoredOrigin(std::string_view stored_origin) {
++  std::optional<std::string> canonical =
++      CanonicalExactOrigin(GURL(std::string(stored_origin)));
++  return canonical.has_value() && *canonical == stored_origin;
++}
++
++std::optional<std::u16string> FoldBoundedQuery(std::string_view query) {
++  if (query.empty() || !IsBoundedRuntimeUtf8(query, kMaxMemoryQueryBytes)) {
++    return std::nullopt;
++  }
++  std::string trimmed(
++      base::TrimWhitespaceASCII(query, base::TrimPositions::TRIM_ALL));
++  if (trimmed.empty()) {
++    return std::nullopt;
++  }
++  return base::i18n::FoldCase(base::UTF8ToUTF16(trimmed));
++}
++
++bool ContainsFolded(std::string_view value, std::u16string_view query) {
++  return base::i18n::FoldCase(base::UTF8ToUTF16(value)).find(query) !=
++         std::u16string::npos;
++}
++
++bool TagsContainFolded(const std::vector<std::string>& tags,
++                       std::u16string_view query) {
++  return std::ranges::any_of(tags, [query](const std::string& tag) {
++    return ContainsFolded(tag, query);
++  });
++}
++
++bool MemoryMatches(const MemoryRecord& record, std::u16string_view query) {
++  return ContainsFolded(record.title, query) ||
++         ContainsFolded(record.text, query) ||
++         TagsContainFolded(record.tags, query);
++}
++
++bool SiteGuideMatches(const SiteGuideRecord& record,
++                      std::u16string_view query) {
++  return ContainsFolded(record.title, query) ||
++         ContainsFolded(record.instructions, query) ||
++         ContainsFolded(record.canonical_origin, query) ||
++         TagsContainFolded(record.tags, query);
++}
++
++base::ListValue TagsToValue(const std::vector<std::string>& tags) {
++  base::ListValue values;
++  for (const std::string& tag : tags) {
++    values.Append(tag);
++  }
++  return values;
++}
++
++std::optional<std::vector<std::string>> TagsFromValue(
++    const base::ListValue* values) {
++  if (!values || values->size() > kMaxMemoryTags) {
++    return std::nullopt;
++  }
++  std::vector<std::string> tags;
++  for (const base::Value& value : *values) {
++    if (!value.is_string()) {
++      return std::nullopt;
++    }
++    tags.push_back(value.GetString());
++  }
++  std::optional<std::vector<std::string>> normalized = NormalizeTags(tags);
++  if (!normalized || *normalized != tags) {
++    return std::nullopt;
++  }
++  return tags;
++}
++
++base::DictValue MemoryToValue(const MemoryRecord& record,
++                              std::string_view owner_key,
++                              uint64_t access_sequence) {
++  base::DictValue value;
++  value.Set(kMemoryIdKey, record.memory_id);
++  value.Set(kOwnerKey, owner_key);
++  value.Set(kTitleKey, record.title);
++  value.Set(kTextKey, record.text);
++  value.Set(kTagsKey, TagsToValue(record.tags));
++  value.Set(kVisibilityKey,
++            std::string(MemoryVisibilityToString(record.visibility)));
++  value.Set(kCreatedAtKey, static_cast<double>(record.created_at_ms));
++  value.Set(kUpdatedAtKey, static_cast<double>(record.updated_at_ms));
++  value.Set(kByteCountKey, static_cast<int>(record.byte_count));
++  value.Set(kAccessSequenceKey, static_cast<double>(access_sequence));
++  return value;
++}
++
++base::DictValue SiteGuideToValue(const SiteGuideRecord& record,
++                                 std::string_view owner_key,
++                                 uint64_t access_sequence) {
++  base::DictValue value;
++  value.Set(kGuideIdKey, record.guide_id);
++  value.Set(kOwnerKey, owner_key);
++  value.Set(kTitleKey, record.title);
++  value.Set(kInstructionsKey, record.instructions);
++  value.Set(kTagsKey, TagsToValue(record.tags));
++  value.Set(kCanonicalOriginKey, record.canonical_origin);
++  value.Set(kVisibilityKey,
++            std::string(MemoryVisibilityToString(record.visibility)));
++  value.Set(kCreatedAtKey, static_cast<double>(record.created_at_ms));
++  value.Set(kUpdatedAtKey, static_cast<double>(record.updated_at_ms));
++  value.Set(kByteCountKey, static_cast<int>(record.byte_count));
++  value.Set(kAccessSequenceKey, static_cast<double>(access_sequence));
++  return value;
++}
++
++base::DictValue GuideApplicationToValue(
++    const SiteGuideApplicationRecord& application) {
++  base::DictValue value;
++  value.Set(kGuideIdKey, application.guide_id);
++  value.Set(kCanonicalOriginKey, application.canonical_origin);
++  value.Set(kOutcomeKey,
++            std::string(SiteGuideApplyOutcomeToString(application.outcome)));
++  value.Set(kTimestampKey, static_cast<double>(application.timestamp_ms));
++  return value;
++}
++
++std::optional<ParsedMemoryRecord> MemoryFromValue(
++    const base::DictValue& value) {
++  if (value.size() != 10u) {
++    return std::nullopt;
++  }
++  const std::string* memory_id = value.FindString(kMemoryIdKey);
++  const std::string* owner_key = value.FindString(kOwnerKey);
++  const std::string* title = value.FindString(kTitleKey);
++  const std::string* text = value.FindString(kTextKey);
++  const std::string* visibility_string = value.FindString(kVisibilityKey);
++  std::optional<std::vector<std::string>> tags =
++      TagsFromValue(value.FindList(kTagsKey));
++  std::optional<double> created_at = value.FindDouble(kCreatedAtKey);
++  std::optional<double> updated_at = value.FindDouble(kUpdatedAtKey);
++  std::optional<int> byte_count = value.FindInt(kByteCountKey);
++  std::optional<double> access_sequence = value.FindDouble(kAccessSequenceKey);
++  if (!memory_id || !owner_key || !title || !text || !visibility_string ||
++      !tags || !created_at || !updated_at || !byte_count || !access_sequence ||
++      !IsValidRecordId(*memory_id) || !IsValidOwnerKey(*owner_key) ||
++      !IsValidTitleAndBody(*title, *text) ||
++      !IsValidStoredInteger(*created_at, false) ||
++      !IsValidStoredInteger(*updated_at, false) || *updated_at < *created_at ||
++      !IsValidStoredInteger(*access_sequence, true)) {
++    return std::nullopt;
++  }
++  std::optional<MemoryVisibility> visibility =
++      MemoryVisibilityFromString(*visibility_string);
++  const size_t expected_bytes = MemoryContentBytes(*title, *text, *tags);
++  if (!visibility || *byte_count < 0 ||
++      static_cast<size_t>(*byte_count) != expected_bytes) {
++    return std::nullopt;
++  }
++
++  ParsedMemoryRecord parsed;
++  parsed.record.memory_id = *memory_id;
++  parsed.record.title = *title;
++  parsed.record.text = *text;
++  parsed.record.tags = std::move(*tags);
++  parsed.record.visibility = *visibility;
++  parsed.record.created_at_ms = static_cast<int64_t>(*created_at);
++  parsed.record.updated_at_ms = static_cast<int64_t>(*updated_at);
++  parsed.record.byte_count = expected_bytes;
++  parsed.owner_key = *owner_key;
++  parsed.access_sequence = static_cast<uint64_t>(*access_sequence);
++  return parsed;
++}
++
++std::optional<ParsedSiteGuideRecord> SiteGuideFromValue(
++    const base::DictValue& value) {
++  if (value.size() != 11u) {
++    return std::nullopt;
++  }
++  const std::string* guide_id = value.FindString(kGuideIdKey);
++  const std::string* owner_key = value.FindString(kOwnerKey);
++  const std::string* title = value.FindString(kTitleKey);
++  const std::string* instructions = value.FindString(kInstructionsKey);
++  const std::string* canonical_origin = value.FindString(kCanonicalOriginKey);
++  const std::string* visibility_string = value.FindString(kVisibilityKey);
++  std::optional<std::vector<std::string>> tags =
++      TagsFromValue(value.FindList(kTagsKey));
++  std::optional<double> created_at = value.FindDouble(kCreatedAtKey);
++  std::optional<double> updated_at = value.FindDouble(kUpdatedAtKey);
++  std::optional<int> byte_count = value.FindInt(kByteCountKey);
++  std::optional<double> access_sequence = value.FindDouble(kAccessSequenceKey);
++  if (!guide_id || !owner_key || !title || !instructions || !canonical_origin ||
++      !visibility_string || !tags || !created_at || !updated_at ||
++      !byte_count || !access_sequence || !IsValidRecordId(*guide_id) ||
++      !IsValidOwnerKey(*owner_key) ||
++      !IsValidTitleAndBody(*title, *instructions) ||
++      !IsCanonicalStoredOrigin(*canonical_origin) ||
++      !IsValidStoredInteger(*created_at, false) ||
++      !IsValidStoredInteger(*updated_at, false) || *updated_at < *created_at ||
++      !IsValidStoredInteger(*access_sequence, true)) {
++    return std::nullopt;
++  }
++  std::optional<MemoryVisibility> visibility =
++      MemoryVisibilityFromString(*visibility_string);
++  const size_t expected_bytes =
++      SiteGuideContentBytes(*title, *instructions, *tags, *canonical_origin);
++  if (!visibility || *byte_count < 0 ||
++      static_cast<size_t>(*byte_count) != expected_bytes) {
++    return std::nullopt;
++  }
++
++  ParsedSiteGuideRecord parsed;
++  parsed.record.guide_id = *guide_id;
++  parsed.record.title = *title;
++  parsed.record.instructions = *instructions;
++  parsed.record.tags = std::move(*tags);
++  parsed.record.canonical_origin = *canonical_origin;
++  parsed.record.visibility = *visibility;
++  parsed.record.created_at_ms = static_cast<int64_t>(*created_at);
++  parsed.record.updated_at_ms = static_cast<int64_t>(*updated_at);
++  parsed.record.byte_count = expected_bytes;
++  parsed.owner_key = *owner_key;
++  parsed.access_sequence = static_cast<uint64_t>(*access_sequence);
++  return parsed;
++}
++
++std::optional<SiteGuideApplicationRecord> GuideApplicationFromValue(
++    const base::DictValue& value) {
++  if (value.size() != 4u) {
++    return std::nullopt;
++  }
++  const std::string* guide_id = value.FindString(kGuideIdKey);
++  const std::string* canonical_origin = value.FindString(kCanonicalOriginKey);
++  const std::string* outcome_string = value.FindString(kOutcomeKey);
++  std::optional<double> timestamp = value.FindDouble(kTimestampKey);
++  if (!guide_id || !canonical_origin || !outcome_string || !timestamp ||
++      !IsValidRecordId(*guide_id) ||
++      (!canonical_origin->empty() &&
++       !IsCanonicalStoredOrigin(*canonical_origin)) ||
++      !IsValidStoredInteger(*timestamp, false)) {
++    return std::nullopt;
++  }
++  std::optional<SiteGuideApplyOutcome> outcome =
++      SiteGuideApplyOutcomeFromString(*outcome_string);
++  if (!outcome) {
++    return std::nullopt;
++  }
++  return SiteGuideApplicationRecord{
++      .guide_id = *guide_id,
++      .canonical_origin = *canonical_origin,
++      .outcome = *outcome,
++      .timestamp_ms = static_cast<int64_t>(*timestamp),
++  };
++}
++
++MemoryRecord PublicMemoryRecord(const MemoryRecord& record,
++                                bool owned_by_caller) {
++  MemoryRecord result = record;
++  result.owned_by_caller = owned_by_caller;
++  return result;
++}
++
++SiteGuideRecord PublicSiteGuideRecord(const SiteGuideRecord& record,
++                                      bool owned_by_caller) {
++  SiteGuideRecord result = record;
++  result.owned_by_caller = owned_by_caller;
++  return result;
++}
++
++}  // namespace
++
+ PrometheusMemoryStore::PrometheusMemoryStore(PrefService* prefs,
+                                              MemoryStoreBounds bounds)
+-    : prefs_(prefs), bounds_(bounds) {
++    : prefs_(prefs), bounds_(ClampMemoryStoreBounds(bounds)) {
+   CHECK(prefs_);
++  Load();
++  EnforceBounds();
++  Persist();
+ }
+ 
+ PrometheusMemoryStore::~PrometheusMemoryStore() = default;
+@@ -25,30 +546,115 @@ MemoryStoreMutation PrometheusMemoryStore::CreateMemory(
+     std::string text,
+     std::vector<std::string> tags,
+     int64_t timestamp_ms) {
+-  return {};
++  std::optional<std::vector<std::string>> normalized_tags = NormalizeTags(tags);
++  if (!IsValidCallerId(caller_id) || !IsValidVisibility(visibility) ||
++      !IsValidTitleAndBody(title, text) || !normalized_tags ||
++      !IsValidTimestamp(timestamp_ms)) {
++    return {.status = MemoryStoreStatus::kInvalidInput};
++  }
++  const size_t byte_count = MemoryContentBytes(title, text, *normalized_tags);
++  if (byte_count > bounds_.max_total_utf8_bytes) {
++    return {.status = MemoryStoreStatus::kStoreFull};
++  }
++
++  StoredMemoryRecord stored;
++  do {
++    stored.record.memory_id = NewOpaqueId();
++  } while (FindMemory(stored.record.memory_id) ||
++           FindSiteGuide(stored.record.memory_id));
++  stored.record.title = std::move(title);
++  stored.record.text = std::move(text);
++  stored.record.tags = std::move(*normalized_tags);
++  stored.record.visibility = visibility;
++  stored.record.created_at_ms = timestamp_ms;
++  stored.record.updated_at_ms = timestamp_ms;
++  stored.record.byte_count = byte_count;
++  stored.owner_key = OwnerKeyForCaller(caller_id);
++  stored.access_sequence = ++access_sequence_;
++  const std::string memory_id = stored.record.memory_id;
++  memories_.push_back(std::move(stored));
++  Persist();
++  if (!FindMemory(memory_id)) {
++    return {.status = MemoryStoreStatus::kStoreFull};
++  }
++  return {.status = MemoryStoreStatus::kOk, .record_id = memory_id};
+ }
+ 
+ std::optional<MemoryRecord> PrometheusMemoryStore::GetMemoryForCaller(
+     std::string_view caller_id,
+     std::string_view memory_id) {
+-  return std::nullopt;
++  if (!IsValidCallerId(caller_id) || !IsValidRecordId(memory_id)) {
++    return std::nullopt;
++  }
++  StoredMemoryRecord* stored = FindMutableMemory(memory_id);
++  if (!stored) {
++    return std::nullopt;
++  }
++  const std::string owner_key = OwnerKeyForCaller(caller_id);
++  const bool owned = stored->owner_key == owner_key;
++  if (!owned && stored->record.visibility != MemoryVisibility::kProfileShared) {
++    return std::nullopt;
++  }
++  stored->access_sequence = ++access_sequence_;
++  MemoryRecord result = PublicMemoryRecord(stored->record, owned);
++  Persist();
++  return result;
+ }
+ 
+ std::vector<MemoryRecord> PrometheusMemoryStore::ListMemoryForCaller(
+     std::string_view caller_id) const {
+-  return {};
++  if (!IsValidCallerId(caller_id)) {
++    return {};
++  }
++  const std::string owner_key = OwnerKeyForCaller(caller_id);
++  std::vector<MemoryRecord> results;
++  for (const StoredMemoryRecord& stored : memories_) {
++    const bool owned = stored.owner_key == owner_key;
++    if (owned || stored.record.visibility == MemoryVisibility::kProfileShared) {
++      results.push_back(PublicMemoryRecord(stored.record, owned));
++    }
++  }
++  return results;
+ }
+ 
+ std::vector<MemoryRecord> PrometheusMemoryStore::SearchMemoryForCaller(
+     std::string_view caller_id,
+     std::string_view query,
+     size_t max_results) {
+-  return {};
++  std::optional<std::u16string> folded_query = FoldBoundedQuery(query);
++  if (!IsValidCallerId(caller_id) || !folded_query || max_results == 0) {
++    return {};
++  }
++  max_results = std::min(max_results, kMaxMemorySearchResults);
++  const std::string owner_key = OwnerKeyForCaller(caller_id);
++  std::vector<MemoryRecord> results;
++  for (StoredMemoryRecord& stored : memories_) {
++    const bool owned = stored.owner_key == owner_key;
++    if ((!owned &&
++         stored.record.visibility != MemoryVisibility::kProfileShared) ||
++        !MemoryMatches(stored.record, *folded_query)) {
++      continue;
++    }
++    stored.access_sequence = ++access_sequence_;
++    results.push_back(PublicMemoryRecord(stored.record, owned));
++    if (results.size() == max_results) {
++      break;
++    }
++  }
++  if (!results.empty()) {
++    Persist();
++  }
++  return results;
+ }
+ 
+ std::vector<MemoryRecord> PrometheusMemoryStore::ListMemoryForBrowserUi()
+     const {
+-  return {};
++  std::vector<MemoryRecord> results;
++  results.reserve(memories_.size());
++  for (const StoredMemoryRecord& stored : memories_) {
++    results.push_back(PublicMemoryRecord(stored.record, false));
++  }
++  return results;
+ }
+ 
+ MemoryStoreStatus PrometheusMemoryStore::UpdateMemory(
+@@ -59,13 +665,58 @@ MemoryStoreStatus PrometheusMemoryStore::UpdateMemory(
+     std::string text,
+     std::vector<std::string> tags,
+     int64_t timestamp_ms) {
+-  return MemoryStoreStatus::kInvalidInput;
++  std::optional<std::vector<std::string>> normalized_tags = NormalizeTags(tags);
++  if (!IsValidCallerId(caller_id) || !IsValidRecordId(memory_id) ||
++      !IsValidVisibility(visibility) || !IsValidTitleAndBody(title, text) ||
++      !normalized_tags || !IsValidTimestamp(timestamp_ms)) {
++    return MemoryStoreStatus::kInvalidInput;
++  }
++  StoredMemoryRecord* stored = FindMutableMemory(memory_id);
++  if (!stored) {
++    return MemoryStoreStatus::kNotFound;
++  }
++  if (stored->owner_key != OwnerKeyForCaller(caller_id)) {
++    return MemoryStoreStatus::kDenied;
++  }
++  if (timestamp_ms < stored->record.updated_at_ms) {
++    return MemoryStoreStatus::kInvalidInput;
++  }
++  const size_t byte_count = MemoryContentBytes(title, text, *normalized_tags);
++  if (byte_count > bounds_.max_total_utf8_bytes) {
++    return MemoryStoreStatus::kStoreFull;
++  }
++
++  stored->record.title = std::move(title);
++  stored->record.text = std::move(text);
++  stored->record.tags = std::move(*normalized_tags);
++  stored->record.visibility = visibility;
++  stored->record.updated_at_ms = timestamp_ms;
++  stored->record.byte_count = byte_count;
++  stored->access_sequence = ++access_sequence_;
++  Persist();
++  return FindMemory(memory_id) ? MemoryStoreStatus::kOk
++                               : MemoryStoreStatus::kStoreFull;
+ }
+ 
+ MemoryStoreStatus PrometheusMemoryStore::DeleteMemory(
+     std::string_view caller_id,
+     std::string_view memory_id) {
+-  return MemoryStoreStatus::kNotFound;
++  if (!IsValidCallerId(caller_id) || !IsValidRecordId(memory_id)) {
++    return MemoryStoreStatus::kInvalidInput;
++  }
++  const auto found = std::ranges::find_if(
++      memories_, [memory_id](const StoredMemoryRecord& stored) {
++        return stored.record.memory_id == memory_id;
++      });
++  if (found == memories_.end()) {
++    return MemoryStoreStatus::kNotFound;
++  }
++  if (found->owner_key != OwnerKeyForCaller(caller_id)) {
++    return MemoryStoreStatus::kDenied;
++  }
++  memories_.erase(found);
++  Persist();
++  return MemoryStoreStatus::kOk;
+ }
+ 
+ MemoryStoreMutation PrometheusMemoryStore::CreateSiteGuide(
+@@ -76,30 +727,119 @@ MemoryStoreMutation PrometheusMemoryStore::CreateSiteGuide(
+     std::vector<std::string> tags,
+     const GURL& exact_origin_url,
+     int64_t timestamp_ms) {
+-  return {};
++  std::optional<std::vector<std::string>> normalized_tags = NormalizeTags(tags);
++  std::optional<std::string> canonical_origin =
++      CanonicalExactOrigin(exact_origin_url);
++  if (!IsValidCallerId(caller_id) || !IsValidVisibility(visibility) ||
++      !IsValidTitleAndBody(title, instructions) || !normalized_tags ||
++      !canonical_origin || !IsValidTimestamp(timestamp_ms)) {
++    return {.status = MemoryStoreStatus::kInvalidInput};
++  }
++  const size_t byte_count = SiteGuideContentBytes(
++      title, instructions, *normalized_tags, *canonical_origin);
++  if (byte_count > bounds_.max_total_utf8_bytes) {
++    return {.status = MemoryStoreStatus::kStoreFull};
++  }
++
++  StoredSiteGuideRecord stored;
++  do {
++    stored.record.guide_id = NewOpaqueId();
++  } while (FindMemory(stored.record.guide_id) ||
++           FindSiteGuide(stored.record.guide_id));
++  stored.record.title = std::move(title);
++  stored.record.instructions = std::move(instructions);
++  stored.record.tags = std::move(*normalized_tags);
++  stored.record.canonical_origin = std::move(*canonical_origin);
++  stored.record.visibility = visibility;
++  stored.record.created_at_ms = timestamp_ms;
++  stored.record.updated_at_ms = timestamp_ms;
++  stored.record.byte_count = byte_count;
++  stored.owner_key = OwnerKeyForCaller(caller_id);
++  stored.access_sequence = ++access_sequence_;
++  const std::string guide_id = stored.record.guide_id;
++  site_guides_.push_back(std::move(stored));
++  Persist();
++  if (!FindSiteGuide(guide_id)) {
++    return {.status = MemoryStoreStatus::kStoreFull};
++  }
++  return {.status = MemoryStoreStatus::kOk, .record_id = guide_id};
+ }
+ 
+ std::optional<SiteGuideRecord> PrometheusMemoryStore::GetSiteGuideForCaller(
+     std::string_view caller_id,
+     std::string_view guide_id) {
+-  return std::nullopt;
++  if (!IsValidCallerId(caller_id) || !IsValidRecordId(guide_id)) {
++    return std::nullopt;
++  }
++  StoredSiteGuideRecord* stored = FindMutableSiteGuide(guide_id);
++  if (!stored) {
++    return std::nullopt;
++  }
++  const std::string owner_key = OwnerKeyForCaller(caller_id);
++  const bool owned = stored->owner_key == owner_key;
++  if (!owned && stored->record.visibility != MemoryVisibility::kProfileShared) {
++    return std::nullopt;
++  }
++  stored->access_sequence = ++access_sequence_;
++  SiteGuideRecord result = PublicSiteGuideRecord(stored->record, owned);
++  Persist();
++  return result;
+ }
+ 
+ std::vector<SiteGuideRecord> PrometheusMemoryStore::ListSiteGuidesForCaller(
+     std::string_view caller_id) const {
+-  return {};
++  if (!IsValidCallerId(caller_id)) {
++    return {};
++  }
++  const std::string owner_key = OwnerKeyForCaller(caller_id);
++  std::vector<SiteGuideRecord> results;
++  for (const StoredSiteGuideRecord& stored : site_guides_) {
++    const bool owned = stored.owner_key == owner_key;
++    if (owned || stored.record.visibility == MemoryVisibility::kProfileShared) {
++      results.push_back(PublicSiteGuideRecord(stored.record, owned));
++    }
++  }
++  return results;
+ }
+ 
+ std::vector<SiteGuideRecord> PrometheusMemoryStore::SearchSiteGuidesForCaller(
+     std::string_view caller_id,
+     std::string_view query,
+     size_t max_results) {
+-  return {};
++  std::optional<std::u16string> folded_query = FoldBoundedQuery(query);
++  if (!IsValidCallerId(caller_id) || !folded_query || max_results == 0) {
++    return {};
++  }
++  max_results = std::min(max_results, kMaxMemorySearchResults);
++  const std::string owner_key = OwnerKeyForCaller(caller_id);
++  std::vector<SiteGuideRecord> results;
++  for (StoredSiteGuideRecord& stored : site_guides_) {
++    const bool owned = stored.owner_key == owner_key;
++    if ((!owned &&
++         stored.record.visibility != MemoryVisibility::kProfileShared) ||
++        !SiteGuideMatches(stored.record, *folded_query)) {
++      continue;
++    }
++    stored.access_sequence = ++access_sequence_;
++    results.push_back(PublicSiteGuideRecord(stored.record, owned));
++    if (results.size() == max_results) {
++      break;
++    }
++  }
++  if (!results.empty()) {
++    Persist();
++  }
++  return results;
+ }
+ 
+-std::vector<SiteGuideRecord>
+-PrometheusMemoryStore::ListSiteGuidesForBrowserUi() const {
+-  return {};
++std::vector<SiteGuideRecord> PrometheusMemoryStore::ListSiteGuidesForBrowserUi()
++    const {
++  std::vector<SiteGuideRecord> results;
++  results.reserve(site_guides_.size());
++  for (const StoredSiteGuideRecord& stored : site_guides_) {
++    results.push_back(PublicSiteGuideRecord(stored.record, false));
++  }
++  return results;
+ }
+ 
+ MemoryStoreStatus PrometheusMemoryStore::UpdateSiteGuide(
+@@ -111,13 +851,63 @@ MemoryStoreStatus PrometheusMemoryStore::UpdateSiteGuide(
+     std::vector<std::string> tags,
+     const GURL& exact_origin_url,
+     int64_t timestamp_ms) {
+-  return MemoryStoreStatus::kInvalidInput;
++  std::optional<std::vector<std::string>> normalized_tags = NormalizeTags(tags);
++  std::optional<std::string> canonical_origin =
++      CanonicalExactOrigin(exact_origin_url);
++  if (!IsValidCallerId(caller_id) || !IsValidRecordId(guide_id) ||
++      !IsValidVisibility(visibility) ||
++      !IsValidTitleAndBody(title, instructions) || !normalized_tags ||
++      !canonical_origin || !IsValidTimestamp(timestamp_ms)) {
++    return MemoryStoreStatus::kInvalidInput;
++  }
++  StoredSiteGuideRecord* stored = FindMutableSiteGuide(guide_id);
++  if (!stored) {
++    return MemoryStoreStatus::kNotFound;
++  }
++  if (stored->owner_key != OwnerKeyForCaller(caller_id)) {
++    return MemoryStoreStatus::kDenied;
++  }
++  if (timestamp_ms < stored->record.updated_at_ms) {
++    return MemoryStoreStatus::kInvalidInput;
++  }
++  const size_t byte_count = SiteGuideContentBytes(
++      title, instructions, *normalized_tags, *canonical_origin);
++  if (byte_count > bounds_.max_total_utf8_bytes) {
++    return MemoryStoreStatus::kStoreFull;
++  }
++
++  stored->record.title = std::move(title);
++  stored->record.instructions = std::move(instructions);
++  stored->record.tags = std::move(*normalized_tags);
++  stored->record.canonical_origin = std::move(*canonical_origin);
++  stored->record.visibility = visibility;
++  stored->record.updated_at_ms = timestamp_ms;
++  stored->record.byte_count = byte_count;
++  stored->access_sequence = ++access_sequence_;
++  Persist();
++  return FindSiteGuide(guide_id) ? MemoryStoreStatus::kOk
++                                 : MemoryStoreStatus::kStoreFull;
+ }
+ 
+ MemoryStoreStatus PrometheusMemoryStore::DeleteSiteGuide(
+     std::string_view caller_id,
+     std::string_view guide_id) {
+-  return MemoryStoreStatus::kNotFound;
++  if (!IsValidCallerId(caller_id) || !IsValidRecordId(guide_id)) {
++    return MemoryStoreStatus::kInvalidInput;
++  }
++  const auto found = std::ranges::find_if(
++      site_guides_, [guide_id](const StoredSiteGuideRecord& stored) {
++        return stored.record.guide_id == guide_id;
++      });
++  if (found == site_guides_.end()) {
++    return MemoryStoreStatus::kNotFound;
++  }
++  if (found->owner_key != OwnerKeyForCaller(caller_id)) {
++    return MemoryStoreStatus::kDenied;
++  }
++  site_guides_.erase(found);
++  Persist();
++  return MemoryStoreStatus::kOk;
+ }
+ 
+ SiteGuideApplicationRecord PrometheusMemoryStore::ApplySiteGuide(
+@@ -128,12 +918,244 @@ SiteGuideApplicationRecord PrometheusMemoryStore::ApplySiteGuide(
+     const GURL& current_committed_url,
+     bool is_current_committed_document,
+     int64_t timestamp_ms) {
+-  return {};
++  SiteGuideApplicationRecord result{
++      .guide_id = std::string(guide_id),
++      .outcome = SiteGuideApplyOutcome::kNotFound,
++      .timestamp_ms = timestamp_ms,
++  };
++  if (!IsValidCallerId(caller_id) || !IsValidRecordId(guide_id) ||
++      !IsValidTimestamp(timestamp_ms)) {
++    return result;
++  }
++
++  StoredSiteGuideRecord* stored = FindMutableSiteGuide(guide_id);
++  if (!stored) {
++    guide_applications_.push_back(result);
++    Persist();
++    return result;
++  }
++
++  SiteGuideApplicationRecord audit = result;
++  audit.canonical_origin = stored->record.canonical_origin;
++  const bool owned = stored->owner_key == OwnerKeyForCaller(caller_id);
++  if (!owned && stored->record.visibility != MemoryVisibility::kProfileShared) {
++    result.outcome = SiteGuideApplyOutcome::kDenied;
++    audit.outcome = result.outcome;
++  } else {
++    result.canonical_origin = stored->record.canonical_origin;
++    stored->access_sequence = ++access_sequence_;
++    if (selected_document_id.empty() || current_document_id.empty() ||
++        selected_document_id != current_document_id) {
++      result.outcome = SiteGuideApplyOutcome::kDocumentChanged;
++    } else if (!is_current_committed_document) {
++      result.outcome = SiteGuideApplyOutcome::kNotCurrentDocument;
++    } else {
++      std::optional<std::string> current_origin =
++          CanonicalCommittedOrigin(current_committed_url);
++      result.outcome =
++          current_origin && *current_origin == stored->record.canonical_origin
++              ? SiteGuideApplyOutcome::kApplied
++              : SiteGuideApplyOutcome::kOriginMismatch;
++    }
++    audit.outcome = result.outcome;
++  }
++
++  guide_applications_.push_back(std::move(audit));
++  Persist();
++  return result;
+ }
+ 
+ std::vector<SiteGuideApplicationRecord>
+ PrometheusMemoryStore::ListSiteGuideApplicationsForBrowserUi() const {
+-  return {};
++  return guide_applications_;
++}
++
++void PrometheusMemoryStore::Load() {
++  memories_.clear();
++  site_guides_.clear();
++  guide_applications_.clear();
++  access_sequence_ = 0;
++
++  const base::DictValue& root = prefs_->GetDict(kPrometheusRuntimeProfileData);
++  const base::DictValue* data = root.FindDict(kDataKey);
++  const base::DictValue* store =
++      data ? data->FindDict(kMemoryStoreKey) : nullptr;
++  if (!store || store->size() != 5u ||
++      store->FindInt(kSchemaVersionKey) != kMemoryStoreSchemaVersion) {
++    return;
++  }
++  std::optional<double> stored_access_sequence =
++      store->FindDouble(kAccessSequenceKey);
++  const base::ListValue* memories = store->FindList(kMemoriesKey);
++  const base::ListValue* site_guides = store->FindList(kSiteGuidesKey);
++  const base::ListValue* guide_applications =
++      store->FindList(kGuideApplicationsKey);
++  if (!stored_access_sequence ||
++      !IsValidStoredInteger(*stored_access_sequence, false) || !memories ||
++      !site_guides || !guide_applications) {
++    return;
++  }
++
++  access_sequence_ = static_cast<uint64_t>(*stored_access_sequence);
++  std::set<std::string> seen_record_ids;
++  for (const base::Value& value : *memories) {
++    if (!value.is_dict()) {
++      continue;
++    }
++    std::optional<ParsedMemoryRecord> parsed = MemoryFromValue(value.GetDict());
++    if (!parsed || !seen_record_ids.insert(parsed->record.memory_id).second) {
++      continue;
++    }
++    access_sequence_ = std::max(access_sequence_, parsed->access_sequence);
++    memories_.push_back(StoredMemoryRecord{
++        .record = std::move(parsed->record),
++        .owner_key = std::move(parsed->owner_key),
++        .access_sequence = parsed->access_sequence,
++    });
++  }
++  for (const base::Value& value : *site_guides) {
++    if (!value.is_dict()) {
++      continue;
++    }
++    std::optional<ParsedSiteGuideRecord> parsed =
++        SiteGuideFromValue(value.GetDict());
++    if (!parsed || !seen_record_ids.insert(parsed->record.guide_id).second) {
++      continue;
++    }
++    access_sequence_ = std::max(access_sequence_, parsed->access_sequence);
++    site_guides_.push_back(StoredSiteGuideRecord{
++        .record = std::move(parsed->record),
++        .owner_key = std::move(parsed->owner_key),
++        .access_sequence = parsed->access_sequence,
++    });
++  }
++  for (const base::Value& value : *guide_applications) {
++    if (!value.is_dict()) {
++      continue;
++    }
++    std::optional<SiteGuideApplicationRecord> application =
++        GuideApplicationFromValue(value.GetDict());
++    if (application) {
++      guide_applications_.push_back(std::move(*application));
++    }
++  }
++}
++
++void PrometheusMemoryStore::Persist() {
++  EnforceBounds();
++
++  base::ListValue memories;
++  for (const StoredMemoryRecord& stored : memories_) {
++    memories.Append(
++        MemoryToValue(stored.record, stored.owner_key, stored.access_sequence));
++  }
++  base::ListValue site_guides;
++  for (const StoredSiteGuideRecord& stored : site_guides_) {
++    site_guides.Append(SiteGuideToValue(stored.record, stored.owner_key,
++                                        stored.access_sequence));
++  }
++  base::ListValue guide_applications;
++  for (const SiteGuideApplicationRecord& application : guide_applications_) {
++    guide_applications.Append(GuideApplicationToValue(application));
++  }
++
++  base::DictValue store;
++  store.Set(kSchemaVersionKey, kMemoryStoreSchemaVersion);
++  store.Set(kAccessSequenceKey, static_cast<double>(access_sequence_));
++  store.Set(kMemoriesKey, std::move(memories));
++  store.Set(kSiteGuidesKey, std::move(site_guides));
++  store.Set(kGuideApplicationsKey, std::move(guide_applications));
++
++  base::DictValue root = prefs_->GetDict(kPrometheusRuntimeProfileData).Clone();
++  base::DictValue data = root.FindDict(kDataKey)
++                             ? root.FindDict(kDataKey)->Clone()
++                             : base::DictValue();
++  data.Set(kMemoryStoreKey, std::move(store));
++  root.Set(kDataKey, std::move(data));
++  prefs_->SetDict(kPrometheusRuntimeProfileData, std::move(root));
++}
++
++void PrometheusMemoryStore::EnforceBounds() {
++  while (memories_.size() > bounds_.max_memories) {
++    memories_.erase(std::ranges::min_element(
++        memories_, {}, [](const StoredMemoryRecord& stored) {
++          return stored.access_sequence;
++        }));
++  }
++  while (site_guides_.size() > bounds_.max_site_guides) {
++    site_guides_.erase(std::ranges::min_element(
++        site_guides_, {}, [](const StoredSiteGuideRecord& stored) {
++          return stored.access_sequence;
++        }));
++  }
++  while (guide_applications_.size() > bounds_.max_guide_applications) {
++    guide_applications_.erase(guide_applications_.begin());
++  }
++
++  auto total_record_bytes = [this]() {
++    size_t bytes = 0;
++    for (const StoredMemoryRecord& stored : memories_) {
++      bytes += stored.record.byte_count;
++    }
++    for (const StoredSiteGuideRecord& stored : site_guides_) {
++      bytes += stored.record.byte_count;
++    }
++    return bytes;
++  };
++  while (total_record_bytes() > bounds_.max_total_utf8_bytes &&
++         (!memories_.empty() || !site_guides_.empty())) {
++    const auto oldest_memory = std::ranges::min_element(
++        memories_, {}, [](const StoredMemoryRecord& stored) {
++          return stored.access_sequence;
++        });
++    const auto oldest_guide = std::ranges::min_element(
++        site_guides_, {}, [](const StoredSiteGuideRecord& stored) {
++          return stored.access_sequence;
++        });
++    if (oldest_guide == site_guides_.end() ||
++        (oldest_memory != memories_.end() &&
++         oldest_memory->access_sequence < oldest_guide->access_sequence)) {
++      memories_.erase(oldest_memory);
++    } else {
++      site_guides_.erase(oldest_guide);
++    }
++  }
++}
++
++PrometheusMemoryStore::StoredMemoryRecord*
++PrometheusMemoryStore::FindMutableMemory(std::string_view memory_id) {
++  const auto found = std::ranges::find_if(
++      memories_, [memory_id](const StoredMemoryRecord& stored) {
++        return stored.record.memory_id == memory_id;
++      });
++  return found == memories_.end() ? nullptr : &*found;
++}
++
++const PrometheusMemoryStore::StoredMemoryRecord*
++PrometheusMemoryStore::FindMemory(std::string_view memory_id) const {
++  const auto found = std::ranges::find_if(
++      memories_, [memory_id](const StoredMemoryRecord& stored) {
++        return stored.record.memory_id == memory_id;
++      });
++  return found == memories_.end() ? nullptr : &*found;
++}
++
++PrometheusMemoryStore::StoredSiteGuideRecord*
++PrometheusMemoryStore::FindMutableSiteGuide(std::string_view guide_id) {
++  const auto found = std::ranges::find_if(
++      site_guides_, [guide_id](const StoredSiteGuideRecord& stored) {
++        return stored.record.guide_id == guide_id;
++      });
++  return found == site_guides_.end() ? nullptr : &*found;
++}
++
++const PrometheusMemoryStore::StoredSiteGuideRecord*
++PrometheusMemoryStore::FindSiteGuide(std::string_view guide_id) const {
++  const auto found = std::ranges::find_if(
++      site_guides_, [guide_id](const StoredSiteGuideRecord& stored) {
++        return stored.record.guide_id == guide_id;
++      });
++  return found == site_guides_.end() ? nullptr : &*found;
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_memory_store.h b/chrome/browser/prometheus/prometheus_memory_store.h
+index bb7abf9c42..0d1c7c3b78 100644
+--- a/chrome/browser/prometheus/prometheus_memory_store.h
++++ b/chrome/browser/prometheus/prometheus_memory_store.h
+@@ -119,9 +119,8 @@ class PrometheusMemoryStore {
+                                    std::string text,
+                                    std::vector<std::string> tags,
+                                    int64_t timestamp_ms);
+-  std::optional<MemoryRecord> GetMemoryForCaller(
+-      std::string_view caller_id,
+-      std::string_view memory_id);
++  std::optional<MemoryRecord> GetMemoryForCaller(std::string_view caller_id,
++                                                 std::string_view memory_id);
+   std::vector<MemoryRecord> ListMemoryForCaller(
+       std::string_view caller_id) const;
+   std::vector<MemoryRecord> SearchMemoryForCaller(
+@@ -179,8 +178,32 @@ class PrometheusMemoryStore {
+   ListSiteGuideApplicationsForBrowserUi() const;
+ 
+  private:
++  struct StoredMemoryRecord {
++    MemoryRecord record;
++    std::string owner_key;
++    uint64_t access_sequence = 0;
++  };
++
++  struct StoredSiteGuideRecord {
++    SiteGuideRecord record;
++    std::string owner_key;
++    uint64_t access_sequence = 0;
++  };
++
++  void Load();
++  void Persist();
++  void EnforceBounds();
++  StoredMemoryRecord* FindMutableMemory(std::string_view memory_id);
++  const StoredMemoryRecord* FindMemory(std::string_view memory_id) const;
++  StoredSiteGuideRecord* FindMutableSiteGuide(std::string_view guide_id);
++  const StoredSiteGuideRecord* FindSiteGuide(std::string_view guide_id) const;
++
+   const raw_ptr<PrefService> prefs_;
+   const MemoryStoreBounds bounds_;
++  std::vector<StoredMemoryRecord> memories_;
++  std::vector<StoredSiteGuideRecord> site_guides_;
++  std::vector<SiteGuideApplicationRecord> guide_applications_;
++  uint64_t access_sequence_ = 0;
+ };
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_memory_store_unittest.cc b/chrome/browser/prometheus/prometheus_memory_store_unittest.cc
+index 62b81d51f1..4c05f9918c 100644
+--- a/chrome/browser/prometheus/prometheus_memory_store_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_memory_store_unittest.cc
+@@ -42,9 +42,9 @@ class PrometheusMemoryStoreTest : public testing::Test {
+       std::string text = "Ship the bounded native runtime.",
+       std::vector<std::string> tags = {" Release ", "NATIVE"},
+       int64_t timestamp_ms = kNow) {
+-    MemoryStoreMutation result = store.CreateMemory(
+-        std::string(caller_id), visibility, std::move(title), std::move(text),
+-        std::move(tags), timestamp_ms);
++    MemoryStoreMutation result =
++        store.CreateMemory(std::string(caller_id), visibility, std::move(title),
++                           std::move(text), std::move(tags), timestamp_ms);
+     EXPECT_TRUE(result.ok());
+     EXPECT_FALSE(result.record_id.empty());
+     return result;
+@@ -94,8 +94,7 @@ TEST_F(PrometheusMemoryStoreTest,
+   EXPECT_EQ(MemoryStoreStatus::kOk,
+             store->UpdateMemory(kCallerA, created.record_id,
+                                 MemoryVisibility::kProfileShared, "New title",
+-                                "New text", {" ONE ", "one", "Two"},
+-                                kNow + 1));
++                                "New text", {" ONE ", "one", "Two"}, kNow + 1));
+   record = store->GetMemoryForCaller(kCallerA, created.record_id);
+   ASSERT_TRUE(record.has_value());
+   EXPECT_EQ(kNow, record->created_at_ms);
+@@ -152,8 +151,8 @@ TEST_F(PrometheusMemoryStoreTest,
+       RequireMemory(*store, kCallerA, MemoryVisibility::kCallerOwned,
+                     "CAF\xC3\x89 launch", "Alpha details", {"Launch"}, kNow);
+   MemoryStoreMutation second =
+-      RequireMemory(*store, kCallerA, MemoryVisibility::kCallerOwned,
+-                    "Second", "Beta details", {}, kNow + 1);
++      RequireMemory(*store, kCallerA, MemoryVisibility::kCallerOwned, "Second",
++                    "Beta details", {}, kNow + 1);
+ 
+   std::vector<MemoryRecord> matches =
+       store->SearchMemoryForCaller(kCallerA, "caf\xC3\xA9", 1);
+@@ -178,17 +177,106 @@ TEST_F(PrometheusMemoryStoreTest,
+   MemoryStoreBounds bounds;
+   bounds.max_total_utf8_bytes = 384;
+   auto store = MakeStore(bounds);
+-  MemoryStoreMutation first = RequireMemory(
+-      *store, kCallerA, MemoryVisibility::kCallerOwned, "First",
+-      std::string(220, 'a'), {}, kNow);
+-  MemoryStoreMutation second = RequireMemory(
+-      *store, kCallerA, MemoryVisibility::kCallerOwned, "Second",
+-      std::string(220, 'b'), {}, kNow + 1);
++  MemoryStoreMutation first =
++      RequireMemory(*store, kCallerA, MemoryVisibility::kCallerOwned, "First",
++                    std::string(220, 'a'), {}, kNow);
++  MemoryStoreMutation second =
++      RequireMemory(*store, kCallerA, MemoryVisibility::kCallerOwned, "Second",
++                    std::string(220, 'b'), {}, kNow + 1);
+ 
+   EXPECT_FALSE(store->GetMemoryForCaller(kCallerA, first.record_id));
+   EXPECT_TRUE(store->GetMemoryForCaller(kCallerA, second.record_id));
+ }
+ 
++TEST_F(PrometheusMemoryStoreTest,
++       ExactByteQuotaAcceptsLimitRejectsOneOverAndEvictsDeterministically) {
++  MemoryStoreBounds bounds;
++  bounds.max_total_utf8_bytes = 11;
++  auto store = MakeStore(bounds);
++
++  MemoryStoreMutation exact =
++      store->CreateMemory(kCallerA, MemoryVisibility::kCallerOwned, "A",
++                          std::string(10, 'x'), {}, kNow);
++  ASSERT_TRUE(exact.ok());
++  std::optional<MemoryRecord> record =
++      store->GetMemoryForCaller(kCallerA, exact.record_id);
++  ASSERT_TRUE(record.has_value());
++  EXPECT_EQ(11u, record->byte_count);
++
++  EXPECT_EQ(MemoryStoreStatus::kStoreFull,
++            store
++                ->CreateMemory(kCallerA, MemoryVisibility::kCallerOwned, "B",
++                               std::string(11, 'y'), {}, kNow + 1)
++                .status);
++  EXPECT_TRUE(store->GetMemoryForCaller(kCallerA, exact.record_id));
++
++  MemoryStoreMutation replacement =
++      store->CreateMemory(kCallerA, MemoryVisibility::kCallerOwned, "C",
++                          std::string(10, 'z'), {}, kNow + 2);
++  ASSERT_TRUE(replacement.ok());
++  EXPECT_FALSE(store->GetMemoryForCaller(kCallerA, exact.record_id));
++  EXPECT_TRUE(store->GetMemoryForCaller(kCallerA, replacement.record_id));
++}
++
++TEST_F(PrometheusMemoryStoreTest,
++       ExactFieldQueryResultAndGuideCountLimitsAreEnforced) {
++  auto store = MakeStore();
++  std::string exact_utf8_tag;
++  for (size_t i = 0; i < kMaxMemoryTagBytes / 2; ++i) {
++    exact_utf8_tag.append("\xC3\xA9");
++  }
++  MemoryStoreMutation exact = store->CreateMemory(
++      kCallerA, MemoryVisibility::kCallerOwned,
++      std::string(kMaxMemoryTitleBytes, 't'),
++      std::string(kMaxMemoryTextBytes, 'x'), {exact_utf8_tag}, kNow);
++  EXPECT_TRUE(exact.ok());
++  EXPECT_EQ(
++      MemoryStoreStatus::kInvalidInput,
++      store
++          ->CreateMemory(kCallerA, MemoryVisibility::kCallerOwned, "title",
++                         "text", {exact_utf8_tag + "a"}, kNow + 1)
++          .status);
++
++  const std::string exact_query(kMaxMemoryQueryBytes, 'q');
++  ASSERT_TRUE(store
++                  ->CreateMemory(kCallerA, MemoryVisibility::kCallerOwned,
++                                 "Query", exact_query, {}, kNow + 2)
++                  .ok());
++  EXPECT_EQ(1u, store->SearchMemoryForCaller(kCallerA, exact_query, 1).size());
++  EXPECT_TRUE(store
++                  ->SearchMemoryForCaller(kCallerA, exact_query + "q",
++                                          kMaxMemorySearchResults)
++                  .empty());
++
++  for (size_t i = 0; i < kMaxMemorySearchResults + 1; ++i) {
++    ASSERT_TRUE(store
++                    ->CreateMemory(kCallerA, MemoryVisibility::kCallerOwned,
++                                   "Match " + std::to_string(i),
++                                   "result-limit-needle", {}, kNow + 3 + i)
++                    .ok());
++  }
++  EXPECT_EQ(kMaxMemorySearchResults,
++            store
++                ->SearchMemoryForCaller(kCallerA, "result-limit-needle",
++                                        kMaxMemorySearchResults)
++                .size());
++  EXPECT_EQ(kMaxMemorySearchResults,
++            store
++                ->SearchMemoryForCaller(kCallerA, "result-limit-needle",
++                                        kMaxMemorySearchResults + 1)
++                .size());
++
++  MemoryStoreBounds guide_bounds;
++  guide_bounds.max_site_guides = 1;
++  auto guide_store = MakeStore(guide_bounds);
++  MemoryStoreMutation first = RequireGuide(*guide_store);
++  MemoryStoreMutation second =
++      RequireGuide(*guide_store, kCallerA, MemoryVisibility::kCallerOwned,
++                   GURL("https://second.test"), kNow + 1);
++  EXPECT_FALSE(guide_store->GetSiteGuideForCaller(kCallerA, first.record_id));
++  EXPECT_TRUE(guide_store->GetSiteGuideForCaller(kCallerA, second.record_id));
++}
++
+ TEST_F(PrometheusMemoryStoreTest,
+        SiteGuideCrudCanonicalizesOnlyExactHttpOrigins) {
+   auto store = MakeStore();
+@@ -202,10 +290,10 @@ TEST_F(PrometheusMemoryStoreTest,
+   EXPECT_GT(guide->byte_count, 0u);
+ 
+   EXPECT_EQ(MemoryStoreStatus::kOk,
+-            store->UpdateSiteGuide(
+-                kCallerA, created.record_id, MemoryVisibility::kProfileShared,
+-                "Updated", "Updated instructions", {"UPDATED"},
+-                GURL("http://EXAMPLE.test:80/"), kNow + 1));
++            store->UpdateSiteGuide(kCallerA, created.record_id,
++                                   MemoryVisibility::kProfileShared, "Updated",
++                                   "Updated instructions", {"UPDATED"},
++                                   GURL("http://EXAMPLE.test:80/"), kNow + 1));
+   guide = store->GetSiteGuideForCaller(kCallerB, created.record_id);
+   ASSERT_TRUE(guide.has_value());
+   EXPECT_EQ("http://example.test", guide->canonical_origin);
+@@ -257,22 +345,22 @@ TEST_F(PrometheusMemoryStoreTest,
+ 
+   EXPECT_EQ(SiteGuideApplyOutcome::kDocumentChanged,
+             store
+-                ->ApplySiteGuide(kCallerA, guide.record_id, "document-1",
+-                                 "document-2",
+-                                 GURL("https://example.test/dashboard"), true,
+-                                 kNow + 2)
++                ->ApplySiteGuide(
++                    kCallerA, guide.record_id, "document-1", "document-2",
++                    GURL("https://example.test/dashboard"), true, kNow + 2)
+                 .outcome);
+   EXPECT_EQ(SiteGuideApplyOutcome::kNotCurrentDocument,
+             store
+-                ->ApplySiteGuide(kCallerA, guide.record_id, "document-2",
+-                                 "document-2",
+-                                 GURL("https://example.test/dashboard"), false,
+-                                 kNow + 3)
++                ->ApplySiteGuide(
++                    kCallerA, guide.record_id, "document-2", "document-2",
++                    GURL("https://example.test/dashboard"), false, kNow + 3)
+                 .outcome);
+ 
+   const std::vector<GURL> mismatches = {
+-      GURL("http://example.test/"), GURL("https://sub.example.test/"),
+-      GURL("https://example.test:444/"), GURL("about:blank"),
++      GURL("http://example.test/"),
++      GURL("https://sub.example.test/"),
++      GURL("https://example.test:444/"),
++      GURL("about:blank"),
+   };
+   for (const GURL& mismatch : mismatches) {
+     SCOPED_TRACE(mismatch.possibly_invalid_spec());
+@@ -300,19 +388,18 @@ TEST_F(PrometheusMemoryStoreTest,
+        SharedGuidesAreVisibleButOnlyOwnersCanMutateOrApplyPrivateGuides) {
+   auto store = MakeStore();
+   MemoryStoreMutation private_guide = RequireGuide(*store, kCallerA);
+-  MemoryStoreMutation shared_guide = RequireGuide(
+-      *store, kCallerA, MemoryVisibility::kProfileShared,
+-      GURL("https://shared.test"), kNow + 1);
++  MemoryStoreMutation shared_guide =
++      RequireGuide(*store, kCallerA, MemoryVisibility::kProfileShared,
++                   GURL("https://shared.test"), kNow + 1);
+ 
+-  EXPECT_FALSE(
+-      store->GetSiteGuideForCaller(kCallerB, private_guide.record_id));
++  EXPECT_FALSE(store->GetSiteGuideForCaller(kCallerB, private_guide.record_id));
+   EXPECT_TRUE(store->GetSiteGuideForCaller(kCallerB, shared_guide.record_id));
+-  EXPECT_EQ(SiteGuideApplyOutcome::kDenied,
+-            store
+-                ->ApplySiteGuide(kCallerB, private_guide.record_id, "doc",
+-                                 "doc", GURL("https://example.test"), true,
+-                                 kNow + 2)
+-                .outcome);
++  EXPECT_EQ(
++      SiteGuideApplyOutcome::kDenied,
++      store
++          ->ApplySiteGuide(kCallerB, private_guide.record_id, "doc", "doc",
++                           GURL("https://example.test"), true, kNow + 2)
++          .outcome);
+   EXPECT_TRUE(store
+                   ->ApplySiteGuide(kCallerB, shared_guide.record_id, "doc",
+                                    "doc", GURL("https://shared.test/path"),
+@@ -336,8 +423,8 @@ TEST_F(PrometheusMemoryStoreTest,
+   }
+ 
+   constexpr std::string_view kForbiddenSentinels[] = {
+-      "COOKIE_VALUE_SENTINEL", "FORM_VALUE_SENTINEL",
+-      "VAULT_SECRET_SENTINEL", "PAYMENT_SECRET_SENTINEL",
++      "COOKIE_VALUE_SENTINEL",    "FORM_VALUE_SENTINEL",
++      "VAULT_SECRET_SENTINEL",    "PAYMENT_SECRET_SENTINEL",
+       "PROVIDER_SECRET_SENTINEL", "PROMPT_SENTINEL",
+       "PAGE_TEXT_SENTINEL"};
+   base::DictValue injected_store;
+@@ -374,26 +461,24 @@ TEST_F(PrometheusMemoryStoreTest, RejectsOversizedAndInvalidMutations) {
+                                std::string(kMaxMemoryTitleBytes + 1, 't'),
+                                "text", {}, kNow)
+                 .status);
++  EXPECT_EQ(
++      MemoryStoreStatus::kInvalidInput,
++      store
++          ->CreateMemory(kCallerA, MemoryVisibility::kCallerOwned, "title",
++                         std::string(kMaxMemoryTextBytes + 1, 'x'), {}, kNow)
++          .status);
+   EXPECT_EQ(MemoryStoreStatus::kInvalidInput,
+             store
+-                ->CreateMemory(kCallerA, MemoryVisibility::kCallerOwned,
+-                               "title", std::string(kMaxMemoryTextBytes + 1, 'x'),
+-                               {}, kNow)
+-                .status);
+-  EXPECT_EQ(MemoryStoreStatus::kInvalidInput,
+-            store
+-                ->CreateMemory(kCallerA, MemoryVisibility::kCallerOwned,
+-                               "title", "text",
+-                               std::vector<std::string>(kMaxMemoryTags + 1,
+-                                                        "tag"),
+-                               kNow)
+-                .status);
+-  EXPECT_EQ(MemoryStoreStatus::kInvalidInput,
+-            store
+-                ->CreateMemory(kCallerA, MemoryVisibility::kCallerOwned,
+-                               "title", "text", {std::string("bad\xFF", 4)},
+-                               kNow)
++                ->CreateMemory(
++                    kCallerA, MemoryVisibility::kCallerOwned, "title", "text",
++                    std::vector<std::string>(kMaxMemoryTags + 1, "tag"), kNow)
+                 .status);
++  EXPECT_EQ(
++      MemoryStoreStatus::kInvalidInput,
++      store
++          ->CreateMemory(kCallerA, MemoryVisibility::kCallerOwned, "title",
++                         "text", {std::string("bad\xFF", 4)}, kNow)
++          .status);
+   EXPECT_EQ(MemoryStoreStatus::kInvalidInput,
+             store
+                 ->CreateMemory(kCallerA, MemoryVisibility::kCallerOwned,
+-- 
+2.50.1 (Apple Git-155)
+
