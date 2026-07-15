@@ -132,7 +132,7 @@ None - all three RED/GREEN tasks, atomic nested commits, ordered patch exports, 
 - `PrometheusProviderRegistryTest.*` list guard - 10 registered tests, zero disabled.
 - Combined plan gate - all 21 tests passed.
 - Full `prometheus_unittests` regression - all 184 tests passed.
-- Secret lifecycle evidence - save/read/replace/delete, exact mismatch, corrupt ciphertext, encrypt/decrypt/re-encrypt failure preservation, compare-before-swap, destroyed-owner, OTR, and invalid binding cases passed.
+- Secret lifecycle evidence - save/read/replace/delete, exact mismatch, corrupt ciphertext, encrypt/decrypt/re-encrypt error-path preservation, compare-before-swap, destroyed-owner, OTR, and invalid binding cases passed.
 - Provider policy evidence - all ten kinds, fixed HTTPS endpoints, canonical remote custom, exact localhost routes, ambiguous authority/dot-segment rejection, model bounds, fallback uniqueness/order, closed health/secret errors, restart persistence, and exact request paths passed.
 - Redaction evidence - exact credential, password, authorization, ciphertext, plaintext, raw-error, suffix, and endpoint-query sentinels are absent from prefs and sanitized snapshots.
 - Chromium formatting, nested source `git diff --check`, clean nested/root worktrees, and explicit-file staging checks - passed.
