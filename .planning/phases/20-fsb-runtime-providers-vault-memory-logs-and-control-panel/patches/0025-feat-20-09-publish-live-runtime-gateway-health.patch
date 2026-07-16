@@ -1,0 +1,413 @@
+From d69eb101fa0d0e67a4a5b6c85f7122169485cfb0 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 17:22:45 -0500
+Subject: [PATCH 25/25] feat(20-09): publish live runtime gateway health
+
+---
+ .../prometheus/prometheus_agent_gateway.cc    | 152 ++++++++++++------
+ .../prometheus/prometheus_agent_gateway.h     |   9 ++
+ .../prometheus_agent_gateway_unittest.cc      | 137 ++++++++++++++++
+ 3 files changed, 247 insertions(+), 51 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.cc b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+index a69045e977..58bbf788a4 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+@@ -27,6 +27,7 @@
+ #include "base/time/time.h"
+ #include "base/uuid.h"
+ #include "base/values.h"
++#include "chrome/browser/browser_process.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/profiles/profile_manager.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
+@@ -54,6 +55,20 @@ namespace {
+ constexpr int kListenBacklog = 16;
+ constexpr int32_t kSocketBufferBytes = 1'114'112;
+ 
++GlobalBrowserCollection* GetGlobalBrowserCollectionIfAvailable() {
++  if (!g_browser_process || !g_browser_process->GetFeatures()) {
++    return nullptr;
++  }
++  return GlobalBrowserCollection::GetInstance();
++}
++
++bool IsProviderPolicyOperable(const PrometheusProviderConfig& provider) {
++  return provider.enabled &&
++         provider.health == PrometheusProviderHealth::kHealthy &&
++         (provider.route_class == PrometheusProviderRouteClass::kLocal ||
++          provider.secret_configured);
++}
++
+ const net::NetworkTrafficAnnotationTag kGatewayTrafficAnnotation =
+     net::DefineNetworkTrafficAnnotation("prometheus_agent_gateway", R"(
+       semantics {
+@@ -297,6 +312,52 @@ RuntimeTransportResult DispatchAuthenticatedRuntimeRequestForTesting(
+   return dispatcher.Run(request, derived_caller_id);
+ }
+ 
++RuntimeGatewayHealthState BuildPrometheusRuntimeHealthStateForTesting(
++    bool runtime_available,
++    size_t provider_count,
++    bool policy_operable_provider_available,
++    bool vault_available) {
++  RuntimeGatewayHealthState health;
++  if (!runtime_available) {
++    health.provider_status = RuntimeComponentStatus::kUnavailable;
++    health.provider_reason = "The regular-profile runtime is unavailable";
++    health.provider_next_action =
++        "Open a regular Prometheus browser window and retry";
++    health.vault_status = RuntimeComponentStatus::kUnavailable;
++    health.vault_reason = "The regular-profile runtime is unavailable";
++    health.vault_next_action =
++        "Open a regular Prometheus browser window and retry";
++    return health;
++  }
++
++  if (provider_count == 0) {
++    health.provider_status = RuntimeComponentStatus::kNotReady;
++    health.provider_reason = "No provider metadata is configured";
++    health.provider_next_action =
++        "Configure a provider in the local control panel";
++  } else if (!policy_operable_provider_available) {
++    health.provider_status = RuntimeComponentStatus::kDegraded;
++    health.provider_reason = "No configured provider is policy-operable";
++    health.provider_next_action =
++        "Enable or repair an eligible provider in the local control panel";
++  } else {
++    health.provider_status = RuntimeComponentStatus::kReady;
++    health.provider_reason = "An enabled provider is policy-operable";
++    health.provider_next_action = "No provider recovery action is required";
++  }
++
++  health.vault_status = vault_available ? RuntimeComponentStatus::kReady
++                                        : RuntimeComponentStatus::kNotReady;
++  health.vault_reason =
++      vault_available ? "The profile-owned native vault is available"
++                      : "The profile vault metadata owner is unavailable";
++  health.vault_next_action =
++      vault_available
++          ? "Use a fresh native confirmation for every vault operation"
++          : "Open the local control panel and retry vault diagnostics";
++  return health;
++}
++
+ AgentRouteResult BuildPrometheusGatewayHealthForTesting(
+     bool active_regular,
+     const RuntimeGatewayHealthState& runtime_health) {
+@@ -749,6 +810,13 @@ void PrometheusAgentGateway::SetProfileSelectorForTesting(
+   profile_selector_for_testing_ = std::move(selector);
+ }
+ 
++void PrometheusAgentGateway::HandleNativeRequestForTesting(
++    std::string_view path,
++    std::string_view body,
++    ResponseCallback callback) {
++  HandleNativeRequest(path, body, std::move(callback));
++}
++
+ void PrometheusAgentGateway::HandleRequest(uint64_t request_id,
+                                            std::string path,
+                                            std::string body) {
+@@ -781,13 +849,15 @@ Profile* PrometheusAgentGateway::SelectProfileForNewSession() {
+   Profile* profile = nullptr;
+   if (profile_selector_for_testing_) {
+     profile = profile_selector_for_testing_.Run();
+-  } else if (BrowserWindowInterface* active =
+-                 GlobalBrowserCollection::GetInstance()->GetActiveBrowser()) {
+-    if (active->GetType() == BrowserWindowInterface::TYPE_NORMAL) {
+-      profile = active->GetProfile();
++  } else if (GlobalBrowserCollection* browsers =
++                 GetGlobalBrowserCollectionIfAvailable()) {
++    if (BrowserWindowInterface* active = browsers->GetActiveBrowser()) {
++      if (active->GetType() == BrowserWindowInterface::TYPE_NORMAL) {
++        profile = active->GetProfile();
++      }
+     }
+   }
+-  if (!profile) {
++  if (!profile && g_browser_process) {
+     profile = ProfileManager::GetLastUsedProfileIfLoaded();
+   }
+   return profile && profile->IsRegularProfile() ? profile : nullptr;
+@@ -1287,54 +1357,32 @@ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+   PruneSessionBindings();
+ 
+   if (path == "/v1/health") {
+-    AgentRouteResult health = AgentRouteResult::Success({});
+-    auto add = [&health](std::string key, AgentDiagnosticStatus status,
+-                         std::string reason, std::string next_action) {
+-      AgentDiagnosticComponent component;
+-      component.key = std::move(key);
+-      component.status = status;
+-      component.reason = std::move(reason);
+-      component.next_action = std::move(next_action);
+-      health.diagnostics.push_back(std::move(component));
+-    };
++    GlobalBrowserCollection* const browsers =
++        GetGlobalBrowserCollectionIfAvailable();
+     BrowserWindowInterface* const active =
+-        GlobalBrowserCollection::GetInstance()->GetActiveBrowser();
++        browsers ? browsers->GetActiveBrowser() : nullptr;
+     const bool active_regular = active && active->GetProfile() &&
+                                 active->GetProfile()->IsRegularProfile();
+-    add("browser", AgentDiagnosticStatus::kReady,
+-        "Prometheus browser process is running",
+-        "No browser recovery action is required");
+-    add("bridge", AgentDiagnosticStatus::kReady,
+-        "Authenticated local route bridge is accepting requests",
+-        "Keep the external MCP client connected");
+-    add("active_tab",
+-        active_regular ? AgentDiagnosticStatus::kReady
+-                       : AgentDiagnosticStatus::kUnavailable,
+-        active_regular ? "A regular-profile browser tab is available"
+-                       : "No active regular-profile browser tab is available",
+-        active_regular ? "Use a pinned session target"
+-                       : "Open a regular Prometheus browser window");
+-    add("content_adapter", AgentDiagnosticStatus::kReady,
+-        "Normal-page content adapter is available",
+-        "Use bounded page read and action routes");
+-    add("internal_adapter", AgentDiagnosticStatus::kReady,
+-        "Closed internal-surface adapter is available",
+-        "Use one of the documented Prometheus surfaces");
+-    add("webui_adapter", AgentDiagnosticStatus::kReady,
+-        "Prometheus WebUI adapter is available",
+-        "Use browser-owned WebUI routes");
+-    add("vault", AgentDiagnosticStatus::kNotReady,
+-        "Vault capability is owned by Phase 20",
+-        "Retry after native vault diagnostics reports ready");
+-    add("provider", AgentDiagnosticStatus::kNotReady,
+-        "Provider runtime is owned by Phase 20",
+-        "Configure providers after Phase 20 is available");
+-    add("supervision", AgentDiagnosticStatus::kNotReady,
+-        "Supervision and pairing are owned by Phase 21",
+-        "Retry after supervision diagnostics reports ready");
+-    add("extensions", AgentDiagnosticStatus::kNotReady,
+-        "Agent extension policy is owned by Phase 22",
+-        "Retry after extension diagnostics reports ready");
++    Profile* profile = active_regular ? active->GetProfile() : nullptr;
++    if (!profile && g_browser_process) {
++      profile = ProfileManager::GetLastUsedProfileIfLoaded();
++    }
++    if (profile && !profile->IsRegularProfile()) {
++      profile = nullptr;
++    }
++    PrometheusRuntimeProfileService* const runtime =
++        PrometheusRuntimeProfileServiceFactory::GetForProfile(profile);
++    const std::vector<PrometheusProviderConfig> providers =
++        runtime ? runtime->ListProvidersForTransport()
++                : std::vector<PrometheusProviderConfig>();
++    const bool policy_operable_provider =
++        std::ranges::any_of(providers, IsProviderPolicyOperable);
++    const RuntimeGatewayHealthState runtime_health =
++        BuildPrometheusRuntimeHealthStateForTesting(
++            runtime != nullptr, providers.size(), policy_operable_provider,
++            runtime && runtime->IsVaultAvailableForTransport());
++    AgentRouteResult health = BuildPrometheusGatewayHealthForTesting(
++        active_regular, runtime_health);
+     auto serialized = SerializeAgentTransportResult(health);
+     std::move(callback).Run(
+         net::HTTP_OK, serialized.has_value()
+@@ -1512,8 +1560,10 @@ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+                                       "Close another session or retry"));
+       return;
+     }
++    GlobalBrowserCollection* const browsers =
++        GetGlobalBrowserCollectionIfAvailable();
+     BrowserWindowInterface* const active =
+-        GlobalBrowserCollection::GetInstance()->GetActiveBrowser();
++        browsers ? browsers->GetActiveBrowser() : nullptr;
+     BrowserWindowInterface* target_browser = nullptr;
+     tabs::TabInterface* active_tab = nullptr;
+     if (active && active->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.h b/chrome/browser/prometheus/prometheus_agent_gateway.h
+index c39a158708..d7fd93be3c 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.h
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.h
+@@ -68,6 +68,12 @@ RuntimeTransportResult DispatchAuthenticatedRuntimeRequestForTesting(
+     std::string_view derived_caller_id,
+     RuntimeGatewayDispatchCallback dispatcher);
+ 
++RuntimeGatewayHealthState BuildPrometheusRuntimeHealthStateForTesting(
++    bool runtime_available,
++    size_t provider_count,
++    bool policy_operable_provider_available,
++    bool vault_available);
++
+ AgentRouteResult BuildPrometheusGatewayHealthForTesting(
+     bool active_regular,
+     const RuntimeGatewayHealthState& runtime_health);
+@@ -109,6 +115,9 @@ class PrometheusAgentGateway {
+   void SetRequestHandlerForTesting(RequestHandler handler);
+   void SetRequestTimeoutForTesting(base::TimeDelta timeout);
+   void SetProfileSelectorForTesting(ProfileSelector selector);
++  void HandleNativeRequestForTesting(std::string_view path,
++                                     std::string_view body,
++                                     ResponseCallback callback);
+ 
+   const net::IPEndPoint& endpoint_for_testing() const { return endpoint_; }
+   int port_for_testing() const { return endpoint_.port(); }
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+index 80255d0800..34da9aa6e7 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+@@ -13,6 +13,7 @@
+ #include "base/files/file_path.h"
+ #include "base/files/file_util.h"
+ #include "base/files/scoped_temp_dir.h"
++#include "base/functional/bind.h"
+ #include "base/json/json_reader.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/prometheus/prometheus_agent_transport_codec.h"
+@@ -21,6 +22,7 @@
+ #include "chrome/common/chrome_switches.h"
+ #include "net/base/ip_address.h"
+ #include "net/base/ip_endpoint.h"
++#include "net/http/http_status_code.h"
+ #include "net/server/http_server_request_info.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ 
+@@ -461,5 +463,140 @@ TEST(PrometheusAgentGatewayTest,
+   }
+ }
+ 
++TEST(PrometheusAgentGatewayTest,
++     LiveRuntimeHealthDecisionMatrixIsClosedAndContentFree) {
++  struct HealthCase {
++    bool runtime_available;
++    size_t provider_count;
++    bool policy_operable_provider_available;
++    bool vault_available;
++    RuntimeComponentStatus provider_status;
++    RuntimeComponentStatus vault_status;
++  };
++  constexpr std::array<HealthCase, 4> kCases = {{
++      {.runtime_available = false,
++       .provider_count = 0,
++       .policy_operable_provider_available = false,
++       .vault_available = false,
++       .provider_status = RuntimeComponentStatus::kUnavailable,
++       .vault_status = RuntimeComponentStatus::kUnavailable},
++      {.runtime_available = true,
++       .provider_count = 0,
++       .policy_operable_provider_available = false,
++       .vault_available = true,
++       .provider_status = RuntimeComponentStatus::kNotReady,
++       .vault_status = RuntimeComponentStatus::kReady},
++      {.runtime_available = true,
++       .provider_count = 2,
++       .policy_operable_provider_available = false,
++       .vault_available = true,
++       .provider_status = RuntimeComponentStatus::kDegraded,
++       .vault_status = RuntimeComponentStatus::kReady},
++      {.runtime_available = true,
++       .provider_count = 2,
++       .policy_operable_provider_available = true,
++       .vault_available = false,
++       .provider_status = RuntimeComponentStatus::kReady,
++       .vault_status = RuntimeComponentStatus::kNotReady},
++  }};
++
++  for (const HealthCase& test_case : kCases) {
++    RuntimeGatewayHealthState health =
++        BuildPrometheusRuntimeHealthStateForTesting(
++            test_case.runtime_available, test_case.provider_count,
++            test_case.policy_operable_provider_available,
++            test_case.vault_available);
++    EXPECT_EQ(test_case.provider_status, health.provider_status);
++    EXPECT_EQ(test_case.vault_status, health.vault_status);
++    const std::string serialized =
++        health.provider_reason + health.provider_next_action +
++        health.vault_reason + health.vault_next_action;
++    for (std::string_view forbidden :
++         {"prompt-sentinel", "page-content-sentinel", "provider-body-sentinel",
++          "?api_key=", "ciphertext-sentinel", "browser-session",
++          "/Users/private/profile"}) {
++      EXPECT_EQ(std::string::npos, serialized.find(forbidden));
++    }
++  }
++}
++
++TEST(PrometheusAgentGatewayTest,
++     SessionPageAndRuntimeCancelStatusContractsRegressTogether) {
++  for (std::string_view path : {"/v1/session/create", "/v1/session/resume",
++                                "/v1/session/touch", "/v1/session/close"}) {
++    EXPECT_EQ(PrometheusAgentRequestRejection::kNone,
++              ValidatePrometheusAgentGatewayRequestForTesting(
++                  ValidRequest(path), kTestPort, kBearer, /*in_flight=*/0));
++  }
++
++  auto page = ParseAgentTransportRequest(
++      R"({"route":"read_page","session_id":"browser-session",)"
++      R"("params":{"max_chars":100,"max_nodes":10,"compact":true}})");
++  ASSERT_TRUE(page.has_value());
++  EXPECT_EQ(AgentRouteName::kReadPage, page->route_name);
++
++  auto stop = ParseRuntimeTransportRequest(
++      R"({"route":"stop_task","session_id":"browser-session",)"
++      R"("params":{"task_id":"task-1"}})");
++  auto status = ParseRuntimeTransportRequest(
++      R"({"route":"get_task_status","session_id":"browser-session",)"
++      R"("params":{"task_id":"task-1"}})");
++  ASSERT_TRUE(stop.has_value());
++  ASSERT_TRUE(status.has_value());
++  EXPECT_EQ(RuntimeCallerOrigin::kMcp, stop->origin);
++  EXPECT_EQ(RuntimeCallerOrigin::kMcp, status->origin);
++  EXPECT_TRUE(std::holds_alternative<StopTaskParams>(stop->params));
++  EXPECT_TRUE(std::holds_alternative<GetTaskStatusParams>(status->params));
++}
++
++TEST(PrometheusAgentGatewayTest,
++     NativeHealthEndpointReturnsExactClosedDocument) {
++  PrometheusAgentGateway gateway({});
++  int status = 0;
++  std::string body;
++  gateway.HandleNativeRequestForTesting(
++      "/v1/health", std::string_view(),
++      base::BindOnce(
++          [](int* out_status, std::string* out_body, int response_status,
++             std::string response_body) {
++            *out_status = response_status;
++            *out_body = std::move(response_body);
++          },
++          &status, &body));
++  EXPECT_EQ(net::HTTP_OK, status);
++  std::optional<base::DictValue> parsed =
++      base::JSONReader::ReadDict(body, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(parsed.has_value());
++  EXPECT_EQ(true, parsed->FindBool("ok"));
++  const base::ListValue* diagnostics = parsed->FindList("diagnostics");
++  ASSERT_TRUE(diagnostics);
++  ASSERT_EQ(10u, diagnostics->size());
++
++  std::map<std::string, std::string, std::less<>> statuses;
++  for (const base::Value& value : *diagnostics) {
++    ASSERT_TRUE(value.is_dict());
++    const std::string* key = value.GetDict().FindString("key");
++    const std::string* component_status =
++        value.GetDict().FindString("status");
++    ASSERT_TRUE(key);
++    ASSERT_TRUE(component_status);
++    EXPECT_TRUE(statuses.emplace(*key, *component_status).second);
++  }
++  for (std::string_view key :
++       {"browser", "bridge", "active_tab", "content_adapter",
++        "internal_adapter", "webui_adapter", "vault", "provider",
++        "supervision", "extensions"}) {
++    EXPECT_TRUE(statuses.contains(key));
++  }
++  EXPECT_EQ("not_ready", statuses["supervision"]);
++  EXPECT_EQ("not_ready", statuses["extensions"]);
++  for (std::string_view forbidden :
++       {"prompt-sentinel", "page-content-sentinel", "?api_key=",
++        "provider-body-sentinel", "ciphertext-sentinel", "browser-session",
++        "/Users/private/profile"}) {
++    EXPECT_EQ(std::string::npos, body.find(forbidden));
++  }
++}
++
+ }  // namespace
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+
