@@ -1,0 +1,536 @@
+From 7e59c5126f749eb644da37791b9b3f3f80649de4 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 04:33:11 -0500
+Subject: [PATCH] feat(20-06): add bounded safe task titles
+
+- Derive deterministic redacted UTF-8 titles before task creation\n- Persist safe_title additively in schema-v1 task records\n- Hydrate legacy records with the Browser task fallback
+---
+ chrome/browser/prometheus/BUILD.gn            |   5 +-
+ .../prometheus/prometheus_runtime_store.cc    |  17 ++-
+ .../prometheus/prometheus_runtime_store.h     |   1 +
+ .../prometheus_runtime_store_unittest.cc      | 129 +++++++++++++++++-
+ .../prometheus/prometheus_runtime_types.cc    |  85 +++++++++---
+ .../prometheus/prometheus_runtime_types.h     |   4 +
+ .../prometheus_runtime_types_unittest.cc      |  65 +++++++++
+ 7 files changed, 283 insertions(+), 23 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 1854f4f680..fe46d14ba6 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -257,7 +257,10 @@ source_set("prometheus_runtime_types") {
+     "prometheus_runtime_types.h",
+   ]
+ 
+-  deps = [ "//base" ]
++  deps = [
++    "//base",
++    "//third_party/re2",
++  ]
+ }
+ 
+ source_set("prometheus_runtime_prefs") {
+diff --git a/chrome/browser/prometheus/prometheus_runtime_store.cc b/chrome/browser/prometheus/prometheus_runtime_store.cc
+index 44c07eca60..385b2f8ba5 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_store.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_store.cc
+@@ -206,6 +206,7 @@ base::DictValue StoredTaskToValue(const RuntimeStoredTask& task) {
+ std::optional<RuntimeStoredTask> StoredTaskFromValue(
+     const base::DictValue& value) {
+   const std::string* task_id = value.FindString("task_id");
++  const std::string* safe_title = value.FindString("safe_title");
+   const std::string* origin_string = value.FindString("origin");
+   const std::string* requested_string = value.FindString("requested_execution");
+   const std::string* state_string = value.FindString("state");
+@@ -239,6 +240,17 @@ std::optional<RuntimeStoredTask> StoredTaskFromValue(
+ 
+   RuntimeStoredTask task;
+   task.snapshot.task_id = *task_id;
++  if (safe_title) {
++    if (safe_title->empty() ||
++        !IsBoundedRuntimeUtf8(*safe_title, kMaxRuntimeSafeTitleBytes)) {
++      return std::nullopt;
++    }
++    task.snapshot.safe_title = *safe_title;
++  } else if (value.Find("safe_title")) {
++    return std::nullopt;
++  } else {
++    task.snapshot.safe_title = kRuntimeSafeTitleFallback;
++  }
+   task.snapshot.origin = *origin;
+   task.snapshot.requested_execution = *requested;
+   if (const std::string* effective_string =
+@@ -588,8 +600,10 @@ PrometheusRuntimeStore::~PrometheusRuntimeStore() = default;
+ std::optional<RuntimeTaskHandle> PrometheusRuntimeStore::CreateTask(
+     RuntimeTaskOrigin origin,
+     RequestedExecution requested_execution,
++    std::string safe_title,
+     int64_t timestamp_ms) {
+-  if (timestamp_ms < 0) {
++  if (timestamp_ms < 0 || safe_title.empty() ||
++      !IsBoundedRuntimeUtf8(safe_title, kMaxRuntimeSafeTitleBytes)) {
+     return std::nullopt;
+   }
+   RuntimeStoredTask task;
+@@ -598,6 +612,7 @@ std::optional<RuntimeTaskHandle> PrometheusRuntimeStore::CreateTask(
+   } while (FindTask(task.snapshot.task_id));
+   task.snapshot.origin = origin;
+   task.snapshot.requested_execution = requested_execution;
++  task.snapshot.safe_title = std::move(safe_title);
+   task.snapshot.state = RuntimeTaskState::kQueued;
+   task.snapshot.created_at_ms = timestamp_ms;
+   task.snapshot.updated_at_ms = timestamp_ms;
+diff --git a/chrome/browser/prometheus/prometheus_runtime_store.h b/chrome/browser/prometheus/prometheus_runtime_store.h
+index c548ee1741..1287a7ba5a 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_store.h
++++ b/chrome/browser/prometheus/prometheus_runtime_store.h
+@@ -160,6 +160,7 @@ class PrometheusRuntimeStore {
+   std::optional<RuntimeTaskHandle> CreateTask(
+       RuntimeTaskOrigin origin,
+       RequestedExecution requested_execution,
++      std::string safe_title,
+       int64_t timestamp_ms);
+   std::optional<RuntimeStoredTask> GetTask(std::string_view task_id);
+   std::vector<RuntimeStoredTask> ListTasks() const;
+diff --git a/chrome/browser/prometheus/prometheus_runtime_store_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_store_unittest.cc
+index d5e2f29829..6513309f22 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_store_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_store_unittest.cc
+@@ -5,6 +5,7 @@
+ #include "chrome/browser/prometheus/prometheus_runtime_store.h"
+ 
+ #include <algorithm>
++#include <array>
+ #include <cstdint>
+ #include <memory>
+ #include <optional>
+@@ -35,10 +36,13 @@ class PrometheusRuntimeStoreTest : public testing::Test {
+     return std::make_unique<PrometheusRuntimeStore>(&prefs_, bounds);
+   }
+ 
+-  RuntimeTaskHandle RequireTask(PrometheusRuntimeStore& store,
+-                                int64_t timestamp_ms = kNow) {
+-    std::optional<RuntimeTaskHandle> task = store.CreateTask(
+-        RuntimeTaskOrigin::kMcp, RequestedExecution::kAuto, timestamp_ms);
++  RuntimeTaskHandle RequireTask(
++      PrometheusRuntimeStore& store,
++      int64_t timestamp_ms = kNow,
++      std::string safe_title = "Task: Inspect the current page") {
++    std::optional<RuntimeTaskHandle> task =
++        store.CreateTask(RuntimeTaskOrigin::kMcp, RequestedExecution::kAuto,
++                         std::move(safe_title), timestamp_ms);
+     EXPECT_TRUE(task.has_value());
+     return task.value_or(RuntimeTaskHandle());
+   }
+@@ -82,6 +86,7 @@ TEST_F(PrometheusRuntimeStoreTest,
+   ASSERT_TRUE(stored.has_value());
+   EXPECT_EQ(RuntimeTaskOrigin::kMcp, stored->snapshot.origin);
+   EXPECT_EQ(RequestedExecution::kAuto, stored->snapshot.requested_execution);
++  EXPECT_EQ("Task: Inspect the current page", stored->snapshot.safe_title);
+   EXPECT_EQ(RuntimeTaskState::kQueued, stored->snapshot.state);
+   EXPECT_EQ(2u, store->ListTasks().size());
+ 
+@@ -91,6 +96,122 @@ TEST_F(PrometheusRuntimeStoreTest,
+   EXPECT_EQ(std::string::npos, serialized.find("session-a"));
+ }
+ 
++TEST_F(PrometheusRuntimeStoreTest,
++       SafeTitlePersistsAcrossRestartAndHydratesSchemaV1Fallback) {
++  const std::string prompt =
++      "Open https://private.example/?token=ALPHA and type "
++      "password=hunter2";
++  const std::string safe_title = DeriveRuntimeSafeTitle(prompt);
++  std::string task_id;
++  {
++    auto store = MakeStore();
++    task_id = RequireTask(*store, kNow, safe_title).task_id;
++    const std::optional<RuntimeStoredTask> stored = store->GetTask(task_id);
++    ASSERT_TRUE(stored.has_value());
++    EXPECT_EQ("Task: Open [link] and type [redacted]",
++              stored->snapshot.safe_title);
++  }
++
++  {
++    auto restarted = MakeStore();
++    const std::optional<RuntimeStoredTask> stored = restarted->GetTask(task_id);
++    ASSERT_TRUE(stored.has_value());
++    EXPECT_EQ(safe_title, stored->snapshot.safe_title);
++    EXPECT_EQ(std::string::npos, SerializedRuntimeStoreData().find(prompt));
++    EXPECT_EQ(std::string::npos,
++              SerializedRuntimeStoreData().find("private.example"));
++    EXPECT_EQ(std::string::npos, SerializedRuntimeStoreData().find("hunter2"));
++    EXPECT_EQ(std::string::npos, SerializedRuntimeStoreData().find("ALPHA"));
++  }
++
++  base::DictValue root = prefs_.GetDict(kPrometheusRuntimeProfileData).Clone();
++  base::DictValue* data = root.FindDict("data");
++  ASSERT_NE(nullptr, data);
++  base::DictValue* runtime_store = data->FindDict("runtime_store");
++  ASSERT_NE(nullptr, runtime_store);
++  base::ListValue* tasks = runtime_store->FindList("tasks");
++  ASSERT_NE(nullptr, tasks);
++  ASSERT_EQ(1u, tasks->size());
++  tasks->front().GetDict().Remove("safe_title");
++  prefs_.SetUserPref(kPrometheusRuntimeProfileData, std::move(root));
++
++  auto legacy_restart = MakeStore();
++  const std::optional<RuntimeStoredTask> legacy =
++      legacy_restart->GetTask(task_id);
++  ASSERT_TRUE(legacy.has_value());
++  EXPECT_EQ("Browser task", legacy->snapshot.safe_title);
++  EXPECT_EQ(1, prefs_.GetDict(kPrometheusRuntimeProfileData)
++                   .FindDict("data")
++                   ->FindDict("runtime_store")
++                   ->FindInt("schema_version"));
++}
++
++TEST_F(PrometheusRuntimeStoreTest,
++       SafeTitleRejectsCorruptInputAndExcludesPromptSentinels) {
++  auto store = MakeStore();
++  EXPECT_FALSE(store
++                   ->CreateTask(RuntimeTaskOrigin::kSidePanel,
++                                RequestedExecution::kProvider, std::string(),
++                                kNow)
++                   .has_value());
++  EXPECT_FALSE(store
++                   ->CreateTask(RuntimeTaskOrigin::kSidePanel,
++                                RequestedExecution::kProvider,
++                                std::string(kMaxRuntimeSafeTitleBytes + 1, 'x'),
++                                kNow)
++                   .has_value());
++
++  constexpr std::string_view kPrompt =
++      "Open https://page.example/?token=TOKEN_SENTINEL and send "
++      "password=PASSWORD_SENTINEL to PRIVATE_EMAIL@example.com with "
++      "account=123456789 authorization=AUTHORIZATION_SENTINEL";
++  RuntimeTaskHandle task =
++      RequireTask(*store, kNow + 1, DeriveRuntimeSafeTitle(kPrompt));
++  const std::optional<RuntimeStoredTask> stored = store->GetTask(task.task_id);
++  ASSERT_TRUE(stored.has_value());
++  const std::optional<base::DictValue> snapshot =
++      RuntimeTaskSnapshotToValue(stored->snapshot);
++  ASSERT_TRUE(snapshot.has_value());
++  const std::string snapshot_json = base::WriteJson(*snapshot).value_or("");
++  const std::string persisted = SerializedRuntimeStoreData();
++
++  constexpr std::array<std::string_view, 15> kSentinels = {
++      kPrompt,
++      "page.example",
++      "TOKEN_SENTINEL",
++      "PASSWORD_SENTINEL",
++      "PRIVATE_EMAIL@example.com",
++      "123456789",
++      "account=",
++      "AUTHORIZATION_SENTINEL",
++      "selector",
++      "script",
++      "typed_text",
++      "ciphertext",
++      "profile_path",
++      "gateway_session_id",
++      "provider_body",
++  };
++  for (std::string_view sentinel : kSentinels) {
++    EXPECT_EQ(std::string::npos, snapshot_json.find(sentinel)) << sentinel;
++    EXPECT_EQ(std::string::npos, persisted.find(sentinel)) << sentinel;
++  }
++
++  base::DictValue root = prefs_.GetDict(kPrometheusRuntimeProfileData).Clone();
++  base::ListValue* tasks =
++      root.FindDict("data")->FindDict("runtime_store")->FindList("tasks");
++  ASSERT_NE(nullptr, tasks);
++  ASSERT_EQ(1u, tasks->size());
++  tasks->front().GetDict().Set("safe_title",
++                               std::string(kMaxRuntimeSafeTitleBytes + 1, 'x'));
++  prefs_.SetUserPref(kPrometheusRuntimeProfileData, std::move(root));
++
++  auto repaired = MakeStore();
++  EXPECT_TRUE(repaired->ListTasks().empty());
++  EXPECT_EQ(std::string::npos, SerializedProfileData().find(std::string(
++                                   kMaxRuntimeSafeTitleBytes + 1, 'x')));
++}
++
+ TEST_F(PrometheusRuntimeStoreTest,
+        EnforcesLegalTransitionsAndGenerationFences) {
+   auto store = MakeStore();
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types.cc b/chrome/browser/prometheus/prometheus_runtime_types.cc
+index 08b89487d4..a9d4385352 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_types.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_types.cc
+@@ -8,6 +8,7 @@
+ #include <limits>
+ 
+ #include "base/strings/string_util.h"
++#include "third_party/re2/src/re2/re2.h"
+ 
+ namespace prometheus {
+ 
+@@ -29,6 +30,24 @@ bool AddWithoutOverflow(int64_t left, int64_t right, int64_t* result) {
+   return true;
+ }
+ 
++std::string CollapseRuntimeWhitespace(std::string_view input) {
++  std::string collapsed;
++  collapsed.reserve(input.size());
++  bool saw_whitespace = false;
++  for (char character : input) {
++    if (base::IsAsciiWhitespace(character)) {
++      saw_whitespace = true;
++      continue;
++    }
++    if (saw_whitespace && !collapsed.empty()) {
++      collapsed.push_back(' ');
++    }
++    saw_whitespace = false;
++    collapsed.push_back(character);
++  }
++  return collapsed;
++}
++
+ }  // namespace
+ 
+ std::optional<RuntimeTaskOrigin> RuntimeTaskOriginFromString(
+@@ -241,8 +260,7 @@ std::string_view RuntimeErrorCodeToString(RuntimeErrorCode value) {
+   return "INTERNAL";
+ }
+ 
+-bool IsLegalRuntimeTaskTransition(RuntimeTaskState from,
+-                                  RuntimeTaskState to) {
++bool IsLegalRuntimeTaskTransition(RuntimeTaskState from, RuntimeTaskState to) {
+   if (IsTerminalRuntimeTaskState(from) || from == to) {
+     return false;
+   }
+@@ -279,20 +297,19 @@ bool IsTerminalRuntimeTaskState(RuntimeTaskState state) {
+ 
+ RuntimeLimits ClampRuntimeLimits(const RuntimeLimits& limits) {
+   return RuntimeLimits{
+-      .max_prompt_bytes = ClampLimit(limits.max_prompt_bytes,
+-                                     kDefaultRuntimePromptBytes,
+-                                     kHardRuntimePromptBytes),
+-      .max_result_bytes = ClampLimit(limits.max_result_bytes,
+-                                     kDefaultRuntimeResultBytes,
+-                                     kHardRuntimeResultBytes),
+-      .max_turns = ClampLimit(limits.max_turns, kDefaultRuntimeTurns,
+-                              kHardRuntimeTurns),
++      .max_prompt_bytes =
++          ClampLimit(limits.max_prompt_bytes, kDefaultRuntimePromptBytes,
++                     kHardRuntimePromptBytes),
++      .max_result_bytes =
++          ClampLimit(limits.max_result_bytes, kDefaultRuntimeResultBytes,
++                     kHardRuntimeResultBytes),
++      .max_turns =
++          ClampLimit(limits.max_turns, kDefaultRuntimeTurns, kHardRuntimeTurns),
+       .max_total_tokens = ClampLimit(limits.max_total_tokens,
+-                                     kDefaultRuntimeTokens,
+-                                     kHardRuntimeTokens),
+-      .max_duration_ms = ClampLimit(limits.max_duration_ms,
+-                                    kDefaultRuntimeDurationMs,
+-                                    kHardRuntimeDurationMs),
++                                     kDefaultRuntimeTokens, kHardRuntimeTokens),
++      .max_duration_ms =
++          ClampLimit(limits.max_duration_ms, kDefaultRuntimeDurationMs,
++                     kHardRuntimeDurationMs),
+       .max_concurrent_tasks = ClampLimit(limits.max_concurrent_tasks,
+                                          kDefaultRuntimeConcurrentTasks,
+                                          kHardRuntimeConcurrentTasks),
+@@ -332,8 +349,7 @@ std::optional<RuntimeUsage> AddRuntimeUsage(const RuntimeUsage& left,
+     return std::nullopt;
+   }
+ 
+-  if (left.cost_microunits.has_value() &&
+-      right.cost_microunits.has_value()) {
++  if (left.cost_microunits.has_value() && right.cost_microunits.has_value()) {
+     int64_t cost = 0;
+     if (!AddWithoutOverflow(*left.cost_microunits, *right.cost_microunits,
+                             &cost)) {
+@@ -352,10 +368,44 @@ bool IsBoundedRuntimeUtf8(std::string_view value, size_t max_bytes) {
+   return value.size() <= max_bytes && base::IsStringUTF8(value);
+ }
+ 
++std::string DeriveRuntimeSafeTitle(std::string_view prompt) {
++  if (!base::IsStringUTF8(prompt)) {
++    return kRuntimeSafeTitleFallback;
++  }
++
++  std::string redacted = CollapseRuntimeWhitespace(prompt);
++  if (redacted.empty()) {
++    return kRuntimeSafeTitleFallback;
++  }
++
++  RE2::GlobalReplace(&redacted, "(?i)https?://[^\\s]+", "[link]");
++  RE2::GlobalReplace(
++      &redacted,
++      "(?i)[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\\.[a-z0-9-]+)+",
++      "[redacted]");
++  RE2::GlobalReplace(
++      &redacted,
++      "(?i)\\b(?:secret|token|password|api[_-]?key|authorization|bearer)"
++      "\\b(?:(?:\\s*(?:=|:)\\s*|\\s+)(?:bearer\\s+)?[^\\s]+)?",
++      "[redacted]");
++  RE2::GlobalReplace(&redacted, "\\b[a-zA-Z_][a-zA-Z0-9_.-]*\\s*=\\s*[^\\s]+",
++                     "[redacted]");
++  RE2::GlobalReplace(&redacted, "[0-9]{6,}", "[redacted]");
++  redacted = CollapseRuntimeWhitespace(redacted);
++  if (redacted.empty()) {
++    return kRuntimeSafeTitleFallback;
++  }
++
++  return std::string(base::TruncateUTF8ToByteSize("Task: " + redacted,
++                                                  kMaxRuntimeSafeTitleBytes));
++}
++
+ std::optional<base::DictValue> RuntimeTaskSnapshotToValue(
+     const RuntimeTaskSnapshot& snapshot) {
+   if (snapshot.task_id.empty() ||
+       !IsBoundedRuntimeUtf8(snapshot.task_id, kMaxRuntimeTaskIdBytes) ||
++      snapshot.safe_title.empty() ||
++      !IsBoundedRuntimeUtf8(snapshot.safe_title, kMaxRuntimeSafeTitleBytes) ||
+       snapshot.created_at_ms < 0 ||
+       snapshot.updated_at_ms < snapshot.created_at_ms ||
+       !IsValidRuntimeUsage(snapshot.usage)) {
+@@ -375,6 +425,7 @@ std::optional<base::DictValue> RuntimeTaskSnapshotToValue(
+ 
+   base::DictValue value;
+   value.Set("task_id", snapshot.task_id);
++  value.Set("safe_title", snapshot.safe_title);
+   value.Set("origin", RuntimeTaskOriginToString(snapshot.origin));
+   value.Set("requested_execution",
+             RequestedExecutionToString(snapshot.requested_execution));
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types.h b/chrome/browser/prometheus/prometheus_runtime_types.h
+index 8ea5c4ab51..90e52204e5 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_types.h
++++ b/chrome/browser/prometheus/prometheus_runtime_types.h
+@@ -76,6 +76,8 @@ inline constexpr int64_t kHardRuntimeConcurrentTasks = 8;
+ inline constexpr int64_t kRuntimeToolsPerTurn = 1;
+ inline constexpr int64_t kHardRuntimeCostMicrounits = 1000 * 1000 * 1000;
+ inline constexpr size_t kMaxRuntimeTaskIdBytes = 128;
++inline constexpr size_t kMaxRuntimeSafeTitleBytes = 96;
++inline constexpr char kRuntimeSafeTitleFallback[] = "Browser task";
+ 
+ struct RuntimeLimits {
+   int64_t max_prompt_bytes = kDefaultRuntimePromptBytes;
+@@ -98,6 +100,7 @@ struct RuntimeUsage {
+ 
+ struct RuntimeTaskSnapshot {
+   std::string task_id;
++  std::string safe_title;
+   RuntimeTaskOrigin origin = RuntimeTaskOrigin::kSidePanel;
+   RequestedExecution requested_execution = RequestedExecution::kAuto;
+   std::optional<EffectiveExecution> effective_execution;
+@@ -137,6 +140,7 @@ std::optional<RuntimeUsage> AddRuntimeUsage(const RuntimeUsage& left,
+                                             const RuntimeUsage& right);
+ 
+ bool IsBoundedRuntimeUtf8(std::string_view value, size_t max_bytes);
++std::string DeriveRuntimeSafeTitle(std::string_view prompt);
+ std::optional<base::DictValue> RuntimeTaskSnapshotToValue(
+     const RuntimeTaskSnapshot& snapshot);
+ 
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
+index 1f59bccb59..eced89ee9e 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
+@@ -4,12 +4,14 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_runtime_types.h"
+ 
++#include <array>
+ #include <limits>
+ #include <optional>
+ #include <string>
+ #include <string_view>
+ #include <vector>
+ 
++#include "base/strings/string_util.h"
+ #include "base/values.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
+ #include "components/pref_registry/pref_registry_syncable.h"
+@@ -193,9 +195,69 @@ TEST_F(PrometheusRuntimeTypesTest, EnforcesUtf8AndByteBounds) {
+   EXPECT_FALSE(IsBoundedRuntimeUtf8("\xC3\x28", 2));
+ }
+ 
++TEST_F(PrometheusRuntimeTypesTest, SafeTitleExactFixtures) {
++  EXPECT_EQ(
++      "Task: Open the docs and summarize release notes",
++      DeriveRuntimeSafeTitle("Open the docs and summarize release notes"));
++  EXPECT_EQ("Task: Open [link] and type [redacted]",
++            DeriveRuntimeSafeTitle(
++                "Open https://private.example/?token=ALPHA and type "
++                "password=hunter2"));
++  EXPECT_EQ("Browser task", DeriveRuntimeSafeTitle(" \t\n "));
++}
++
++TEST_F(PrometheusRuntimeTypesTest, SafeTitleRedactsEveryClass) {
++  constexpr std::array<std::string_view, 10> kSensitivePrompts = {
++      "Visit https://private.example/path?q=alpha",
++      "Email private.person@example.com",
++      "Use account 123456789",
++      "Set workspace=private-value",
++      "Use SECRET=private-value",
++      "Use ToKeN: private-value",
++      "Use Password private-value",
++      "Use API_KEY=private-value",
++      "Use Authorization: private-value",
++      "Use Bearer private-value",
++  };
++
++  for (std::string_view prompt : kSensitivePrompts) {
++    SCOPED_TRACE(prompt);
++    const std::string safe_title = DeriveRuntimeSafeTitle(prompt);
++    EXPECT_NE(
++        std::string::npos,
++        safe_title.find(prompt.starts_with("Visit") ? "[link]" : "[redacted]"));
++    EXPECT_EQ(std::string::npos, safe_title.find("private"));
++    EXPECT_TRUE(IsBoundedRuntimeUtf8(safe_title, kMaxRuntimeSafeTitleBytes));
++  }
++}
++
++TEST_F(PrometheusRuntimeTypesTest,
++       SafeTitleWhitespaceFallbackDeterminismAndUtf8Boundary) {
++  const std::string collapsed =
++      DeriveRuntimeSafeTitle("  Open\t\n the   release notes  ");
++  EXPECT_EQ("Task: Open the release notes", collapsed);
++  EXPECT_EQ(collapsed,
++            DeriveRuntimeSafeTitle("  Open\t\n the   release notes  "));
++  EXPECT_EQ("Browser task", DeriveRuntimeSafeTitle(""));
++  EXPECT_EQ("Browser task", DeriveRuntimeSafeTitle("\xC3\x28"));
++
++  const std::string boundary_prompt = std::string(87, 'a') + "\xE2\x9C\x93";
++  const std::string boundary = DeriveRuntimeSafeTitle(boundary_prompt);
++  EXPECT_EQ(kMaxRuntimeSafeTitleBytes, boundary.size());
++  EXPECT_TRUE(base::IsStringUTF8(boundary));
++  EXPECT_TRUE(boundary.ends_with("\xE2\x9C\x93"));
++
++  const std::string split_prompt = std::string(88, 'b') + "\xE2\x9C\x93";
++  const std::string split = DeriveRuntimeSafeTitle(split_prompt);
++  EXPECT_EQ(std::string("Task: ") + std::string(88, 'b'), split);
++  EXPECT_LT(split.size(), kMaxRuntimeSafeTitleBytes);
++  EXPECT_TRUE(base::IsStringUTF8(split));
++}
++
+ TEST_F(PrometheusRuntimeTypesTest, SerializesOnlyClosedMetadata) {
+   RuntimeTaskSnapshot snapshot;
+   snapshot.task_id = "task-123";
++  snapshot.safe_title = "Task: Summarize release notes";
+   snapshot.origin = RuntimeTaskOrigin::kMcp;
+   snapshot.requested_execution = RequestedExecution::kAuto;
+   snapshot.effective_execution = EffectiveExecution::kHosted;
+@@ -213,6 +275,8 @@ TEST_F(PrometheusRuntimeTypesTest, SerializesOnlyClosedMetadata) {
+   const std::string* task_id = value->FindString("task_id");
+   ASSERT_NE(nullptr, task_id);
+   EXPECT_EQ("task-123", *task_id);
++  ASSERT_NE(nullptr, value->FindString("safe_title"));
++  EXPECT_EQ("Task: Summarize release notes", *value->FindString("safe_title"));
+   ASSERT_NE(nullptr, value->FindString("origin"));
+   EXPECT_EQ("mcp", *value->FindString("origin"));
+   ASSERT_NE(nullptr, value->FindString("requested_execution"));
+@@ -239,6 +303,7 @@ TEST_F(PrometheusRuntimeTypesTest, SerializesOnlyClosedMetadata) {
+ TEST_F(PrometheusRuntimeTypesTest, RejectsInvalidSnapshots) {
+   RuntimeTaskSnapshot snapshot;
+   snapshot.task_id = "";
++  snapshot.safe_title = "Browser task";
+   EXPECT_EQ(std::nullopt, RuntimeTaskSnapshotToValue(snapshot));
+ 
+   snapshot.task_id = std::string(kHardRuntimePromptBytes + 1, 'x');
+-- 
+2.50.1 (Apple Git-155)
+
