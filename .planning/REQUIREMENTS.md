@@ -177,7 +177,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 | AGENT-01..AGENT-08 | Phase 17 | Complete |
 | PAGE-01..PAGE-08 | Phase 18 | Complete |
 | MCP-01..MCP-07 | Phase 19 | Complete |
-| FSB-01..FSB-08 | Phase 20 | Planned |
+| FSB-01..FSB-08 | Phase 20 | In Progress (FSB-06 complete) |
 | SUP-01..SUP-05 | Phase 21 | Planned |
 | EXT-01..EXT-06 | Phase 22 | Planned |
 | REL-01..REL-07 | Phases 23-24 | Planned |
@@ -187,9 +187,9 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 - v2 active requirements: 92 total
 - mapped to phases: 92
 - unmapped: 0
-- complete through Phase 18: 59
-- in progress: 0
-- planned in Phases 19-24: 33
+- complete through Phase 20 so far: 67
+- in progress: 7
+- planned in Phases 21-24: 18
 - planned phases: 14
 
 ---

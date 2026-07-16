@@ -7,7 +7,7 @@
 
 ## v2.0 Chromium Engine Migration
 
-**Status:** In progress — Phase 20 Plan 6 is complete and Plan 7 is current.
+**Status:** In progress — Phase 20 Plan 7 is complete and Plan 8 is current.
 
 ## Milestone Thesis
 
@@ -306,7 +306,7 @@ Plans:
 
 **Requirements:** FSB-01, FSB-02, FSB-03, FSB-04, FSB-05, FSB-06, FSB-07, FSB-08
 
-**Plans:** 6/14 plans executed
+**Plans:** 7/14 plans executed
 
 Plans:
 - [x] 20-01-PLAN.md — Define closed native runtime contracts, profile prefs, limits, and effective policy.
@@ -315,7 +315,7 @@ Plans:
 - [x] 20-04-PLAN.md — Add OSCrypt-backed exact-origin secret storage and the provider registry.
 - [x] 20-05-PLAN.md — Add three strict provider codec families and secure cancellable network transport.
 - [x] 20-06-PLAN.md — Add safe-title persistence plus native policy and Agent-session-cap primitives.
-- [ ] 20-07-PLAN.md — Own the closed non-official provider bootstrap and assemble the regular-profile runtime, private local principal, safe tool loop, fallback, cancellation, and evaluation seam.
+- [x] 20-07-PLAN.md — Own the closed non-official provider bootstrap and assemble the regular-profile runtime, private local principal, safe tool loop, fallback, cancellation, and evaluation seam.
 - [ ] 20-08-PLAN.md — Add vault metadata, private Agent-authority insertion, and fail-closed fresh target confirmation.
 - [ ] 20-09-PLAN.md — Expose 27 closed runtime commands through the authenticated native gateway.
 - [ ] 20-10-PLAN.md — Promote all 31 Phase 20 MCP names to 27 native routes plus four aliases and prove built-app external smoke.
