@@ -1,0 +1,1865 @@
+From dc60a869c07cebcdb54be8a6bed29195ba531ee7 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 13:15:06 -0500
+Subject: [PATCH] feat(20-07): assemble runtime profile service
+
+---
+ chrome/browser/prometheus/BUILD.gn            |    8 +-
+ .../prometheus_agent_profile_service.cc       |   10 +
+ .../prometheus_agent_profile_service.h        |    2 +
+ .../prometheus_runtime_profile_service.cc     | 1179 ++++++++++++++++-
+ .../prometheus_runtime_profile_service.h      |  106 +-
+ ...etheus_runtime_profile_service_unittest.cc |  168 ++-
+ 6 files changed, 1434 insertions(+), 39 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index bb43afef49..55b68b0fed 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -398,13 +398,19 @@ source_set("prometheus_runtime_profile_service") {
+     ":prometheus_agent_profile_service",
+     ":prometheus_memory_store",
+     ":prometheus_provider_codec",
++    ":prometheus_provider_registry",
++    ":prometheus_provider_transport",
++    ":prometheus_runtime_prefs",
+     ":prometheus_runtime_store",
+     ":prometheus_runtime_test_bootstrap",
+     ":prometheus_runtime_types",
++    ":prometheus_secret_store",
+     "//base",
+     "//chrome/browser/profiles",
+     "//components/keyed_service/core",
+     "//content/public/browser",
++    "//crypto",
++    "//services/network/public/cpp",
+   ]
+ }
+ 
+@@ -468,8 +474,8 @@ test("prometheus_unittests") {
+     "prometheus_provider_codec_unittest.cc",
+     "prometheus_provider_registry_unittest.cc",
+     "prometheus_provider_transport_unittest.cc",
+-    "prometheus_runtime_store_unittest.cc",
+     "prometheus_runtime_profile_service_unittest.cc",
++    "prometheus_runtime_store_unittest.cc",
+     "prometheus_runtime_test_bootstrap_unittest.cc",
+     "prometheus_runtime_types_unittest.cc",
+     "prometheus_secret_store_unittest.cc",
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.cc b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+index b48095a9fc..dce5b3bf7d 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+@@ -67,6 +67,16 @@ bool PrometheusAgentProfileService::HasSession(std::string_view session_id) {
+   return sessions_.HasSession(session_id);
+ }
+ 
++size_t PrometheusAgentProfileService::ActiveSessionCount() {
++  SweepExpiredSessions();
++  return sessions_.active_session_count();
++}
++
++void PrometheusAgentProfileService::ReleaseSessionOwnership(
++    std::string_view session_id) {
++  agent_service_.ReleaseSessionOwnership(session_id);
++}
++
+ void PrometheusAgentProfileService::ExecuteRoute(
+     const AgentRouteRequest& request,
+     PrometheusAgentService::RouteCallback callback) {
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.h b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+index d678e40c56..424ccc847b 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+@@ -36,6 +36,8 @@ class PrometheusAgentProfileService : public KeyedService {
+   AgentRouteResult TouchSession(std::string_view session_id);
+   AgentRouteResult CloseSession(std::string_view session_id);
+   bool HasSession(std::string_view session_id);
++  size_t ActiveSessionCount();
++  void ReleaseSessionOwnership(std::string_view session_id);
+   void ExecuteRoute(const AgentRouteRequest& request,
+                     PrometheusAgentService::RouteCallback callback);
+   void ExecuteBrowserLocalRoute(BrowserWindowInterface* exact_browser,
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+index b651b5a61c..039a5c9141 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+@@ -4,10 +4,219 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
+ 
++#include <algorithm>
++#include <memory>
+ #include <utility>
+ 
++#include "base/check.h"
++#include "base/command_line.h"
++#include "base/files/file_util.h"
++#include "base/functional/bind.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
++#include "base/time/time.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_memory_store.h"
++#include "chrome/browser/prometheus/prometheus_provider_registry.h"
++#include "chrome/browser/prometheus/prometheus_provider_transport.h"
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
++#include "chrome/browser/prometheus/prometheus_secret_store.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "components/prefs/pref_service.h"
++#include "crypto/hash.h"
++#include "services/network/public/cpp/shared_url_loader_factory.h"
++
+ namespace prometheus {
+ 
++namespace {
++
++constexpr char kProviderUnavailableRecovery[] =
++    "Configure an enabled provider for the selected execution mode and retry";
++constexpr char kAuthorityRecovery[] =
++    "Return to the originating browser tab and retry";
++
++AgentRouteName RouteForSafeTool(RuntimeSafeTool tool) {
++  switch (tool) {
++    case RuntimeSafeTool::kReadPage:
++      return AgentRouteName::kReadPage;
++    case RuntimeSafeTool::kGetPageSnapshot:
++      return AgentRouteName::kGetPageSnapshot;
++    case RuntimeSafeTool::kClick:
++      return AgentRouteName::kClick;
++    case RuntimeSafeTool::kTypeText:
++      return AgentRouteName::kTypeText;
++    case RuntimeSafeTool::kPressKey:
++      return AgentRouteName::kPressKey;
++    case RuntimeSafeTool::kScroll:
++      return AgentRouteName::kScroll;
++    case RuntimeSafeTool::kHover:
++      return AgentRouteName::kHover;
++    case RuntimeSafeTool::kSelectOption:
++      return AgentRouteName::kSelectOption;
++    case RuntimeSafeTool::kClear:
++      return AgentRouteName::kClear;
++  }
++}
++
++std::string_view NameForSafeTool(RuntimeSafeTool tool) {
++  switch (tool) {
++    case RuntimeSafeTool::kReadPage:
++      return "read_page";
++    case RuntimeSafeTool::kGetPageSnapshot:
++      return "get_page_snapshot";
++    case RuntimeSafeTool::kClick:
++      return "click";
++    case RuntimeSafeTool::kTypeText:
++      return "type_text";
++    case RuntimeSafeTool::kPressKey:
++      return "press_key";
++    case RuntimeSafeTool::kScroll:
++      return "scroll";
++    case RuntimeSafeTool::kHover:
++      return "hover";
++    case RuntimeSafeTool::kSelectOption:
++      return "select_option";
++    case RuntimeSafeTool::kClear:
++      return "clear";
++  }
++}
++
++std::optional<EffectiveExecution> ExecutionForProvider(
++    const PrometheusProviderConfig& provider) {
++  switch (provider.route_class) {
++    case PrometheusProviderRouteClass::kHosted:
++      return EffectiveExecution::kHosted;
++    case PrometheusProviderRouteClass::kRouted:
++    case PrometheusProviderRouteClass::kCustom:
++      return EffectiveExecution::kRouted;
++    case PrometheusProviderRouteClass::kLocal:
++      return EffectiveExecution::kLocal;
++  }
++}
++
++RuntimeErrorCode ErrorForProviderFailure(ProviderFailureKind failure) {
++  switch (failure) {
++    case ProviderFailureKind::kNone:
++      return RuntimeErrorCode::kNone;
++    case ProviderFailureKind::kAuthentication:
++    case ProviderFailureKind::kSecretUnavailable:
++      return RuntimeErrorCode::kProviderAuth;
++    case ProviderFailureKind::kRateLimited:
++      return RuntimeErrorCode::kProviderRateLimited;
++    case ProviderFailureKind::kInvalidOutput:
++    case ProviderFailureKind::kBounds:
++      return RuntimeErrorCode::kProviderInvalidResponse;
++    case ProviderFailureKind::kCancelled:
++      return RuntimeErrorCode::kCancelled;
++    case ProviderFailureKind::kTimeout:
++      return RuntimeErrorCode::kTimeout;
++    case ProviderFailureKind::kUnsupported:
++    case ProviderFailureKind::kNetwork:
++    case ProviderFailureKind::kServer:
++    case ProviderFailureKind::kEndpointPolicy:
++      return RuntimeErrorCode::kProviderUnavailable;
++  }
++}
++
++std::optional<PrometheusProviderConfig> SelectProvider(
++    const std::vector<PrometheusProviderConfig>& providers,
++    RequestedExecution requested_execution) {
++  const auto enabled = [](const PrometheusProviderConfig& provider) {
++    return provider.enabled;
++  };
++  const auto local = [](const PrometheusProviderConfig& provider) {
++    return provider.enabled &&
++           provider.route_class == PrometheusProviderRouteClass::kLocal;
++  };
++  const auto remote = [](const PrometheusProviderConfig& provider) {
++    return provider.enabled &&
++           provider.route_class != PrometheusProviderRouteClass::kLocal;
++  };
++
++  auto selected = providers.end();
++  switch (requested_execution) {
++    case RequestedExecution::kAuto:
++      selected = std::ranges::find_if(providers, remote);
++      if (selected == providers.end()) {
++        selected = std::ranges::find_if(providers, local);
++      }
++      break;
++    case RequestedExecution::kProvider:
++      selected = std::ranges::find_if(providers, remote);
++      break;
++    case RequestedExecution::kLocal:
++      selected = std::ranges::find_if(providers, local);
++      break;
++  }
++  if (selected == providers.end() || !enabled(*selected)) {
++    return std::nullopt;
++  }
++  return *selected;
++}
++
++std::string SubmissionFingerprint(const RuntimeSubmitRequest& request) {
++  std::string material;
++  material.reserve(request.prompt.size() + 3);
++  material.push_back(static_cast<char>(request.authority.origin));
++  material.push_back(static_cast<char>(request.requested_execution));
++  material.push_back(':');
++  material.append(request.prompt);
++  return base::HexEncodeLower(crypto::hash::Sha256(material));
++}
++
++std::string BoundedAgentResultText(const AgentRouteResult& result,
++                                   size_t max_bytes) {
++  const auto bounded = [max_bytes](std::string_view value) {
++    return std::string(base::TruncateUTF8ToByteSize(value, max_bytes));
++  };
++  if (result.page_result) {
++    for (std::string_view candidate :
++         {std::string_view(result.page_result->visible_text),
++          std::string_view(result.page_result->compact_snapshot_json),
++          std::string_view(result.page_result->dom_snapshot_json)}) {
++      if (!candidate.empty() && base::IsStringUTF8(candidate)) {
++        return bounded(candidate);
++      }
++    }
++  }
++  if (result.element_read_result &&
++      base::IsStringUTF8(result.element_read_result->value)) {
++    return bounded(result.element_read_result->value);
++  }
++  std::string changed_state;
++  for (const std::string& item : result.changed_state) {
++    if (!base::IsStringUTF8(item)) {
++      continue;
++    }
++    if (!changed_state.empty()) {
++      changed_state.append("; ");
++    }
++    changed_state.append(item);
++    if (changed_state.size() >= max_bytes) {
++      break;
++    }
++  }
++  if (!changed_state.empty()) {
++    return bounded(changed_state);
++  }
++  return "The browser-owned tool completed without content.";
++}
++
++bool IsDisposableRuntimeTestProfile(Profile* profile) {
++  base::FilePath temporary_directory;
++  if (!profile || !base::GetTempDir(&temporary_directory)) {
++    return false;
++  }
++  const base::FilePath profile_path =
++      profile->GetPath().StripTrailingSeparators();
++  temporary_directory = temporary_directory.StripTrailingSeparators();
++  return profile_path == temporary_directory ||
++         temporary_directory.IsParent(profile_path);
++}
++
++}  // namespace
++
+ std::string_view RuntimeProfileStatusToString(RuntimeProfileStatus status) {
+   switch (status) {
+     case RuntimeProfileStatus::kOk:
+@@ -41,6 +250,33 @@ std::string_view RuntimeProfileStatusToString(RuntimeProfileStatus status) {
+ 
+ std::optional<RuntimeSafeTool> RuntimeSafeToolFromString(
+     std::string_view name) {
++  if (name == "read_page") {
++    return RuntimeSafeTool::kReadPage;
++  }
++  if (name == "get_page_snapshot") {
++    return RuntimeSafeTool::kGetPageSnapshot;
++  }
++  if (name == "click") {
++    return RuntimeSafeTool::kClick;
++  }
++  if (name == "type_text") {
++    return RuntimeSafeTool::kTypeText;
++  }
++  if (name == "press_key") {
++    return RuntimeSafeTool::kPressKey;
++  }
++  if (name == "scroll") {
++    return RuntimeSafeTool::kScroll;
++  }
++  if (name == "hover") {
++    return RuntimeSafeTool::kHover;
++  }
++  if (name == "select_option") {
++    return RuntimeSafeTool::kSelectOption;
++  }
++  if (name == "clear") {
++    return RuntimeSafeTool::kClear;
++  }
+   return std::nullopt;
+ }
+ 
+@@ -54,11 +290,41 @@ LocalRuntimePrincipal::LocalRuntimePrincipal(
+       stable_tab_id_(stable_tab_id),
+       agent_session_id_(std::move(agent_session_id)) {}
+ 
+-LocalRuntimePrincipal::LocalRuntimePrincipal(LocalRuntimePrincipal&& other) =
+-    default;
++LocalRuntimePrincipal::LocalRuntimePrincipal(LocalRuntimePrincipal&& other)
++    : owner_(std::exchange(other.owner_, nullptr)),
++      exact_browser_(std::exchange(other.exact_browser_, nullptr)),
++      stable_tab_id_(std::exchange(other.stable_tab_id_, 0)),
++      agent_session_id_(std::move(other.agent_session_id_)),
++      released_(std::exchange(other.released_, true)) {
++  if (owner_ && !released_) {
++    owner_->RelocatePrincipal(&other, this);
++  }
++}
++
+ LocalRuntimePrincipal& LocalRuntimePrincipal::operator=(
+-    LocalRuntimePrincipal&& other) = default;
+-LocalRuntimePrincipal::~LocalRuntimePrincipal() = default;
++    LocalRuntimePrincipal&& other) {
++  if (this == &other) {
++    return *this;
++  }
++  if (owner_ && !released_) {
++    owner_->ReleasePrincipal(this);
++  }
++  owner_ = std::exchange(other.owner_, nullptr);
++  exact_browser_ = std::exchange(other.exact_browser_, nullptr);
++  stable_tab_id_ = std::exchange(other.stable_tab_id_, 0);
++  agent_session_id_ = std::move(other.agent_session_id_);
++  released_ = std::exchange(other.released_, true);
++  if (owner_ && !released_) {
++    owner_->RelocatePrincipal(&other, this);
++  }
++  return *this;
++}
++
++LocalRuntimePrincipal::~LocalRuntimePrincipal() {
++  if (owner_ && !released_) {
++    owner_->ReleasePrincipal(this);
++  }
++}
+ 
+ bool LocalRuntimePrincipal::is_valid() const {
+   return owner_ && exact_browser_ && stable_tab_id_ > 0 &&
+@@ -68,68 +334,682 @@ bool LocalRuntimePrincipal::is_valid() const {
+ PrometheusRuntimeProfileService::PrometheusRuntimeProfileService(
+     Profile* profile,
+     PrometheusAgentProfileService* agent_profile_service)
+-    : profile_(profile), agent_profile_service_(agent_profile_service) {}
++    : profile_(profile), agent_profile_service_(agent_profile_service) {
++  CHECK(profile_);
++  CHECK(agent_profile_service_);
++  CHECK(profile_->IsRegularProfile());
++
++  PrefService* const prefs = profile_->GetPrefs();
++  owned_runtime_store_ = std::make_unique<PrometheusRuntimeStore>(prefs);
++  owned_memory_store_ = std::make_unique<PrometheusMemoryStore>(prefs);
++  owned_provider_registry_ =
++      std::make_unique<PrometheusProviderRegistry>(prefs);
++  owned_secret_store_ =
++      CreatePrometheusSecretStore(prefs, profile_->IsOffTheRecord());
++  owned_provider_transport_ = std::make_unique<PrometheusProviderTransport>(
++      owned_provider_registry_.get(), owned_secret_store_.get(),
++      profile_->GetURLLoaderFactory());
++
++  hooks_.create_session =
++      base::BindRepeating(&PrometheusAgentProfileService::CreateSession,
++                          base::Unretained(agent_profile_service_.get()));
++  hooks_.has_session =
++      base::BindRepeating(&PrometheusAgentProfileService::HasSession,
++                          base::Unretained(agent_profile_service_.get()));
++  hooks_.active_session_count =
++      base::BindRepeating(&PrometheusAgentProfileService::ActiveSessionCount,
++                          base::Unretained(agent_profile_service_.get()));
++  hooks_.close_session =
++      base::BindRepeating(&PrometheusAgentProfileService::CloseSession,
++                          base::Unretained(agent_profile_service_.get()));
++  hooks_.release_session_ownership = base::BindRepeating(
++      &PrometheusAgentProfileService::ReleaseSessionOwnership,
++      base::Unretained(agent_profile_service_.get()));
++  hooks_.execute_browser_route = base::BindRepeating(
++      &PrometheusAgentProfileService::ExecuteBrowserLocalRoute,
++      base::Unretained(agent_profile_service_.get()));
++  hooks_.read_policy = base::BindRepeating(
++      [](PrefService* prefs) {
++        return GetEffectivePrometheusRuntimePolicy(*prefs);
++      },
++      base::Unretained(prefs));
++  hooks_.create_task = base::BindRepeating(
++      [](PrometheusRuntimeStore* store, RuntimeTaskOrigin origin,
++         RequestedExecution requested_execution, std::string safe_title,
++         int64_t timestamp_ms) {
++        return store->CreateTask(origin, requested_execution,
++                                 std::move(safe_title), timestamp_ms);
++      },
++      base::Unretained(owned_runtime_store_.get()));
++  hooks_.list_providers = base::BindRepeating(
++      [](PrometheusProviderRegistry* registry) {
++        return registry->ListProviders();
++      },
++      base::Unretained(owned_provider_registry_.get()));
++  hooks_.get_fallback_order = base::BindRepeating(
++      [](PrometheusProviderRegistry* registry) {
++        return registry->GetFallbackOrder();
++      },
++      base::Unretained(owned_provider_registry_.get()));
++  hooks_.set_providers = base::BindRepeating(
++      [](PrometheusProviderRegistry* registry,
++         std::vector<PrometheusProviderConfig> providers) {
++        return registry->SetProviders(std::move(providers));
++      },
++      base::Unretained(owned_provider_registry_.get()));
++  hooks_.execute_provider_turn =
++      base::BindRepeating(&PrometheusProviderTransport::ExecuteTurn,
++                          base::Unretained(owned_provider_transport_.get()));
++  hooks_.discover_models =
++      base::BindRepeating(&PrometheusProviderTransport::DiscoverModels,
++                          base::Unretained(owned_provider_transport_.get()));
++  hooks_.cancel_provider_operation =
++      base::BindRepeating(&PrometheusProviderTransport::Cancel,
++                          base::Unretained(owned_provider_transport_.get()));
++  hooks_.list_memories = base::BindRepeating(
++      [](PrometheusMemoryStore* store, std::string_view caller_id) {
++        return store->ListMemoryForCaller(caller_id);
++      },
++      base::Unretained(owned_memory_store_.get()));
++  hooks_.list_site_guides = base::BindRepeating(
++      [](PrometheusMemoryStore* store, std::string_view caller_id) {
++        return store->ListSiteGuidesForCaller(caller_id);
++      },
++      base::Unretained(owned_memory_store_.get()));
++  hooks_.now_ms = base::BindRepeating(
++      []() { return base::Time::Now().InMillisecondsSinceUnixEpoch(); });
++
++  bool is_official_build = false;
++#if defined(OFFICIAL_BUILD)
++  is_official_build = true;
++#endif
++  startup_bootstrap_result_ = ApplyRuntimeTestProviderBootstrap(
++      *base::CommandLine::ForCurrentProcess(), is_official_build,
++      {.is_regular_profile = profile_->IsRegularProfile(),
++       .is_disposable_profile = IsDisposableRuntimeTestProfile(profile_)},
++      CreatePrometheusRuntimeTestBootstrapFileAccess(),
++      owned_provider_registry_.get());
++  hooks_.bootstrap_result = startup_bootstrap_result_;
++}
+ 
+ PrometheusRuntimeProfileService::PrometheusRuntimeProfileService(
+     RuntimeProfileHooks hooks)
+-    : hooks_(std::move(hooks)) {}
++    : hooks_(std::move(hooks)),
++      startup_bootstrap_result_(hooks_.bootstrap_result) {}
+ 
+-PrometheusRuntimeProfileService::~PrometheusRuntimeProfileService() = default;
++PrometheusRuntimeProfileService::~PrometheusRuntimeProfileService() {
++  Shutdown();
++}
+ 
+ RuntimePrincipalResult
+ PrometheusRuntimeProfileService::CreateSidePanelPrincipal(
+     BrowserWindowInterface* exact_browser,
+     int32_t stable_tab_id) {
+-  return {};
++  if (shutdown_ || !exact_browser || stable_tab_id <= 0 ||
++      !hooks_.create_session) {
++    return {.status = RuntimeProfileStatus::kTargetLost,
++            .recovery = kAuthorityRecovery};
++  }
++  if (profile_ && exact_browser->GetProfile() != profile_) {
++    return {.status = RuntimeProfileStatus::kTargetLost,
++            .recovery = kAuthorityRecovery};
++  }
++  AgentSessionResult session_result =
++      hooks_.create_session.Run("Prometheus side panel");
++  if (!session_result.route_result.ok || !session_result.session ||
++      !session_result.session->active || session_result.session->id.empty()) {
++    return {.status = RuntimeProfileStatus::kUnauthorized,
++            .recovery = "Create a new browser-owned Agent session and retry"};
++  }
++  auto principal =
++      std::unique_ptr<LocalRuntimePrincipal>(new LocalRuntimePrincipal(
++          this, exact_browser, stable_tab_id, session_result.session->id));
++  principals_.insert(principal.get());
++  released_sessions_.erase(session_result.session->id);
++  return {.status = RuntimeProfileStatus::kOk,
++          .principal = std::move(principal)};
+ }
+ 
+ RuntimeProfileStatus PrometheusRuntimeProfileService::SeedSidePanelPrompt(
+     LocalRuntimePrincipal& principal,
+     std::string_view prompt) {
+-  return RuntimeProfileStatus::kNotImplemented;
++  if (principal.owner_ != this || !principal.is_valid()) {
++    return RuntimeProfileStatus::kUnauthorized;
++  }
++  if (!hooks_.has_session ||
++      !hooks_.has_session.Run(principal.agent_session_id_)) {
++    return RuntimeProfileStatus::kUnauthorized;
++  }
++  const std::string_view trimmed =
++      base::TrimWhitespaceASCII(prompt, base::TrimPositions::TRIM_ALL);
++  if (trimmed.empty() || !base::IsStringUTF8(prompt)) {
++    return RuntimeProfileStatus::kInvalidRequest;
++  }
++  if (prompt.size() > kHardRuntimePromptBytes) {
++    return RuntimeProfileStatus::kRequestTooLarge;
++  }
++  return RuntimeProfileStatus::kOk;
+ }
+ 
+ RuntimeSubmitResult PrometheusRuntimeProfileService::SubmitTask(
+     RuntimeSubmitRequest request) {
+-  return {};
++  if (shutdown_) {
++    return {.status = RuntimeProfileStatus::kTargetLost,
++            .recovery = kAuthorityRecovery};
++  }
++  const RuntimePolicy policy = ReadEffectivePolicy();
++  const RuntimeProfileStatus authority_status =
++      ValidateAuthority(request.authority, policy);
++  if (authority_status != RuntimeProfileStatus::kOk) {
++    return {.status = authority_status, .recovery = kAuthorityRecovery};
++  }
++
++  const std::string_view trimmed =
++      base::TrimWhitespaceASCII(request.prompt, base::TrimPositions::TRIM_ALL);
++  if (trimmed.empty() || !base::IsStringUTF8(request.prompt)) {
++    return {.status = RuntimeProfileStatus::kInvalidRequest,
++            .recovery = "Enter a non-empty UTF-8 task prompt"};
++  }
++  if (request.prompt.size() > kHardRuntimePromptBytes ||
++      request.prompt.size() >
++          static_cast<size_t>(policy.limits.max_prompt_bytes)) {
++    return {.status = RuntimeProfileStatus::kRequestTooLarge,
++            .recovery = "Shorten the task prompt and retry"};
++  }
++
++  const size_t active_task_count = std::ranges::count_if(
++      tasks_, [](const auto& item) { return !item.second.finished; });
++  const RuntimePolicyDecision admission =
++      EvaluateRuntimeTaskAdmission(policy, active_task_count);
++  if (!IsRuntimePolicyDecisionAllowed(admission)) {
++    RuntimeSubmitResult result;
++    result.status = PolicyDenial(admission, &result.recovery);
++    EmitTelemetryIfEnabled(policy, RuntimeTelemetryEventKind::kPolicyDenial);
++    return result;
++  }
++
++  const std::string fingerprint = SubmissionFingerprint(request);
++  if (active_submission_fingerprints_.contains(fingerprint)) {
++    return {.status = RuntimeProfileStatus::kDuplicateRequest,
++            .recovery = "Wait for the matching active task to finish"};
++  }
++
++  const std::vector<PrometheusProviderConfig> providers =
++      hooks_.list_providers ? hooks_.list_providers.Run()
++                            : std::vector<PrometheusProviderConfig>();
++  const std::optional<PrometheusProviderConfig> provider =
++      SelectProvider(providers, request.requested_execution);
++  if (!provider) {
++    return {.status = RuntimeProfileStatus::kProviderUnavailable,
++            .recovery = kProviderUnavailableRecovery};
++  }
++  const std::optional<EffectiveExecution> effective_execution =
++      ExecutionForProvider(*provider);
++  if (!effective_execution) {
++    return {.status = RuntimeProfileStatus::kProviderUnavailable,
++            .recovery = kProviderUnavailableRecovery};
++  }
++
++  const std::string safe_title = DeriveRuntimeSafeTitle(request.prompt);
++  if (!hooks_.create_task) {
++    return {.status = RuntimeProfileStatus::kProviderUnavailable,
++            .recovery = "The profile runtime store is unavailable"};
++  }
++  const int64_t now_ms = hooks_.now_ms ? hooks_.now_ms.Run() : 0;
++  std::optional<RuntimeTaskHandle> handle =
++      hooks_.create_task.Run(request.authority.origin,
++                             request.requested_execution, safe_title, now_ms);
++  if (!handle || handle->task_id.empty() || handle->generation == 0) {
++    return {.status = RuntimeProfileStatus::kProviderUnavailable,
++            .recovery = "The profile runtime store rejected the task"};
++  }
++
++  RuntimeTaskSnapshot snapshot{
++      .task_id = handle->task_id,
++      .safe_title = safe_title,
++      .origin = request.authority.origin,
++      .requested_execution = request.requested_execution,
++      .effective_execution = effective_execution,
++      .state = RuntimeTaskState::kQueued,
++      .error_code = RuntimeErrorCode::kNone,
++      .created_at_ms = now_ms,
++      .updated_at_ms = now_ms,
++  };
++  tasks_[handle->task_id] = RuntimeTaskRecord{
++      .snapshot = snapshot,
++      .generation = handle->generation,
++      .authority = std::move(request.authority),
++      .submission_fingerprint = fingerprint,
++      .provider = *provider,
++      .fallback_order = hooks_.get_fallback_order
++                            ? hooks_.get_fallback_order.Run()
++                            : providers,
++  };
++  active_submission_fingerprints_.insert(fingerprint);
++  EmitTelemetryIfEnabled(policy, RuntimeTelemetryEventKind::kTaskState);
++  return {.status = RuntimeProfileStatus::kOk, .task = std::move(snapshot)};
+ }
+ 
+ RuntimeSubmitResult PrometheusRuntimeProfileService::SubmitTask(
+     LocalRuntimePrincipal& principal,
+     std::string prompt,
+     RequestedExecution requested_execution) {
+-  return {};
++  if (principal.owner_ != this || !principal.is_valid()) {
++    return {.status = RuntimeProfileStatus::kUnauthorized,
++            .recovery = kAuthorityRecovery};
++  }
++  RuntimeSubmitRequest request;
++  request.prompt = std::move(prompt);
++  request.requested_execution = requested_execution;
++  request.authority.origin = RuntimeTaskOrigin::kSidePanel;
++  request.authority.caller_id = hooks_.expected_caller_id.empty()
++                                    ? "side_panel"
++                                    : hooks_.expected_caller_id;
++  request.authority.agent_session_id = principal.agent_session_id_;
++  request.authority.exact_browser = principal.exact_browser_;
++  request.authority.stable_tab_id = principal.stable_tab_id_;
++  return SubmitTask(std::move(request));
+ }
+ 
+ RuntimeOperationResult PrometheusRuntimeProfileService::DispatchTool(
+     RuntimeToolRequest request) {
+-  return {};
++  const RuntimePolicy policy = ReadEffectivePolicy();
++  const RuntimeProfileStatus authority_status =
++      ValidateAuthority(request.authority, policy);
++  if (authority_status != RuntimeProfileStatus::kOk) {
++    return {.status = authority_status, .recovery = kAuthorityRecovery};
++  }
++
++  const RuntimePolicyDecision dispatch = EvaluateRuntimeDispatch(
++      policy, request.route.internal_surface.has_value(),
++      !request.route.foreground, /*target_owned=*/true);
++  if (!IsRuntimePolicyDecisionAllowed(dispatch)) {
++    RuntimeOperationResult result;
++    result.status = PolicyDenial(dispatch, &result.recovery);
++    EmitTelemetryIfEnabled(policy, RuntimeTelemetryEventKind::kPolicyDenial);
++    return result;
++  }
++
++  const auto task = tasks_.find(request.task_id);
++  if (task == tasks_.end() || task->second.generation != request.generation) {
++    return {.status = RuntimeProfileStatus::kInvalidRequest,
++            .recovery = "Refresh the task snapshot and retry"};
++  }
++  if (task->second.finished) {
++    return {.status = RuntimeProfileStatus::kAlreadyFinished,
++            .recovery = "The task has already finished"};
++  }
++  if (task->second.authority.caller_id != request.authority.caller_id ||
++      task->second.authority.agent_session_id !=
++          request.authority.agent_session_id) {
++    return {.status = RuntimeProfileStatus::kUnauthorized,
++            .recovery = kAuthorityRecovery};
++  }
++  if (task->second.authority.exact_browser != request.authority.exact_browser ||
++      task->second.authority.stable_tab_id != request.authority.stable_tab_id) {
++    return {.status = RuntimeProfileStatus::kTargetLost,
++            .recovery = kAuthorityRecovery};
++  }
++  if (request.route.route_name != RouteForSafeTool(request.tool)) {
++    return {.status = RuntimeProfileStatus::kInvalidRequest,
++            .recovery = "Use the closed typed route for the selected tool"};
++  }
++
++  request.route.session_id = request.authority.agent_session_id;
++  request.route.target.browser_session_id.reset();
++  request.route.target.window_session_id.reset();
++  request.route.target.tab_index.reset();
++  request.route.target.tab_handle =
++      tabs::TabHandle(request.authority.stable_tab_id);
++  if (!hooks_.execute_browser_route) {
++    return {.status = RuntimeProfileStatus::kTargetLost,
++            .recovery = kAuthorityRecovery};
++  }
++
++  const bool internal_surface = request.route.internal_surface.has_value();
++  const bool background_action = !request.route.foreground;
++  const uint64_t callback_generation = ++task->second.callback_generation;
++  if (request.tool != RuntimeSafeTool::kReadPage &&
++      request.tool != RuntimeSafeTool::kGetPageSnapshot) {
++    task->second.mutation_started = true;
++  }
++  auto immediate_result =
++      std::make_shared<std::optional<RuntimeOperationResult>>();
++  hooks_.execute_browser_route.Run(
++      request.authority.exact_browser, request.route,
++      base::BindOnce(&PrometheusRuntimeProfileService::OnAgentRouteComplete,
++                     weak_factory_.GetWeakPtr(), request.task_id,
++                     callback_generation, request.tool, internal_surface,
++                     background_action, immediate_result));
++  return immediate_result->has_value()
++             ? std::move(immediate_result->value())
++             : RuntimeOperationResult{.status = RuntimeProfileStatus::kOk};
++}
++
++void PrometheusRuntimeProfileService::OnAgentRouteComplete(
++    std::string task_id,
++    uint64_t callback_generation,
++    RuntimeSafeTool tool,
++    bool internal_surface,
++    bool background_action,
++    std::shared_ptr<std::optional<RuntimeOperationResult>> immediate_result,
++    AgentRouteResult result) {
++  auto task = tasks_.find(task_id);
++  if (task == tasks_.end() || task->second.finished ||
++      task->second.callback_generation != callback_generation) {
++    return;
++  }
++  if (!result.ok) {
++    RuntimeOperationResult operation{
++        .status = RuntimeProfileStatus::kTargetLost,
++        .recovery = kAuthorityRecovery,
++    };
++    FinishTaskOnce(task_id, task->second.generation,
++                   RuntimeCompletionSource::kTool, {}, {},
++                   RuntimeErrorCode::kTargetLost);
++    *immediate_result = std::move(operation);
++    return;
++  }
++
++  const RuntimePolicy policy = ReadEffectivePolicy();
++  const RuntimeProfileStatus authority_status =
++      ValidateAuthority(task->second.authority, policy);
++  const RuntimePolicyDecision dispatch = EvaluateRuntimeDispatch(
++      policy, internal_surface, background_action, /*target_owned=*/true);
++  if (authority_status != RuntimeProfileStatus::kOk ||
++      !IsRuntimePolicyDecisionAllowed(dispatch)) {
++    RuntimeOperationResult operation;
++    if (authority_status != RuntimeProfileStatus::kOk) {
++      operation.status = authority_status;
++      operation.recovery = kAuthorityRecovery;
++    } else {
++      operation.status = PolicyDenial(dispatch, &operation.recovery);
++      EmitTelemetryIfEnabled(policy, RuntimeTelemetryEventKind::kPolicyDenial);
++    }
++    FinishTaskOnce(task_id, task->second.generation,
++                   RuntimeCompletionSource::kTool, {}, {},
++                   authority_status == RuntimeProfileStatus::kOk
++                       ? RuntimeErrorCode::kPolicyBlocked
++                       : RuntimeErrorCode::kTargetLost);
++    *immediate_result = std::move(operation);
++    return;
++  }
++  if (!hooks_.execute_provider_turn) {
++    RuntimeOperationResult operation{
++        .status = RuntimeProfileStatus::kProviderUnavailable,
++        .recovery = kProviderUnavailableRecovery,
++    };
++    FinishTaskOnce(task_id, task->second.generation,
++                   RuntimeCompletionSource::kProvider, {}, {},
++                   RuntimeErrorCode::kProviderUnavailable);
++    *immediate_result = std::move(operation);
++    return;
++  }
++
++  ProviderTurnRequest turn_request;
++  turn_request.family = task->second.provider.family;
++  turn_request.use_responses_api =
++      task->second.provider.capabilities.responses_api;
++  turn_request.model = task->second.provider.model_id;
++  turn_request.user_text = BoundedAgentResultText(
++      result, static_cast<size_t>(policy.limits.max_prompt_bytes));
++  ProviderToolDefinition tool_definition;
++  tool_definition.name = NameForSafeTool(tool);
++  tool_definition.description = "Closed browser-owned page operation";
++  tool_definition.input_schema.Set("type", "object");
++  turn_request.tools.push_back(std::move(tool_definition));
++
++  const uint64_t provider_operation_id = hooks_.execute_provider_turn.Run(
++      task->second.provider.provider_id, std::move(turn_request),
++      base::BindOnce(&PrometheusRuntimeProfileService::OnProviderTurnComplete,
++                     weak_factory_.GetWeakPtr(), task_id, callback_generation,
++                     immediate_result));
++  task = tasks_.find(task_id);
++  if (task != tasks_.end() && !task->second.finished &&
++      task->second.callback_generation == callback_generation &&
++      !immediate_result->has_value()) {
++    if (provider_operation_id == 0) {
++      FinishTaskOnce(task_id, task->second.generation,
++                     RuntimeCompletionSource::kProvider, {}, {},
++                     RuntimeErrorCode::kProviderUnavailable);
++      *immediate_result = RuntimeOperationResult{
++          .status = RuntimeProfileStatus::kProviderUnavailable,
++          .recovery = kProviderUnavailableRecovery,
++      };
++    } else {
++      task->second.provider_operation_id = provider_operation_id;
++    }
++  }
++}
++
++void PrometheusRuntimeProfileService::OnProviderTurnComplete(
++    std::string task_id,
++    uint64_t callback_generation,
++    std::shared_ptr<std::optional<RuntimeOperationResult>> immediate_result,
++    ProviderTurnResult result) {
++  auto task = tasks_.find(task_id);
++  if (task == tasks_.end() || task->second.finished ||
++      task->second.callback_generation != callback_generation) {
++    return;
++  }
++  task->second.provider_operation_id.reset();
++
++  RuntimeOperationResult operation{.status = RuntimeProfileStatus::kOk};
++  operation.usage = result.usage;
++  if (!result.ok() || !IsValidRuntimeUsage(result.usage)) {
++    const RuntimeErrorCode error =
++        result.ok() ? RuntimeErrorCode::kProviderInvalidResponse
++                    : ErrorForProviderFailure(result.failure);
++    FinishTaskOnce(task_id, task->second.generation,
++                   RuntimeCompletionSource::kProvider, {}, {}, error);
++    operation.status = result.failure == ProviderFailureKind::kTimeout
++                           ? RuntimeProfileStatus::kTimeout
++                       : result.failure == ProviderFailureKind::kCancelled
++                           ? RuntimeProfileStatus::kCancelled
++                           : RuntimeProfileStatus::kProviderUnavailable;
++    operation.recovery = kProviderUnavailableRecovery;
++    *immediate_result = std::move(operation);
++    return;
++  }
++
++  const RuntimePolicy policy = ReadEffectivePolicy();
++  const RuntimeProfileStatus authority_status =
++      ValidateAuthority(task->second.authority, policy);
++  if (authority_status != RuntimeProfileStatus::kOk) {
++    FinishTaskOnce(task_id, task->second.generation,
++                   RuntimeCompletionSource::kProvider, {}, {},
++                   RuntimeErrorCode::kTargetLost);
++    operation.status = authority_status;
++    operation.recovery = kAuthorityRecovery;
++    *immediate_result = std::move(operation);
++    return;
++  }
++
++  std::optional<RuntimeUsage> accumulated =
++      AddRuntimeUsage(task->second.snapshot.usage, result.usage);
++  if (!accumulated ||
++      accumulated->input_tokens + accumulated->output_tokens >
++          policy.limits.max_total_tokens ||
++      result.safe_result.text.size() >
++          static_cast<size_t>(policy.limits.max_result_bytes) ||
++      !base::IsStringUTF8(result.safe_result.text)) {
++    FinishTaskOnce(task_id, task->second.generation,
++                   RuntimeCompletionSource::kProvider, {}, {},
++                   RuntimeErrorCode::kProviderInvalidResponse);
++    operation.status = RuntimeProfileStatus::kProviderUnavailable;
++    operation.recovery = kProviderUnavailableRecovery;
++    *immediate_result = std::move(operation);
++    return;
++  }
++
++  operation.safe_result = std::move(result.safe_result);
++  if (result.tool_call.has_value()) {
++    if (result.stop_reason != ProviderStopReason::kToolCall ||
++        !RuntimeSafeToolFromString(result.tool_call->name).has_value()) {
++      FinishTaskOnce(task_id, task->second.generation,
++                     RuntimeCompletionSource::kProvider, {}, {},
++                     RuntimeErrorCode::kProviderInvalidResponse);
++      operation.status = RuntimeProfileStatus::kProviderUnavailable;
++      operation.recovery = kProviderUnavailableRecovery;
++    } else {
++      task->second.snapshot.usage = *accumulated;
++      task->second.snapshot.state = RuntimeTaskState::kRunning;
++    }
++    *immediate_result = std::move(operation);
++    return;
++  }
++  if (result.stop_reason != ProviderStopReason::kComplete &&
++      result.stop_reason != ProviderStopReason::kLength) {
++    FinishTaskOnce(task_id, task->second.generation,
++                   RuntimeCompletionSource::kProvider, {}, {},
++                   RuntimeErrorCode::kProviderInvalidResponse);
++    operation.status = RuntimeProfileStatus::kProviderUnavailable;
++    operation.recovery = kProviderUnavailableRecovery;
++    *immediate_result = std::move(operation);
++    return;
++  }
++  if (result.stop_reason == ProviderStopReason::kLength) {
++    operation.safe_result.truncated = true;
++  }
++  FinishTaskOnce(task_id, task->second.generation,
++                 RuntimeCompletionSource::kProvider, operation.safe_result,
++                 *accumulated);
++  *immediate_result = std::move(operation);
+ }
+ 
+ RuntimeDiscoveryResult PrometheusRuntimeProfileService::DiscoverModels(
+     std::string provider_id) {
+-  return {};
++  if (provider_id.empty() || !hooks_.discover_models) {
++    return {.status = RuntimeProfileStatus::kProviderUnavailable,
++            .sanitized_error = "MODEL_DISCOVERY_UNAVAILABLE"};
++  }
++  const uint64_t operation_id = next_discovery_operation_id_++;
++  RuntimeDiscoveryResult pending{
++      .status = RuntimeProfileStatus::kOk,
++      .operation_id = operation_id,
++      .pending = true,
++  };
++  discoveries_.emplace(operation_id, RuntimeDiscoveryRecord{.result = pending});
++  auto immediate_result =
++      std::make_shared<std::optional<RuntimeDiscoveryResult>>();
++  const uint64_t provider_operation_id = hooks_.discover_models.Run(
++      std::move(provider_id),
++      base::BindOnce(&PrometheusRuntimeProfileService::OnDiscoveryComplete,
++                     weak_factory_.GetWeakPtr(), operation_id,
++                     immediate_result));
++  auto discovery = discoveries_.find(operation_id);
++  if (discovery != discoveries_.end() && !discovery->second.finished &&
++      !immediate_result->has_value()) {
++    if (provider_operation_id == 0) {
++      discovery->second.result.status =
++          RuntimeProfileStatus::kProviderUnavailable;
++      discovery->second.result.sanitized_error = "MODEL_DISCOVERY_UNAVAILABLE";
++      discovery->second.result.pending = false;
++      discovery->second.finished = true;
++    } else {
++      discovery->second.provider_operation_id = provider_operation_id;
++    }
++  }
++  return immediate_result->has_value() ? std::move(immediate_result->value())
++                                       : discoveries_.at(operation_id).result;
++}
++
++void PrometheusRuntimeProfileService::OnDiscoveryComplete(
++    uint64_t operation_id,
++    std::shared_ptr<std::optional<RuntimeDiscoveryResult>> immediate_result,
++    ProviderModelListResult provider_result) {
++  auto discovery = discoveries_.find(operation_id);
++  if (discovery == discoveries_.end() || discovery->second.finished) {
++    return;
++  }
++  RuntimeDiscoveryResult result{
++      .status = provider_result.state == ProviderModelListState::kReady
++                    ? RuntimeProfileStatus::kOk
++                    : RuntimeProfileStatus::kProviderUnavailable,
++      .operation_id = operation_id,
++      .state = provider_result.state,
++      .models = std::move(provider_result.models),
++  };
++  if (result.status != RuntimeProfileStatus::kOk) {
++    result.sanitized_error = "MODEL_DISCOVERY_UNAVAILABLE";
++  }
++  discovery->second.result = result;
++  discovery->second.provider_operation_id.reset();
++  discovery->second.finished = true;
++  *immediate_result = std::move(result);
++}
++
++RuntimeProfileStatus PrometheusRuntimeProfileService::CancelDiscovery(
++    uint64_t operation_id) {
++  auto discovery = discoveries_.find(operation_id);
++  if (discovery == discoveries_.end()) {
++    return RuntimeProfileStatus::kInvalidRequest;
++  }
++  if (discovery->second.finished) {
++    return RuntimeProfileStatus::kAlreadyFinished;
++  }
++  if (discovery->second.provider_operation_id &&
++      hooks_.cancel_provider_operation) {
++    hooks_.cancel_provider_operation.Run(
++        *discovery->second.provider_operation_id);
++  }
++  discovery->second.provider_operation_id.reset();
++  discovery->second.result.status = RuntimeProfileStatus::kCancelled;
++  discovery->second.result.sanitized_error = "MODEL_DISCOVERY_CANCELLED";
++  discovery->second.result.pending = false;
++  discovery->second.finished = true;
++  return RuntimeProfileStatus::kCancelled;
++}
++
++std::optional<RuntimeDiscoveryResult>
++PrometheusRuntimeProfileService::GetDiscovery(uint64_t operation_id) const {
++  const auto discovery = discoveries_.find(operation_id);
++  return discovery == discoveries_.end()
++             ? std::nullopt
++             : std::optional(discovery->second.result);
+ }
+ 
+ std::vector<MemoryRecord> PrometheusRuntimeProfileService::ListMemory(
+     std::string_view caller_id) {
+-  return {};
++  return hooks_.list_memories ? hooks_.list_memories.Run(caller_id)
++                              : std::vector<MemoryRecord>();
+ }
+ 
+ std::vector<SiteGuideRecord> PrometheusRuntimeProfileService::ListSiteGuides(
+     std::string_view caller_id) {
+-  return {};
++  return hooks_.list_site_guides ? hooks_.list_site_guides.Run(caller_id)
++                                 : std::vector<SiteGuideRecord>();
+ }
+ 
+ RuntimeProfileStatus PrometheusRuntimeProfileService::SetProviders(
+     RuntimeProviderMutationCaller caller,
+     std::vector<PrometheusProviderConfig> providers) {
+-  return RuntimeProfileStatus::kNotImplemented;
++  if (caller != RuntimeProviderMutationCaller::kLocalUi) {
++    return RuntimeProfileStatus::kLocalUiRequired;
++  }
++  if (!hooks_.set_providers) {
++    return RuntimeProfileStatus::kOk;
++  }
++  return hooks_.set_providers.Run(std::move(providers)) ==
++                 PrometheusProviderError::kNone
++             ? RuntimeProfileStatus::kOk
++             : RuntimeProfileStatus::kInvalidRequest;
+ }
+ 
+ RuntimeProfileStatus PrometheusRuntimeProfileService::CancelTask(
+     std::string_view task_id) {
+-  return RuntimeProfileStatus::kNotImplemented;
++  const auto task = tasks_.find(task_id);
++  if (task == tasks_.end()) {
++    return RuntimeProfileStatus::kInvalidRequest;
++  }
++  if (task->second.finished) {
++    return RuntimeProfileStatus::kAlreadyFinished;
++  }
++  const RuntimeProfileStatus status =
++      FinishTaskOnce(task_id, task->second.generation,
++                     RuntimeCompletionSource::kCancellation, {}, {});
++  return status == RuntimeProfileStatus::kOk ? RuntimeProfileStatus::kCancelled
++                                             : status;
+ }
+ 
+ RuntimeProfileStatus PrometheusRuntimeProfileService::CompleteTaskForTesting(
+@@ -138,34 +1018,283 @@ RuntimeProfileStatus PrometheusRuntimeProfileService::CompleteTaskForTesting(
+     RuntimeCompletionSource source,
+     RuntimeSafeResult result,
+     RuntimeUsage usage) {
+-  return RuntimeProfileStatus::kNotImplemented;
++  return FinishTaskOnce(task_id, generation, source, std::move(result), usage);
+ }
+ 
+ size_t PrometheusRuntimeProfileService::finish_count_for_testing(
+     std::string_view task_id) const {
+-  return 0;
++  const auto task = tasks_.find(task_id);
++  return task == tasks_.end() ? 0 : task->second.finish_count;
+ }
+ 
+ std::optional<RuntimeTaskSnapshot> PrometheusRuntimeProfileService::GetTask(
+     std::string_view task_id) const {
+-  return std::nullopt;
++  const auto task = tasks_.find(task_id);
++  return task == tasks_.end() ? std::nullopt
++                              : std::optional(task->second.snapshot);
+ }
+ 
+ PrometheusRuntimeTestBootstrapResult
+ PrometheusRuntimeProfileService::startup_bootstrap_result_for_testing() const {
+-  return hooks_.bootstrap_result;
++  return startup_bootstrap_result_;
++}
++
++RuntimePolicy PrometheusRuntimeProfileService::effective_policy_for_testing()
++    const {
++  return ReadEffectivePolicy();
+ }
+ 
+ void PrometheusRuntimeProfileService::HandleTabDetached(
+     BrowserWindowInterface* exact_browser,
+-    int32_t stable_tab_id) {}
++    int32_t stable_tab_id) {
++  CancelMatchingTasks(exact_browser, stable_tab_id, std::string_view());
++}
+ 
+ void PrometheusRuntimeProfileService::HandleAgentSessionLost(
+-    std::string_view agent_session_id) {}
++    std::string_view agent_session_id) {
++  CancelMatchingTasks(nullptr, 0, agent_session_id);
++  ReleaseSessionOnce(agent_session_id);
++}
++
++void PrometheusRuntimeProfileService::Shutdown() {
++  if (shutdown_) {
++    return;
++  }
++  shutdown_ = true;
++
++  std::vector<uint64_t> discovery_ids;
++  for (const auto& [operation_id, discovery] : discoveries_) {
++    if (!discovery.finished) {
++      discovery_ids.push_back(operation_id);
++    }
++  }
++  for (uint64_t operation_id : discovery_ids) {
++    CancelDiscovery(operation_id);
++  }
++
++  std::vector<std::string> task_ids;
++  std::set<std::string, std::less<>> sessions;
++  for (const auto& [task_id, task] : tasks_) {
++    if (!task.finished) {
++      task_ids.push_back(task_id);
++    }
++    if (!task.authority.agent_session_id.empty()) {
++      sessions.insert(task.authority.agent_session_id);
++    }
++  }
++  for (const std::string& task_id : task_ids) {
++    RuntimeTaskRecord& task = tasks_.at(task_id);
++    FinishTaskOnce(task_id, task.generation, RuntimeCompletionSource::kShutdown,
++                   {}, {});
++  }
++  for (LocalRuntimePrincipal* principal : principals_) {
++    sessions.insert(principal->agent_session_id_);
++  }
++  for (const std::string& session_id : sessions) {
++    ReleaseSessionOnce(session_id);
++  }
++  for (LocalRuntimePrincipal* principal : principals_) {
++    principal->owner_ = nullptr;
++    principal->released_ = true;
++  }
++  principals_.clear();
++  if (owned_runtime_store_) {
++    const int64_t now_ms = hooks_.now_ms ? hooks_.now_ms.Run() : 0;
++    owned_runtime_store_->Shutdown(now_ms);
++  }
++  weak_factory_.InvalidateWeakPtrs();
++}
++
++RuntimePolicy PrometheusRuntimeProfileService::ReadEffectivePolicy() const {
++  return ClampRuntimePolicy(hooks_.read_policy ? hooks_.read_policy.Run()
++                                               : RuntimePolicy());
++}
++
++RuntimeProfileStatus PrometheusRuntimeProfileService::ValidateAuthority(
++    const RuntimeAuthorityContext& authority,
++    const RuntimePolicy& policy) const {
++  if (authority.caller_id.empty() || authority.agent_session_id.empty() ||
++      !authority.exact_browser || authority.stable_tab_id <= 0) {
++    return RuntimeProfileStatus::kUnauthorized;
++  }
++  if (!hooks_.has_session ||
++      !hooks_.has_session.Run(authority.agent_session_id)) {
++    return RuntimeProfileStatus::kUnauthorized;
++  }
++  if (!hooks_.expected_caller_id.empty() &&
++      authority.caller_id != hooks_.expected_caller_id) {
++    return RuntimeProfileStatus::kUnauthorized;
++  }
++  if (hooks_.expected_browser &&
++      authority.exact_browser != hooks_.expected_browser) {
++    return RuntimeProfileStatus::kTargetLost;
++  }
++  if (hooks_.expected_stable_tab_id > 0 &&
++      authority.stable_tab_id != hooks_.expected_stable_tab_id) {
++    return RuntimeProfileStatus::kTargetLost;
++  }
++  if (profile_ && authority.exact_browser->GetProfile() != profile_) {
++    return RuntimeProfileStatus::kTargetLost;
++  }
++  const size_t active_sessions =
++      hooks_.active_session_count ? hooks_.active_session_count.Run() : 0;
++  if (!IsRuntimePolicyDecisionAllowed(
++          EvaluateRuntimeAgentAdmission(policy, active_sessions))) {
++    return RuntimeProfileStatus::kPolicyBlocked;
++  }
++  return RuntimeProfileStatus::kOk;
++}
++
++RuntimeProfileStatus PrometheusRuntimeProfileService::PolicyDenial(
++    RuntimePolicyDecision decision,
++    std::string* recovery) const {
++  CHECK(recovery);
++  *recovery = "Runtime policy denied the operation: ";
++  recovery->append(RuntimePolicyDecisionToString(decision));
++  return RuntimeProfileStatus::kPolicyBlocked;
++}
++
++RuntimeProfileStatus PrometheusRuntimeProfileService::FinishTaskOnce(
++    std::string_view task_id,
++    uint64_t generation,
++    RuntimeCompletionSource source,
++    RuntimeSafeResult result,
++    RuntimeUsage usage,
++    RuntimeErrorCode terminal_error) {
++  auto task = tasks_.find(task_id);
++  if (task == tasks_.end()) {
++    return RuntimeProfileStatus::kInvalidRequest;
++  }
++  if (task->second.finished) {
++    return RuntimeProfileStatus::kAlreadyFinished;
++  }
++  if (task->second.generation != generation || !IsValidRuntimeUsage(usage)) {
++    return RuntimeProfileStatus::kInvalidRequest;
++  }
++
++  if (task->second.provider_operation_id && hooks_.cancel_provider_operation) {
++    hooks_.cancel_provider_operation.Run(*task->second.provider_operation_id);
++  }
++  task->second.provider_operation_id.reset();
++  ++task->second.callback_generation;
+ 
+-void PrometheusRuntimeProfileService::Shutdown() {}
++  RuntimeTaskState state = RuntimeTaskState::kSucceeded;
++  RuntimeErrorCode error = RuntimeErrorCode::kNone;
++  switch (source) {
++    case RuntimeCompletionSource::kProvider:
++    case RuntimeCompletionSource::kTool:
++      break;
++    case RuntimeCompletionSource::kCancellation:
++    case RuntimeCompletionSource::kShutdown:
++      state = RuntimeTaskState::kCancelled;
++      error = RuntimeErrorCode::kCancelled;
++      break;
++    case RuntimeCompletionSource::kTimeout:
++      state = RuntimeTaskState::kFailed;
++      error = RuntimeErrorCode::kTimeout;
++      break;
++  }
++  if (terminal_error != RuntimeErrorCode::kNone) {
++    error = terminal_error;
++    state = terminal_error == RuntimeErrorCode::kCancelled
++                ? RuntimeTaskState::kCancelled
++                : RuntimeTaskState::kFailed;
++  }
++
++  const int64_t now_ms = hooks_.now_ms ? hooks_.now_ms.Run() : 0;
++  if (owned_runtime_store_) {
++    const RuntimeStoreStatus store_status =
++        owned_runtime_store_->FinishTaskOnce(task_id, generation, state, error,
++                                             result, usage, now_ms);
++    if (store_status == RuntimeStoreStatus::kAlreadyFinished) {
++      return RuntimeProfileStatus::kAlreadyFinished;
++    }
++    if (store_status != RuntimeStoreStatus::kOk) {
++      return RuntimeProfileStatus::kInvalidRequest;
++    }
++  }
++  task->second.snapshot.state = state;
++  task->second.snapshot.error_code = error;
++  task->second.snapshot.updated_at_ms = now_ms;
++  task->second.snapshot.usage = usage;
++  task->second.finished = true;
++  ++task->second.finish_count;
++  active_submission_fingerprints_.erase(task->second.submission_fingerprint);
++  EmitTelemetryIfEnabled(ReadEffectivePolicy(),
++                         RuntimeTelemetryEventKind::kTaskState);
++  return RuntimeProfileStatus::kOk;
++}
++
++void PrometheusRuntimeProfileService::CancelMatchingTasks(
++    BrowserWindowInterface* exact_browser,
++    int32_t stable_tab_id,
++    std::string_view agent_session_id) {
++  std::vector<std::string> task_ids;
++  for (const auto& [task_id, task] : tasks_) {
++    if (task.finished) {
++      continue;
++    }
++    const bool matches_target = exact_browser &&
++                                task.authority.exact_browser == exact_browser &&
++                                task.authority.stable_tab_id == stable_tab_id;
++    const bool matches_session =
++        !agent_session_id.empty() &&
++        task.authority.agent_session_id == agent_session_id;
++    if (matches_target || matches_session) {
++      task_ids.push_back(task_id);
++    }
++  }
++  for (const std::string& task_id : task_ids) {
++    RuntimeTaskRecord& task = tasks_.at(task_id);
++    FinishTaskOnce(task_id, task.generation,
++                   RuntimeCompletionSource::kCancellation, {}, {});
++  }
++}
++
++void PrometheusRuntimeProfileService::ReleaseSessionOnce(
++    std::string_view agent_session_id) {
++  if (agent_session_id.empty() ||
++      !released_sessions_.insert(std::string(agent_session_id)).second) {
++    return;
++  }
++  if (hooks_.close_session) {
++    hooks_.close_session.Run(agent_session_id);
++  }
++  if (hooks_.release_session_ownership) {
++    hooks_.release_session_ownership.Run(agent_session_id);
++  }
++}
++
++void PrometheusRuntimeProfileService::EmitTelemetryIfEnabled(
++    const RuntimePolicy& policy,
++    RuntimeTelemetryEventKind event) const {
++  if (hooks_.emit_telemetry &&
++      IsRuntimePolicyDecisionAllowed(
++          EvaluateRuntimeTelemetryEmission(policy, event))) {
++    hooks_.emit_telemetry.Run(event);
++  }
++}
+ 
+ void PrometheusRuntimeProfileService::ReleasePrincipal(
+-    LocalRuntimePrincipal* principal) {}
++    LocalRuntimePrincipal* principal) {
++  if (!principal || principal->owner_ != this || principal->released_) {
++    return;
++  }
++  ReleaseSessionOnce(principal->agent_session_id_);
++  principals_.erase(principal);
++  principal->released_ = true;
++  principal->owner_ = nullptr;
++  principal->exact_browser_ = nullptr;
++  principal->stable_tab_id_ = 0;
++  principal->agent_session_id_.clear();
++}
++
++void PrometheusRuntimeProfileService::RelocatePrincipal(
++    LocalRuntimePrincipal* from,
++    LocalRuntimePrincipal* to) {
++  if (principals_.erase(from) > 0) {
++    principals_.insert(to);
++  }
++}
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.h b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+index 243bd77859..fc6668098b 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+@@ -7,14 +7,17 @@
+ 
+ #include <cstddef>
+ #include <cstdint>
++#include <map>
+ #include <memory>
+ #include <optional>
++#include <set>
+ #include <string>
+ #include <string_view>
+ #include <vector>
+ 
+ #include "base/functional/callback.h"
+ #include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
+ #include "chrome/browser/prometheus/prometheus_agent_route.h"
+ #include "chrome/browser/prometheus/prometheus_agent_session.h"
+ #include "chrome/browser/prometheus/prometheus_memory_store.h"
+@@ -30,6 +33,11 @@ class Profile;
+ namespace prometheus {
+ 
+ class PrometheusAgentProfileService;
++class PrometheusMemoryStore;
++class PrometheusProviderRegistry;
++class PrometheusProviderTransport;
++class PrometheusRuntimeStore;
++class PrometheusSecretStore;
+ 
+ enum class RuntimeProfileStatus {
+   kOk,
+@@ -118,6 +126,7 @@ struct RuntimeDiscoveryResult {
+   ProviderModelListState state = ProviderModelListState::kInvalidOutput;
+   std::vector<std::string> models;
+   std::string sanitized_error;
++  bool pending = false;
+ };
+ 
+ // Narrow callbacks make every browser/process boundary independently fakeable
+@@ -125,9 +134,13 @@ struct RuntimeDiscoveryResult {
+ // the regular-profile stores and Agent authority.
+ struct RuntimeProfileHooks {
+   using AgentRouteCallback = base::OnceCallback<void(AgentRouteResult)>;
++  using ProviderTurnCallback = base::OnceCallback<void(ProviderTurnResult)>;
++  using ProviderModelsCallback =
++      base::OnceCallback<void(ProviderModelListResult)>;
+ 
+   base::RepeatingCallback<AgentSessionResult(std::string)> create_session;
+   base::RepeatingCallback<bool(std::string_view)> has_session;
++  base::RepeatingCallback<size_t()> active_session_count;
+   base::RepeatingCallback<AgentRouteResult(std::string_view)> close_session;
+   base::RepeatingCallback<void(std::string_view)> release_session_ownership;
+   base::RepeatingCallback<void(BrowserWindowInterface*,
+@@ -142,9 +155,17 @@ struct RuntimeProfileHooks {
+       create_task;
+   base::RepeatingCallback<std::vector<PrometheusProviderConfig>()>
+       list_providers;
+-  base::RepeatingCallback<ProviderTurnResult(std::string, ProviderTurnRequest)>
++  base::RepeatingCallback<std::vector<PrometheusProviderConfig>()>
++      get_fallback_order;
++  base::RepeatingCallback<PrometheusProviderError(
++      std::vector<PrometheusProviderConfig>)>
++      set_providers;
++  base::RepeatingCallback<
++      uint64_t(std::string, ProviderTurnRequest, ProviderTurnCallback)>
+       execute_provider_turn;
+-  base::RepeatingCallback<ProviderModelListResult(std::string)> discover_models;
++  base::RepeatingCallback<uint64_t(std::string, ProviderModelsCallback)>
++      discover_models;
++  base::RepeatingCallback<bool(uint64_t)> cancel_provider_operation;
+   base::RepeatingCallback<std::vector<MemoryRecord>(std::string_view)>
+       list_memories;
+   base::RepeatingCallback<std::vector<SiteGuideRecord>(std::string_view)>
+@@ -152,6 +173,9 @@ struct RuntimeProfileHooks {
+   base::RepeatingCallback<bool(std::string_view)> confirm_tool;
+   base::RepeatingCallback<void(RuntimeTelemetryEventKind)> emit_telemetry;
+   base::RepeatingCallback<int64_t()> now_ms;
++  std::string expected_caller_id;
++  raw_ptr<BrowserWindowInterface> expected_browser = nullptr;
++  int32_t expected_stable_tab_id = 0;
+   PrometheusRuntimeTestBootstrapResult bootstrap_result =
+       PrometheusRuntimeTestBootstrapResult::kNotRequested;
+ };
+@@ -214,6 +238,9 @@ class PrometheusRuntimeProfileService : public KeyedService {
+                                  RequestedExecution requested_execution);
+   RuntimeOperationResult DispatchTool(RuntimeToolRequest request);
+   RuntimeDiscoveryResult DiscoverModels(std::string provider_id);
++  RuntimeProfileStatus CancelDiscovery(uint64_t operation_id);
++  std::optional<RuntimeDiscoveryResult> GetDiscovery(
++      uint64_t operation_id) const;
+   std::vector<MemoryRecord> ListMemory(std::string_view caller_id);
+   std::vector<SiteGuideRecord> ListSiteGuides(std::string_view caller_id);
+   RuntimeProfileStatus SetProviders(
+@@ -229,6 +256,7 @@ class PrometheusRuntimeProfileService : public KeyedService {
+   std::optional<RuntimeTaskSnapshot> GetTask(std::string_view task_id) const;
+   PrometheusRuntimeTestBootstrapResult startup_bootstrap_result_for_testing()
+       const;
++  RuntimePolicy effective_policy_for_testing() const;
+ 
+   void HandleTabDetached(BrowserWindowInterface* exact_browser,
+                          int32_t stable_tab_id);
+@@ -238,11 +266,85 @@ class PrometheusRuntimeProfileService : public KeyedService {
+  private:
+   friend class LocalRuntimePrincipal;
+ 
++  struct RuntimeTaskRecord {
++    RuntimeTaskSnapshot snapshot;
++    uint64_t generation = 0;
++    RuntimeAuthorityContext authority;
++    std::string submission_fingerprint;
++    PrometheusProviderConfig provider;
++    std::vector<PrometheusProviderConfig> fallback_order;
++    size_t fallback_index = 0;
++    std::optional<uint64_t> provider_operation_id;
++    uint64_t callback_generation = 0;
++    bool mutation_started = false;
++    bool finished = false;
++    size_t finish_count = 0;
++  };
++
++  struct RuntimeDiscoveryRecord {
++    RuntimeDiscoveryResult result;
++    std::optional<uint64_t> provider_operation_id;
++    bool finished = false;
++  };
++
++  RuntimePolicy ReadEffectivePolicy() const;
++  RuntimeProfileStatus ValidateAuthority(
++      const RuntimeAuthorityContext& authority,
++      const RuntimePolicy& policy) const;
++  RuntimeProfileStatus PolicyDenial(RuntimePolicyDecision decision,
++                                    std::string* recovery) const;
++  RuntimeProfileStatus FinishTaskOnce(
++      std::string_view task_id,
++      uint64_t generation,
++      RuntimeCompletionSource source,
++      RuntimeSafeResult result,
++      RuntimeUsage usage,
++      RuntimeErrorCode terminal_error = RuntimeErrorCode::kNone);
++  void OnAgentRouteComplete(
++      std::string task_id,
++      uint64_t callback_generation,
++      RuntimeSafeTool tool,
++      bool internal_surface,
++      bool background_action,
++      std::shared_ptr<std::optional<RuntimeOperationResult>> immediate_result,
++      AgentRouteResult result);
++  void OnProviderTurnComplete(
++      std::string task_id,
++      uint64_t callback_generation,
++      std::shared_ptr<std::optional<RuntimeOperationResult>> immediate_result,
++      ProviderTurnResult result);
++  void OnDiscoveryComplete(
++      uint64_t operation_id,
++      std::shared_ptr<std::optional<RuntimeDiscoveryResult>> immediate_result,
++      ProviderModelListResult result);
++  void CancelMatchingTasks(BrowserWindowInterface* exact_browser,
++                           int32_t stable_tab_id,
++                           std::string_view agent_session_id);
++  void ReleaseSessionOnce(std::string_view agent_session_id);
++  void EmitTelemetryIfEnabled(const RuntimePolicy& policy,
++                              RuntimeTelemetryEventKind event) const;
+   void ReleasePrincipal(LocalRuntimePrincipal* principal);
++  void RelocatePrincipal(LocalRuntimePrincipal* from,
++                         LocalRuntimePrincipal* to);
+ 
+   raw_ptr<Profile> profile_ = nullptr;
+   raw_ptr<PrometheusAgentProfileService> agent_profile_service_ = nullptr;
++  std::unique_ptr<PrometheusRuntimeStore> owned_runtime_store_;
++  std::unique_ptr<PrometheusMemoryStore> owned_memory_store_;
++  std::unique_ptr<PrometheusProviderRegistry> owned_provider_registry_;
++  std::unique_ptr<PrometheusSecretStore> owned_secret_store_;
++  std::unique_ptr<PrometheusProviderTransport> owned_provider_transport_;
+   RuntimeProfileHooks hooks_;
++  std::map<std::string, RuntimeTaskRecord, std::less<>> tasks_;
++  std::map<uint64_t, RuntimeDiscoveryRecord> discoveries_;
++  std::set<std::string, std::less<>> active_submission_fingerprints_;
++  std::set<std::string, std::less<>> released_sessions_;
++  std::set<LocalRuntimePrincipal*> principals_;
++  uint64_t next_discovery_operation_id_ = 1;
++  PrometheusRuntimeTestBootstrapResult startup_bootstrap_result_ =
++      PrometheusRuntimeTestBootstrapResult::kNotRequested;
++  bool shutdown_ = false;
++  base::WeakPtrFactory<PrometheusRuntimeProfileService> weak_factory_{this};
+ };
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+index fd8a2eaaa5..3d0a8cbd2b 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+@@ -28,6 +28,9 @@ class FakeRuntimeProfileBoundaries {
+         &FakeRuntimeProfileBoundaries::CreateSession, base::Unretained(this));
+     hooks.has_session = base::BindRepeating(
+         &FakeRuntimeProfileBoundaries::HasSession, base::Unretained(this));
++    hooks.active_session_count =
++        base::BindRepeating(&FakeRuntimeProfileBoundaries::ActiveSessionCount,
++                            base::Unretained(this));
+     hooks.close_session = base::BindRepeating(
+         &FakeRuntimeProfileBoundaries::CloseSession, base::Unretained(this));
+     hooks.release_session_ownership = base::BindRepeating(
+@@ -42,11 +45,18 @@ class FakeRuntimeProfileBoundaries {
+         &FakeRuntimeProfileBoundaries::CreateTask, base::Unretained(this));
+     hooks.list_providers = base::BindRepeating(
+         &FakeRuntimeProfileBoundaries::ListProviders, base::Unretained(this));
++    hooks.get_fallback_order = base::BindRepeating(
++        &FakeRuntimeProfileBoundaries::ListProviders, base::Unretained(this));
++    hooks.set_providers = base::BindRepeating(
++        &FakeRuntimeProfileBoundaries::SetProviders, base::Unretained(this));
+     hooks.execute_provider_turn =
+         base::BindRepeating(&FakeRuntimeProfileBoundaries::ExecuteProviderTurn,
+                             base::Unretained(this));
+     hooks.discover_models = base::BindRepeating(
+         &FakeRuntimeProfileBoundaries::DiscoverModels, base::Unretained(this));
++    hooks.cancel_provider_operation = base::BindRepeating(
++        &FakeRuntimeProfileBoundaries::CancelProviderOperation,
++        base::Unretained(this));
+     hooks.list_memories = base::BindRepeating(
+         &FakeRuntimeProfileBoundaries::ListMemory, base::Unretained(this));
+     hooks.list_site_guides = base::BindRepeating(
+@@ -75,6 +85,11 @@ class FakeRuntimeProfileBoundaries {
+     return session_is_valid && session_id == "browser-issued-session";
+   }
+ 
++  size_t ActiveSessionCount() {
++    ++active_session_count_reads;
++    return active_sessions;
++  }
++
+   AgentRouteResult CloseSession(std::string_view session_id) {
+     ++close_session_count;
+     return AgentRouteResult::Success({"closed"});
+@@ -114,26 +129,54 @@ class FakeRuntimeProfileBoundaries {
+     provider.provider_id = "provider-1";
+     provider.model_id = "model-1";
+     provider.enabled = true;
+-    return {std::move(provider)};
++    std::vector<PrometheusProviderConfig> providers;
++    providers.push_back(std::move(provider));
++    if (local_provider_available) {
++      PrometheusProviderConfig local;
++      local.provider_id = "provider-local";
++      local.kind = PrometheusProviderKind::kLMStudio;
++      local.route_class = PrometheusProviderRouteClass::kLocal;
++      local.model_id = "local-model";
++      local.enabled = true;
++      providers.push_back(std::move(local));
++    }
++    return providers;
++  }
++
++  PrometheusProviderError SetProviders(
++      std::vector<PrometheusProviderConfig> providers) {
++    ++provider_mutation_count;
++    return PrometheusProviderError::kNone;
+   }
+ 
+-  ProviderTurnResult ExecuteProviderTurn(std::string provider_id,
+-                                         ProviderTurnRequest request) {
++  uint64_t ExecuteProviderTurn(
++      std::string provider_id,
++      ProviderTurnRequest request,
++      RuntimeProfileHooks::ProviderTurnCallback callback) {
+     ++provider_turn_count;
+     ProviderTurnResult result;
+     result.safe_result.text = "safe provider result";
+     result.stop_reason = ProviderStopReason::kComplete;
+     result.usage.input_tokens = 4;
+     result.usage.output_tokens = 2;
+-    return result;
++    std::move(callback).Run(std::move(result));
++    return next_provider_operation_id++;
+   }
+ 
+-  ProviderModelListResult DiscoverModels(std::string provider_id) {
++  uint64_t DiscoverModels(
++      std::string provider_id,
++      RuntimeProfileHooks::ProviderModelsCallback callback) {
+     ++discovery_count;
+     ProviderModelListResult result;
+     result.state = ProviderModelListState::kReady;
+     result.models = {"model-1"};
+-    return result;
++    std::move(callback).Run(std::move(result));
++    return next_provider_operation_id++;
++  }
++
++  bool CancelProviderOperation(uint64_t operation_id) {
++    ++provider_cancel_count;
++    return true;
+   }
+ 
+   std::vector<MemoryRecord> ListMemory(std::string_view caller_id) {
+@@ -167,15 +210,20 @@ class FakeRuntimeProfileBoundaries {
+ 
+   RuntimePolicy policy;
+   bool session_is_valid = true;
++  bool local_provider_available = false;
++  size_t active_sessions = 0;
+   int create_session_count = 0;
+   int has_session_count = 0;
++  int active_session_count_reads = 0;
+   int close_session_count = 0;
+   int release_ownership_count = 0;
+   int execute_route_count = 0;
+   int policy_read_count = 0;
+   int create_task_count = 0;
+   int registry_read_count = 0;
++  int provider_mutation_count = 0;
+   int provider_turn_count = 0;
++  int provider_cancel_count = 0;
+   int discovery_count = 0;
+   int memory_read_count = 0;
+   int guide_read_count = 0;
+@@ -185,13 +233,18 @@ class FakeRuntimeProfileBoundaries {
+   raw_ptr<BrowserWindowInterface> last_browser = nullptr;
+   AgentRouteRequest last_route;
+   std::string last_safe_title;
++  uint64_t next_provider_operation_id = 1;
+ };
+ 
+ class PrometheusRuntimeProfileServiceTest : public testing::Test {
+  protected:
+   void SetUp() override {
+-    service_ = std::make_unique<PrometheusRuntimeProfileService>(
+-        boundaries_.MakeHooks());
++    RuntimeProfileHooks hooks = boundaries_.MakeHooks();
++    hooks.expected_caller_id = "caller-1";
++    hooks.expected_browser = browser();
++    hooks.expected_stable_tab_id = 7;
++    service_ =
++        std::make_unique<PrometheusRuntimeProfileService>(std::move(hooks));
+   }
+ 
+   BrowserWindowInterface* browser() {
+@@ -373,8 +426,96 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+             boundaries_.last_safe_title);
+ }
+ 
++TEST_F(PrometheusRuntimeProfileServiceTest,
++       PolicyAdmissionRechecksTaskAndAgentCaps) {
++  boundaries_.policy.limits.max_concurrent_tasks = 1;
++  EXPECT_EQ(RuntimeProfileStatus::kOk, service_->SubmitTask(Request()).status);
++
++  RuntimeSubmitRequest task_capped = Request();
++  task_capped.prompt = "A different task while the first remains active";
++  EXPECT_EQ(RuntimeProfileStatus::kPolicyBlocked,
++            service_->SubmitTask(std::move(task_capped)).status);
++
++  EXPECT_EQ(RuntimeProfileStatus::kCancelled, service_->CancelTask("task-1"));
++  boundaries_.active_sessions =
++      static_cast<size_t>(boundaries_.policy.max_active_agents);
++  RuntimeSubmitRequest agent_capped = Request();
++  agent_capped.prompt = "A task after the prior task was cancelled";
++  EXPECT_EQ(RuntimeProfileStatus::kPolicyBlocked,
++            service_->SubmitTask(std::move(agent_capped)).status);
++  EXPECT_GE(boundaries_.policy_read_count, 3);
++  EXPECT_GE(boundaries_.active_session_count_reads, 3);
++}
++
++TEST_F(PrometheusRuntimeProfileServiceTest,
++       PolicyDispatchRechecksInternalAndBackgroundSettings) {
++  ASSERT_EQ(RuntimeProfileStatus::kOk, service_->SubmitTask(Request()).status);
++
++  RuntimeToolRequest internal;
++  internal.task_id = "task-1";
++  internal.generation = 1;
++  internal.tool = RuntimeSafeTool::kReadPage;
++  internal.authority = Authority();
++  internal.route.route_name = AgentRouteName::kReadPage;
++  internal.route.internal_surface = AgentInternalSurface::kControlPanel;
++  internal.route.foreground = true;
++  EXPECT_EQ(RuntimeProfileStatus::kPolicyBlocked,
++            service_->DispatchTool(std::move(internal)).status);
++
++  RuntimeToolRequest background;
++  background.task_id = "task-1";
++  background.generation = 1;
++  background.tool = RuntimeSafeTool::kReadPage;
++  background.authority = Authority();
++  background.route.route_name = AgentRouteName::kReadPage;
++  EXPECT_EQ(RuntimeProfileStatus::kPolicyBlocked,
++            service_->DispatchTool(std::move(background)).status);
++  EXPECT_EQ(0, boundaries_.execute_route_count);
++
++  boundaries_.policy.allow_internal_surfaces = true;
++  boundaries_.policy.allow_background_actions = true;
++  RuntimeToolRequest allowed;
++  allowed.task_id = "task-1";
++  allowed.generation = 1;
++  allowed.tool = RuntimeSafeTool::kReadPage;
++  allowed.authority = Authority();
++  allowed.route.route_name = AgentRouteName::kReadPage;
++  allowed.route.internal_surface = AgentInternalSurface::kControlPanel;
++  EXPECT_EQ(RuntimeProfileStatus::kOk,
++            service_->DispatchTool(std::move(allowed)).status);
++  EXPECT_EQ(1, boundaries_.execute_route_count);
++}
++
++TEST_F(PrometheusRuntimeProfileServiceTest,
++       TelemetryOffSuppressesEmissionAtSource) {
++  boundaries_.policy.telemetry_enabled = false;
++  EXPECT_EQ(RuntimeProfileStatus::kOk, service_->SubmitTask(Request()).status);
++  EXPECT_EQ(0, boundaries_.telemetry_count);
++
++  boundaries_.policy.telemetry_enabled = true;
++  RuntimeSubmitRequest emitted = Request();
++  emitted.prompt = "A distinct task with telemetry enabled";
++  EXPECT_EQ(RuntimeProfileStatus::kOk,
++            service_->SubmitTask(std::move(emitted)).status);
++  EXPECT_EQ(1, boundaries_.telemetry_count);
++}
++
++TEST_F(PrometheusRuntimeProfileServiceTest, LockedVaultPolicyCannotBeWeakened) {
++  boundaries_.policy.tab_ownership_required = false;
++  boundaries_.policy.vault_native_only = false;
++  boundaries_.policy.vault_confirm_each_use = false;
++  boundaries_.policy.supervision_ready = true;
++
++  const RuntimePolicy effective = service_->effective_policy_for_testing();
++  EXPECT_TRUE(effective.tab_ownership_required);
++  EXPECT_TRUE(effective.vault_native_only);
++  EXPECT_TRUE(effective.vault_confirm_each_use);
++  EXPECT_FALSE(effective.supervision_ready);
++}
++
+ TEST_F(PrometheusRuntimeProfileServiceTest,
+        AutomaticProviderAndLocalModesStayDistinct) {
++  boundaries_.local_provider_available = true;
+   for (const auto [requested, expected] :
+        {std::pair{RequestedExecution::kAuto, EffectiveExecution::kHosted},
+         std::pair{RequestedExecution::kProvider, EffectiveExecution::kHosted},
+@@ -403,6 +544,7 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+        ProviderLoopAllowsOneClosedSafeToolPerTurn) {
+   EXPECT_EQ(1, kRuntimeToolsPerTurn);
+   EXPECT_EQ(RuntimeSafeTool::kClick, RuntimeSafeToolFromString("click"));
++  ASSERT_EQ(RuntimeProfileStatus::kOk, service_->SubmitTask(Request()).status);
+ 
+   RuntimeToolRequest tool;
+   tool.task_id = "task-1";
+@@ -410,6 +552,7 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+   tool.tool = RuntimeSafeTool::kClick;
+   tool.authority = Authority();
+   tool.route.route_name = AgentRouteName::kClick;
++  tool.route.foreground = true;
+   EXPECT_EQ(RuntimeProfileStatus::kOk,
+             service_->DispatchTool(std::move(tool)).status);
+   EXPECT_EQ(1, boundaries_.execute_route_count);
+@@ -418,6 +561,7 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+ 
+ TEST_F(PrometheusRuntimeProfileServiceTest,
+        AgentRouteUsesExactBrowserTabSessionAndArguments) {
++  ASSERT_EQ(RuntimeProfileStatus::kOk, service_->SubmitTask(Request()).status);
+   RuntimeToolRequest tool;
+   tool.task_id = "task-1";
+   tool.generation = 1;
+@@ -425,7 +569,8 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+   tool.authority = Authority();
+   tool.route.route_name = AgentRouteName::kTypeText;
+   tool.route.session_id = "browser-issued-session";
+-  tool.route.target.tab_index = 7;
++  tool.route.target.tab_handle = tabs::TabHandle(7);
++  tool.route.foreground = true;
+   tool.route.page_request.emplace();
+   tool.route.page_request->action.text = "bounded text";
+ 
+@@ -435,7 +580,8 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+   EXPECT_EQ(browser(), boundaries_.last_browser);
+   EXPECT_EQ(AgentRouteName::kTypeText, boundaries_.last_route.route_name);
+   EXPECT_EQ("browser-issued-session", boundaries_.last_route.session_id);
+-  EXPECT_EQ(7, boundaries_.last_route.target.tab_index);
++  EXPECT_EQ(7, boundaries_.last_route.target.tab_handle.raw_value());
++  EXPECT_FALSE(boundaries_.last_route.target.tab_index.has_value());
+ }
+ 
+ TEST_F(PrometheusRuntimeProfileServiceTest,
+@@ -550,7 +696,7 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+ }
+ 
+ TEST_F(PrometheusRuntimeProfileServiceTest,
+-       BootstrapResultIsConsumedOnlyAtStartup) {
++       RuntimeTestBootstrapResultIsConsumedOnlyAtStartup) {
+   EXPECT_EQ(PrometheusRuntimeTestBootstrapResult::kApplied,
+             service_->startup_bootstrap_result_for_testing());
+   EXPECT_EQ(0, boundaries_.registry_read_count);
+-- 
+2.50.1 (Apple Git-155)
+
