@@ -1,0 +1,2603 @@
+From 71bdf6b3ef4568a2991ba9c8fdcb6ccd1daa4e93 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 16:56:08 -0500
+Subject: [PATCH 24/24] feat(20-09): implement authenticated runtime gateway
+
+---
+ chrome/browser/prometheus/BUILD.gn            |    2 +
+ .../prometheus/prometheus_agent_gateway.cc    |  679 ++++++++-
+ .../prometheus/prometheus_agent_gateway.h     |   11 +
+ .../prometheus_runtime_profile_service.cc     |  150 +-
+ .../prometheus_runtime_profile_service.h      |   37 +
+ ...etheus_runtime_profile_service_unittest.cc |   23 +
+ .../prometheus_runtime_transport_codec.cc     | 1296 +++++++++++++++--
+ ...etheus_runtime_transport_codec_unittest.cc |    7 +
+ .../prometheus/prometheus_vault_service.cc    |   13 +
+ .../prometheus/prometheus_vault_service.h     |    2 +
+ .../prometheus_vault_service_unittest.cc      |    8 +
+ 11 files changed, 2134 insertions(+), 94 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 12871e77fb..0bb4cd6c13 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -423,6 +423,7 @@ source_set("prometheus_runtime_profile_service") {
+     ":prometheus_runtime_test_bootstrap",
+     ":prometheus_runtime_types",
+     ":prometheus_secret_store",
++    ":prometheus_vault_service",
+     "//base",
+     "//chrome/browser/profiles",
+     "//components/keyed_service/core",
+@@ -484,6 +485,7 @@ source_set("prometheus_agent_gateway") {
+     "//chrome/browser/profiles",
+     "//chrome/browser/ui/browser_window",
+     "//chrome/common",
++    "//components/tabs:public",
+     "//net",
+   ]
+ }
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.cc b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+index 8e47a82aa3..a69045e977 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+@@ -8,6 +8,7 @@
+ #include <cstdint>
+ #include <initializer_list>
+ #include <optional>
++#include <ranges>
+ #include <utility>
+ #include <vector>
+ 
+@@ -23,6 +24,8 @@
+ #include "base/task/task_traits.h"
+ #include "base/task/thread_pool.h"
+ #include "base/timer/timer.h"
++#include "base/time/time.h"
++#include "base/uuid.h"
+ #include "base/values.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/profiles/profile_manager.h"
+@@ -30,8 +33,11 @@
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_agent_transport_codec.h"
+ #include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
++#include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "components/tabs/public/tab_interface.h"
+ #include "net/base/ip_address.h"
+ #include "net/base/net_errors.h"
+ #include "net/http/http_status_code.h"
+@@ -126,6 +132,130 @@ std::string WriteJsonOrFallback(base::DictValue value) {
+       R"({"ok":false,"error_code":"INVALID_REQUEST"})");
+ }
+ 
++AgentDiagnosticStatus ToAgentDiagnosticStatus(RuntimeComponentStatus status) {
++  switch (status) {
++    case RuntimeComponentStatus::kReady:
++      return AgentDiagnosticStatus::kReady;
++    case RuntimeComponentStatus::kDegraded:
++      return AgentDiagnosticStatus::kDegraded;
++    case RuntimeComponentStatus::kNotReady:
++      return AgentDiagnosticStatus::kNotReady;
++    case RuntimeComponentStatus::kUnavailable:
++      return AgentDiagnosticStatus::kUnavailable;
++  }
++}
++
++RuntimeTransportErrorCode ToTransportError(RuntimeProfileStatus status) {
++  switch (status) {
++    case RuntimeProfileStatus::kOk:
++      return RuntimeTransportErrorCode::kNone;
++    case RuntimeProfileStatus::kInvalidRequest:
++    case RuntimeProfileStatus::kDuplicateRequest:
++      return RuntimeTransportErrorCode::kInvalidRequest;
++    case RuntimeProfileStatus::kRequestTooLarge:
++      return RuntimeTransportErrorCode::kRequestTooLarge;
++    case RuntimeProfileStatus::kUnauthorized:
++    case RuntimeProfileStatus::kTargetLost:
++      return RuntimeTransportErrorCode::kUnauthorized;
++    case RuntimeProfileStatus::kLocalUiRequired:
++      return RuntimeTransportErrorCode::kLocalUiRequired;
++    case RuntimeProfileStatus::kAlreadyFinished:
++    case RuntimeProfileStatus::kProviderUnavailable:
++    case RuntimeProfileStatus::kNotImplemented:
++      return RuntimeTransportErrorCode::kCapabilityNotReady;
++    case RuntimeProfileStatus::kPolicyBlocked:
++      return RuntimeTransportErrorCode::kConfirmationRequired;
++    case RuntimeProfileStatus::kCancelled:
++      return RuntimeTransportErrorCode::kCancelled;
++    case RuntimeProfileStatus::kTimeout:
++      return RuntimeTransportErrorCode::kInternal;
++  }
++}
++
++RuntimeTransportResult RuntimeStatusFailure(
++    RuntimeRouteName route,
++    RuntimeProfileStatus status,
++    std::string recovery) {
++  return RuntimeTransportResult::Failure(
++      route, ToTransportError(status),
++      "The native runtime rejected the request",
++      recovery.empty() ? "Refresh runtime state and retry"
++                       : std::move(recovery));
++}
++
++RuntimeTaskView TaskView(const RuntimeStoredTask& task) {
++  return RuntimeTaskView{.snapshot = task.snapshot,
++                         .safe_result = task.result};
++}
++
++RuntimeTaskView TaskView(RuntimeTaskSnapshot snapshot) {
++  return RuntimeTaskView{.snapshot = std::move(snapshot)};
++}
++
++RuntimeProviderView ProviderView(const PrometheusProviderConfig& provider) {
++  return RuntimeProviderView{
++      .provider_id = provider.provider_id,
++      .label = provider.label,
++      .kind = provider.kind,
++      .route_class = provider.route_class,
++      .canonical_endpoint = provider.canonical_endpoint,
++      .model_id = provider.model_id,
++      .enabled = provider.enabled,
++      .health = provider.health,
++      .discovery_state = provider.discovery_state,
++      .secret_configured = provider.secret_configured,
++      .fallback_rank = provider.fallback_rank,
++  };
++}
++
++RuntimeLogView LogView(const RuntimeEventRecord& event) {
++  return RuntimeLogView{
++      .event_id = event.event_id,
++      .task_id = event.task_id,
++      .kind = event.kind,
++      .error_code = event.error_code,
++      .timestamp_ms = event.timestamp_ms,
++      .value = event.value,
++  };
++}
++
++RuntimeActionView ActionView(const RuntimeActionRecord& action) {
++  return RuntimeActionView{
++      .action_id = action.action_id,
++      .task_id = action.task_id,
++      .kind = action.kind,
++      .timestamp_ms = action.timestamp_ms,
++      .succeeded = action.succeeded,
++  };
++}
++
++RuntimeVaultMetadataView VaultView(
++    const PrometheusVaultMetadata& metadata) {
++  return RuntimeVaultMetadataView{
++      .id = metadata.id,
++      .label = metadata.label,
++      .kind = metadata.kind,
++      .canonical_site_origin = metadata.canonical_site_origin,
++      .updated_time_ms = metadata.updated_time_ms,
++      .secret_configured = metadata.secret_configured,
++  };
++}
++
++template <typename T>
++void ClampList(std::vector<T>* values, size_t limit) {
++  if (values->size() > limit) {
++    values->resize(limit);
++  }
++}
++
++RuntimeTransportResult VaultCapabilityUnavailable(RuntimeRouteName route) {
++  return RuntimeTransportResult::Failure(
++      route, RuntimeTransportErrorCode::kCapabilityNotReady,
++      "The profile vault metadata owner is unavailable",
++      "Open the local control panel and retry when vault diagnostics are "
++      "ready");
++}
++
+ bool WriteGatewayDescriptor(base::FilePath path,
+                             net::IPEndPoint endpoint,
+                             std::string instance_nonce,
+@@ -151,6 +281,13 @@ RuntimeTransportResult DispatchAuthenticatedRuntimeRequestForTesting(
+         "The browser-issued Agent session is unavailable",
+         "Create a new browser-issued session and retry");
+   }
++  if (request.route_name == RuntimeRouteName::kSetProviderConfig &&
++      request.origin == RuntimeCallerOrigin::kMcp) {
++    return RuntimeTransportResult::Failure(
++        request.route_name, RuntimeTransportErrorCode::kLocalUiRequired,
++        "Provider configuration changes require local browser authority",
++        "Use the Prometheus local control panel to change provider settings");
++  }
+   if (!dispatcher) {
+     return RuntimeTransportResult::Failure(
+         request.route_name, RuntimeTransportErrorCode::kCapabilityNotReady,
+@@ -163,7 +300,6 @@ RuntimeTransportResult DispatchAuthenticatedRuntimeRequestForTesting(
+ AgentRouteResult BuildPrometheusGatewayHealthForTesting(
+     bool active_regular,
+     const RuntimeGatewayHealthState& runtime_health) {
+-  static_cast<void>(runtime_health);
+   AgentRouteResult health = AgentRouteResult::Success({});
+   auto add = [&health](std::string key, AgentDiagnosticStatus status,
+                        std::string reason, std::string next_action) {
+@@ -196,12 +332,20 @@ AgentRouteResult BuildPrometheusGatewayHealthForTesting(
+   add("webui_adapter", AgentDiagnosticStatus::kReady,
+       "Prometheus WebUI adapter is available",
+       "Use browser-owned WebUI routes");
+-  add("vault", AgentDiagnosticStatus::kNotReady,
+-      "Vault capability is owned by Phase 20",
+-      "Retry after native vault diagnostics reports ready");
+-  add("provider", AgentDiagnosticStatus::kNotReady,
+-      "Provider runtime is owned by Phase 20",
+-      "Configure providers after Phase 20 is available");
++  add("vault", ToAgentDiagnosticStatus(runtime_health.vault_status),
++      runtime_health.vault_reason.empty()
++          ? "Native vault diagnostics are unavailable"
++          : runtime_health.vault_reason,
++      runtime_health.vault_next_action.empty()
++          ? "Open the local control panel and retry vault diagnostics"
++          : runtime_health.vault_next_action);
++  add("provider", ToAgentDiagnosticStatus(runtime_health.provider_status),
++      runtime_health.provider_reason.empty()
++          ? "Provider runtime diagnostics are unavailable"
++          : runtime_health.provider_reason,
++      runtime_health.provider_next_action.empty()
++          ? "Open the local control panel and retry provider diagnostics"
++          : runtime_health.provider_next_action);
+   add("supervision", AgentDiagnosticStatus::kNotReady,
+       "Supervision and pairing are owned by Phase 21",
+       "Retry after supervision diagnostics reports ready");
+@@ -416,6 +560,7 @@ PrometheusAgentGateway::PrometheusAgentGateway(Options options)
+     : options_(std::move(options)) {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+   PrometheusAgentProfileServiceFactory::GetInstance();
++  PrometheusRuntimeProfileServiceFactory::GetInstance();
+   if (options_.descriptor_path.empty()) {
+     options_.descriptor_path = GetDefaultPrometheusEndpointDescriptorPath();
+   }
+@@ -543,6 +688,7 @@ void PrometheusAgentGateway::Shutdown(base::OnceClosure callback) {
+     }
+   }
+   session_bindings_.clear();
++  runtime_task_owners_.clear();
+   weak_ptr_factory_.InvalidateWeakPtrs();
+   io_thread_.task_runner()->PostTask(
+       FROM_HERE,
+@@ -683,6 +829,457 @@ void PrometheusAgentGateway::PruneSessionBindings() {
+   }
+ }
+ 
++RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
++    Profile* profile,
++    std::string gateway_session_id,
++    const RuntimeTransportRequest& request,
++    std::string_view derived_caller_id) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  auto binding = session_bindings_.find(gateway_session_id);
++  if (!profile || binding == session_bindings_.end() ||
++      binding->second.profile.get() != profile ||
++      binding->second.caller_id != derived_caller_id ||
++      request.origin != RuntimeCallerOrigin::kMcp) {
++    return RuntimeTransportResult::Failure(
++        request.route_name, RuntimeTransportErrorCode::kUnauthorized,
++        "The browser-issued runtime authority is unavailable",
++        "Create a new browser-issued session and retry");
++  }
++
++  PrometheusRuntimeProfileService* const runtime =
++      PrometheusRuntimeProfileServiceFactory::GetForProfile(profile);
++  if (!runtime) {
++    return RuntimeTransportResult::Failure(
++        request.route_name, RuntimeTransportErrorCode::kCapabilityNotReady,
++        "The regular-profile runtime is unavailable",
++        "Open a regular Prometheus browser window and retry");
++  }
++
++  const auto owns_task = [this, derived_caller_id](std::string_view task_id) {
++    auto owner = runtime_task_owners_.find(task_id);
++    return owner != runtime_task_owners_.end() &&
++           owner->second == derived_caller_id;
++  };
++  const auto memory_failure = [&request](std::string message) {
++    return RuntimeTransportResult::Failure(
++        request.route_name, RuntimeTransportErrorCode::kInvalidRequest,
++        std::move(message), "Refresh the caller-owned memory view and retry");
++  };
++
++  switch (request.route_name) {
++    case RuntimeRouteName::kRunTask: {
++      const auto& params = std::get<RunTaskParams>(request.params);
++      BrowserWindowInterface* const browser = binding->second.browser.get();
++      if (!browser || binding->second.stable_tab_id <= 0 ||
++          browser->GetProfile() != profile) {
++        return RuntimeTransportResult::Failure(
++            request.route_name,
++            RuntimeTransportErrorCode::kCapabilityNotReady,
++            "The session's pinned browser target is unavailable",
++            "Create a new session from an active regular-profile tab");
++      }
++      RuntimeSubmitRequest submit;
++      submit.prompt = params.prompt;
++      submit.requested_execution = params.requested_execution;
++      submit.provider_id = params.provider_id;
++      submit.authority.origin = RuntimeTaskOrigin::kMcp;
++      submit.authority.caller_id = std::string(derived_caller_id);
++      submit.authority.agent_session_id = gateway_session_id;
++      submit.authority.exact_browser = browser;
++      submit.authority.stable_tab_id = binding->second.stable_tab_id;
++      RuntimeSubmitResult result = runtime->SubmitTask(std::move(submit));
++      if (result.status != RuntimeProfileStatus::kOk || !result.task) {
++        return RuntimeStatusFailure(request.route_name, result.status,
++                                    std::move(result.recovery));
++      }
++      runtime_task_owners_[result.task->task_id] =
++          std::string(derived_caller_id);
++      return RuntimeTransportResult::Success(
++          request.route_name,
++          RuntimeTaskResult{.task = TaskView(std::move(*result.task))});
++    }
++    case RuntimeRouteName::kStopTask: {
++      const auto& params = std::get<StopTaskParams>(request.params);
++      if (!owns_task(params.task_id)) {
++        return RuntimeTransportResult::Failure(
++            request.route_name, RuntimeTransportErrorCode::kNotFound,
++            "The caller-owned task was not found",
++            "Refresh the caller-owned task list and retry");
++      }
++      RuntimeProfileStatus status = runtime->CancelTask(params.task_id);
++      if (status != RuntimeProfileStatus::kCancelled) {
++        return RuntimeStatusFailure(request.route_name, status,
++                                    "Refresh task status and retry");
++      }
++      std::optional<RuntimeTaskSnapshot> task =
++          runtime->GetTask(params.task_id);
++      return RuntimeTransportResult::Success(
++          request.route_name,
++          RuntimeTaskResult{
++              .task = task ? std::optional(TaskView(std::move(*task)))
++                           : std::nullopt});
++    }
++    case RuntimeRouteName::kGetTaskStatus: {
++      const auto& params = std::get<GetTaskStatusParams>(request.params);
++      if (!owns_task(params.task_id)) {
++        return RuntimeTransportResult::Failure(
++            request.route_name, RuntimeTransportErrorCode::kNotFound,
++            "The caller-owned task was not found",
++            "Refresh the caller-owned task list and retry");
++      }
++      RuntimeStoreSnapshot snapshot =
++          runtime->GetRuntimeSnapshotForTransport();
++      auto task = std::ranges::find(snapshot.tasks, params.task_id,
++                                    [](const RuntimeStoredTask& item) {
++                                      return item.snapshot.task_id;
++                                    });
++      if (task == snapshot.tasks.end()) {
++        return RuntimeTransportResult::Failure(
++            request.route_name, RuntimeTransportErrorCode::kNotFound,
++            "The caller-owned task was not found",
++            "Refresh the caller-owned task list and retry");
++      }
++      return RuntimeTransportResult::Success(
++          request.route_name,
++          RuntimeTaskResult{.task = TaskView(*task)});
++    }
++    case RuntimeRouteName::kListTasks: {
++      const auto& params = std::get<ListTasksParams>(request.params);
++      RuntimeTaskListResult payload;
++      for (const RuntimeStoredTask& task :
++           runtime->GetRuntimeSnapshotForTransport().tasks) {
++        if (owns_task(task.snapshot.task_id)) {
++          payload.tasks.push_back(TaskView(task));
++        }
++      }
++      ClampList(&payload.tasks, params.limit);
++      return RuntimeTransportResult::Success(request.route_name,
++                                             std::move(payload));
++    }
++    case RuntimeRouteName::kGetProviderConfig: {
++      const auto& params = std::get<GetProviderConfigParams>(request.params);
++      std::optional<PrometheusProviderConfig> provider =
++          runtime->GetProviderForTransport(params.provider_id);
++      if (!provider) {
++        return RuntimeTransportResult::Failure(
++            request.route_name, RuntimeTransportErrorCode::kNotFound,
++            "The provider metadata was not found",
++            "Refresh the provider list in the local control panel");
++      }
++      return RuntimeTransportResult::Success(
++          request.route_name,
++          RuntimeProviderResult{.provider = ProviderView(*provider)});
++    }
++    case RuntimeRouteName::kListProviders: {
++      const auto& params = std::get<ListProvidersParams>(request.params);
++      RuntimeProviderListResult payload;
++      for (const PrometheusProviderConfig& provider :
++           runtime->ListProvidersForTransport()) {
++        if (params.include_disabled || provider.enabled) {
++          payload.providers.push_back(ProviderView(provider));
++        }
++      }
++      ClampList(&payload.providers, kMaxRuntimeTransportListItems);
++      return RuntimeTransportResult::Success(request.route_name,
++                                             std::move(payload));
++    }
++    case RuntimeRouteName::kDiscoverModels: {
++      const auto& params = std::get<DiscoverModelsParams>(request.params);
++      RuntimeDiscoveryResult result =
++          runtime->DiscoverModels(params.provider_id);
++      if (result.status != RuntimeProfileStatus::kOk) {
++        return RuntimeStatusFailure(request.route_name, result.status,
++                                    std::move(result.sanitized_error));
++      }
++      ClampList(&result.models, kMaxRuntimeTransportListItems);
++      return RuntimeTransportResult::Success(
++          request.route_name,
++          RuntimeModelListResult{.models = std::move(result.models),
++                                 .pending = result.pending});
++    }
++    case RuntimeRouteName::kSetProviderConfig: {
++      RuntimeProfileStatus status = runtime->SetProviders(
++          RuntimeProviderMutationCaller::kMcp, {});
++      return RuntimeStatusFailure(
++          request.route_name, status,
++          "Use the Prometheus local control panel to change provider settings");
++    }
++    case RuntimeRouteName::kGetLogs: {
++      const auto& params = std::get<GetLogsParams>(request.params);
++      RuntimeLogListResult payload;
++      for (const RuntimeEventRecord& event :
++           runtime->GetRuntimeSnapshotForTransport().events) {
++        if (owns_task(event.task_id)) {
++          payload.logs.push_back(LogView(event));
++        }
++      }
++      ClampList(&payload.logs, params.limit);
++      return RuntimeTransportResult::Success(request.route_name,
++                                             std::move(payload));
++    }
++    case RuntimeRouteName::kActionHistory: {
++      const auto& params = std::get<ActionHistoryParams>(request.params);
++      if (params.task_id && !owns_task(*params.task_id)) {
++        return RuntimeTransportResult::Failure(
++            request.route_name, RuntimeTransportErrorCode::kNotFound,
++            "The caller-owned task was not found",
++            "Refresh the caller-owned task list and retry");
++      }
++      RuntimeActionListResult payload;
++      for (const RuntimeActionRecord& action :
++           runtime->GetRuntimeSnapshotForTransport().actions) {
++        if (owns_task(action.task_id) &&
++            (!params.task_id || action.task_id == *params.task_id)) {
++          payload.actions.push_back(ActionView(action));
++        }
++      }
++      ClampList(&payload.actions, params.limit);
++      return RuntimeTransportResult::Success(request.route_name,
++                                             std::move(payload));
++    }
++    case RuntimeRouteName::kRuntimeDiagnostics: {
++      const bool providers_present =
++          !runtime->ListProvidersForTransport().empty();
++      RuntimeDiagnosticsResult payload;
++      payload.components = {
++          {.key = "runtime",
++           .status = RuntimeComponentStatus::kReady,
++           .reason = "The regular-profile runtime is available",
++           .next_action = "No runtime recovery action is required"},
++          {.key = "provider",
++           .status = providers_present ? RuntimeComponentStatus::kReady
++                                       : RuntimeComponentStatus::kDegraded,
++           .reason = providers_present
++                         ? "Provider metadata is available"
++                         : "No provider metadata is configured",
++           .next_action = providers_present
++                              ? "No provider recovery action is required"
++                              : "Configure a provider in the local control "
++                                "panel"},
++          {.key = "vault",
++           .status = runtime->IsVaultAvailableForTransport()
++                         ? RuntimeComponentStatus::kReady
++                         : RuntimeComponentStatus::kNotReady,
++           .reason = runtime->IsVaultAvailableForTransport()
++                         ? "The profile-owned native vault is available"
++                         : "The profile vault metadata owner is unavailable",
++           .next_action = runtime->IsVaultAvailableForTransport()
++                              ? "No vault recovery action is required"
++                              : "Open the local control panel and retry vault "
++                                "diagnostics"},
++          {.key = "memory",
++           .status = RuntimeComponentStatus::kReady,
++           .reason = "Caller-isolated profile memory is available",
++           .next_action = "No memory recovery action is required"},
++      };
++      return RuntimeTransportResult::Success(request.route_name,
++                                             std::move(payload));
++    }
++    case RuntimeRouteName::kSaveMemory: {
++      const auto& params = std::get<SaveMemoryParams>(request.params);
++      MemoryStoreMutation mutation = runtime->SaveMemoryForTransport(
++          std::string(derived_caller_id),
++          params.shared ? MemoryVisibility::kProfileShared
++                        : MemoryVisibility::kCallerOwned,
++          params.title, params.text, params.tags);
++      if (!mutation.ok()) {
++        return memory_failure("The memory record could not be saved");
++      }
++      return RuntimeTransportResult::Success(
++          request.route_name,
++          RuntimeMemoryResult{.memory = runtime->GetMemoryForTransport(
++                                  derived_caller_id, mutation.record_id)});
++    }
++    case RuntimeRouteName::kListMemory: {
++      const auto& params = std::get<ListMemoryParams>(request.params);
++      RuntimeMemoryListResult payload{
++          .memories = runtime->ListMemory(derived_caller_id)};
++      ClampList(&payload.memories, params.limit);
++      return RuntimeTransportResult::Success(request.route_name,
++                                             std::move(payload));
++    }
++    case RuntimeRouteName::kSaveSiteGuide: {
++      const auto& params = std::get<SaveSiteGuideParams>(request.params);
++      MemoryStoreMutation mutation = runtime->SaveSiteGuideForTransport(
++          std::string(derived_caller_id),
++          params.shared ? MemoryVisibility::kProfileShared
++                        : MemoryVisibility::kCallerOwned,
++          params.title, params.instructions, params.tags,
++          GURL(params.canonical_origin));
++      if (!mutation.ok()) {
++        return memory_failure("The site guide could not be saved");
++      }
++      return RuntimeTransportResult::Success(
++          request.route_name,
++          RuntimeSiteGuideResult{.guide = runtime->GetSiteGuideForTransport(
++                                     derived_caller_id, mutation.record_id)});
++    }
++    case RuntimeRouteName::kListSiteGuides: {
++      const auto& params = std::get<ListSiteGuidesParams>(request.params);
++      RuntimeSiteGuideListResult payload{
++          .guides = runtime->ListSiteGuides(derived_caller_id)};
++      ClampList(&payload.guides, params.limit);
++      return RuntimeTransportResult::Success(request.route_name,
++                                             std::move(payload));
++    }
++    case RuntimeRouteName::kCreateVaultEntry: {
++      if (!runtime->IsVaultAvailableForTransport()) {
++        return VaultCapabilityUnavailable(request.route_name);
++      }
++      const auto& params = std::get<CreateVaultEntryParams>(request.params);
++      PrometheusVaultMetadataResult result =
++          runtime->CreateVaultMetadataForTransport(
++              params.label, params.kind, params.canonical_site_origin);
++      if (!result.ok() || !result.metadata) {
++        return RuntimeTransportResult::Failure(
++            request.route_name, RuntimeTransportErrorCode::kInvalidRequest,
++            "The vault metadata record could not be created",
++            "Review bounded metadata in the local control panel and retry");
++      }
++      return RuntimeTransportResult::Success(
++          request.route_name,
++          RuntimeVaultMetadataResult{
++              .entry = VaultView(std::move(*result.metadata))});
++    }
++    case RuntimeRouteName::kListVaultEntries: {
++      if (!runtime->IsVaultAvailableForTransport()) {
++        return VaultCapabilityUnavailable(request.route_name);
++      }
++      const auto& params = std::get<ListVaultEntriesParams>(request.params);
++      RuntimeVaultListResult payload;
++      for (const PrometheusVaultMetadata& metadata :
++           runtime->ListVaultMetadataForTransport(params.kind)) {
++        payload.entries.push_back(VaultView(metadata));
++      }
++      ClampList(&payload.entries, kMaxRuntimeTransportListItems);
++      return RuntimeTransportResult::Success(request.route_name,
++                                             std::move(payload));
++    }
++    case RuntimeRouteName::kListCredentials:
++    case RuntimeRouteName::kListPaymentMethods: {
++      if (!runtime->IsVaultAvailableForTransport()) {
++        return VaultCapabilityUnavailable(request.route_name);
++      }
++      const bool credentials =
++          request.route_name == RuntimeRouteName::kListCredentials;
++      const size_t limit = credentials
++                               ? std::get<ListCredentialsParams>(request.params)
++                                     .limit
++                               : std::get<ListPaymentMethodsParams>(
++                                     request.params)
++                                     .limit;
++      RuntimeVaultListResult payload;
++      for (const PrometheusVaultMetadata& metadata :
++           runtime->ListVaultMetadataForTransport(
++               credentials ? PrometheusVaultKind::kCredential
++                           : PrometheusVaultKind::kPayment)) {
++        payload.entries.push_back(VaultView(metadata));
++      }
++      ClampList(&payload.entries, limit);
++      return RuntimeTransportResult::Success(request.route_name,
++                                             std::move(payload));
++    }
++    case RuntimeRouteName::kVaultAutofill:
++    case RuntimeRouteName::kFillCredential:
++    case RuntimeRouteName::kUsePaymentMethod: {
++      std::string_view entry_id;
++      std::optional<PrometheusVaultKind> required_kind;
++      if (request.route_name == RuntimeRouteName::kVaultAutofill) {
++        entry_id = std::get<VaultAutofillParams>(request.params).entry_id;
++      } else if (request.route_name == RuntimeRouteName::kFillCredential) {
++        entry_id = std::get<FillCredentialParams>(request.params).entry_id;
++        required_kind = PrometheusVaultKind::kCredential;
++      } else {
++        entry_id = std::get<UsePaymentMethodParams>(request.params).entry_id;
++        required_kind = PrometheusVaultKind::kPayment;
++      }
++      std::vector<PrometheusVaultMetadata> entries =
++          runtime->ListVaultMetadataForTransport(required_kind);
++      const bool found = std::ranges::any_of(
++          entries, [entry_id](const PrometheusVaultMetadata& metadata) {
++            return metadata.id == entry_id;
++          });
++      return RuntimeTransportResult::Success(
++          request.route_name,
++          RuntimeVaultUseResult{
++              .status = !runtime->IsVaultAvailableForTransport()
++                            ? PrometheusVaultStatus::
++                                  kNativeConfirmationUnavailable
++                            : found ? PrometheusVaultStatus::
++                                          kNativeConfirmationUnavailable
++                                    : PrometheusVaultStatus::kNotFound});
++    }
++    case RuntimeRouteName::kListSessions: {
++      const auto& params = std::get<ListSessionsParams>(request.params);
++      RuntimeSessionListResult payload;
++      for (const RuntimeStoredTask& task :
++           runtime->GetRuntimeSnapshotForTransport().tasks) {
++        if (owns_task(task.snapshot.task_id)) {
++          payload.runs.push_back(TaskView(task));
++        }
++      }
++      ClampList(&payload.runs, params.limit);
++      return RuntimeTransportResult::Success(request.route_name,
++                                             std::move(payload));
++    }
++    case RuntimeRouteName::kGetSessionDetail: {
++      const auto& params = std::get<GetSessionDetailParams>(request.params);
++      if (!owns_task(params.run_id)) {
++        return RuntimeTransportResult::Failure(
++            request.route_name, RuntimeTransportErrorCode::kNotFound,
++            "The caller-owned task run was not found",
++            "Refresh the caller-owned run history and retry");
++      }
++      RuntimeStoreSnapshot snapshot =
++          runtime->GetRuntimeSnapshotForTransport();
++      auto task = std::ranges::find(snapshot.tasks, params.run_id,
++                                    [](const RuntimeStoredTask& item) {
++                                      return item.snapshot.task_id;
++                                    });
++      return RuntimeTransportResult::Success(
++          request.route_name,
++          RuntimeSessionDetailResult{
++              .run = task != snapshot.tasks.end()
++                         ? std::optional(TaskView(*task))
++                         : std::nullopt});
++    }
++    case RuntimeRouteName::kSearchMemory: {
++      const auto& params = std::get<SearchMemoryParams>(request.params);
++      RuntimeMemoryListResult payload{
++          .memories = runtime->SearchMemoryForTransport(
++              derived_caller_id, params.query, params.limit)};
++      ClampList(&payload.memories, params.limit);
++      return RuntimeTransportResult::Success(request.route_name,
++                                             std::move(payload));
++    }
++    case RuntimeRouteName::kGetMemoryStats: {
++      std::vector<MemoryRecord> memories =
++          runtime->ListMemory(derived_caller_id);
++      RuntimeMemoryStatsResult payload{.count = memories.size()};
++      for (const MemoryRecord& memory : memories) {
++        payload.total_bytes += memory.byte_count;
++      }
++      return RuntimeTransportResult::Success(request.route_name,
++                                             std::move(payload));
++    }
++    case RuntimeRouteName::kGetSiteGuide: {
++      const auto& params = std::get<GetSiteGuideParams>(request.params);
++      std::optional<SiteGuideRecord> guide =
++          runtime->GetSiteGuideForTransport(derived_caller_id,
++                                            params.guide_id);
++      if (!guide) {
++        return RuntimeTransportResult::Failure(
++            request.route_name, RuntimeTransportErrorCode::kNotFound,
++            "The caller-visible site guide was not found",
++            "Refresh the caller-visible site guide list and retry");
++      }
++      return RuntimeTransportResult::Success(
++          request.route_name,
++          RuntimeSiteGuideResult{.guide = std::move(guide)});
++    }
++  }
++}
++
+ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+                                                  std::string_view body,
+                                                  ResponseCallback callback) {
+@@ -750,6 +1347,54 @@ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+   }
+ 
+   if (path == "/v1/agent/command") {
++    std::optional<base::DictValue> envelope =
++        base::JSONReader::ReadDict(body, base::JSON_PARSE_RFC);
++    const std::string* const route =
++        envelope ? envelope->FindString("route") : nullptr;
++    if (route && RuntimeRouteNameFromString(*route).has_value()) {
++      auto request = ParseRuntimeTransportRequest(body);
++      if (!request.has_value()) {
++        auto serialized = SerializeRuntimeTransportResult(request.error());
++        std::move(callback).Run(
++            net::HTTP_BAD_REQUEST,
++            serialized.has_value()
++                ? std::move(serialized.value())
++                : R"({"ok":false,"error_code":"INVALID_REQUEST"})");
++        return;
++      }
++      auto binding = session_bindings_.find(request->session_id);
++      const bool session_valid =
++          binding != session_bindings_.end() && binding->second.profile;
++      Profile* const profile =
++          session_valid ? binding->second.profile.get() : nullptr;
++      const std::string_view caller_id =
++          session_valid ? std::string_view(binding->second.caller_id)
++                        : std::string_view();
++      RuntimeTransportResult result =
++          DispatchAuthenticatedRuntimeRequestForTesting(
++              *request, session_valid, caller_id,
++              session_valid
++                  ? base::BindRepeating(
++                        &PrometheusAgentGateway::DispatchRuntimeRequest,
++                        base::Unretained(this), profile, request->session_id)
++                  : RuntimeGatewayDispatchCallback());
++      auto serialized = SerializeRuntimeTransportResult(result);
++      if (!serialized.has_value()) {
++        RuntimeTransportResult failure = RuntimeTransportResult::Failure(
++            request->route_name,
++            RuntimeTransportErrorCode::kRequestTooLarge,
++            "The runtime result exceeded transport bounds",
++            "Reduce requested output bounds and retry");
++        serialized = SerializeRuntimeTransportResult(failure);
++      }
++      std::move(callback).Run(
++          net::HTTP_OK,
++          serialized.has_value()
++              ? std::move(serialized.value())
++              : R"({"ok":false,"error_code":"REQUEST_TOO_LARGE"})");
++      return;
++    }
++
+     auto request = ParseAgentTransportRequest(body);
+     if (!request.has_value()) {
+       auto serialized = SerializeAgentTransportResult(request.error());
+@@ -867,8 +1512,24 @@ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+                                       "Close another session or retry"));
+       return;
+     }
+-    session_bindings_.emplace(result.session->id,
+-                              SessionBinding{.profile = profile->GetWeakPtr()});
++    BrowserWindowInterface* const active =
++        GlobalBrowserCollection::GetInstance()->GetActiveBrowser();
++    BrowserWindowInterface* target_browser = nullptr;
++    tabs::TabInterface* active_tab = nullptr;
++    if (active && active->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
++        active->GetProfile() == profile) {
++      target_browser = active;
++      active_tab = active->GetActiveTabInterface();
++    }
++    SessionBinding binding{
++        .profile = profile->GetWeakPtr(),
++        .browser = target_browser
++                       ? target_browser->GetWeakPtr()
++                       : base::WeakPtr<BrowserWindowInterface>(),
++        .stable_tab_id = active_tab ? active_tab->GetHandle().raw_value() : 0,
++        .caller_id = base::Uuid::GenerateRandomV4().AsLowercaseString(),
++    };
++    session_bindings_.emplace(result.session->id, std::move(binding));
+     std::move(callback).Run(net::HTTP_OK,
+                             SerializeSessionResult(result.session->id));
+     return;
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.h b/chrome/browser/prometheus/prometheus_agent_gateway.h
+index d60842020c..c39a158708 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.h
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.h
+@@ -6,6 +6,7 @@
+ #define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_GATEWAY_H_
+ 
+ #include <atomic>
++#include <cstdint>
+ #include <map>
+ #include <memory>
+ #include <string>
+@@ -22,6 +23,7 @@
+ #include "net/base/ip_endpoint.h"
+ 
+ class Profile;
++class BrowserWindowInterface;
+ 
+ namespace net {
+ class HttpServerRequestInfo;
+@@ -129,6 +131,9 @@ class PrometheusAgentGateway {
+ 
+   struct SessionBinding {
+     base::WeakPtr<Profile> profile;
++    base::WeakPtr<BrowserWindowInterface> browser;
++    int32_t stable_tab_id = 0;
++    std::string caller_id;
+   };
+ 
+   void OnIoStarted(base::OnceCallback<void(bool)> callback,
+@@ -147,6 +152,11 @@ class PrometheusAgentGateway {
+ 
+   Profile* SelectProfileForNewSession();
+   void PruneSessionBindings();
++  RuntimeTransportResult DispatchRuntimeRequest(
++      Profile* profile,
++      std::string gateway_session_id,
++      const RuntimeTransportRequest& request,
++      std::string_view derived_caller_id);
+   std::string SerializeSessionResult(const std::string& session_id) const;
+   std::string SerializeRouteFailure(AgentErrorCode error_code,
+                                     std::string message,
+@@ -162,6 +172,7 @@ class PrometheusAgentGateway {
+   RequestHandler request_handler_for_testing_;
+   ProfileSelector profile_selector_for_testing_;
+   std::map<std::string, SessionBinding, std::less<>> session_bindings_;
++  std::map<std::string, std::string, std::less<>> runtime_task_owners_;
+   std::atomic_size_t pending_request_count_{0};
+   std::atomic_size_t terminal_request_count_{0};
+   bool started_ = false;
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+index 695c5f8108..5b96abee38 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+@@ -183,10 +183,18 @@ bool ProviderMatchesRequestedExecution(const PrometheusProviderConfig& provider,
+ 
+ std::string SubmissionFingerprint(const RuntimeSubmitRequest& request) {
+   std::string material;
+-  material.reserve(request.prompt.size() + 3);
++  material.reserve(request.prompt.size() +
++                   request.provider_id.value_or(std::string()).size() +
++                   request.authority.caller_id.size() + 5);
+   material.push_back(static_cast<char>(request.authority.origin));
+   material.push_back(static_cast<char>(request.requested_execution));
+   material.push_back(':');
++  material.append(request.authority.caller_id);
++  material.push_back(':');
++  if (request.provider_id) {
++    material.append(*request.provider_id);
++  }
++  material.push_back(':');
+   material.append(request.prompt);
+   return base::HexEncodeLower(crypto::hash::Sha256(material));
+ }
+@@ -372,6 +380,8 @@ PrometheusRuntimeProfileService::PrometheusRuntimeProfileService(
+       std::make_unique<PrometheusProviderRegistry>(prefs);
+   owned_secret_store_ =
+       CreatePrometheusSecretStore(prefs, profile_->IsOffTheRecord());
++  owned_vault_service_ = std::make_unique<PrometheusVaultService>(
++      profile_, owned_secret_store_.get(), agent_profile_service_);
+   owned_provider_transport_ = std::make_unique<PrometheusProviderTransport>(
+       owned_provider_registry_.get(), owned_secret_store_.get(),
+       profile_->GetURLLoaderFactory());
+@@ -563,10 +573,22 @@ RuntimeSubmitResult PrometheusRuntimeProfileService::SubmitTask(
+   const std::vector<PrometheusProviderConfig> providers =
+       hooks_.list_providers ? hooks_.list_providers.Run()
+                             : std::vector<PrometheusProviderConfig>();
+-  const std::vector<PrometheusProviderConfig> fallback_order =
++  std::vector<PrometheusProviderConfig> fallback_order =
+       hooks_.get_fallback_order ? hooks_.get_fallback_order.Run() : providers;
+-  const std::optional<PrometheusProviderConfig> provider =
+-      SelectProvider(fallback_order, request.requested_execution);
++  std::optional<PrometheusProviderConfig> provider;
++  if (request.provider_id) {
++    auto selected = std::ranges::find(
++        providers, *request.provider_id,
++        &PrometheusProviderConfig::provider_id);
++    if (selected != providers.end() &&
++        ProviderMatchesRequestedExecution(*selected,
++                                          request.requested_execution)) {
++      provider = *selected;
++      fallback_order = {*selected};
++    }
++  } else {
++    provider = SelectProvider(fallback_order, request.requested_execution);
++  }
+   if (!provider || std::ranges::find(providers, *provider) == providers.end()) {
+     return {.status = RuntimeProfileStatus::kProviderUnavailable,
+             .recovery = kProviderUnavailableRecovery};
+@@ -1148,6 +1170,123 @@ std::vector<SiteGuideRecord> PrometheusRuntimeProfileService::ListSiteGuides(
+                                  : std::vector<SiteGuideRecord>();
+ }
+ 
++RuntimeStoreSnapshot
++PrometheusRuntimeProfileService::GetRuntimeSnapshotForTransport() const {
++  if (owned_runtime_store_) {
++    return owned_runtime_store_->GetSnapshot();
++  }
++  RuntimeStoreSnapshot snapshot;
++  snapshot.tasks.reserve(tasks_.size());
++  for (const auto& [task_id, task] : tasks_) {
++    static_cast<void>(task_id);
++    snapshot.tasks.push_back(RuntimeStoredTask{.snapshot = task.snapshot,
++                                               .generation = task.generation});
++  }
++  return snapshot;
++}
++
++std::vector<PrometheusProviderConfig>
++PrometheusRuntimeProfileService::ListProvidersForTransport() const {
++  return hooks_.list_providers
++             ? hooks_.list_providers.Run()
++             : std::vector<PrometheusProviderConfig>();
++}
++
++std::optional<PrometheusProviderConfig>
++PrometheusRuntimeProfileService::GetProviderForTransport(
++    std::string_view provider_id) const {
++  std::vector<PrometheusProviderConfig> providers =
++      ListProvidersForTransport();
++  auto provider = std::ranges::find(providers, provider_id,
++                                    &PrometheusProviderConfig::provider_id);
++  return provider == providers.end() ? std::nullopt
++                                     : std::optional(*provider);
++}
++
++MemoryStoreMutation PrometheusRuntimeProfileService::SaveMemoryForTransport(
++    std::string caller_id,
++    MemoryVisibility visibility,
++    std::string title,
++    std::string text,
++    std::vector<std::string> tags) {
++  if (!owned_memory_store_ || shutdown_) {
++    return {};
++  }
++  return owned_memory_store_->CreateMemory(
++      std::move(caller_id), visibility, std::move(title), std::move(text),
++      std::move(tags), base::Time::Now().InMillisecondsSinceUnixEpoch());
++}
++
++std::optional<MemoryRecord>
++PrometheusRuntimeProfileService::GetMemoryForTransport(
++    std::string_view caller_id,
++    std::string_view memory_id) {
++  return owned_memory_store_
++             ? owned_memory_store_->GetMemoryForCaller(caller_id, memory_id)
++             : std::nullopt;
++}
++
++std::vector<MemoryRecord>
++PrometheusRuntimeProfileService::SearchMemoryForTransport(
++    std::string_view caller_id,
++    std::string_view query,
++    size_t limit) {
++  return owned_memory_store_
++             ? owned_memory_store_->SearchMemoryForCaller(caller_id, query,
++                                                           limit)
++             : std::vector<MemoryRecord>();
++}
++
++MemoryStoreMutation
++PrometheusRuntimeProfileService::SaveSiteGuideForTransport(
++    std::string caller_id,
++    MemoryVisibility visibility,
++    std::string title,
++    std::string instructions,
++    std::vector<std::string> tags,
++    const GURL& canonical_origin) {
++  if (!owned_memory_store_ || shutdown_) {
++    return {};
++  }
++  return owned_memory_store_->CreateSiteGuide(
++      std::move(caller_id), visibility, std::move(title),
++      std::move(instructions), std::move(tags), canonical_origin,
++      base::Time::Now().InMillisecondsSinceUnixEpoch());
++}
++
++std::optional<SiteGuideRecord>
++PrometheusRuntimeProfileService::GetSiteGuideForTransport(
++    std::string_view caller_id,
++    std::string_view guide_id) {
++  return owned_memory_store_
++             ? owned_memory_store_->GetSiteGuideForCaller(caller_id, guide_id)
++             : std::nullopt;
++}
++
++bool PrometheusRuntimeProfileService::IsVaultAvailableForTransport() const {
++  return owned_vault_service_ && !shutdown_;
++}
++
++PrometheusVaultMetadataResult
++PrometheusRuntimeProfileService::CreateVaultMetadataForTransport(
++    std::string label,
++    PrometheusVaultKind kind,
++    std::string canonical_site_origin) {
++  if (!IsVaultAvailableForTransport()) {
++    return {};
++  }
++  return owned_vault_service_->CreateMetadata(
++      std::move(label), kind, std::move(canonical_site_origin));
++}
++
++std::vector<PrometheusVaultMetadata>
++PrometheusRuntimeProfileService::ListVaultMetadataForTransport(
++    std::optional<PrometheusVaultKind> kind) const {
++  return IsVaultAvailableForTransport()
++             ? owned_vault_service_->ListMetadata(kind)
++             : std::vector<PrometheusVaultMetadata>();
++}
++
+ RuntimeProfileStatus PrometheusRuntimeProfileService::SetProviders(
+     RuntimeProviderMutationCaller caller,
+     std::vector<PrometheusProviderConfig> providers) {
+@@ -1265,6 +1404,9 @@ void PrometheusRuntimeProfileService::Shutdown() {
+     principal->released_ = true;
+   }
+   principals_.clear();
++  if (owned_vault_service_) {
++    owned_vault_service_->Shutdown();
++  }
+   if (owned_runtime_store_) {
+     const int64_t now_ms = hooks_.now_ms ? hooks_.now_ms.Run() : 0;
+     owned_runtime_store_->Shutdown(now_ms);
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.h b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+index fc6668098b..276fcd3205 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+@@ -25,6 +25,7 @@
+ #include "chrome/browser/prometheus/prometheus_runtime_store.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_types.h"
++#include "chrome/browser/prometheus/prometheus_vault_service.h"
+ #include "components/keyed_service/core/keyed_service.h"
+ 
+ class BrowserWindowInterface;
+@@ -96,6 +97,7 @@ struct RuntimeAuthorityContext {
+ struct RuntimeSubmitRequest {
+   std::string prompt;
+   RequestedExecution requested_execution = RequestedExecution::kAuto;
++  std::optional<std::string> provider_id;
+   RuntimeAuthorityContext authority;
+ };
+ 
+@@ -243,6 +245,40 @@ class PrometheusRuntimeProfileService : public KeyedService {
+       uint64_t operation_id) const;
+   std::vector<MemoryRecord> ListMemory(std::string_view caller_id);
+   std::vector<SiteGuideRecord> ListSiteGuides(std::string_view caller_id);
++  RuntimeStoreSnapshot GetRuntimeSnapshotForTransport() const;
++  std::vector<PrometheusProviderConfig> ListProvidersForTransport() const;
++  std::optional<PrometheusProviderConfig> GetProviderForTransport(
++      std::string_view provider_id) const;
++  MemoryStoreMutation SaveMemoryForTransport(
++      std::string caller_id,
++      MemoryVisibility visibility,
++      std::string title,
++      std::string text,
++      std::vector<std::string> tags);
++  std::optional<MemoryRecord> GetMemoryForTransport(
++      std::string_view caller_id,
++      std::string_view memory_id);
++  std::vector<MemoryRecord> SearchMemoryForTransport(
++      std::string_view caller_id,
++      std::string_view query,
++      size_t limit);
++  MemoryStoreMutation SaveSiteGuideForTransport(
++      std::string caller_id,
++      MemoryVisibility visibility,
++      std::string title,
++      std::string instructions,
++      std::vector<std::string> tags,
++      const GURL& canonical_origin);
++  std::optional<SiteGuideRecord> GetSiteGuideForTransport(
++      std::string_view caller_id,
++      std::string_view guide_id);
++  bool IsVaultAvailableForTransport() const;
++  PrometheusVaultMetadataResult CreateVaultMetadataForTransport(
++      std::string label,
++      PrometheusVaultKind kind,
++      std::string canonical_site_origin);
++  std::vector<PrometheusVaultMetadata> ListVaultMetadataForTransport(
++      std::optional<PrometheusVaultKind> kind) const;
+   RuntimeProfileStatus SetProviders(
+       RuntimeProviderMutationCaller caller,
+       std::vector<PrometheusProviderConfig> providers);
+@@ -333,6 +369,7 @@ class PrometheusRuntimeProfileService : public KeyedService {
+   std::unique_ptr<PrometheusMemoryStore> owned_memory_store_;
+   std::unique_ptr<PrometheusProviderRegistry> owned_provider_registry_;
+   std::unique_ptr<PrometheusSecretStore> owned_secret_store_;
++  std::unique_ptr<PrometheusVaultService> owned_vault_service_;
+   std::unique_ptr<PrometheusProviderTransport> owned_provider_transport_;
+   RuntimeProfileHooks hooks_;
+   std::map<std::string, RuntimeTaskRecord, std::less<>> tasks_;
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+index 79a5ce36da..1805d2cf59 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+@@ -718,6 +718,29 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+   }
+ }
+ 
++TEST_F(PrometheusRuntimeProfileServiceTest,
++       ExplicitProviderPinIsExactAndExecutionCompatible) {
++  boundaries_.local_provider_available = true;
++
++  RuntimeSubmitRequest local = Request(RequestedExecution::kLocal);
++  local.provider_id = "provider-local";
++  RuntimeSubmitResult selected = service_->SubmitTask(std::move(local));
++  ASSERT_EQ(RuntimeProfileStatus::kOk, selected.status);
++  ASSERT_TRUE(selected.task.has_value());
++  EXPECT_EQ(EffectiveExecution::kLocal,
++            selected.task->effective_execution);
++
++  RuntimeSubmitRequest incompatible = Request(RequestedExecution::kProvider);
++  incompatible.provider_id = "provider-local";
++  EXPECT_EQ(RuntimeProfileStatus::kProviderUnavailable,
++            service_->SubmitTask(std::move(incompatible)).status);
++
++  RuntimeSubmitRequest unknown = Request();
++  unknown.provider_id = "provider-missing";
++  EXPECT_EQ(RuntimeProfileStatus::kProviderUnavailable,
++            service_->SubmitTask(std::move(unknown)).status);
++}
++
+ TEST_F(PrometheusRuntimeProfileServiceTest,
+        SidePanelAndMcpProvenanceStayDistinct) {
+   RuntimeSubmitResult side_panel = service_->SubmitTask(
+diff --git a/chrome/browser/prometheus/prometheus_runtime_transport_codec.cc b/chrome/browser/prometheus/prometheus_runtime_transport_codec.cc
+index e70631d1c1..fed324a92a 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_transport_codec.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_transport_codec.cc
+@@ -4,17 +4,26 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_runtime_transport_codec.h"
+ 
++#include <algorithm>
+ #include <array>
++#include <initializer_list>
++#include <type_traits>
+ #include <utility>
+ 
+ #include "base/json/json_reader.h"
+ #include "base/json/json_writer.h"
+ #include "base/strings/string_util.h"
+ #include "base/values.h"
++#include "url/gurl.h"
+ 
+ namespace prometheus {
+ namespace {
+ 
++constexpr size_t kMaxTransportMessageBytes = 512;
++constexpr size_t kMaxTransportEndpointBytes = 2048;
++constexpr size_t kMaxRecursiveFields = 4096;
++constexpr size_t kMaxRecursiveDepth = 16;
++
+ struct RuntimeRouteEntry {
+   std::string_view name;
+   RuntimeRouteName route_name;
+@@ -51,72 +60,780 @@ constexpr std::array<RuntimeRouteEntry, kRuntimeTransportCommandCount>
+         {"use_payment_method", RuntimeRouteName::kUsePaymentMethod},
+     }};
+ 
+-RuntimeTransportResult ParseFailure(RuntimeTransportErrorCode code,
++RuntimeTransportResult ParseFailure(RuntimeRouteName route_name,
++                                    RuntimeTransportErrorCode code,
+                                     std::string message) {
+   return RuntimeTransportResult::Failure(
+-      RuntimeRouteName::kRuntimeDiagnostics, code, std::move(message),
++      route_name, code, std::move(message),
+       "Send a bounded request using only documented runtime fields");
+ }
+ 
+-RuntimeTransportParams DefaultParamsForRoute(RuntimeRouteName route_name) {
+-  switch (route_name) {
+-    case RuntimeRouteName::kRunTask:
+-      return RunTaskParams();
+-    case RuntimeRouteName::kStopTask:
+-      return StopTaskParams();
+-    case RuntimeRouteName::kGetTaskStatus:
+-      return GetTaskStatusParams();
+-    case RuntimeRouteName::kListTasks:
+-      return ListTasksParams();
+-    case RuntimeRouteName::kGetProviderConfig:
+-      return GetProviderConfigParams();
+-    case RuntimeRouteName::kListProviders:
+-      return ListProvidersParams();
+-    case RuntimeRouteName::kDiscoverModels:
+-      return DiscoverModelsParams();
+-    case RuntimeRouteName::kSetProviderConfig:
+-      return SetProviderConfigParams();
+-    case RuntimeRouteName::kGetLogs:
+-      return GetLogsParams();
+-    case RuntimeRouteName::kActionHistory:
+-      return ActionHistoryParams();
+-    case RuntimeRouteName::kRuntimeDiagnostics:
+-      return RuntimeDiagnosticsParams();
+-    case RuntimeRouteName::kSaveMemory:
+-      return SaveMemoryParams();
+-    case RuntimeRouteName::kListMemory:
+-      return ListMemoryParams();
+-    case RuntimeRouteName::kSaveSiteGuide:
+-      return SaveSiteGuideParams();
+-    case RuntimeRouteName::kListSiteGuides:
+-      return ListSiteGuidesParams();
+-    case RuntimeRouteName::kCreateVaultEntry:
+-      return CreateVaultEntryParams();
+-    case RuntimeRouteName::kListVaultEntries:
+-      return ListVaultEntriesParams();
+-    case RuntimeRouteName::kVaultAutofill:
+-      return VaultAutofillParams();
+-    case RuntimeRouteName::kListSessions:
+-      return ListSessionsParams();
+-    case RuntimeRouteName::kGetSessionDetail:
+-      return GetSessionDetailParams();
+-    case RuntimeRouteName::kSearchMemory:
+-      return SearchMemoryParams();
+-    case RuntimeRouteName::kGetMemoryStats:
+-      return GetMemoryStatsParams();
+-    case RuntimeRouteName::kGetSiteGuide:
+-      return GetSiteGuideParams();
+-    case RuntimeRouteName::kListCredentials:
+-      return ListCredentialsParams();
+-    case RuntimeRouteName::kFillCredential:
+-      return FillCredentialParams();
+-    case RuntimeRouteName::kListPaymentMethods:
+-      return ListPaymentMethodsParams();
+-    case RuntimeRouteName::kUsePaymentMethod:
+-      return UsePaymentMethodParams();
++bool HasOnlyKeys(const base::DictValue& value,
++                 std::initializer_list<std::string_view> allowed) {
++  for (const auto [key, ignored] : value) {
++    static_cast<void>(ignored);
++    if (std::find(allowed.begin(), allowed.end(), key) == allowed.end()) {
++      return false;
++    }
++  }
++  return true;
++}
++
++std::string NormalizeFieldName(std::string_view value) {
++  std::string normalized;
++  normalized.reserve(value.size());
++  for (char character : value) {
++    if (base::IsAsciiAlphaNumeric(character)) {
++      normalized.push_back(base::ToLowerASCII(character));
++    }
++  }
++  return normalized;
++}
++
++bool IsSecretField(std::string_view field) {
++  const std::string normalized = NormalizeFieldName(field);
++  return normalized == "secret" || normalized == "apikey" ||
++         normalized == "token" || normalized == "password" ||
++         normalized == "authorization" || normalized == "ciphertext" ||
++         normalized == "paymentvalue" || normalized == "approvaltoken";
++}
++
++bool IsAuthorityField(std::string_view field) {
++  const std::string normalized = NormalizeFieldName(field);
++  return normalized == "callerid" || normalized == "profileid" ||
++         normalized == "profilepath" || normalized == "ownerid" ||
++         normalized == "principalid" || normalized == "gatewaysessionid" ||
++         normalized == "sessionid";
++}
++
++enum class RecursiveFieldScan {
++  kSafe,
++  kSecret,
++  kAuthority,
++  kBounds,
++};
++
++RecursiveFieldScan ScanReservedFields(const base::Value& value,
++                                      size_t depth,
++                                      size_t* visited) {
++  if (depth > kMaxRecursiveDepth || ++*visited > kMaxRecursiveFields) {
++    return RecursiveFieldScan::kBounds;
++  }
++  if (value.is_dict()) {
++    for (const auto [key, child] : value.GetDict()) {
++      if (IsSecretField(key)) {
++        return RecursiveFieldScan::kSecret;
++      }
++      if (IsAuthorityField(key)) {
++        return RecursiveFieldScan::kAuthority;
++      }
++      const RecursiveFieldScan nested =
++          ScanReservedFields(child, depth + 1, visited);
++      if (nested != RecursiveFieldScan::kSafe) {
++        return nested;
++      }
++    }
++  } else if (value.is_list()) {
++    for (const base::Value& child : value.GetList()) {
++      const RecursiveFieldScan nested =
++          ScanReservedFields(child, depth + 1, visited);
++      if (nested != RecursiveFieldScan::kSafe) {
++        return nested;
++      }
++    }
++  }
++  return RecursiveFieldScan::kSafe;
++}
++
++bool IsBoundedString(const base::Value* value,
++                     size_t max_bytes,
++                     bool allow_empty = false) {
++  return value && value->is_string() &&
++         (allow_empty || !value->GetString().empty()) &&
++         value->GetString().size() <= max_bytes &&
++         base::IsStringUTF8(value->GetString());
++}
++
++bool ReadOptionalString(const base::DictValue& value,
++                        std::string_view key,
++                        size_t max_bytes,
++                        std::optional<std::string>* output) {
++  const base::Value* field = value.Find(key);
++  if (!field) {
++    output->reset();
++    return true;
++  }
++  if (!IsBoundedString(field, max_bytes)) {
++    return false;
++  }
++  *output = field->GetString();
++  return true;
++}
++
++bool ReadOptionalBool(const base::DictValue& value,
++                      std::string_view key,
++                      std::optional<bool>* output) {
++  const base::Value* field = value.Find(key);
++  if (!field) {
++    output->reset();
++    return true;
++  }
++  if (!field->is_bool()) {
++    return false;
++  }
++  *output = field->GetBool();
++  return true;
++}
++
++bool ReadOptionalInt(const base::DictValue& value,
++                     std::string_view key,
++                     int minimum,
++                     int maximum,
++                     std::optional<int>* output) {
++  const base::Value* field = value.Find(key);
++  if (!field) {
++    output->reset();
++    return true;
++  }
++  if (!field->is_int() || field->GetInt() < minimum ||
++      field->GetInt() > maximum) {
++    return false;
++  }
++  *output = field->GetInt();
++  return true;
++}
++
++bool ReadOptionalInt64(const base::DictValue& value,
++                       std::string_view key,
++                       int64_t minimum,
++                       int64_t maximum,
++                       std::optional<int64_t>* output) {
++  const base::Value* field = value.Find(key);
++  if (!field) {
++    output->reset();
++    return true;
++  }
++  if (!field->is_int() || field->GetInt() < minimum ||
++      field->GetInt() > maximum) {
++    return false;
++  }
++  *output = field->GetInt();
++  return true;
++}
++
++bool ReadListLimit(const base::DictValue& value, size_t* output) {
++  const base::Value* field = value.Find("limit");
++  if (!field) {
++    *output = kMaxRuntimeTransportListItems;
++    return true;
++  }
++  if (!field->is_int() || field->GetInt() < 1 ||
++      field->GetInt() > static_cast<int>(kMaxRuntimeTransportListItems)) {
++    return false;
++  }
++  *output = static_cast<size_t>(field->GetInt());
++  return true;
++}
++
++bool ReadTags(const base::DictValue& value, std::vector<std::string>* output) {
++  const base::ListValue* tags = value.FindList("tags");
++  if (!tags || tags->size() > kMaxMemoryTags) {
++    return false;
++  }
++  output->clear();
++  output->reserve(tags->size());
++  for (const base::Value& tag : *tags) {
++    if (!IsBoundedString(&tag, kMaxMemoryTagBytes)) {
++      return false;
++    }
++    output->push_back(tag.GetString());
++  }
++  return true;
++}
++
++std::optional<std::string> CanonicalOrigin(std::string_view value,
++                                           bool require_https) {
++  if (value.size() > kMaxTransportEndpointBytes || !base::IsStringUTF8(value)) {
++    return std::nullopt;
++  }
++  const GURL url(value);
++  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS() ||
++      (require_https && !url.SchemeIs("https")) || url.host().empty() ||
++      url.has_username() || url.has_password() || url.has_query() ||
++      url.has_ref() || (url.path() != "/" && !url.path().empty())) {
++    return std::nullopt;
++  }
++  return url.DeprecatedGetOriginAsURL().spec();
++}
++
++std::optional<std::string> CanonicalProviderEndpoint(std::string_view value) {
++  if (value.size() > kMaxTransportEndpointBytes || !base::IsStringUTF8(value)) {
++    return std::nullopt;
++  }
++  const GURL url(value);
++  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS() || url.host().empty() ||
++      url.has_username() || url.has_password() || url.has_query() ||
++      url.has_ref()) {
++    return std::nullopt;
++  }
++  return url.spec();
++}
++
++bool IsProviderKindName(std::string_view value) {
++  return value == "openai" || value == "anthropic" || value == "gemini" ||
++         value == "xai" || value == "openrouter" || value == "lm_studio" ||
++         value == "hosted" || value == "routed" || value == "local" ||
++         value == "custom";
++}
++
++bool IsProviderRouteClassName(std::string_view value) {
++  return value == "hosted" || value == "routed" || value == "local" ||
++         value == "custom";
++}
++
++std::string_view ProviderKindName(PrometheusProviderKind kind) {
++  switch (kind) {
++    case PrometheusProviderKind::kOpenAI:
++      return "openai";
++    case PrometheusProviderKind::kAnthropic:
++      return "anthropic";
++    case PrometheusProviderKind::kGemini:
++      return "gemini";
++    case PrometheusProviderKind::kXAI:
++      return "xai";
++    case PrometheusProviderKind::kOpenRouter:
++      return "openrouter";
++    case PrometheusProviderKind::kLMStudio:
++      return "lm_studio";
++    case PrometheusProviderKind::kHosted:
++      return "hosted";
++    case PrometheusProviderKind::kRouted:
++      return "routed";
++    case PrometheusProviderKind::kLocal:
++      return "local";
++    case PrometheusProviderKind::kCustom:
++      return "custom";
++  }
++}
++
++std::string_view ProviderRouteClassName(
++    PrometheusProviderRouteClass route_class) {
++  switch (route_class) {
++    case PrometheusProviderRouteClass::kHosted:
++      return "hosted";
++    case PrometheusProviderRouteClass::kRouted:
++      return "routed";
++    case PrometheusProviderRouteClass::kLocal:
++      return "local";
++    case PrometheusProviderRouteClass::kCustom:
++      return "custom";
++  }
++}
++
++std::string_view ProviderHealthName(PrometheusProviderHealth health) {
++  switch (health) {
++    case PrometheusProviderHealth::kUnknown:
++      return "unknown";
++    case PrometheusProviderHealth::kHealthy:
++      return "healthy";
++    case PrometheusProviderHealth::kDegraded:
++      return "degraded";
++    case PrometheusProviderHealth::kUnavailable:
++      return "unavailable";
++  }
++}
++
++std::string_view ProviderDiscoveryName(
++    PrometheusProviderDiscoveryState state) {
++  switch (state) {
++    case PrometheusProviderDiscoveryState::kNotSupported:
++      return "not_supported";
++    case PrometheusProviderDiscoveryState::kNotStarted:
++      return "not_started";
++    case PrometheusProviderDiscoveryState::kDiscovering:
++      return "discovering";
++    case PrometheusProviderDiscoveryState::kReady:
++      return "ready";
++    case PrometheusProviderDiscoveryState::kFailed:
++      return "failed";
++  }
++}
++
++std::string_view RuntimeEventName(RuntimeEventKind kind) {
++  switch (kind) {
++    case RuntimeEventKind::kTaskCreated:
++      return "task_created";
++    case RuntimeEventKind::kStateChanged:
++      return "state_changed";
++    case RuntimeEventKind::kProviderAttempt:
++      return "provider_attempt";
++    case RuntimeEventKind::kFallback:
++      return "fallback";
++    case RuntimeEventKind::kToolDispatched:
++      return "tool_dispatched";
++    case RuntimeEventKind::kConfirmation:
++      return "confirmation";
++    case RuntimeEventKind::kTaskFinished:
++      return "task_finished";
++    case RuntimeEventKind::kCancellation:
++      return "cancellation";
++    case RuntimeEventKind::kTimeout:
++      return "timeout";
++    case RuntimeEventKind::kShutdown:
++      return "shutdown";
+   }
+ }
+ 
++std::string_view RuntimeActionName(RuntimeActionKind kind) {
++  switch (kind) {
++    case RuntimeActionKind::kNavigate:
++      return "navigate";
++    case RuntimeActionKind::kClick:
++      return "click";
++    case RuntimeActionKind::kTypeText:
++      return "type_text";
++    case RuntimeActionKind::kPressKey:
++      return "press_key";
++    case RuntimeActionKind::kScroll:
++      return "scroll";
++    case RuntimeActionKind::kHover:
++      return "hover";
++    case RuntimeActionKind::kSelectOption:
++      return "select_option";
++    case RuntimeActionKind::kClear:
++      return "clear";
++    case RuntimeActionKind::kDrag:
++      return "drag";
++  }
++}
++
++RuntimeTransportResult OutputFailure(RuntimeRouteName route_name) {
++  return RuntimeTransportResult::Failure(
++      route_name, RuntimeTransportErrorCode::kRequestTooLarge,
++      "Runtime result exceeds transport bounds",
++      "Reduce requested list or result bounds and retry");
++}
++
++bool ValidOutputString(std::string_view value,
++                       size_t max_bytes,
++                       bool allow_empty = true) {
++  return (allow_empty || !value.empty()) && value.size() <= max_bytes &&
++         base::IsStringUTF8(value);
++}
++
++std::optional<base::DictValue> TaskViewToValue(const RuntimeTaskView& view) {
++  const RuntimeTaskSnapshot& task = view.snapshot;
++  if (!ValidOutputString(task.task_id, kMaxRuntimeTransportIdBytes, false) ||
++      !ValidOutputString(task.safe_title, kMaxRuntimeSafeTitleBytes, false) ||
++      !IsValidRuntimeUsage(task.usage)) {
++    return std::nullopt;
++  }
++  base::DictValue value;
++  value.Set("task_id", task.task_id);
++  value.Set("safe_title", task.safe_title);
++  value.Set("origin", std::string(RuntimeTaskOriginToString(task.origin)));
++  value.Set("requested_execution",
++            std::string(RequestedExecutionToString(task.requested_execution)));
++  if (task.effective_execution) {
++    value.Set(
++        "effective_execution",
++        std::string(EffectiveExecutionToString(*task.effective_execution)));
++  }
++  value.Set("state", std::string(RuntimeTaskStateToString(task.state)));
++  value.Set("error_code",
++            std::string(RuntimeErrorCodeToString(task.error_code)));
++  value.Set("created_at_ms", static_cast<double>(task.created_at_ms));
++  value.Set("updated_at_ms", static_cast<double>(task.updated_at_ms));
++  base::DictValue usage;
++  usage.Set("input_tokens", static_cast<double>(task.usage.input_tokens));
++  usage.Set("output_tokens", static_cast<double>(task.usage.output_tokens));
++  usage.Set("tool_calls", static_cast<double>(task.usage.tool_calls));
++  usage.Set("duration_ms", static_cast<double>(task.usage.duration_ms));
++  if (task.usage.cost_microunits) {
++    usage.Set("cost_microunits",
++              static_cast<double>(*task.usage.cost_microunits));
++  }
++  value.Set("usage", std::move(usage));
++  if (view.safe_result) {
++    if (!ValidOutputString(view.safe_result->text, kHardRuntimeResultBytes)) {
++      return std::nullopt;
++    }
++    base::DictValue result;
++    result.Set("text", view.safe_result->text);
++    result.Set("truncated", view.safe_result->truncated);
++    value.Set("safe_result", std::move(result));
++  }
++  return value;
++}
++
++std::optional<base::DictValue> ProviderViewToValue(
++    const RuntimeProviderView& provider) {
++  if (!ValidOutputString(provider.provider_id, kMaxPrometheusProviderIdBytes,
++                         false) ||
++      !ValidOutputString(provider.label, kMaxPrometheusProviderLabelBytes,
++                         false) ||
++      !ValidOutputString(provider.model_id,
++                         kMaxPrometheusProviderModelIdBytes) ||
++      !ValidOutputString(provider.canonical_endpoint,
++                         kMaxTransportEndpointBytes) ||
++      (!provider.canonical_endpoint.empty() &&
++       !CanonicalProviderEndpoint(provider.canonical_endpoint))) {
++    return std::nullopt;
++  }
++  base::DictValue value;
++  value.Set("provider_id", provider.provider_id);
++  value.Set("label", provider.label);
++  value.Set("kind", std::string(ProviderKindName(provider.kind)));
++  value.Set("route_class",
++            std::string(ProviderRouteClassName(provider.route_class)));
++  value.Set("canonical_endpoint", provider.canonical_endpoint);
++  value.Set("model_id", provider.model_id);
++  value.Set("enabled", provider.enabled);
++  value.Set("health", std::string(ProviderHealthName(provider.health)));
++  value.Set("discovery_state",
++            std::string(ProviderDiscoveryName(provider.discovery_state)));
++  value.Set("secret_configured", provider.secret_configured);
++  value.Set("fallback_rank", provider.fallback_rank);
++  return value;
++}
++
++std::optional<base::DictValue> MemoryToValue(const MemoryRecord& memory) {
++  if (!ValidOutputString(memory.memory_id, kMaxRuntimeTransportIdBytes,
++                         false) ||
++      !ValidOutputString(memory.title, kMaxMemoryTitleBytes, false) ||
++      !ValidOutputString(memory.text, kMaxMemoryTextBytes) ||
++      memory.tags.size() > kMaxMemoryTags) {
++    return std::nullopt;
++  }
++  base::ListValue tags;
++  for (const std::string& tag : memory.tags) {
++    if (!ValidOutputString(tag, kMaxMemoryTagBytes, false)) {
++      return std::nullopt;
++    }
++    tags.Append(tag);
++  }
++  base::DictValue value;
++  value.Set("memory_id", memory.memory_id);
++  value.Set("title", memory.title);
++  value.Set("text", memory.text);
++  value.Set("tags", std::move(tags));
++  value.Set("visibility", memory.visibility == MemoryVisibility::kProfileShared
++                              ? "profile_shared"
++                              : "caller_owned");
++  value.Set("created_at_ms", static_cast<double>(memory.created_at_ms));
++  value.Set("updated_at_ms", static_cast<double>(memory.updated_at_ms));
++  value.Set("byte_count", static_cast<double>(memory.byte_count));
++  value.Set("owned_by_caller", memory.owned_by_caller);
++  return value;
++}
++
++std::optional<base::DictValue> SiteGuideToValue(const SiteGuideRecord& guide) {
++  if (!ValidOutputString(guide.guide_id, kMaxRuntimeTransportIdBytes, false) ||
++      !ValidOutputString(guide.title, kMaxMemoryTitleBytes, false) ||
++      !ValidOutputString(guide.instructions, kMaxMemoryTextBytes) ||
++      !ValidOutputString(guide.canonical_origin, kMaxTransportEndpointBytes,
++                         false) ||
++      !CanonicalOrigin(guide.canonical_origin, false) ||
++      guide.tags.size() > kMaxMemoryTags) {
++    return std::nullopt;
++  }
++  base::ListValue tags;
++  for (const std::string& tag : guide.tags) {
++    if (!ValidOutputString(tag, kMaxMemoryTagBytes, false)) {
++      return std::nullopt;
++    }
++    tags.Append(tag);
++  }
++  base::DictValue value;
++  value.Set("guide_id", guide.guide_id);
++  value.Set("title", guide.title);
++  value.Set("instructions", guide.instructions);
++  value.Set("tags", std::move(tags));
++  value.Set("canonical_origin", guide.canonical_origin);
++  value.Set("visibility", guide.visibility == MemoryVisibility::kProfileShared
++                              ? "profile_shared"
++                              : "caller_owned");
++  value.Set("created_at_ms", static_cast<double>(guide.created_at_ms));
++  value.Set("updated_at_ms", static_cast<double>(guide.updated_at_ms));
++  value.Set("byte_count", static_cast<double>(guide.byte_count));
++  value.Set("owned_by_caller", guide.owned_by_caller);
++  return value;
++}
++
++std::optional<base::DictValue> VaultMetadataToValue(
++    const RuntimeVaultMetadataView& entry) {
++  if (!ValidOutputString(entry.id, kMaxRuntimeTransportIdBytes, false) ||
++      !ValidOutputString(entry.label, kMaxPrometheusVaultLabelBytes, false) ||
++      !ValidOutputString(entry.canonical_site_origin,
++                         kMaxTransportEndpointBytes, false) ||
++      !CanonicalOrigin(entry.canonical_site_origin, true)) {
++    return std::nullopt;
++  }
++  base::DictValue value;
++  value.Set("id", entry.id);
++  value.Set("label", entry.label);
++  value.Set("kind", std::string(PrometheusVaultKindToString(entry.kind)));
++  value.Set("canonical_site_origin", entry.canonical_site_origin);
++  value.Set("updated_time_ms", static_cast<double>(entry.updated_time_ms));
++  value.Set("secret_configured", entry.secret_configured);
++  return value;
++}
++
++std::optional<base::DictValue> PayloadToValue(
++    const RuntimeTransportPayload& payload) {
++  base::DictValue result;
++  bool valid = true;
++  std::visit(
++      [&result, &valid](const auto& value) {
++        using T = std::decay_t<decltype(value)>;
++        if constexpr (std::is_same_v<T, RuntimeEmptyResult>) {
++          return;
++        } else if constexpr (std::is_same_v<T, RuntimeTaskResult>) {
++          if (!value.task) {
++            result.Set("task", base::Value());
++            return;
++          }
++          auto task = TaskViewToValue(*value.task);
++          valid = task.has_value();
++          if (task) {
++            result.Set("task", std::move(*task));
++          }
++        } else if constexpr (std::is_same_v<T, RuntimeTaskListResult> ||
++                             std::is_same_v<T, RuntimeSessionListResult>) {
++          base::ListValue tasks;
++          const auto& source = [&]() -> const auto& {
++            if constexpr (std::is_same_v<T, RuntimeTaskListResult>) {
++              return value.tasks;
++            } else {
++              return value.runs;
++            }
++          }();
++          if (source.size() > kMaxRuntimeTransportListItems) {
++            valid = false;
++            return;
++          }
++          for (const RuntimeTaskView& item : source) {
++            auto task = TaskViewToValue(item);
++            if (!task) {
++              valid = false;
++              return;
++            }
++            tasks.Append(std::move(*task));
++          }
++          result.Set(
++              std::is_same_v<T, RuntimeTaskListResult> ? "tasks" : "runs",
++              std::move(tasks));
++        } else if constexpr (std::is_same_v<T, RuntimeSessionDetailResult>) {
++          if (!value.run) {
++            result.Set("run", base::Value());
++            return;
++          }
++          auto run = TaskViewToValue(*value.run);
++          valid = run.has_value();
++          if (run) {
++            result.Set("run", std::move(*run));
++          }
++        } else if constexpr (std::is_same_v<T, RuntimeProviderResult>) {
++          if (!value.provider) {
++            result.Set("provider", base::Value());
++            return;
++          }
++          auto provider = ProviderViewToValue(*value.provider);
++          valid = provider.has_value();
++          if (provider) {
++            result.Set("provider", std::move(*provider));
++          }
++        } else if constexpr (std::is_same_v<T, RuntimeProviderListResult>) {
++          if (value.providers.size() > kMaxRuntimeTransportListItems) {
++            valid = false;
++            return;
++          }
++          base::ListValue providers;
++          for (const RuntimeProviderView& item : value.providers) {
++            auto provider = ProviderViewToValue(item);
++            if (!provider) {
++              valid = false;
++              return;
++            }
++            providers.Append(std::move(*provider));
++          }
++          result.Set("providers", std::move(providers));
++        } else if constexpr (std::is_same_v<T, RuntimeModelListResult>) {
++          if (value.models.size() > kMaxPrometheusDiscoveredModels) {
++            valid = false;
++            return;
++          }
++          base::ListValue models;
++          for (const std::string& model : value.models) {
++            if (!ValidOutputString(model, kMaxPrometheusProviderModelIdBytes,
++                                   false)) {
++              valid = false;
++              return;
++            }
++            models.Append(model);
++          }
++          result.Set("models", std::move(models));
++          result.Set("pending", value.pending);
++        } else if constexpr (std::is_same_v<T, RuntimeLogListResult>) {
++          if (value.logs.size() > kMaxRuntimeTransportListItems) {
++            valid = false;
++            return;
++          }
++          base::ListValue logs;
++          for (const RuntimeLogView& item : value.logs) {
++            if (!ValidOutputString(item.event_id, kMaxRuntimeTransportIdBytes,
++                                   false) ||
++                !ValidOutputString(item.task_id, kMaxRuntimeTransportIdBytes,
++                                   false)) {
++              valid = false;
++              return;
++            }
++            base::DictValue log;
++            log.Set("event_id", item.event_id);
++            log.Set("task_id", item.task_id);
++            log.Set("kind", std::string(RuntimeEventName(item.kind)));
++            log.Set("error_code",
++                    std::string(RuntimeErrorCodeToString(item.error_code)));
++            log.Set("timestamp_ms", static_cast<double>(item.timestamp_ms));
++            log.Set("value", static_cast<double>(item.value));
++            logs.Append(std::move(log));
++          }
++          result.Set("logs", std::move(logs));
++        } else if constexpr (std::is_same_v<T, RuntimeActionListResult>) {
++          if (value.actions.size() > kMaxRuntimeTransportListItems) {
++            valid = false;
++            return;
++          }
++          base::ListValue actions;
++          for (const RuntimeActionView& item : value.actions) {
++            if (!ValidOutputString(item.action_id, kMaxRuntimeTransportIdBytes,
++                                   false) ||
++                !ValidOutputString(item.task_id, kMaxRuntimeTransportIdBytes,
++                                   false)) {
++              valid = false;
++              return;
++            }
++            base::DictValue action;
++            action.Set("action_id", item.action_id);
++            action.Set("task_id", item.task_id);
++            action.Set("kind", std::string(RuntimeActionName(item.kind)));
++            action.Set("timestamp_ms", static_cast<double>(item.timestamp_ms));
++            action.Set("succeeded", item.succeeded);
++            actions.Append(std::move(action));
++          }
++          result.Set("actions", std::move(actions));
++        } else if constexpr (std::is_same_v<T, RuntimeDiagnosticsResult>) {
++          if (value.components.size() > kMaxRuntimeTransportListItems) {
++            valid = false;
++            return;
++          }
++          base::ListValue components;
++          for (const RuntimeDiagnosticView& item : value.components) {
++            if (!ValidOutputString(item.key, kMaxRuntimeTransportLabelBytes,
++                                   false) ||
++                !ValidOutputString(item.reason, kMaxTransportMessageBytes) ||
++                !ValidOutputString(item.next_action,
++                                   kMaxTransportMessageBytes)) {
++              valid = false;
++              return;
++            }
++            base::DictValue component;
++            component.Set("key", item.key);
++            component.Set(
++                "status",
++                std::string(RuntimeComponentStatusToString(item.status)));
++            component.Set("reason", item.reason);
++            component.Set("next_action", item.next_action);
++            components.Append(std::move(component));
++          }
++          result.Set("components", std::move(components));
++        } else if constexpr (std::is_same_v<T, RuntimeMemoryResult>) {
++          if (!value.memory) {
++            result.Set("memory", base::Value());
++            return;
++          }
++          auto memory = MemoryToValue(*value.memory);
++          valid = memory.has_value();
++          if (memory) {
++            result.Set("memory", std::move(*memory));
++          }
++        } else if constexpr (std::is_same_v<T, RuntimeMemoryListResult>) {
++          if (value.memories.size() > kMaxRuntimeTransportListItems) {
++            valid = false;
++            return;
++          }
++          base::ListValue memories;
++          for (const MemoryRecord& item : value.memories) {
++            auto memory = MemoryToValue(item);
++            if (!memory) {
++              valid = false;
++              return;
++            }
++            memories.Append(std::move(*memory));
++          }
++          result.Set("memories", std::move(memories));
++        } else if constexpr (std::is_same_v<T, RuntimeMemoryStatsResult>) {
++          result.Set("count", static_cast<double>(value.count));
++          result.Set("total_bytes", static_cast<double>(value.total_bytes));
++        } else if constexpr (std::is_same_v<T, RuntimeSiteGuideResult>) {
++          if (!value.guide) {
++            result.Set("guide", base::Value());
++            return;
++          }
++          auto guide = SiteGuideToValue(*value.guide);
++          valid = guide.has_value();
++          if (guide) {
++            result.Set("guide", std::move(*guide));
++          }
++        } else if constexpr (std::is_same_v<T, RuntimeSiteGuideListResult>) {
++          if (value.guides.size() > kMaxRuntimeTransportListItems) {
++            valid = false;
++            return;
++          }
++          base::ListValue guides;
++          for (const SiteGuideRecord& item : value.guides) {
++            auto guide = SiteGuideToValue(item);
++            if (!guide) {
++              valid = false;
++              return;
++            }
++            guides.Append(std::move(*guide));
++          }
++          result.Set("guides", std::move(guides));
++        } else if constexpr (std::is_same_v<T, RuntimeVaultMetadataResult>) {
++          if (!value.entry) {
++            result.Set("entry", base::Value());
++            return;
++          }
++          auto entry = VaultMetadataToValue(*value.entry);
++          valid = entry.has_value();
++          if (entry) {
++            result.Set("entry", std::move(*entry));
++          }
++        } else if constexpr (std::is_same_v<T, RuntimeVaultListResult>) {
++          if (value.entries.size() > kMaxRuntimeTransportListItems) {
++            valid = false;
++            return;
++          }
++          base::ListValue entries;
++          for (const RuntimeVaultMetadataView& item : value.entries) {
++            auto entry = VaultMetadataToValue(item);
++            if (!entry) {
++              valid = false;
++              return;
++            }
++            entries.Append(std::move(*entry));
++          }
++          result.Set("entries", std::move(entries));
++        } else if constexpr (std::is_same_v<T, RuntimeVaultUseResult>) {
++          result.Set("status",
++                     std::string(PrometheusVaultStatusToString(value.status)));
++        }
++      },
++      payload);
++  return valid ? std::optional(std::move(result)) : std::nullopt;
++}
++
+ }  // namespace
+ 
+ RuntimeTransportResult RuntimeTransportResult::Success(
+@@ -209,54 +926,471 @@ base::expected<RuntimeTransportRequest, RuntimeTransportResult>
+ ParseRuntimeTransportRequest(std::string_view json) {
+   if (json.size() > kMaxRuntimeTransportInputBytes) {
+     return base::unexpected(
+-        ParseFailure(RuntimeTransportErrorCode::kRequestTooLarge,
++        ParseFailure(RuntimeRouteName::kRuntimeDiagnostics,
++                     RuntimeTransportErrorCode::kRequestTooLarge,
+                      "Runtime request body exceeds 1 MiB"));
+   }
+   std::optional<base::DictValue> root =
+       base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
+   if (!root) {
+     return base::unexpected(
+-        ParseFailure(RuntimeTransportErrorCode::kInvalidRequest,
+-                     "Runtime request body must be a JSON object"));
+-  }
+-  const std::string* route = root->FindString("route");
+-  const std::string* session_id = root->FindString("session_id");
+-  if (!route || !session_id || session_id->empty() ||
+-      session_id->size() > kMaxRuntimeTransportSessionIdBytes ||
+-      !base::IsStringUTF8(*session_id)) {
++        ParseFailure(RuntimeRouteName::kRuntimeDiagnostics,
++                     RuntimeTransportErrorCode::kInvalidRequest,
++                     "Runtime request must use the closed request envelope"));
++  }
++
++  RuntimeRouteName failure_route = RuntimeRouteName::kRuntimeDiagnostics;
++  if (const std::string* route = root->FindString("route")) {
++    failure_route =
++        RuntimeRouteNameFromString(*route).value_or(failure_route);
++  }
++  for (const auto [key, value] : *root) {
++    if (key == "route" || key == "session_id" || key == "params") {
++      continue;
++    }
++    size_t visited = 0;
++    const RecursiveFieldScan scan =
++        IsSecretField(key) ? RecursiveFieldScan::kSecret
++                           : IsAuthorityField(key)
++                                 ? RecursiveFieldScan::kAuthority
++                                 : ScanReservedFields(value, 0, &visited);
++    if (scan == RecursiveFieldScan::kSecret) {
++      return base::unexpected(ParseFailure(
++          failure_route, RuntimeTransportErrorCode::kSecretTransportBlocked,
++          "Secret-shaped fields cannot cross the runtime transport"));
++    }
++    if (scan == RecursiveFieldScan::kBounds) {
++      return base::unexpected(ParseFailure(
++          failure_route, RuntimeTransportErrorCode::kRequestTooLarge,
++          "Runtime request exceeds recursive bounds"));
++    }
++  }
++  if (!HasOnlyKeys(*root, {"route", "session_id", "params"})) {
++    return base::unexpected(
++        ParseFailure(failure_route, RuntimeTransportErrorCode::kInvalidRequest,
++                     "Runtime request must use the closed request envelope"));
++  }
++  const base::Value* route_value = root->Find("route");
++  const base::Value* session_value = root->Find("session_id");
++  const base::Value* params_value = root->Find("params");
++  if (!IsBoundedString(route_value, kMaxRuntimeTransportLabelBytes) ||
++      !IsBoundedString(session_value, kMaxRuntimeTransportSessionIdBytes) ||
++      !params_value || !params_value->is_dict()) {
+     return base::unexpected(
+-        ParseFailure(RuntimeTransportErrorCode::kInvalidRequest,
+-                     "Runtime route and bounded session_id are required"));
++        ParseFailure(RuntimeRouteName::kRuntimeDiagnostics,
++                     RuntimeTransportErrorCode::kInvalidRequest,
++                     "Runtime route, session_id, and params are required"));
+   }
+-  std::optional<RuntimeRouteName> route_name =
+-      RuntimeRouteNameFromString(*route);
++  const std::optional<RuntimeRouteName> route_name =
++      RuntimeRouteNameFromString(route_value->GetString());
+   if (!route_name) {
+     return base::unexpected(
+-        ParseFailure(RuntimeTransportErrorCode::kInvalidRoute,
++        ParseFailure(RuntimeRouteName::kRuntimeDiagnostics,
++                     RuntimeTransportErrorCode::kInvalidRoute,
+                      "Unknown native runtime route"));
+   }
++
++  size_t visited = 0;
++  switch (ScanReservedFields(*params_value, 0, &visited)) {
++    case RecursiveFieldScan::kSafe:
++      break;
++    case RecursiveFieldScan::kSecret:
++      return base::unexpected(ParseFailure(
++          *route_name, RuntimeTransportErrorCode::kSecretTransportBlocked,
++          "Secret-shaped fields cannot cross the runtime transport"));
++    case RecursiveFieldScan::kAuthority:
++      return base::unexpected(
++          ParseFailure(*route_name, RuntimeTransportErrorCode::kInvalidRequest,
++                       "Runtime authority is derived by the browser"));
++    case RecursiveFieldScan::kBounds:
++      return base::unexpected(
++          ParseFailure(*route_name, RuntimeTransportErrorCode::kRequestTooLarge,
++                       "Runtime params exceed recursive bounds"));
++  }
++
++  const base::DictValue& params = params_value->GetDict();
+   RuntimeTransportRequest request;
+   request.route_name = *route_name;
+-  request.session_id = *session_id;
+-  request.params = DefaultParamsForRoute(*route_name);
++  request.session_id = session_value->GetString();
++  request.origin = RuntimeCallerOrigin::kMcp;
++  const auto invalid =
++      [&]() -> base::expected<RuntimeTransportRequest, RuntimeTransportResult> {
++    return base::unexpected(
++        ParseFailure(*route_name, RuntimeTransportErrorCode::kInvalidRequest,
++                     "Runtime params do not match the closed route schema"));
++  };
++
++  switch (*route_name) {
++    case RuntimeRouteName::kRunTask: {
++      if (!HasOnlyKeys(params,
++                       {"prompt", "requested_execution", "provider_id"})) {
++        return invalid();
++      }
++      const base::Value* prompt = params.Find("prompt");
++      const base::Value* execution = params.Find("requested_execution");
++      if (!prompt || !prompt->is_string()) {
++        return invalid();
++      }
++      if (prompt->GetString().size() > kHardRuntimePromptBytes) {
++        return base::unexpected(ParseFailure(
++            *route_name, RuntimeTransportErrorCode::kRequestTooLarge,
++            "Runtime prompt exceeds the hard byte bound"));
++      }
++      if (!IsBoundedString(prompt, kHardRuntimePromptBytes) ||
++          !IsBoundedString(execution, 16)) {
++        return invalid();
++      }
++      const std::optional<RequestedExecution> requested_execution =
++          RequestedExecutionFromString(execution->GetString());
++      RunTaskParams parsed;
++      if (!requested_execution ||
++          !ReadOptionalString(params, "provider_id",
++                              kMaxPrometheusProviderIdBytes,
++                              &parsed.provider_id)) {
++        return invalid();
++      }
++      parsed.prompt = prompt->GetString();
++      parsed.requested_execution = *requested_execution;
++      request.params = std::move(parsed);
++      break;
++    }
++    case RuntimeRouteName::kStopTask:
++    case RuntimeRouteName::kGetTaskStatus: {
++      if (!HasOnlyKeys(params, {"task_id"}) ||
++          !IsBoundedString(params.Find("task_id"),
++                           kMaxRuntimeTransportIdBytes)) {
++        return invalid();
++      }
++      if (*route_name == RuntimeRouteName::kStopTask) {
++        request.params = StopTaskParams{*params.FindString("task_id")};
++      } else {
++        request.params =
++            GetTaskStatusParams{*params.FindString("task_id")};
++      }
++      break;
++    }
++    case RuntimeRouteName::kListTasks:
++    case RuntimeRouteName::kGetLogs:
++    case RuntimeRouteName::kListMemory:
++    case RuntimeRouteName::kListSiteGuides:
++    case RuntimeRouteName::kListSessions:
++    case RuntimeRouteName::kListCredentials:
++    case RuntimeRouteName::kListPaymentMethods: {
++      size_t limit = 0;
++      if (!HasOnlyKeys(params, {"limit"}) || !ReadListLimit(params, &limit)) {
++        return invalid();
++      }
++      switch (*route_name) {
++        case RuntimeRouteName::kListTasks:
++          request.params = ListTasksParams{limit};
++          break;
++        case RuntimeRouteName::kGetLogs:
++          request.params = GetLogsParams{limit};
++          break;
++        case RuntimeRouteName::kListMemory:
++          request.params = ListMemoryParams{limit};
++          break;
++        case RuntimeRouteName::kListSiteGuides:
++          request.params = ListSiteGuidesParams{limit};
++          break;
++        case RuntimeRouteName::kListSessions:
++          request.params = ListSessionsParams{limit};
++          break;
++        case RuntimeRouteName::kListCredentials:
++          request.params = ListCredentialsParams{limit};
++          break;
++        case RuntimeRouteName::kListPaymentMethods:
++          request.params = ListPaymentMethodsParams{limit};
++          break;
++        default:
++          break;
++      }
++      break;
++    }
++    case RuntimeRouteName::kGetProviderConfig:
++    case RuntimeRouteName::kDiscoverModels: {
++      if (!HasOnlyKeys(params, {"provider_id"}) ||
++          !IsBoundedString(params.Find("provider_id"),
++                           kMaxPrometheusProviderIdBytes)) {
++        return invalid();
++      }
++      if (*route_name == RuntimeRouteName::kGetProviderConfig) {
++        request.params =
++            GetProviderConfigParams{*params.FindString("provider_id")};
++      } else {
++        request.params =
++            DiscoverModelsParams{*params.FindString("provider_id")};
++      }
++      break;
++    }
++    case RuntimeRouteName::kListProviders: {
++      if (!HasOnlyKeys(params, {"include_disabled"})) {
++        return invalid();
++      }
++      bool include_disabled = true;
++      if (const base::Value* value = params.Find("include_disabled")) {
++        if (!value->is_bool()) {
++          return invalid();
++        }
++        include_disabled = value->GetBool();
++      }
++      request.params = ListProvidersParams{include_disabled};
++      break;
++    }
++    case RuntimeRouteName::kSetProviderConfig: {
++      if (!HasOnlyKeys(params,
++                       {"provider_id", "label", "kind", "route_class",
++                        "endpoint", "model_id", "fallback_rank",
++                        "input_rate_microunits", "output_rate_microunits",
++                        "enabled", "trusted", "configure_secret"}) ||
++          !IsBoundedString(params.Find("provider_id"),
++                           kMaxPrometheusProviderIdBytes)) {
++        return invalid();
++      }
++      SetProviderConfigParams parsed;
++      parsed.provider_id = *params.FindString("provider_id");
++      if (!ReadOptionalString(params, "label", kMaxPrometheusProviderLabelBytes,
++                              &parsed.label) ||
++          !ReadOptionalString(params, "kind", 32, &parsed.kind) ||
++          !ReadOptionalString(params, "route_class", 32, &parsed.route_class) ||
++          !ReadOptionalString(params, "endpoint", kMaxTransportEndpointBytes,
++                              &parsed.endpoint) ||
++          !ReadOptionalString(params, "model_id",
++                              kMaxPrometheusProviderModelIdBytes,
++                              &parsed.model_id) ||
++          !ReadOptionalInt(params, "fallback_rank", 0,
++                           static_cast<int>(kMaxPrometheusProviders - 1),
++                           &parsed.fallback_rank) ||
++          !ReadOptionalInt64(params, "input_rate_microunits", 0,
++                             kHardRuntimeCostMicrounits,
++                             &parsed.input_rate_microunits) ||
++          !ReadOptionalInt64(params, "output_rate_microunits", 0,
++                             kHardRuntimeCostMicrounits,
++                             &parsed.output_rate_microunits) ||
++          !ReadOptionalBool(params, "enabled", &parsed.enabled) ||
++          !ReadOptionalBool(params, "trusted", &parsed.trusted) ||
++          !ReadOptionalBool(params, "configure_secret",
++                            &parsed.configure_secret)) {
++        return invalid();
++      }
++      if ((parsed.kind && !IsProviderKindName(*parsed.kind)) ||
++          (parsed.route_class &&
++           !IsProviderRouteClassName(*parsed.route_class))) {
++        return invalid();
++      }
++      if (parsed.endpoint) {
++        auto endpoint = CanonicalProviderEndpoint(*parsed.endpoint);
++        if (!endpoint) {
++          return invalid();
++        }
++        parsed.endpoint = std::move(*endpoint);
++      }
++      request.params = std::move(parsed);
++      break;
++    }
++    case RuntimeRouteName::kActionHistory: {
++      if (!HasOnlyKeys(params, {"task_id", "limit"})) {
++        return invalid();
++      }
++      ActionHistoryParams parsed;
++      if (!ReadOptionalString(params, "task_id", kMaxRuntimeTransportIdBytes,
++                              &parsed.task_id) ||
++          !ReadListLimit(params, &parsed.limit)) {
++        return invalid();
++      }
++      request.params = std::move(parsed);
++      break;
++    }
++    case RuntimeRouteName::kRuntimeDiagnostics:
++    case RuntimeRouteName::kGetMemoryStats: {
++      if (!params.empty()) {
++        return invalid();
++      }
++      request.params = *route_name == RuntimeRouteName::kRuntimeDiagnostics
++                           ? RuntimeTransportParams(RuntimeDiagnosticsParams())
++                           : RuntimeTransportParams(GetMemoryStatsParams());
++      break;
++    }
++    case RuntimeRouteName::kSaveMemory: {
++      if (!HasOnlyKeys(params, {"title", "text", "tags", "shared"}) ||
++          !IsBoundedString(params.Find("title"), kMaxMemoryTitleBytes) ||
++          !IsBoundedString(params.Find("text"), kMaxMemoryTextBytes)) {
++        return invalid();
++      }
++      SaveMemoryParams parsed;
++      parsed.title = *params.FindString("title");
++      parsed.text = *params.FindString("text");
++      if (!ReadTags(params, &parsed.tags)) {
++        return invalid();
++      }
++      if (const base::Value* shared = params.Find("shared")) {
++        if (!shared->is_bool()) {
++          return invalid();
++        }
++        parsed.shared = shared->GetBool();
++      }
++      request.params = std::move(parsed);
++      break;
++    }
++    case RuntimeRouteName::kSaveSiteGuide: {
++      if (!HasOnlyKeys(params, {"title", "instructions", "canonical_origin",
++                                "tags", "shared"}) ||
++          !IsBoundedString(params.Find("title"), kMaxMemoryTitleBytes) ||
++          !IsBoundedString(params.Find("instructions"), kMaxMemoryTextBytes) ||
++          !IsBoundedString(params.Find("canonical_origin"),
++                           kMaxTransportEndpointBytes)) {
++        return invalid();
++      }
++      auto origin =
++          CanonicalOrigin(*params.FindString("canonical_origin"), false);
++      if (!origin) {
++        return invalid();
++      }
++      SaveSiteGuideParams parsed;
++      parsed.title = *params.FindString("title");
++      parsed.instructions = *params.FindString("instructions");
++      parsed.canonical_origin = std::move(*origin);
++      if (!ReadTags(params, &parsed.tags)) {
++        return invalid();
++      }
++      if (const base::Value* shared = params.Find("shared")) {
++        if (!shared->is_bool()) {
++          return invalid();
++        }
++        parsed.shared = shared->GetBool();
++      }
++      request.params = std::move(parsed);
++      break;
++    }
++    case RuntimeRouteName::kCreateVaultEntry: {
++      if (!HasOnlyKeys(params, {"label", "kind", "canonical_site_origin"}) ||
++          !IsBoundedString(params.Find("label"),
++                           kMaxPrometheusVaultLabelBytes) ||
++          !IsBoundedString(params.Find("kind"), 16) ||
++          !IsBoundedString(params.Find("canonical_site_origin"),
++                           kMaxTransportEndpointBytes)) {
++        return invalid();
++      }
++      const std::string& kind = *params.FindString("kind");
++      PrometheusVaultKind parsed_kind;
++      if (kind == "credential") {
++        parsed_kind = PrometheusVaultKind::kCredential;
++      } else if (kind == "payment") {
++        parsed_kind = PrometheusVaultKind::kPayment;
++      } else {
++        return invalid();
++      }
++      auto origin =
++          CanonicalOrigin(*params.FindString("canonical_site_origin"), true);
++      if (!origin) {
++        return invalid();
++      }
++      request.params =
++          CreateVaultEntryParams{.label = *params.FindString("label"),
++                                 .kind = parsed_kind,
++                                 .canonical_site_origin = std::move(*origin)};
++      break;
++    }
++    case RuntimeRouteName::kListVaultEntries: {
++      if (!HasOnlyKeys(params, {"kind"})) {
++        return invalid();
++      }
++      ListVaultEntriesParams parsed;
++      if (const base::Value* kind = params.Find("kind")) {
++        if (!IsBoundedString(kind, 16)) {
++          return invalid();
++        }
++        if (kind->GetString() == "credential") {
++          parsed.kind = PrometheusVaultKind::kCredential;
++        } else if (kind->GetString() == "payment") {
++          parsed.kind = PrometheusVaultKind::kPayment;
++        } else {
++          return invalid();
++        }
++      }
++      request.params = std::move(parsed);
++      break;
++    }
++    case RuntimeRouteName::kVaultAutofill:
++    case RuntimeRouteName::kFillCredential:
++    case RuntimeRouteName::kUsePaymentMethod: {
++      if (!HasOnlyKeys(params, {"entry_id"}) ||
++          !IsBoundedString(params.Find("entry_id"),
++                           kMaxRuntimeTransportIdBytes)) {
++        return invalid();
++      }
++      const std::string& entry_id = *params.FindString("entry_id");
++      if (*route_name == RuntimeRouteName::kVaultAutofill) {
++        request.params = VaultAutofillParams{entry_id};
++      } else if (*route_name == RuntimeRouteName::kFillCredential) {
++        request.params = FillCredentialParams{entry_id};
++      } else {
++        request.params = UsePaymentMethodParams{entry_id};
++      }
++      break;
++    }
++    case RuntimeRouteName::kGetSessionDetail: {
++      if (!HasOnlyKeys(params, {"run_id"}) ||
++          !IsBoundedString(params.Find("run_id"),
++                           kMaxRuntimeTransportIdBytes)) {
++        return invalid();
++      }
++      request.params =
++          GetSessionDetailParams{*params.FindString("run_id")};
++      break;
++    }
++    case RuntimeRouteName::kSearchMemory: {
++      if (!HasOnlyKeys(params, {"query", "limit"}) ||
++          !IsBoundedString(params.Find("query"), kMaxMemoryQueryBytes)) {
++        return invalid();
++      }
++      SearchMemoryParams parsed;
++      parsed.query = *params.FindString("query");
++      if (!ReadListLimit(params, &parsed.limit)) {
++        return invalid();
++      }
++      request.params = std::move(parsed);
++      break;
++    }
++    case RuntimeRouteName::kGetSiteGuide: {
++      if (!HasOnlyKeys(params, {"guide_id"}) ||
++          !IsBoundedString(params.Find("guide_id"),
++                           kMaxRuntimeTransportIdBytes)) {
++        return invalid();
++      }
++      request.params =
++          GetSiteGuideParams{*params.FindString("guide_id")};
++      break;
++    }
++  }
+   return request;
+ }
+ 
+ base::expected<std::string, RuntimeTransportResult>
+ SerializeRuntimeTransportResult(const RuntimeTransportResult& result) {
++  if (!ValidOutputString(result.message, kMaxTransportMessageBytes) ||
++      !ValidOutputString(result.recovery, kMaxTransportMessageBytes)) {
++    return base::unexpected(OutputFailure(result.route_name));
++  }
+   base::DictValue root;
+   root.Set("ok", result.ok);
+-  root.Set("error_code", RuntimeTransportErrorCodeToString(result.error_code));
++  root.Set("error_code",
++           std::string(RuntimeTransportErrorCodeToString(result.error_code)));
+   root.Set("message", result.message);
+   root.Set("recovery", result.recovery);
+-  root.Set("route", RuntimeRouteNameToString(result.route_name));
+-  root.Set("result", base::DictValue());
++  root.Set("route", std::string(RuntimeRouteNameToString(result.route_name)));
++  if (result.ok) {
++    auto payload = PayloadToValue(result.payload);
++    if (!payload) {
++      return base::unexpected(OutputFailure(result.route_name));
++    }
++    root.Set("result", std::move(*payload));
++  } else {
++    root.Set("result", base::DictValue());
++  }
+   std::optional<std::string> json = base::WriteJson(root);
+   if (!json || json->size() > kMaxRuntimeTransportOutputBytes) {
+-    return base::unexpected(RuntimeTransportResult::Failure(
+-        result.route_name, RuntimeTransportErrorCode::kRequestTooLarge,
+-        "Runtime result exceeds transport bounds",
+-        "Reduce requested list or result bounds and retry"));
++    return base::unexpected(OutputFailure(result.route_name));
+   }
+   return std::move(*json);
+ }
+diff --git a/chrome/browser/prometheus/prometheus_runtime_transport_codec_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_transport_codec_unittest.cc
+index fd65d728cf..df33b5394d 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_transport_codec_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_transport_codec_unittest.cc
+@@ -204,6 +204,13 @@ TEST(PrometheusRuntimeTransportCodecTest,
+     EXPECT_EQ(std::string::npos, error.message.find("secret-sentinel"));
+     EXPECT_EQ(std::string::npos, error.recovery.find("secret-sentinel"));
+   }
++
++  RuntimeTransportResult root_error = ParseError(
++      R"({"route":"list_tasks","session_id":"browser-session",)"
++      R"("params":{"limit":20},"extra":{"token":"secret-sentinel"}})");
++  EXPECT_EQ(RuntimeTransportErrorCode::kSecretTransportBlocked,
++            root_error.error_code);
++  EXPECT_EQ(std::string::npos, root_error.message.find("secret-sentinel"));
+ }
+ 
+ TEST(PrometheusRuntimeTransportCodecTest,
+diff --git a/chrome/browser/prometheus/prometheus_vault_service.cc b/chrome/browser/prometheus/prometheus_vault_service.cc
+index 4afa8cda76..fe29c5dbfb 100644
+--- a/chrome/browser/prometheus/prometheus_vault_service.cc
++++ b/chrome/browser/prometheus/prometheus_vault_service.cc
+@@ -361,6 +361,19 @@ PrometheusVaultMetadataResult PrometheusVaultService::GetMetadata(
+   return result;
+ }
+ 
++std::vector<PrometheusVaultMetadata> PrometheusVaultService::ListMetadata(
++    std::optional<PrometheusVaultKind> kind) const {
++  std::vector<PrometheusVaultMetadata> entries;
++  entries.reserve(metadata_.size());
++  for (const auto& [entry_id, metadata] : metadata_) {
++    static_cast<void>(entry_id);
++    if (!kind || metadata.kind == *kind) {
++      entries.push_back(metadata);
++    }
++  }
++  return entries;
++}
++
+ PrometheusVaultMetadataResult PrometheusVaultService::UpdateMetadata(
+     std::string_view entry_id,
+     std::string label,
+diff --git a/chrome/browser/prometheus/prometheus_vault_service.h b/chrome/browser/prometheus/prometheus_vault_service.h
+index c8ba970763..769f374345 100644
+--- a/chrome/browser/prometheus/prometheus_vault_service.h
++++ b/chrome/browser/prometheus/prometheus_vault_service.h
+@@ -192,6 +192,8 @@ class PrometheusVaultService {
+       PrometheusVaultKind kind,
+       std::string canonical_site_origin);
+   PrometheusVaultMetadataResult GetMetadata(std::string_view entry_id) const;
++  std::vector<PrometheusVaultMetadata> ListMetadata(
++      std::optional<PrometheusVaultKind> kind = std::nullopt) const;
+   PrometheusVaultMetadataResult UpdateMetadata(
+       std::string_view entry_id,
+       std::string label,
+diff --git a/chrome/browser/prometheus/prometheus_vault_service_unittest.cc b/chrome/browser/prometheus/prometheus_vault_service_unittest.cc
+index 8242fd9562..792fd70c1f 100644
+--- a/chrome/browser/prometheus/prometheus_vault_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_vault_service_unittest.cc
+@@ -256,6 +256,11 @@ TEST_F(PrometheusVaultServiceTest, MetadataCrudBoundsAndSanitizedShape) {
+             "https://login.example");
+   EXPECT_FALSE(created.metadata->secret_configured);
+ 
++  ASSERT_EQ(1u, service_.ListMetadata().size());
++  ASSERT_EQ(1u,
++            service_.ListMetadata(PrometheusVaultKind::kCredential).size());
++  EXPECT_TRUE(service_.ListMetadata(PrometheusVaultKind::kPayment).empty());
++
+   base::ListValue snapshot = service_.GetSanitizedMetadataSnapshot();
+   ASSERT_EQ(snapshot.size(), 1u);
+   ASSERT_TRUE(snapshot.front().is_dict());
+@@ -296,6 +301,9 @@ TEST_F(PrometheusVaultServiceTest, MetadataCrudBoundsAndSanitizedShape) {
+                                     "https://payments.example")
+                 .status,
+             PrometheusVaultStatus::kLimitReached);
++  EXPECT_EQ(kMaxPrometheusVaultEntries,
++            service_.ListMetadata(PrometheusVaultKind::kPayment).size());
++  EXPECT_TRUE(service_.ListMetadata(PrometheusVaultKind::kCredential).empty());
+ }
+ 
+ TEST_F(PrometheusVaultServiceTest,
+-- 
+2.50.1 (Apple Git-155)
+
