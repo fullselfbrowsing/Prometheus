@@ -1,0 +1,241 @@
+From 9c35048823e29e95eaf4fbd151ae749abec801da Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 15:21:58 -0500
+Subject: [PATCH] test(20-08): prove real-window vault authority
+
+---
+ ...ometheus_vault_confirmation_browsertest.cc | 136 +++++++++++++-----
+ 1 file changed, 100 insertions(+), 36 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_vault_confirmation_browsertest.cc b/chrome/browser/prometheus/prometheus_vault_confirmation_browsertest.cc
+index 018afa0612..fd523e6faf 100644
+--- a/chrome/browser/prometheus/prometheus_vault_confirmation_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_vault_confirmation_browsertest.cc
+@@ -2,8 +2,6 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#include "chrome/browser/prometheus/prometheus_vault_service.h"
+-
+ #include <map>
+ #include <optional>
+ #include <string>
+@@ -15,6 +13,7 @@
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
++#include "chrome/browser/prometheus/prometheus_vault_service.h"
+ #include "chrome/browser/tab_list/tab_list_interface.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/browser_window.h"
+@@ -32,6 +31,7 @@
+ #include "net/dns/mock_host_resolver.h"
+ #include "net/test/embedded_test_server/embedded_test_server.h"
+ #include "testing/gtest/include/gtest/gtest.h"
++#include "ui/base/window_open_disposition.h"
+ #include "url/origin.h"
+ 
+ namespace prometheus {
+@@ -96,12 +96,13 @@ class PrometheusVaultConfirmationBrowserTest : public InProcessBrowserTest {
+     InProcessBrowserTest::SetUpOnMainThread();
+     host_resolver()->AddRule("*", "127.0.0.1");
+     ASSERT_TRUE(embedded_test_server()->Start());
+-    ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), PageUrl("title1.html")));
++    ASSERT_TRUE(
++        ui_test_utils::NavigateToURL(browser(), PageUrl("title1.html")));
+     browser()->window()->Activate();
+     ui_test_utils::BrowserActivationWaiter(browser()).WaitForActivation();
+ 
+-    profile_service_ =
+-        PrometheusAgentProfileServiceFactory::GetForProfile(browser()->profile());
++    profile_service_ = PrometheusAgentProfileServiceFactory::GetForProfile(
++        browser()->profile());
+     ASSERT_TRUE(profile_service_);
+     AgentSessionResult session = profile_service_->CreateSession("vault owner");
+     ASSERT_TRUE(session.session.has_value());
+@@ -109,19 +110,25 @@ class PrometheusVaultConfirmationBrowserTest : public InProcessBrowserTest {
+     ClaimCurrentTab(owner_session_);
+ 
+     now_ = base::Time::FromMillisecondsSinceUnixEpoch(200000);
++    authority_now_ = now_;
++    profile_service_->SetNowCallbackForTesting(base::BindRepeating(
++        &PrometheusVaultConfirmationBrowserTest::AuthorityNow,
++        base::Unretained(this)));
++    profile_service_->SetConfirmedVaultFieldInserterForTesting(
++        base::BindRepeating(
++            &PrometheusVaultConfirmationBrowserTest::InsertField,
++            base::Unretained(this)));
+     vault_ = std::make_unique<PrometheusVaultService>(
+         browser()->profile(), &secret_store_, profile_service_);
+     vault_->SetNowCallbackForTesting(base::BindRepeating(
+-        &PrometheusVaultConfirmationBrowserTest::Now,
+-        base::Unretained(this)));
+-    vault_->SetInsertionDelegateForTesting(base::BindRepeating(
+-        &PrometheusVaultConfirmationBrowserTest::Insert,
+-        base::Unretained(this)));
++        &PrometheusVaultConfirmationBrowserTest::Now, base::Unretained(this)));
+   }
+ 
+  protected:
+   base::Time Now() const { return now_; }
+ 
++  base::Time AuthorityNow() const { return authority_now_; }
++
+   GURL PageUrl(std::string_view file) {
+     return embedded_test_server()->GetURL("a.test", "/" + std::string(file));
+   }
+@@ -213,16 +220,19 @@ class PrometheusVaultConfirmationBrowserTest : public InProcessBrowserTest {
+     return request;
+   }
+ 
+-  void Insert(BrowserWindowInterface* exact_browser,
+-              ConfirmedVaultInsertionRequest request,
+-              PrometheusAgentService::ConfirmedVaultCallback callback) {
+-    ++insertion_count_;
++  void InsertField(BrowserWindowInterface* exact_browser,
++                   std::string_view session_id,
++                   const AgentFrameTarget& frame,
++                   std::string_view target_ref,
++                   std::string_view value,
++                   base::RepeatingCallback<void(bool)> callback) {
++    ++field_insertion_count_;
+     inserted_browser_ = exact_browser;
+-    inserted_binding_ = request.binding;
+-    ConfirmedVaultInsertionResult result;
+-    result.status = ConfirmedVaultInsertionStatus::kSuccess;
+-    result.fields_completed = request.fields.size();
+-    std::move(callback).Run(result);
++    inserted_target_refs_.emplace_back(target_ref);
++    EXPECT_EQ(session_id, owner_session_);
++    EXPECT_EQ(frame.document_token, CurrentFrameTarget().document_token);
++    EXPECT_FALSE(value.empty());
++    callback.Run(true);
+   }
+ 
+   PrometheusVaultStatus StartAndReply(PrometheusVaultUseRequest request,
+@@ -249,9 +259,10 @@ class PrometheusVaultConfirmationBrowserTest : public InProcessBrowserTest {
+   std::unique_ptr<PrometheusVaultService> vault_;
+   std::string owner_session_;
+   base::Time now_;
+-  int insertion_count_ = 0;
++  base::Time authority_now_;
++  int field_insertion_count_ = 0;
+   raw_ptr<BrowserWindowInterface> inserted_browser_ = nullptr;
+-  ConfirmedVaultTargetBinding inserted_binding_;
++  std::vector<std::string> inserted_target_refs_;
+ };
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusVaultConfirmationBrowserTest,
+@@ -293,23 +304,25 @@ IN_PROC_BROWSER_TEST_F(PrometheusVaultConfirmationBrowserTest,
+   EXPECT_EQ(missing.Get().status,
+             PrometheusVaultStatus::kNativeConfirmationUnavailable);
+   EXPECT_EQ(secret_store_.read_count, 0);
+-  EXPECT_EQ(insertion_count_, 0);
++  EXPECT_EQ(field_insertion_count_, 0);
+ 
+-  EXPECT_EQ(StartAndReply(
+-                Request(metadata.id, PrometheusVaultUseOrigin::kBrowserUi),
+-                false),
+-            PrometheusVaultStatus::kDenied);
++  EXPECT_EQ(
++      StartAndReply(Request(metadata.id, PrometheusVaultUseOrigin::kBrowserUi),
++                    false),
++      PrometheusVaultStatus::kDenied);
+   EXPECT_EQ(secret_store_.read_count, 0);
+-  EXPECT_EQ(insertion_count_, 0);
++  EXPECT_EQ(field_insertion_count_, 0);
+ 
+-  EXPECT_EQ(StartAndReply(
+-                Request(metadata.id, PrometheusVaultUseOrigin::kBrowserUi),
+-                true),
++  PrometheusVaultUseRequest accepted_request =
++      Request(metadata.id, PrometheusVaultUseOrigin::kBrowserUi);
++  const std::vector<std::string> expected_target_refs =
++      accepted_request.target_refs;
++  EXPECT_EQ(StartAndReply(std::move(accepted_request), true),
+             PrometheusVaultStatus::kSuccess);
+   EXPECT_EQ(secret_store_.read_count, 1);
+-  EXPECT_EQ(insertion_count_, 1);
++  EXPECT_EQ(field_insertion_count_, 2);
+   EXPECT_EQ(inserted_browser_, browser());
+-  EXPECT_EQ(inserted_binding_.browser, browser());
++  EXPECT_EQ(inserted_target_refs_, expected_target_refs);
+ 
+   content::WebContents* contents = ActiveTab()->GetContents();
+   EXPECT_EQ(content::EvalJs(contents, "document.body.innerText")
+@@ -360,11 +373,9 @@ IN_PROC_BROWSER_TEST_F(PrometheusVaultConfirmationBrowserTest,
+   PrometheusAgentTabData* tab_data = PrometheusAgentTabData::From(ActiveTab());
+   ASSERT_TRUE(tab_data);
+   EXPECT_TRUE(tab_data->ReleaseIfOwnedBy(owner_session_));
+-  EXPECT_TRUE(
+-      tab_data->ClaimIfUnowned(other.session->id, "other owner").ok);
++  EXPECT_TRUE(tab_data->ClaimIfUnowned(other.session->id, "other owner").ok);
+   owner_reply->Run(true);
+-  EXPECT_EQ(owner_change.Get().status,
+-            PrometheusVaultStatus::kStaleTarget);
++  EXPECT_EQ(owner_change.Get().status, PrometheusVaultStatus::kStaleTarget);
+   EXPECT_EQ(secret_store_.read_count, 0);
+ 
+   tab_data->ReleaseIfOwnedBy(other.session->id);
+@@ -449,5 +460,58 @@ IN_PROC_BROWSER_TEST_F(PrometheusVaultConfirmationBrowserTest,
+   EXPECT_NE(wrong_window.Get().status, PrometheusVaultStatus::kSuccess);
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusVaultConfirmationBrowserTest,
++                       CrossOriginAndBackgroundTabFailBeforeDecrypt) {
++  PrometheusVaultMetadata metadata = CreateConfiguredEntry();
++  ASSERT_FALSE(metadata.id.empty());
++
++  std::optional<PrometheusVaultService::NativeConfirmationReply>
++      cross_origin_reply;
++  vault_->SetNativeConfirmationDelegateForTesting(base::BindRepeating(
++      [](std::optional<PrometheusVaultService::NativeConfirmationReply>* out,
++         const PrometheusVaultConfirmationBinding&,
++         PrometheusVaultService::NativeConfirmationReply callback) {
++        *out = std::move(callback);
++      },
++      &cross_origin_reply));
++  base::test::TestFuture<PrometheusVaultUseResult> cross_origin;
++  vault_->UseEntry(Request(metadata.id, PrometheusVaultUseOrigin::kBrowserUi),
++                   cross_origin.GetCallback());
++  ASSERT_TRUE(cross_origin_reply.has_value());
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("b.test", "/title2.html")));
++  cross_origin_reply->Run(true);
++  EXPECT_EQ(cross_origin.Get().status, PrometheusVaultStatus::kStaleTarget);
++  EXPECT_EQ(secret_store_.read_count, 0);
++
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), PageUrl("title1.html")));
++  ClaimCurrentTab(owner_session_);
++  std::optional<PrometheusVaultService::NativeConfirmationReply>
++      background_reply;
++  vault_->SetNativeConfirmationDelegateForTesting(base::BindRepeating(
++      [](std::optional<PrometheusVaultService::NativeConfirmationReply>* out,
++         const PrometheusVaultConfirmationBinding&,
++         PrometheusVaultService::NativeConfirmationReply callback) {
++        *out = std::move(callback);
++      },
++      &background_reply));
++  base::test::TestFuture<PrometheusVaultUseResult> background;
++  PrometheusVaultUseRequest background_request =
++      Request(metadata.id, PrometheusVaultUseOrigin::kBrowserUi);
++  const tabs::TabHandle original_tab = background_request.target.tab_handle;
++  vault_->UseEntry(std::move(background_request), background.GetCallback());
++  ASSERT_TRUE(background_reply.has_value());
++  ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
++      browser(), PageUrl("title2.html"),
++      WindowOpenDisposition::NEW_FOREGROUND_TAB,
++      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
++  ASSERT_TRUE(ActiveTab());
++  EXPECT_NE(ActiveTab()->GetHandle(), original_tab);
++  background_reply->Run(true);
++  EXPECT_EQ(background.Get().status, PrometheusVaultStatus::kFocusLost);
++  EXPECT_EQ(secret_store_.read_count, 0);
++  EXPECT_EQ(field_insertion_count_, 0);
++}
++
+ }  // namespace
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+
