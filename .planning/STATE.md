@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 20
 current_phase_name: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
-current_plan: 9
+current_plan: 10
 status: executing
-stopped_at: Completed 20-08-PLAN.md
-last_updated: "2026-07-16T15:23:22-05:00"
+stopped_at: Completed 20-09-PLAN.md
+last_updated: "2026-07-16T22:27:40.835Z"
 last_activity: 2026-07-16
 progress:
   total_phases: 14
   completed_phases: 9
   total_plans: 66
-  completed_plans: 60
-  percent: 91
+  completed_plans: 61
+  percent: 92
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: `.planning/PROJECT.md` (updated 2026-07-13)
 **Core value:** Agents get fast, precise, auditable whole-browser control
 through DOM/native structure rather than screenshots or extension injection.
 
-**Current focus:** Execute Phase 20 Plan 9 of 14: expose the 27 closed runtime
-commands through the authenticated native gateway without weakening exact
-Browser, secret, or caller authority.
+**Current focus:** Execute Phase 20 Plan 10 of 14: map the 31 Phase 20 MCP names
+to the 27 closed native routes plus four aliases and prove built-app external
+stdio smoke without adding an alternate runtime.
 
 **Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
 external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
@@ -37,22 +37,26 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 20 (FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel) — EXECUTING
-Plan: 9 of 14
+Plan: 10 of 14
 **Current Phase:** 20
 **Current Phase Name:** FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
 **Total Phases:** 14
 **Completed Phases:** 9
-**Current Plan:** 9
+**Current Plan:** 10
 **Total Plans in Phase:** 14
 **Status:** Ready to execute
-**Progress:** [█████████░] 91%
+**Progress:** [█████████░] 92%
 **Last Activity:** 2026-07-16
-**Last Activity Description:** Completed Phase 20 Plan 8 native vault metadata, private exact-window insertion authority, and fail-closed confirmation races
+**Last Activity Description:** Completed Phase 20 Plan 9 authenticated 27-command runtime gateway, caller isolation, provider mutation denial, and live health
 
-Milestone work is 60 of 66 plans complete (91%); cumulative project work is
-111 of 117 existing plans summarized (95%).
+Milestone work is 61 of 66 plans complete (92%); cumulative project work is
+112 of 117 existing plans summarized (96%).
 
 ## Latest Evidence
+
+- Phase 20 Plan 9: exact guards select 8 runtime-codec, 13 gateway, and 16
+  existing Agent-transport cases; the combined regression is 37/37 green and
+  the real native health endpoint returns exactly ten sanitized components.
 
 - Phase 20 Plan 8: exact list guards select 7 Vault, 5 confirmed-Agent, 11
   SecretStore, and 5 browser cases; focused units are 23/23 green and serial
@@ -82,9 +86,6 @@ Milestone work is 60 of 66 plans complete (91%); cumulative project work is
 
 - Phase 20 Plan 2: all 12 store and 13 foundation tests pass; task state,
   structured evidence, safe results, usage, races, and restart repair are bounded.
-
-- Phase 20 Plan 1: 13/13 runtime contract/policy tests pass; prefs are local,
-  non-syncable, versioned, clamped, and native-boundary locked.
 
 - Human UAT was not run; remaining visual review stays non-blocking in Phase 24.
 
@@ -116,6 +117,9 @@ Milestone work is 60 of 66 plans complete (91%); cumulative project work is
 | 20 | Keep confirmed vault insertion as a move-only C++-only Agent authority method with no Agent/runtime route, transport schema, catalog entry, or model tool. |
 | 20 | Bind vault confirmation to the exact Browser/profile/window/tab/owner/origin/frame/document/refs/focus and revalidate before decrypt, before insertion, and before every typed field. |
 | 20 | Give MCP only a short-lived one-use identical-retry approval; no approval token or secret crosses the response. |
+| 20 | Keep the 27 native runtime commands in a separate closed codec and derive profile, Browser, tab, and caller only from a browser-issued session binding. |
+| 20 | Deny external provider mutation at both the gateway and runtime service while preserving bounded read-only config, discovery, and diagnostics. |
+| 20 | Let RuntimeProfileService own the shared vault/secret state and publish exact ten-key health from live sanitized provider/vault owners. |
 
 ## Performance Metrics
 
@@ -125,6 +129,7 @@ Milestone work is 60 of 66 plans complete (91%); cumulative project work is
 | Phase 20 P06 | 25min | 2 tasks | 17 files |
 | Phase 20 P07 | 9h11min | 4 tasks | 19 files |
 | Phase 20 P08 | 1h16min | 3 tasks | 18 files |
+| Phase 20 P09 | 2h | 3 tasks | 20 files |
 
 ## Blockers and Deferred Items
 
@@ -134,11 +139,11 @@ Milestone work is 60 of 66 plans complete (91%); cumulative project work is
 
 ## Session
 
-**Last Date:** 2026-07-16T15:23:22-05:00
-**Stopped At:** Completed 20-08-PLAN.md
+**Last Date:** 2026-07-16T22:27:40.831Z
+**Stopped At:** Completed 20-09-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute Phase 20 Plan 9, then continue Plans 10-14 with mandatory automated
+Execute Phase 20 Plan 10, then continue Plans 11-14 with mandatory automated
 gates. Do not run human UAT.
