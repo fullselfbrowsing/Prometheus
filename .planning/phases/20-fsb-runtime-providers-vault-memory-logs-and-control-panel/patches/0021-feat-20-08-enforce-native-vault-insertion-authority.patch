@@ -1,0 +1,1652 @@
+From c36513b1fde1eed258f7d17fa27dd801180671cd Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 15:12:35 -0500
+Subject: [PATCH] feat(20-08): enforce native vault insertion authority
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   3 +-
+ .../prometheus/prometheus_agent_service.cc    | 426 +++++++++-
+ .../prometheus/prometheus_agent_service.h     |  40 +-
+ .../prometheus/prometheus_vault_service.cc    | 777 ++++++++++++++++--
+ .../prometheus/prometheus_vault_service.h     |  40 +-
+ 5 files changed, 1133 insertions(+), 153 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 2ce81dab3b..f43a3bddef 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -212,6 +212,7 @@ source_set("prometheus_agent_service") {
+     "//chrome/browser/ui",
+     "//chrome/browser/ui/browser_window",
+     "//chrome/browser/ui/views/prometheus:side_panel",
++    "//components/optimization_guide/content/browser",
+     "//components/sessions:session_id",
+     "//components/tabs:public",
+     "//content/public/browser",
+@@ -474,8 +475,8 @@ test("prometheus_unittests") {
+     "prometheus_agent_audit_unittest.cc",
+     "prometheus_agent_gateway_unittest.cc",
+     "prometheus_agent_route_unittest.cc",
+-    "prometheus_agent_session_unittest.cc",
+     "prometheus_agent_service_unittest.cc",
++    "prometheus_agent_session_unittest.cc",
+     "prometheus_agent_tab_data_unittest.cc",
+     "prometheus_agent_transport_unittest.cc",
+     "prometheus_asset_resource_unittest.cc",
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.cc b/chrome/browser/prometheus/prometheus_agent_service.cc
+index c4f7d7881b..70988235ff 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service.cc
+@@ -5,6 +5,7 @@
+ #include "chrome/browser/prometheus/prometheus_agent_service.h"
+ 
+ #include <optional>
++#include <set>
+ #include <string>
+ #include <utility>
+ #include <vector>
+@@ -25,23 +26,27 @@
+ #include "chrome/browser/ui/side_panel/side_panel_enums.h"
+ #include "chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.h"
+ #include "chrome/common/webui_url_constants.h"
++#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
++#include "components/optimization_guide/content/browser/page_content_proto_util.h"
+ #include "components/sessions/core/session_id.h"
+ #include "content/public/browser/navigation_controller.h"
+ #include "content/public/browser/page_navigator.h"
++#include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/render_process_host.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/common/referrer.h"
+ #include "crypto/secure_util.h"
+ #include "ui/base/page_transition_types.h"
+ #include "ui/base/window_open_disposition.h"
+ #include "url/gurl.h"
++#include "url/origin.h"
+ 
+ namespace prometheus {
+ 
+ ScopedSensitiveVaultValue::ScopedSensitiveVaultValue() = default;
+ 
+-ScopedSensitiveVaultValue::ScopedSensitiveVaultValue(
+-    std::string value,
+-    WipeCallback wipe_callback)
++ScopedSensitiveVaultValue::ScopedSensitiveVaultValue(std::string value,
++                                                     WipeCallback wipe_callback)
+     : value_(std::move(value)), wipe_callback_(std::move(wipe_callback)) {}
+ 
+ ScopedSensitiveVaultValue::ScopedSensitiveVaultValue(
+@@ -78,8 +83,8 @@ ConfirmedVaultFieldValue::ConfirmedVaultFieldValue(
+     ScopedSensitiveVaultValue value)
+     : target_ref(std::move(target_ref)), value(std::move(value)) {}
+ 
+-ConfirmedVaultFieldValue::ConfirmedVaultFieldValue(
+-    ConfirmedVaultFieldValue&&) = default;
++ConfirmedVaultFieldValue::ConfirmedVaultFieldValue(ConfirmedVaultFieldValue&&) =
++    default;
+ ConfirmedVaultFieldValue& ConfirmedVaultFieldValue::operator=(
+     ConfirmedVaultFieldValue&&) = default;
+ ConfirmedVaultFieldValue::~ConfirmedVaultFieldValue() = default;
+@@ -96,13 +101,82 @@ std::optional<ConfirmedVaultTargetBinding> CaptureConfirmedVaultTarget(
+     const AgentTarget& target,
+     const AgentFrameTarget& frame,
+     const std::vector<std::string>& target_refs) {
+-  (void)exact_browser;
+-  (void)target;
+-  (void)frame;
+-  (void)target_refs;
+-  // Intentionally inert for the Task 1 RED checkpoint. Task 2 supplies the
+-  // exact Browser/tab/profile/origin/frame/document/ref inspection.
+-  return std::nullopt;
++  constexpr size_t kMaxConfirmedVaultRefs = 8;
++  constexpr size_t kMaxConfirmedVaultRefBytes = 4096;
++  if (!exact_browser || exact_browser->IsDeleteScheduled() ||
++      !target.window_session_id.has_value() ||
++      *target.window_session_id != exact_browser->GetSessionID().id() ||
++      (target.browser_session_id.has_value() &&
++       *target.browser_session_id != exact_browser->GetSessionID().id()) ||
++      target.tab_handle.raw_value() == tabs::TabHandle::NullValue ||
++      !frame.document_token.has_value() || frame.document_token->empty() ||
++      !frame.render_process_id.has_value() ||
++      !frame.render_frame_routing_id.has_value() || target_refs.empty() ||
++      target_refs.size() > kMaxConfirmedVaultRefs) {
++    return std::nullopt;
++  }
++
++  TabListInterface* tab_list = TabListInterface::From(exact_browser);
++  tabs::TabInterface* tab = target.tab_handle.Get();
++  if (!tab_list || !tab || tab->GetBrowserWindowInterface() != exact_browser) {
++    return std::nullopt;
++  }
++  const int tab_index = tab_list->GetIndexOfTab(target.tab_handle);
++  if (tab_index < 0 ||
++      (target.tab_index.has_value() && *target.tab_index != tab_index)) {
++    return std::nullopt;
++  }
++
++  PrometheusAgentTabData* tab_data = PrometheusAgentTabData::From(tab);
++  content::WebContents* web_contents = tab->GetContents();
++  if (!tab_data || tab_data->owner_session_id().empty() || !web_contents) {
++    return std::nullopt;
++  }
++  content::RenderFrameHost* render_frame =
++      optimization_guide::GetRenderFrameForDocumentIdentifier(
++          *web_contents, *frame.document_token);
++  if (!render_frame || !render_frame->IsActive() ||
++      !render_frame->IsRenderFrameLive() ||
++      render_frame->GetProcess()->GetDeprecatedID() !=
++          *frame.render_process_id ||
++      render_frame->GetRoutingID() != *frame.render_frame_routing_id) {
++    return std::nullopt;
++  }
++  std::optional<std::string> live_document =
++      optimization_guide::DocumentIdentifierUserData::GetDocumentIdentifier(
++          render_frame->GetGlobalFrameToken());
++  if (!live_document.has_value() || *live_document != *frame.document_token) {
++    return std::nullopt;
++  }
++
++  const url::Origin origin = render_frame->GetLastCommittedOrigin();
++  if (origin.opaque() || !origin.GetURL().SchemeIsHTTPOrHTTPS()) {
++    return std::nullopt;
++  }
++  std::set<std::string_view> unique_refs;
++  const std::string ref_prefix = *frame.document_token + ":";
++  for (const std::string& target_ref : target_refs) {
++    if (target_ref.empty() || target_ref.size() > kMaxConfirmedVaultRefBytes ||
++        !target_ref.starts_with(ref_prefix) ||
++        !unique_refs.insert(target_ref).second) {
++      return std::nullopt;
++    }
++  }
++
++  ConfirmedVaultTargetBinding binding;
++  binding.profile = exact_browser->GetProfile();
++  binding.browser = exact_browser;
++  binding.window_session_id = exact_browser->GetSessionID().id();
++  binding.tab_handle = tab->GetHandle();
++  binding.owner_session_id = std::string(tab_data->owner_session_id());
++  binding.canonical_origin = origin.Serialize();
++  binding.frame_token = std::to_string(*frame.render_process_id) + ":" +
++                        std::to_string(*frame.render_frame_routing_id);
++  binding.document_token = *frame.document_token;
++  binding.target_refs = target_refs;
++  binding.focused =
++      exact_browser->IsActive() && tab_list->GetActiveTab() == tab;
++  return binding;
+ }
+ 
+ namespace {
+@@ -111,6 +185,73 @@ bool IsNullTabHandle(tabs::TabHandle handle) {
+   return handle.raw_value() == tabs::TabHandle::NullValue;
+ }
+ 
++constexpr size_t kMaxConfirmedVaultFields = 8;
++constexpr size_t kMaxConfirmedVaultSessionIdBytes = 256;
++constexpr size_t kMaxConfirmedVaultTargetRefBytes = 4096;
++
++std::vector<std::string> ConfirmedVaultFieldRefs(
++    const ConfirmedVaultInsertionRequest& request) {
++  std::vector<std::string> refs;
++  refs.reserve(request.fields.size());
++  for (const ConfirmedVaultFieldValue& field : request.fields) {
++    refs.push_back(field.target_ref);
++  }
++  return refs;
++}
++
++bool ConfirmedVaultRequestHasValidShape(
++    BrowserWindowInterface* exact_browser,
++    const ConfirmedVaultInsertionRequest& request) {
++  if (!exact_browser || request.binding.browser != exact_browser ||
++      !request.binding.profile || !request.binding.focused ||
++      request.session_id.empty() ||
++      request.session_id.size() > kMaxConfirmedVaultSessionIdBytes ||
++      request.session_id != request.binding.owner_session_id ||
++      request.generation == 0 || request.expires_at.is_null() ||
++      !request.target.window_session_id.has_value() ||
++      *request.target.window_session_id != request.binding.window_session_id ||
++      (request.target.browser_session_id.has_value() &&
++       *request.target.browser_session_id !=
++           request.binding.window_session_id) ||
++      request.target.tab_handle != request.binding.tab_handle ||
++      !request.frame.document_token.has_value() ||
++      *request.frame.document_token != request.binding.document_token ||
++      !request.frame.render_process_id.has_value() ||
++      !request.frame.render_frame_routing_id.has_value() ||
++      request.binding.frame_token !=
++          std::to_string(*request.frame.render_process_id) + ":" +
++              std::to_string(*request.frame.render_frame_routing_id) ||
++      request.fields.empty() ||
++      request.fields.size() > kMaxConfirmedVaultFields ||
++      request.binding.target_refs != ConfirmedVaultFieldRefs(request)) {
++    return false;
++  }
++  std::set<std::string_view> refs;
++  for (const ConfirmedVaultFieldValue& field : request.fields) {
++    if (field.target_ref.empty() ||
++        field.target_ref.size() > kMaxConfirmedVaultTargetRefBytes ||
++        field.value.empty() || !refs.insert(field.target_ref).second) {
++      return false;
++    }
++  }
++  return true;
++}
++
++ConfirmedVaultInsertionStatus RevalidatedVaultTargetStatus(
++    const ConfirmedVaultTargetBinding& expected,
++    const std::optional<ConfirmedVaultTargetBinding>& current) {
++  if (!current.has_value()) {
++    return ConfirmedVaultInsertionStatus::kStaleTarget;
++  }
++  if (!current->focused) {
++    return ConfirmedVaultInsertionStatus::kFocusLost;
++  }
++  if (*current != expected) {
++    return ConfirmedVaultInsertionStatus::kStaleTarget;
++  }
++  return ConfirmedVaultInsertionStatus::kSuccess;
++}
++
+ AgentRouteResult InvalidTarget(std::string message) {
+   return AgentRouteResult::Failure(AgentErrorCode::kInvalidTarget,
+                                    std::move(message),
+@@ -257,7 +398,22 @@ struct PrometheusAgentService::OwnedTabData {
+   base::CallbackListSubscription will_detach_subscription;
+ };
+ 
+-struct PrometheusAgentService::ConfirmedVaultOperation {};
++struct PrometheusAgentService::ConfirmedVaultOperation {
++  ConfirmedVaultOperation(BrowserWindowInterface* exact_browser,
++                          ConfirmedVaultInsertionRequest request,
++                          ConfirmedVaultCallback callback)
++      : exact_browser(exact_browser),
++        request(std::move(request)),
++        callback(std::move(callback)) {}
++
++  raw_ptr<BrowserWindowInterface> exact_browser;
++  ConfirmedVaultInsertionRequest request;
++  ConfirmedVaultCallback callback;
++  size_t next_field_index = 0;
++  size_t fields_completed = 0;
++  bool awaiting_field_callback = false;
++  uint64_t dispatch_serial = 0;
++};
+ 
+ PrometheusAgentService::PrometheusAgentService(
+     AgentSessionRegistry* session_registry)
+@@ -274,7 +430,12 @@ PrometheusAgentService::PrometheusAgentService(
+   CHECK(now_callback_);
+ }
+ 
+-PrometheusAgentService::~PrometheusAgentService() = default;
++PrometheusAgentService::~PrometheusAgentService() {
++  while (!confirmed_vault_operations_.empty()) {
++    FinishConfirmedVaultInsertion(confirmed_vault_operations_.begin()->first,
++                                  ConfirmedVaultInsertionStatus::kCancelled);
++  }
++}
+ 
+ AgentSessionResult PrometheusAgentService::CreateSession(
+     std::string display_label) {
+@@ -292,6 +453,16 @@ AgentRouteResult PrometheusAgentService::CloseSession(
+ 
+ void PrometheusAgentService::ReleaseSessionOwnership(
+     std::string_view session_id) {
++  std::vector<uint64_t> cancelled_operations;
++  for (const auto& [operation_id, operation] : confirmed_vault_operations_) {
++    if (operation->request.session_id == session_id) {
++      cancelled_operations.push_back(operation_id);
++    }
++  }
++  for (uint64_t operation_id : cancelled_operations) {
++    FinishConfirmedVaultInsertion(operation_id,
++                                  ConfirmedVaultInsertionStatus::kUnauthorized);
++  }
+   for (auto& entry : tab_data_) {
+     entry.second->data->ReleaseIfOwnedBy(session_id);
+   }
+@@ -311,12 +482,65 @@ void PrometheusAgentService::ExecuteConfirmedVaultInsertion(
+     BrowserWindowInterface* exact_browser,
+     ConfirmedVaultInsertionRequest request,
+     ConfirmedVaultCallback callback) {
+-  (void)exact_browser;
+-  (void)request;
+-  (void)next_confirmed_vault_operation_id_;
+-  ConfirmedVaultInsertionResult result;
+-  result.status = ConfirmedVaultInsertionStatus::kUnavailable;
+-  std::move(callback).Run(result);
++  const base::Time timestamp = Now();
++  const size_t field_count = request.fields.size();
++  const uint64_t generation = request.generation;
++  auto fail = [&](ConfirmedVaultInsertionStatus status) {
++    RecordConfirmedVaultAudit(status, field_count, generation, timestamp);
++    ConfirmedVaultInsertionResult result;
++    result.status = status;
++    std::move(callback).Run(result);
++  };
++
++  if (!ConfirmedVaultRequestHasValidShape(exact_browser, request)) {
++    fail(ConfirmedVaultInsertionStatus::kInvalidRequest);
++    return;
++  }
++  if (timestamp > request.expires_at) {
++    fail(ConfirmedVaultInsertionStatus::kExpired);
++    return;
++  }
++  AgentSessionResult session_result =
++      session_registry_->ValidateSession(request.session_id, timestamp);
++  if (!session_result.route_result.ok || !session_result.session.has_value() ||
++      session_result.session->id != request.binding.owner_session_id) {
++    fail(ConfirmedVaultInsertionStatus::kUnauthorized);
++    return;
++  }
++  const std::pair<std::string, uint64_t> replay_key(request.session_id,
++                                                    request.generation);
++  if (consumed_confirmed_vault_requests_.contains(replay_key)) {
++    fail(ConfirmedVaultInsertionStatus::kReplay);
++    return;
++  }
++
++  const ConfirmedVaultTargetInspector& inspector =
++      confirmed_vault_target_inspector_
++          ? confirmed_vault_target_inspector_
++          : base::BindRepeating(&CaptureConfirmedVaultTarget);
++  const ConfirmedVaultInsertionStatus target_status =
++      RevalidatedVaultTargetStatus(
++          request.binding,
++          inspector.Run(exact_browser, request.target, request.frame,
++                        request.binding.target_refs));
++  if (target_status != ConfirmedVaultInsertionStatus::kSuccess) {
++    fail(target_status);
++    return;
++  }
++  AgentRouteResult touch_result =
++      session_registry_->TouchSession(request.session_id, Now());
++  if (!touch_result.ok) {
++    fail(ConfirmedVaultInsertionStatus::kUnauthorized);
++    return;
++  }
++
++  consumed_confirmed_vault_requests_.insert(replay_key);
++  const uint64_t operation_id = ++next_confirmed_vault_operation_id_;
++  confirmed_vault_operations_.emplace(
++      operation_id,
++      std::make_unique<ConfirmedVaultOperation>(
++          exact_browser, std::move(request), std::move(callback)));
++  ContinueConfirmedVaultInsertion(operation_id);
+ }
+ 
+ void PrometheusAgentService::SetConfirmedVaultTargetInspectorForTesting(
+@@ -331,21 +555,154 @@ void PrometheusAgentService::SetConfirmedVaultFieldInserterForTesting(
+ 
+ void PrometheusAgentService::ContinueConfirmedVaultInsertion(
+     uint64_t operation_id) {
+-  (void)operation_id;
++  auto operation_it = confirmed_vault_operations_.find(operation_id);
++  if (operation_it == confirmed_vault_operations_.end()) {
++    return;
++  }
++  ConfirmedVaultOperation& operation = *operation_it->second;
++  if (operation.awaiting_field_callback) {
++    return;
++  }
++  if (operation.next_field_index >= operation.request.fields.size()) {
++    FinishConfirmedVaultInsertion(operation_id,
++                                  ConfirmedVaultInsertionStatus::kSuccess);
++    return;
++  }
++  if (Now() > operation.request.expires_at) {
++    FinishConfirmedVaultInsertion(operation_id,
++                                  ConfirmedVaultInsertionStatus::kExpired);
++    return;
++  }
++  AgentSessionResult session_result =
++      session_registry_->ValidateSession(operation.request.session_id, Now());
++  if (!session_result.route_result.ok || !session_result.session.has_value() ||
++      session_result.session->id !=
++          operation.request.binding.owner_session_id) {
++    FinishConfirmedVaultInsertion(operation_id,
++                                  ConfirmedVaultInsertionStatus::kUnauthorized);
++    return;
++  }
++
++  const ConfirmedVaultTargetInspector& inspector =
++      confirmed_vault_target_inspector_
++          ? confirmed_vault_target_inspector_
++          : base::BindRepeating(&CaptureConfirmedVaultTarget);
++  const ConfirmedVaultInsertionStatus target_status =
++      RevalidatedVaultTargetStatus(
++          operation.request.binding,
++          inspector.Run(operation.exact_browser, operation.request.target,
++                        operation.request.frame,
++                        operation.request.binding.target_refs));
++  if (target_status != ConfirmedVaultInsertionStatus::kSuccess) {
++    FinishConfirmedVaultInsertion(operation_id, target_status);
++    return;
++  }
++
++  const size_t field_index = operation.next_field_index;
++  const uint64_t dispatch_serial = ++operation.dispatch_serial;
++  operation.awaiting_field_callback = true;
++  ConfirmedVaultFieldValue& field = operation.request.fields[field_index];
++  auto field_callback = base::BindRepeating(
++      &PrometheusAgentService::OnConfirmedVaultFieldInserted,
++      weak_factory_.GetWeakPtr(), operation_id, field_index, dispatch_serial);
++  if (confirmed_vault_field_inserter_) {
++    confirmed_vault_field_inserter_.Run(
++        operation.exact_browser, operation.request.session_id,
++        operation.request.frame, field.target_ref, field.value.value(),
++        std::move(field_callback));
++    return;
++  }
++
++  ResolvedTarget resolved;
++  AgentRouteResult resolved_result =
++      ResolveTarget(operation.exact_browser, operation.request.target,
++                    /*require_tab=*/true, &resolved);
++  if (!resolved_result.ok || !resolved.tab) {
++    operation.awaiting_field_callback = false;
++    FinishConfirmedVaultInsertion(operation_id,
++                                  ConfirmedVaultInsertionStatus::kStaleTarget);
++    return;
++  }
++
++  AgentRouteRequest action;
++  action.route_name = AgentRouteName::kTypeText;
++  action.session_id = operation.request.session_id;
++  action.target = operation.request.target;
++  action.page_request.emplace();
++  action.page_request->action.frame = operation.request.frame;
++  action.page_request->action.element.element_ref = field.target_ref;
++  action.page_request->action.text = std::string(field.value.value());
++  action.page_request->verify_mutation = true;
++  page_adapter_->Execute(
++      action, operation.exact_browser, resolved.tab, *session_result.session,
++      base::BindOnce([](base::RepeatingCallback<void(bool)> callback,
++                        AgentRouteResult result) { callback.Run(result.ok); },
++                     std::move(field_callback)));
++  std::string& transient_text = *action.page_request->action.text;
++  crypto::SecureZeroBuffer(base::as_writable_byte_span(transient_text));
++  transient_text.clear();
+ }
+ 
+ void PrometheusAgentService::OnConfirmedVaultFieldInserted(
+     uint64_t operation_id,
++    size_t expected_field_index,
++    uint64_t dispatch_serial,
+     bool success) {
+-  (void)operation_id;
+-  (void)success;
++  auto operation_it = confirmed_vault_operations_.find(operation_id);
++  if (operation_it == confirmed_vault_operations_.end()) {
++    return;
++  }
++  ConfirmedVaultOperation& operation = *operation_it->second;
++  if (!operation.awaiting_field_callback ||
++      operation.next_field_index != expected_field_index ||
++      operation.dispatch_serial != dispatch_serial) {
++    return;
++  }
++  operation.awaiting_field_callback = false;
++  if (!success) {
++    FinishConfirmedVaultInsertion(operation_id,
++                                  ConfirmedVaultInsertionStatus::kFieldFailed);
++    return;
++  }
++  ++operation.fields_completed;
++  ++operation.next_field_index;
++  ContinueConfirmedVaultInsertion(operation_id);
+ }
+ 
+ void PrometheusAgentService::FinishConfirmedVaultInsertion(
+     uint64_t operation_id,
+     ConfirmedVaultInsertionStatus status) {
+-  (void)operation_id;
+-  (void)status;
++  auto operation_it = confirmed_vault_operations_.find(operation_id);
++  if (operation_it == confirmed_vault_operations_.end()) {
++    return;
++  }
++  std::unique_ptr<ConfirmedVaultOperation> operation =
++      std::move(operation_it->second);
++  confirmed_vault_operations_.erase(operation_it);
++  const size_t fields_completed = operation->fields_completed;
++  const size_t field_count = operation->request.fields.size();
++  const uint64_t generation = operation->request.generation;
++  ConfirmedVaultCallback callback = std::move(operation->callback);
++  operation.reset();
++
++  RecordConfirmedVaultAudit(status, field_count, generation, Now());
++  ConfirmedVaultInsertionResult result;
++  result.status = status;
++  result.fields_completed = fields_completed;
++  std::move(callback).Run(result);
++}
++
++void PrometheusAgentService::RecordConfirmedVaultAudit(
++    ConfirmedVaultInsertionStatus status,
++    size_t field_count,
++    uint64_t generation,
++    base::Time timestamp) {
++  ConfirmedVaultAuditRecord record;
++  record.status = status;
++  record.field_count = field_count;
++  record.generation = generation;
++  record.timestamp = timestamp;
++  confirmed_vault_audit_.push_back(std::move(record));
+ }
+ 
+ AgentRouteResult PrometheusAgentService::ExecuteRouteSynchronously(
+@@ -375,8 +732,7 @@ AgentRouteResult PrometheusAgentService::ExecuteRouteSynchronously(
+       if (!resolved_result.ok) {
+         return FinishRoute(request, timestamp, started_at, resolved_result);
+       }
+-      AgentRouteResult result =
+-          SuccessForTarget({}, resolved.browser, nullptr);
++      AgentRouteResult result = SuccessForTarget({}, resolved.browser, nullptr);
+       result.tabs = BuildTabMetadata(resolved.tab_list, request.session_id);
+       return FinishRoute(request, timestamp, started_at, std::move(result));
+     }
+@@ -615,9 +971,8 @@ AgentRouteResult PrometheusAgentService::ExecuteRouteSynchronously(
+                   GURL(chrome::kChromeUIPrometheusNewTabURL),
+                   "prometheus_new_tab_opened", *session_result.session));
+         case AgentInternalSurface::kSidePanel:
+-          return FinishRoute(
+-              request, timestamp, started_at,
+-              OpenPrometheusSidePanel(browser, request.target));
++          return FinishRoute(request, timestamp, started_at,
++                             OpenPrometheusSidePanel(browser, request.target));
+         case AgentInternalSurface::kControlPanel:
+           return FinishRoute(
+               request, timestamp, started_at,
+@@ -626,12 +981,11 @@ AgentRouteResult PrometheusAgentService::ExecuteRouteSynchronously(
+                   GURL(chrome::kChromeUIPrometheusControlPanelURL),
+                   "prometheus_control_panel_opened", *session_result.session));
+       }
+-      return FinishRoute(
+-          request, timestamp, started_at,
+-          AgentRouteResult::Failure(
+-              AgentErrorCode::kInvalidPageInput,
+-              "Unsupported Prometheus internal surface",
+-              "Choose new_tab, side_panel, or control_panel"));
++      return FinishRoute(request, timestamp, started_at,
++                         AgentRouteResult::Failure(
++                             AgentErrorCode::kInvalidPageInput,
++                             "Unsupported Prometheus internal surface",
++                             "Choose new_tab, side_panel, or control_panel"));
+     case AgentRouteName::kDiagnostics:
+       return FinishRoute(request, timestamp, started_at,
+                          NativeRouteNotReady(request.route_name));
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.h b/chrome/browser/prometheus/prometheus_agent_service.h
+index 5aa4a2b0e1..193f152252 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_service.h
+@@ -105,8 +105,7 @@ std::optional<ConfirmedVaultTargetBinding> CaptureConfirmedVaultTarget(
+ struct ConfirmedVaultInsertionRequest {
+   ConfirmedVaultInsertionRequest();
+   ConfirmedVaultInsertionRequest(ConfirmedVaultInsertionRequest&&);
+-  ConfirmedVaultInsertionRequest& operator=(
+-      ConfirmedVaultInsertionRequest&&);
++  ConfirmedVaultInsertionRequest& operator=(ConfirmedVaultInsertionRequest&&);
+   ConfirmedVaultInsertionRequest(const ConfirmedVaultInsertionRequest&) =
+       delete;
+   ConfirmedVaultInsertionRequest& operator=(
+@@ -158,19 +157,19 @@ class PrometheusAgentService {
+   using RouteCallback = base::OnceCallback<void(AgentRouteResult)>;
+   using ConfirmedVaultCallback =
+       base::OnceCallback<void(ConfirmedVaultInsertionResult)>;
+-  using ConfirmedVaultTargetInspector = base::RepeatingCallback<
+-      std::optional<ConfirmedVaultTargetBinding>(
++  using ConfirmedVaultTargetInspector =
++      base::RepeatingCallback<std::optional<ConfirmedVaultTargetBinding>(
+           BrowserWindowInterface*,
+           const AgentTarget&,
+           const AgentFrameTarget&,
+           const std::vector<std::string>&)>;
+-  using ConfirmedVaultFieldInserter = base::RepeatingCallback<void(
+-      BrowserWindowInterface*,
+-      std::string_view,
+-      const AgentFrameTarget&,
+-      std::string_view,
+-      std::string_view,
+-      base::RepeatingCallback<void(bool)>)>;
++  using ConfirmedVaultFieldInserter =
++      base::RepeatingCallback<void(BrowserWindowInterface*,
++                                   std::string_view,
++                                   const AgentFrameTarget&,
++                                   std::string_view,
++                                   std::string_view,
++                                   base::RepeatingCallback<void(bool)>)>;
+ 
+   explicit PrometheusAgentService(AgentSessionRegistry* session_registry);
+   PrometheusAgentService(AgentSessionRegistry* session_registry,
+@@ -185,10 +184,9 @@ class PrometheusAgentService {
+   void ExecuteRoute(BrowserWindowInterface* browser,
+                     const AgentRouteRequest& request,
+                     RouteCallback callback);
+-  void ExecuteConfirmedVaultInsertion(
+-      BrowserWindowInterface* exact_browser,
+-      ConfirmedVaultInsertionRequest request,
+-      ConfirmedVaultCallback callback);
++  void ExecuteConfirmedVaultInsertion(BrowserWindowInterface* exact_browser,
++                                      ConfirmedVaultInsertionRequest request,
++                                      ConfirmedVaultCallback callback);
+   const AgentRouteAuditLog& audit_log_for_testing() const { return audit_log_; }
+   const std::vector<ConfirmedVaultAuditRecord>&
+   confirmed_vault_audit_for_testing() const {
+@@ -249,9 +247,16 @@ class PrometheusAgentService {
+                    const AgentRouteResult& result,
+                    base::Time timestamp);
+   void ContinueConfirmedVaultInsertion(uint64_t operation_id);
+-  void OnConfirmedVaultFieldInserted(uint64_t operation_id, bool success);
++  void OnConfirmedVaultFieldInserted(uint64_t operation_id,
++                                     size_t expected_field_index,
++                                     uint64_t dispatch_serial,
++                                     bool success);
+   void FinishConfirmedVaultInsertion(uint64_t operation_id,
+                                      ConfirmedVaultInsertionStatus status);
++  void RecordConfirmedVaultAudit(ConfirmedVaultInsertionStatus status,
++                                 size_t field_count,
++                                 uint64_t generation,
++                                 base::Time timestamp);
+ 
+   raw_ptr<AgentSessionRegistry> session_registry_;
+   NowCallback now_callback_;
+@@ -264,8 +269,7 @@ class PrometheusAgentService {
+   uint64_t next_confirmed_vault_operation_id_ = 0;
+   std::map<uint64_t, std::unique_ptr<ConfirmedVaultOperation>>
+       confirmed_vault_operations_;
+-  std::set<std::pair<std::string, uint64_t>>
+-      consumed_confirmed_vault_requests_;
++  std::set<std::pair<std::string, uint64_t>> consumed_confirmed_vault_requests_;
+   base::WeakPtrFactory<PrometheusAgentService> weak_factory_{this};
+ };
+ 
+diff --git a/chrome/browser/prometheus/prometheus_vault_service.cc b/chrome/browser/prometheus/prometheus_vault_service.cc
+index da69c20d39..4afa8cda76 100644
+--- a/chrome/browser/prometheus/prometheus_vault_service.cc
++++ b/chrome/browser/prometheus/prometheus_vault_service.cc
+@@ -4,27 +4,208 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_vault_service.h"
+ 
++#include <algorithm>
++#include <limits>
++#include <set>
+ #include <utility>
+ 
+ #include "base/check.h"
+ #include "base/functional/bind.h"
++#include "base/functional/callback_helpers.h"
++#include "base/json/json_reader.h"
++#include "base/json/json_writer.h"
++#include "base/numerics/safe_conversions.h"
++#include "base/strings/string_util.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
++#include "url/gurl.h"
++#include "url/origin.h"
+ 
+ namespace prometheus {
+ 
++namespace {
++
++constexpr char kVaultIdPrefix[] = "vault-";
++constexpr char kVaultCredentialOwnerKind[] = "vault_credential";
++constexpr char kVaultPaymentOwnerKind[] = "vault_payment";
++
++std::optional<std::string> CanonicalSiteOrigin(std::string_view input) {
++  if (input.empty() || input.size() > kMaxPrometheusSecretBindingUrlBytes ||
++      !base::IsStringUTF8(input)) {
++    return std::nullopt;
++  }
++  const GURL url(input);
++  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS() || url.host().empty() ||
++      url.has_username() || url.has_password()) {
++    return std::nullopt;
++  }
++  const url::Origin origin = url::Origin::Create(url);
++  if (origin.opaque()) {
++    return std::nullopt;
++  }
++  return origin.Serialize();
++}
++
++bool IsKnownVaultKind(PrometheusVaultKind kind) {
++  switch (kind) {
++    case PrometheusVaultKind::kCredential:
++    case PrometheusVaultKind::kPayment:
++      return true;
++  }
++  return false;
++}
++
++bool IsAllowedVaultField(PrometheusVaultKind kind, std::string_view name) {
++  switch (kind) {
++    case PrometheusVaultKind::kCredential:
++      return name == "username" || name == "password";
++    case PrometheusVaultKind::kPayment:
++      return name == "cardholder" || name == "card_number" ||
++             name == "expiry" || name == "cvc";
++  }
++  return false;
++}
++
++std::optional<std::string> SerializeVaultFields(
++    PrometheusVaultKind kind,
++    const std::vector<NativeVaultFieldValue>& fields) {
++  if (fields.empty() || fields.size() > kMaxPrometheusVaultFields) {
++    return std::nullopt;
++  }
++  std::set<std::string_view> names;
++  bool has_required_field = false;
++  base::ListValue serialized_fields;
++  for (const NativeVaultFieldValue& field : fields) {
++    if (field.field_name.empty() ||
++        field.field_name.size() > kMaxPrometheusVaultFieldNameBytes ||
++        !base::IsStringASCII(field.field_name) || field.value.empty() ||
++        field.value.value().size() > kMaxPrometheusSecretBytes ||
++        !names.insert(field.field_name).second ||
++        !IsAllowedVaultField(kind, field.field_name)) {
++      return std::nullopt;
++    }
++    has_required_field |= (kind == PrometheusVaultKind::kCredential &&
++                           field.field_name == "password") ||
++                          (kind == PrometheusVaultKind::kPayment &&
++                           field.field_name == "card_number");
++    base::DictValue serialized_field;
++    serialized_field.Set("name", field.field_name);
++    serialized_field.Set("value", std::string(field.value.value()));
++    serialized_fields.Append(std::move(serialized_field));
++  }
++  if (!has_required_field) {
++    return std::nullopt;
++  }
++  base::DictValue envelope;
++  envelope.Set("kind", std::string(PrometheusVaultKindToString(kind)));
++  envelope.Set("fields", std::move(serialized_fields));
++  std::optional<std::string> json = base::WriteJson(envelope);
++  if (!json.has_value() || json->size() > kMaxPrometheusSecretBytes) {
++    return std::nullopt;
++  }
++  return json;
++}
++
++std::optional<std::vector<std::string>> ParseVaultFields(
++    PrometheusVaultKind expected_kind,
++    std::string_view serialized) {
++  std::optional<base::Value> parsed =
++      base::JSONReader::Read(serialized, base::JSON_PARSE_RFC);
++  if (!parsed.has_value() || !parsed->is_dict()) {
++    return std::nullopt;
++  }
++  const base::DictValue& envelope = parsed->GetDict();
++  const std::string* kind = envelope.FindString("kind");
++  const base::ListValue* fields = envelope.FindList("fields");
++  if (envelope.size() != 2u || !kind ||
++      *kind != PrometheusVaultKindToString(expected_kind) || !fields ||
++      fields->empty() || fields->size() > kMaxPrometheusVaultFields) {
++    return std::nullopt;
++  }
++  std::set<std::string_view> names;
++  std::vector<std::string> values;
++  values.reserve(fields->size());
++  for (const base::Value& field_value : *fields) {
++    if (!field_value.is_dict()) {
++      return std::nullopt;
++    }
++    const base::DictValue& field = field_value.GetDict();
++    const std::string* name = field.FindString("name");
++    const std::string* value = field.FindString("value");
++    if (field.size() != 2u || !name || !value || value->empty() ||
++        !IsAllowedVaultField(expected_kind, *name) ||
++        !names.insert(*name).second) {
++      return std::nullopt;
++    }
++    values.push_back(*value);
++  }
++  return values;
++}
++
++bool RequestMatchesApproval(const PrometheusVaultConfirmationBinding& approval,
++                            const ConfirmedVaultTargetBinding& target,
++                            const PrometheusVaultUseRequest& request,
++                            Profile* profile) {
++  return request.origin == PrometheusVaultUseOrigin::kMcp &&
++         approval.caller_id == request.caller_id &&
++         approval.profile == profile &&
++         approval.browser == request.exact_browser &&
++         approval.window_session_id == target.window_session_id &&
++         approval.tab_handle == target.tab_handle &&
++         approval.owner_session_id == request.session_id &&
++         approval.owner_session_id == target.owner_session_id &&
++         approval.canonical_origin == target.canonical_origin &&
++         approval.frame_token == target.frame_token &&
++         approval.document_token == target.document_token &&
++         approval.target_refs == request.target_refs &&
++         approval.target_refs == target.target_refs && target.focused &&
++         approval.entry_id == request.entry_id &&
++         approval.request_hash == request.request_hash;
++}
++
++PrometheusVaultStatus StatusForChangedTarget(
++    const std::optional<ConfirmedVaultTargetBinding>& target) {
++  return target.has_value() && !target->focused
++             ? PrometheusVaultStatus::kFocusLost
++             : PrometheusVaultStatus::kStaleTarget;
++}
++
++PrometheusVaultStatus StatusForInsertion(ConfirmedVaultInsertionStatus status) {
++  switch (status) {
++    case ConfirmedVaultInsertionStatus::kSuccess:
++      return PrometheusVaultStatus::kSuccess;
++    case ConfirmedVaultInsertionStatus::kFocusLost:
++      return PrometheusVaultStatus::kFocusLost;
++    case ConfirmedVaultInsertionStatus::kExpired:
++      return PrometheusVaultStatus::kExpired;
++    case ConfirmedVaultInsertionStatus::kReplay:
++      return PrometheusVaultStatus::kApprovalReplay;
++    case ConfirmedVaultInsertionStatus::kCancelled:
++      return PrometheusVaultStatus::kCancelled;
++    case ConfirmedVaultInsertionStatus::kStaleTarget:
++    case ConfirmedVaultInsertionStatus::kUnauthorized:
++    case ConfirmedVaultInsertionStatus::kProfileMismatch:
++      return PrometheusVaultStatus::kStaleTarget;
++    case ConfirmedVaultInsertionStatus::kInvalidRequest:
++    case ConfirmedVaultInsertionStatus::kFieldFailed:
++    case ConfirmedVaultInsertionStatus::kUnavailable:
++      return PrometheusVaultStatus::kInsertionFailed;
++  }
++  return PrometheusVaultStatus::kInsertionFailed;
++}
++
++}  // namespace
++
+ NativeVaultFieldValue::NativeVaultFieldValue() = default;
+-NativeVaultFieldValue::NativeVaultFieldValue(
+-    std::string field_name,
+-    ScopedSensitiveVaultValue value)
++NativeVaultFieldValue::NativeVaultFieldValue(std::string field_name,
++                                             ScopedSensitiveVaultValue value)
+     : field_name(std::move(field_name)), value(std::move(value)) {}
+-NativeVaultFieldValue::NativeVaultFieldValue(NativeVaultFieldValue&&) =
+-    default;
++NativeVaultFieldValue::NativeVaultFieldValue(NativeVaultFieldValue&&) = default;
+ NativeVaultFieldValue& NativeVaultFieldValue::operator=(
+     NativeVaultFieldValue&&) = default;
+ NativeVaultFieldValue::~NativeVaultFieldValue() = default;
+ 
+ NativeVaultEntryReply::NativeVaultEntryReply() = default;
+-NativeVaultEntryReply::NativeVaultEntryReply(NativeVaultEntryReply&&) =
+-    default;
++NativeVaultEntryReply::NativeVaultEntryReply(NativeVaultEntryReply&&) = default;
+ NativeVaultEntryReply& NativeVaultEntryReply::operator=(
+     NativeVaultEntryReply&&) = default;
+ NativeVaultEntryReply::~NativeVaultEntryReply() = default;
+@@ -87,7 +268,35 @@ std::string_view PrometheusVaultStatusToString(PrometheusVaultStatus status) {
+   return "VAULT_INVALID_STATUS";
+ }
+ 
+-struct PrometheusVaultService::ActiveUse {};
++struct PrometheusVaultService::ActiveEntry {
++  ActiveEntry(std::string entry_id,
++              bool replace,
++              NativeEntryCompletion callback)
++      : entry_id(std::move(entry_id)),
++        replace(replace),
++        callback(std::move(callback)) {}
++
++  std::string entry_id;
++  bool replace = false;
++  bool reply_handled = false;
++  NativeEntryCompletion callback;
++};
++
++struct PrometheusVaultService::ActiveUse {
++  ActiveUse(PrometheusVaultUseRequest request,
++            PrometheusVaultConfirmationBinding binding,
++            UseCallback callback)
++      : request(std::move(request)),
++        binding(std::move(binding)),
++        callback(std::move(callback)) {}
++
++  PrometheusVaultUseRequest request;
++  PrometheusVaultConfirmationBinding binding;
++  UseCallback callback;
++  bool confirmation_replied = false;
++  bool read_started = false;
++  bool insertion_started = false;
++};
+ 
+ PrometheusVaultService::PrometheusVaultService(
+     Profile* profile,
+@@ -101,68 +310,307 @@ PrometheusVaultService::PrometheusVaultService(
+   CHECK(secret_store_);
+ }
+ 
+-PrometheusVaultService::~PrometheusVaultService() = default;
++PrometheusVaultService::~PrometheusVaultService() {
++  Shutdown();
++}
+ 
+ PrometheusVaultMetadataResult PrometheusVaultService::CreateMetadata(
+     std::string label,
+     PrometheusVaultKind kind,
+     std::string canonical_site_origin) {
+-  (void)label;
+-  (void)kind;
+-  (void)canonical_site_origin;
+-  (void)next_metadata_id_;
+-  return {};
++  PrometheusVaultMetadataResult result;
++  if (shutdown_ || label.empty() ||
++      label.size() > kMaxPrometheusVaultLabelBytes ||
++      !base::IsStringUTF8(label) || !IsKnownVaultKind(kind)) {
++    return result;
++  }
++  if (metadata_.size() >= kMaxPrometheusVaultEntries) {
++    result.status = PrometheusVaultStatus::kLimitReached;
++    return result;
++  }
++  std::optional<std::string> origin =
++      CanonicalSiteOrigin(canonical_site_origin);
++  if (!origin.has_value()) {
++    return result;
++  }
++
++  PrometheusVaultMetadata metadata;
++  do {
++    metadata.id = kVaultIdPrefix + std::to_string(++next_metadata_id_);
++  } while (metadata_.contains(metadata.id));
++  metadata.label = std::move(label);
++  metadata.kind = kind;
++  metadata.canonical_site_origin = std::move(*origin);
++  metadata.updated_time_ms = Now().InMillisecondsSinceUnixEpoch();
++  metadata_.emplace(metadata.id, metadata);
++  result.status = PrometheusVaultStatus::kSuccess;
++  result.metadata = std::move(metadata);
++  return result;
+ }
+ 
+ PrometheusVaultMetadataResult PrometheusVaultService::GetMetadata(
+     std::string_view entry_id) const {
+-  (void)entry_id;
+-  return {};
++  PrometheusVaultMetadataResult result;
++  auto it = metadata_.find(entry_id);
++  if (it == metadata_.end()) {
++    result.status = PrometheusVaultStatus::kNotFound;
++    return result;
++  }
++  result.status = PrometheusVaultStatus::kSuccess;
++  result.metadata = it->second;
++  return result;
+ }
+ 
+ PrometheusVaultMetadataResult PrometheusVaultService::UpdateMetadata(
+     std::string_view entry_id,
+     std::string label,
+     std::string canonical_site_origin) {
+-  (void)entry_id;
+-  (void)label;
+-  (void)canonical_site_origin;
+-  return {};
++  PrometheusVaultMetadataResult result;
++  auto it = metadata_.find(entry_id);
++  if (it == metadata_.end()) {
++    result.status = PrometheusVaultStatus::kNotFound;
++    return result;
++  }
++  std::optional<std::string> origin =
++      CanonicalSiteOrigin(canonical_site_origin);
++  if (shutdown_ || label.empty() ||
++      label.size() > kMaxPrometheusVaultLabelBytes ||
++      !base::IsStringUTF8(label) || !origin.has_value()) {
++    return result;
++  }
++  if (it->second.secret_configured &&
++      it->second.canonical_site_origin != *origin) {
++    secret_store_->Delete(SecretBindingFor(it->second), base::DoNothing());
++    it->second.secret_configured = false;
++  }
++  it->second.label = std::move(label);
++  it->second.canonical_site_origin = std::move(*origin);
++  it->second.updated_time_ms = Now().InMillisecondsSinceUnixEpoch();
++  result.status = PrometheusVaultStatus::kSuccess;
++  result.metadata = it->second;
++  return result;
+ }
+ 
+-void PrometheusVaultService::DeleteMetadata(
+-    std::string entry_id,
+-    MetadataDeleteCallback callback) {
+-  (void)entry_id;
+-  std::move(callback).Run(PrometheusVaultStatus::kNotFound);
++void PrometheusVaultService::DeleteMetadata(std::string entry_id,
++                                            MetadataDeleteCallback callback) {
++  auto it = metadata_.find(entry_id);
++  if (it == metadata_.end()) {
++    std::move(callback).Run(PrometheusVaultStatus::kNotFound);
++    return;
++  }
++  const bool secret_configured = it->second.secret_configured;
++  PrometheusSecretBinding binding = SecretBindingFor(it->second);
++  metadata_.erase(it);
++  if (!secret_configured) {
++    std::move(callback).Run(PrometheusVaultStatus::kSuccess);
++    return;
++  }
++  secret_store_->Delete(
++      std::move(binding),
++      base::BindOnce(
++          [](MetadataDeleteCallback callback, PrometheusSecretError error) {
++            std::move(callback).Run(
++                error == PrometheusSecretError::kNone
++                    ? PrometheusVaultStatus::kSuccess
++                    : PrometheusVaultStatus::kSecretStoreFailure);
++          },
++          std::move(callback)));
+ }
+ 
+ base::ListValue PrometheusVaultService::GetSanitizedMetadataSnapshot() const {
+-  return {};
++  base::ListValue snapshot;
++  snapshot.reserve(metadata_.size());
++  for (const auto& [entry_id, metadata] : metadata_) {
++    base::DictValue item;
++    item.Set("id", entry_id);
++    item.Set("label", metadata.label);
++    item.Set("kind", std::string(PrometheusVaultKindToString(metadata.kind)));
++    item.Set("canonical_site_origin", metadata.canonical_site_origin);
++    item.Set("updated_time_ms",
++             base::saturated_cast<int>(metadata.updated_time_ms));
++    item.Set("secret_configured", metadata.secret_configured);
++    snapshot.Append(std::move(item));
++  }
++  return snapshot;
+ }
+ 
+ void PrometheusVaultService::OpenNativeSecretEntry(
+     std::string entry_id,
+     bool replace,
+     NativeEntryCompletion callback) {
+-  (void)entry_id;
+-  (void)replace;
+-  std::move(callback).Run(PrometheusVaultStatus::kNativeEntryUnavailable);
++  if (shutdown_) {
++    std::move(callback).Run(PrometheusVaultStatus::kProfileShutdown);
++    return;
++  }
++  auto metadata_it = metadata_.find(entry_id);
++  if (metadata_it == metadata_.end()) {
++    std::move(callback).Run(PrometheusVaultStatus::kNotFound);
++    return;
++  }
++  if (metadata_it->second.secret_configured && !replace) {
++    std::move(callback).Run(PrometheusVaultStatus::kAlreadyExists);
++    return;
++  }
++  if (!native_entry_delegate_) {
++    std::move(callback).Run(PrometheusVaultStatus::kNativeEntryUnavailable);
++    return;
++  }
++  const uint64_t generation = ++generation_;
++  const bool replace_existing =
++      replace && metadata_it->second.secret_configured;
++  active_entries_.emplace(
++      generation, std::make_unique<ActiveEntry>(entry_id, replace_existing,
++                                                std::move(callback)));
++  native_entry_delegate_.Run(
++      metadata_it->second, replace,
++      base::BindRepeating(&PrometheusVaultService::OnNativeEntryReply,
++                          weak_factory_.GetWeakPtr(), generation));
+ }
+ 
+ void PrometheusVaultService::UseEntry(PrometheusVaultUseRequest request,
+                                       UseCallback callback) {
+-  (void)request;
+-  (void)generation_;
+-  PrometheusVaultUseResult result;
+-  result.status = PrometheusVaultStatus::kNativeConfirmationUnavailable;
+-  std::move(callback).Run(result);
++  auto finish_immediately = [&](PrometheusVaultStatus status) {
++    PrometheusVaultUseResult result;
++    result.status = status;
++    std::move(callback).Run(result);
++  };
++  if (shutdown_) {
++    finish_immediately(PrometheusVaultStatus::kProfileShutdown);
++    return;
++  }
++  if (request.caller_id.empty() || request.session_id.empty() ||
++      request.entry_id.empty() || !request.exact_browser ||
++      !request.target.window_session_id.has_value() ||
++      request.target.tab_handle.raw_value() == tabs::TabHandle::NullValue ||
++      !request.frame.document_token.has_value() ||
++      request.frame.document_token->empty() ||
++      !request.frame.render_process_id.has_value() ||
++      !request.frame.render_frame_routing_id.has_value() ||
++      request.target_refs.empty() ||
++      request.target_refs.size() > kMaxPrometheusVaultTargetRefs ||
++      request.request_hash.empty() ||
++      request.request_hash.size() > kMaxPrometheusVaultRequestHashBytes) {
++    finish_immediately(PrometheusVaultStatus::kInvalidArgument);
++    return;
++  }
++  auto metadata_it = metadata_.find(request.entry_id);
++  if (metadata_it == metadata_.end()) {
++    finish_immediately(PrometheusVaultStatus::kNotFound);
++    return;
++  }
++  if (!metadata_it->second.secret_configured) {
++    finish_immediately(PrometheusVaultStatus::kNativeEntryUnavailable);
++    return;
++  }
++
++  std::optional<ConfirmedVaultTargetBinding> target = InspectTarget(request);
++  if (!target.has_value()) {
++    finish_immediately(PrometheusVaultStatus::kStaleTarget);
++    return;
++  }
++  if (!target->focused) {
++    finish_immediately(PrometheusVaultStatus::kFocusLost);
++    return;
++  }
++  const std::string expected_frame_token =
++      std::to_string(*request.frame.render_process_id) + ":" +
++      std::to_string(*request.frame.render_frame_routing_id);
++  if (target->profile != profile_ || target->browser != request.exact_browser ||
++      target->window_session_id != *request.target.window_session_id ||
++      target->tab_handle != request.target.tab_handle ||
++      target->owner_session_id != request.session_id ||
++      target->canonical_origin != metadata_it->second.canonical_site_origin ||
++      target->frame_token != expected_frame_token ||
++      target->document_token != *request.frame.document_token ||
++      target->target_refs != request.target_refs) {
++    finish_immediately(PrometheusVaultStatus::kStaleTarget);
++    return;
++  }
++
++  if (approval_.has_value()) {
++    if (RequestMatchesApproval(*approval_, *target, request, profile_)) {
++      if (Now() > approval_->expires_at) {
++        approval_.reset();
++        finish_immediately(PrometheusVaultStatus::kExpired);
++        return;
++      }
++      if (approval_->consumed) {
++        finish_immediately(PrometheusVaultStatus::kApprovalReplay);
++        return;
++      }
++      if (active_use_) {
++        FinishActiveUse(PrometheusVaultStatus::kCancelled);
++      }
++      approval_->consumed = true;
++      PrometheusVaultConfirmationBinding binding = *approval_;
++      active_use_ = std::make_unique<ActiveUse>(
++          std::move(request), std::move(binding), std::move(callback));
++      ContinueAfterApproval(active_use_->binding.generation);
++      return;
++    }
++    if (!approval_->consumed) {
++      finish_immediately(PrometheusVaultStatus::kApprovalMismatch);
++      return;
++    }
++    approval_.reset();
++  }
++
++  if (active_use_) {
++    FinishActiveUse(PrometheusVaultStatus::kCancelled);
++  }
++  const uint64_t generation = ++generation_;
++  PrometheusVaultConfirmationBinding binding;
++  binding.caller_id = request.caller_id;
++  binding.profile = profile_;
++  binding.browser = request.exact_browser;
++  binding.window_session_id = target->window_session_id;
++  binding.tab_handle = target->tab_handle;
++  binding.owner_session_id = target->owner_session_id;
++  binding.canonical_origin = target->canonical_origin;
++  binding.frame_token = target->frame_token;
++  binding.document_token = target->document_token;
++  binding.target_refs = target->target_refs;
++  binding.focused = target->focused;
++  binding.entry_id = request.entry_id;
++  binding.request_hash = request.request_hash;
++  binding.generation = generation;
++  binding.expires_at = Now() + kPrometheusVaultApprovalLifetime;
++  active_use_ = std::make_unique<ActiveUse>(
++      std::move(request), std::move(binding), std::move(callback));
++  if (!native_confirmation_delegate_) {
++    FinishUse(generation,
++              PrometheusVaultStatus::kNativeConfirmationUnavailable);
++    return;
++  }
++  native_confirmation_delegate_.Run(
++      active_use_->binding,
++      base::BindRepeating(&PrometheusVaultService::OnNativeConfirmation,
++                          weak_factory_.GetWeakPtr(), generation));
+ }
+ 
+-void PrometheusVaultService::CancelPendingUse() {}
++void PrometheusVaultService::CancelPendingUse() {
++  if (active_use_) {
++    FinishActiveUse(PrometheusVaultStatus::kCancelled);
++    ++generation_;
++  }
++  approval_.reset();
++}
+ 
+ void PrometheusVaultService::Shutdown() {
++  if (shutdown_) {
++    return;
++  }
+   shutdown_ = true;
++  approval_.reset();
++  if (active_use_) {
++    FinishActiveUse(PrometheusVaultStatus::kProfileShutdown);
++  }
++  auto entries = std::move(active_entries_);
++  for (auto& [generation, entry] : entries) {
++    static_cast<void>(generation);
++    std::move(entry->callback).Run(PrometheusVaultStatus::kProfileShutdown);
++  }
++  weak_factory_.InvalidateWeakPtrs();
+ }
+ 
+ void PrometheusVaultService::SetNowCallbackForTesting(
+@@ -195,83 +643,268 @@ base::Time PrometheusVaultService::Now() const {
+   return now_callback_.Run();
+ }
+ 
+-void PrometheusVaultService::OnNativeEntryReply(
+-    uint64_t generation,
+-    std::string entry_id,
+-    bool replace,
+-    NativeEntryCompletion callback,
+-    NativeVaultEntryReply reply) {
+-  (void)generation;
+-  (void)entry_id;
+-  (void)replace;
+-  (void)reply;
+-  std::move(callback).Run(PrometheusVaultStatus::kNativeEntryUnavailable);
++void PrometheusVaultService::OnNativeEntryReply(uint64_t generation,
++                                                NativeVaultEntryReply reply) {
++  auto entry_it = active_entries_.find(generation);
++  if (entry_it == active_entries_.end() || entry_it->second->reply_handled) {
++    return;
++  }
++  ActiveEntry& entry = *entry_it->second;
++  entry.reply_handled = true;
++  if (reply.status != PrometheusVaultStatus::kSuccess) {
++    NativeEntryCompletion callback = std::move(entry.callback);
++    active_entries_.erase(entry_it);
++    std::move(callback).Run(reply.status);
++    return;
++  }
++  auto metadata_it = metadata_.find(entry.entry_id);
++  if (metadata_it == metadata_.end()) {
++    NativeEntryCompletion callback = std::move(entry.callback);
++    active_entries_.erase(entry_it);
++    std::move(callback).Run(PrometheusVaultStatus::kNotFound);
++    return;
++  }
++  std::optional<std::string> serialized =
++      SerializeVaultFields(metadata_it->second.kind, reply.fields);
++  if (!serialized.has_value()) {
++    NativeEntryCompletion callback = std::move(entry.callback);
++    active_entries_.erase(entry_it);
++    std::move(callback).Run(PrometheusVaultStatus::kInvalidArgument);
++    return;
++  }
++  PrometheusSecretBinding binding = SecretBindingFor(metadata_it->second);
++  auto completion =
++      base::BindOnce(&PrometheusVaultService::OnSecretWriteComplete,
++                     weak_factory_.GetWeakPtr(), generation);
++  if (entry.replace) {
++    secret_store_->Replace(std::move(binding), std::move(*serialized),
++                           std::move(completion));
++  } else {
++    secret_store_->Save(std::move(binding), std::move(*serialized),
++                        std::move(completion));
++  }
+ }
+ 
+ void PrometheusVaultService::OnSecretWriteComplete(
+     uint64_t generation,
+-    std::string entry_id,
+-    NativeEntryCompletion callback,
+     PrometheusSecretError error) {
+-  (void)generation;
+-  (void)entry_id;
+-  (void)error;
+-  std::move(callback).Run(PrometheusVaultStatus::kSecretStoreFailure);
++  auto entry_it = active_entries_.find(generation);
++  if (entry_it == active_entries_.end()) {
++    return;
++  }
++  const std::string entry_id = entry_it->second->entry_id;
++  NativeEntryCompletion callback = std::move(entry_it->second->callback);
++  active_entries_.erase(entry_it);
++  PrometheusVaultStatus status = PrometheusVaultStatus::kSecretStoreFailure;
++  if (error == PrometheusSecretError::kNone) {
++    auto metadata_it = metadata_.find(entry_id);
++    if (metadata_it != metadata_.end()) {
++      metadata_it->second.secret_configured = true;
++      metadata_it->second.updated_time_ms =
++          Now().InMillisecondsSinceUnixEpoch();
++      status = PrometheusVaultStatus::kSuccess;
++    } else {
++      status = PrometheusVaultStatus::kNotFound;
++    }
++  }
++  std::move(callback).Run(status);
+ }
+ 
+ void PrometheusVaultService::OnNativeConfirmation(uint64_t generation,
+                                                   bool approved) {
+-  (void)generation;
+-  (void)approved;
++  if (!active_use_ || active_use_->binding.generation != generation ||
++      active_use_->confirmation_replied) {
++    return;
++  }
++  active_use_->confirmation_replied = true;
++  if (!approved) {
++    FinishUse(generation, PrometheusVaultStatus::kDenied);
++    return;
++  }
++  if (Now() > active_use_->binding.expires_at) {
++    FinishUse(generation, PrometheusVaultStatus::kExpired);
++    return;
++  }
++  std::optional<ConfirmedVaultTargetBinding> target =
++      InspectTarget(active_use_->request);
++  if (!target.has_value() ||
++      !BindingMatchesTarget(active_use_->binding, *target)) {
++    FinishUse(generation, StatusForChangedTarget(target));
++    return;
++  }
++  if (active_use_->request.origin == PrometheusVaultUseOrigin::kMcp) {
++    approval_ = active_use_->binding;
++    approval_->consumed = false;
++    FinishUse(generation, PrometheusVaultStatus::kNativeConfirmationRequired);
++    return;
++  }
++  ContinueAfterApproval(generation);
+ }
+ 
+ void PrometheusVaultService::ContinueAfterApproval(uint64_t generation) {
+-  (void)generation;
++  if (!active_use_ || active_use_->binding.generation != generation ||
++      active_use_->read_started) {
++    return;
++  }
++  if (Now() > active_use_->binding.expires_at) {
++    FinishUse(generation, PrometheusVaultStatus::kExpired);
++    return;
++  }
++  auto metadata_it = metadata_.find(active_use_->request.entry_id);
++  if (metadata_it == metadata_.end() ||
++      !metadata_it->second.secret_configured) {
++    FinishUse(generation, PrometheusVaultStatus::kNotFound);
++    return;
++  }
++  active_use_->read_started = true;
++  secret_store_->Read(SecretBindingFor(metadata_it->second),
++                      base::BindOnce(&PrometheusVaultService::OnSecretRead,
++                                     weak_factory_.GetWeakPtr(), generation));
+ }
+ 
+-void PrometheusVaultService::OnSecretRead(
+-    uint64_t generation,
+-    PrometheusSecretReadResult result) {
+-  (void)generation;
+-  (void)result;
++void PrometheusVaultService::OnSecretRead(uint64_t generation,
++                                          PrometheusSecretReadResult result) {
++  if (!active_use_ || active_use_->binding.generation != generation ||
++      active_use_->insertion_started) {
++    return;
++  }
++  if (result.error != PrometheusSecretError::kNone ||
++      !result.value.has_value()) {
++    FinishUse(generation, PrometheusVaultStatus::kDecryptFailed);
++    return;
++  }
++  ScopedSensitiveVaultValue serialized(std::move(*result.value));
++  if (Now() > active_use_->binding.expires_at) {
++    FinishUse(generation, PrometheusVaultStatus::kExpired);
++    return;
++  }
++  std::optional<ConfirmedVaultTargetBinding> target =
++      InspectTarget(active_use_->request);
++  if (!target.has_value() ||
++      !BindingMatchesTarget(active_use_->binding, *target)) {
++    FinishUse(generation, StatusForChangedTarget(target));
++    return;
++  }
++  auto metadata_it = metadata_.find(active_use_->request.entry_id);
++  if (metadata_it == metadata_.end() ||
++      !metadata_it->second.secret_configured ||
++      metadata_it->second.canonical_site_origin !=
++          active_use_->binding.canonical_origin) {
++    FinishUse(generation, PrometheusVaultStatus::kStaleTarget);
++    return;
++  }
++  std::optional<std::vector<std::string>> values =
++      ParseVaultFields(metadata_it->second.kind, serialized.value());
++  if (!values.has_value() ||
++      values->size() != active_use_->request.target_refs.size()) {
++    FinishUse(generation, PrometheusVaultStatus::kDecryptFailed);
++    return;
++  }
++
++  ConfirmedVaultInsertionRequest insertion;
++  insertion.session_id = active_use_->request.session_id;
++  insertion.target = active_use_->request.target;
++  insertion.frame = active_use_->request.frame;
++  insertion.binding.profile = active_use_->binding.profile;
++  insertion.binding.browser = active_use_->binding.browser;
++  insertion.binding.window_session_id = active_use_->binding.window_session_id;
++  insertion.binding.tab_handle = active_use_->binding.tab_handle;
++  insertion.binding.owner_session_id = active_use_->binding.owner_session_id;
++  insertion.binding.canonical_origin = active_use_->binding.canonical_origin;
++  insertion.binding.frame_token = active_use_->binding.frame_token;
++  insertion.binding.document_token = active_use_->binding.document_token;
++  insertion.binding.target_refs = active_use_->binding.target_refs;
++  insertion.binding.focused = active_use_->binding.focused;
++  insertion.generation = generation;
++  insertion.expires_at = active_use_->binding.expires_at;
++  for (size_t index = 0; index < values->size(); ++index) {
++    insertion.fields.emplace_back(
++        active_use_->request.target_refs[index],
++        ScopedSensitiveVaultValue(std::move((*values)[index])));
++  }
++  active_use_->insertion_started = true;
++  auto insertion_callback =
++      base::BindOnce(&PrometheusVaultService::OnInsertionComplete,
++                     weak_factory_.GetWeakPtr(), generation);
++  if (insertion_delegate_) {
++    insertion_delegate_.Run(active_use_->request.exact_browser,
++                            std::move(insertion),
++                            std::move(insertion_callback));
++    return;
++  }
++  if (agent_profile_service_) {
++    agent_profile_service_->ExecuteConfirmedVaultInsertion(
++        active_use_->request.exact_browser, std::move(insertion),
++        std::move(insertion_callback));
++    return;
++  }
++  FinishUse(generation, PrometheusVaultStatus::kInsertionFailed);
+ }
+ 
+ void PrometheusVaultService::OnInsertionComplete(
+     uint64_t generation,
+     ConfirmedVaultInsertionResult result) {
+-  (void)generation;
+-  (void)result;
++  FinishUse(generation, StatusForInsertion(result.status));
+ }
+ 
+ void PrometheusVaultService::FinishUse(uint64_t generation,
+                                        PrometheusVaultStatus status) {
+-  (void)generation;
+-  (void)status;
++  if (!active_use_ || active_use_->binding.generation != generation) {
++    return;
++  }
++  FinishActiveUse(status);
+ }
+ 
+ void PrometheusVaultService::FinishActiveUse(PrometheusVaultStatus status) {
+-  (void)status;
++  if (!active_use_) {
++    return;
++  }
++  UseCallback callback = std::move(active_use_->callback);
++  active_use_.reset();
++  PrometheusVaultUseResult result;
++  result.status = status;
++  std::move(callback).Run(result);
+ }
+ 
+ std::optional<ConfirmedVaultTargetBinding>
+ PrometheusVaultService::InspectTarget(
+     const PrometheusVaultUseRequest& request) const {
+-  (void)request;
+-  return std::nullopt;
++  if (target_inspector_) {
++    return target_inspector_.Run(request.exact_browser, request.target,
++                                 request.frame, request.target_refs);
++  }
++  return CaptureConfirmedVaultTarget(request.exact_browser, request.target,
++                                     request.frame, request.target_refs);
+ }
+ 
+ bool PrometheusVaultService::BindingMatchesTarget(
+     const PrometheusVaultConfirmationBinding& binding,
+     const ConfirmedVaultTargetBinding& target) const {
+-  (void)binding;
+-  (void)target;
+-  return false;
++  return binding.profile == target.profile &&
++         binding.browser == target.browser &&
++         binding.window_session_id == target.window_session_id &&
++         binding.tab_handle == target.tab_handle &&
++         binding.owner_session_id == target.owner_session_id &&
++         binding.canonical_origin == target.canonical_origin &&
++         binding.frame_token == target.frame_token &&
++         binding.document_token == target.document_token &&
++         binding.target_refs == target.target_refs &&
++         binding.focused == target.focused && target.focused;
+ }
+ 
+ PrometheusSecretBinding PrometheusVaultService::SecretBindingFor(
+     const PrometheusVaultMetadata& metadata) const {
+-  (void)metadata;
+-  return {};
++  PrometheusSecretBinding binding;
++  binding.record_id = metadata.id;
++  binding.secret_kind = metadata.kind == PrometheusVaultKind::kCredential
++                            ? PrometheusSecretKind::kVaultCredential
++                            : PrometheusSecretKind::kVaultPayment;
++  binding.owner_kind = metadata.kind == PrometheusVaultKind::kCredential
++                           ? kVaultCredentialOwnerKind
++                           : kVaultPaymentOwnerKind;
++  binding.canonical_origin =
++      url::Origin::Create(GURL(metadata.canonical_site_origin)).GetURL().spec();
++  return binding;
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_vault_service.h b/chrome/browser/prometheus/prometheus_vault_service.h
+index ee869a44fa..c8ba970763 100644
+--- a/chrome/browser/prometheus/prometheus_vault_service.h
++++ b/chrome/browser/prometheus/prometheus_vault_service.h
+@@ -164,20 +164,16 @@ class PrometheusVaultService {
+   using NowCallback = base::RepeatingCallback<base::Time()>;
+   using MetadataDeleteCallback =
+       base::OnceCallback<void(PrometheusVaultStatus)>;
+-  using NativeEntryCompletion =
+-      base::OnceCallback<void(PrometheusVaultStatus)>;
++  using NativeEntryCompletion = base::OnceCallback<void(PrometheusVaultStatus)>;
+   using NativeEntryReplyCallback =
+       base::RepeatingCallback<void(NativeVaultEntryReply)>;
+-  using NativeEntryDelegate = base::RepeatingCallback<void(
+-      const PrometheusVaultMetadata&,
+-      bool,
+-      NativeEntryReplyCallback)>;
++  using NativeEntryDelegate = base::RepeatingCallback<
++      void(const PrometheusVaultMetadata&, bool, NativeEntryReplyCallback)>;
+   using NativeConfirmationReply = base::RepeatingCallback<void(bool)>;
+-  using NativeConfirmationDelegate = base::RepeatingCallback<void(
+-      const PrometheusVaultConfirmationBinding&,
+-      NativeConfirmationReply)>;
+-  using TargetInspector =
+-      PrometheusAgentService::ConfirmedVaultTargetInspector;
++  using NativeConfirmationDelegate =
++      base::RepeatingCallback<void(const PrometheusVaultConfirmationBinding&,
++                                   NativeConfirmationReply)>;
++  using TargetInspector = PrometheusAgentService::ConfirmedVaultTargetInspector;
+   using InsertionDelegate = base::RepeatingCallback<void(
+       BrowserWindowInterface*,
+       ConfirmedVaultInsertionRequest,
+@@ -200,8 +196,7 @@ class PrometheusVaultService {
+       std::string_view entry_id,
+       std::string label,
+       std::string canonical_site_origin);
+-  void DeleteMetadata(std::string entry_id,
+-                      MetadataDeleteCallback callback);
++  void DeleteMetadata(std::string entry_id, MetadataDeleteCallback callback);
+   base::ListValue GetSanitizedMetadataSnapshot() const;
+ 
+   // Opens the injected browser-native secret-entry surface. A missing
+@@ -228,18 +223,12 @@ class PrometheusVaultService {
+   }
+ 
+  private:
++  struct ActiveEntry;
+   struct ActiveUse;
+ 
+   base::Time Now() const;
+-  void OnNativeEntryReply(uint64_t generation,
+-                          std::string entry_id,
+-                          bool replace,
+-                          NativeEntryCompletion callback,
+-                          NativeVaultEntryReply reply);
+-  void OnSecretWriteComplete(uint64_t generation,
+-                             std::string entry_id,
+-                             NativeEntryCompletion callback,
+-                             PrometheusSecretError error);
++  void OnNativeEntryReply(uint64_t generation, NativeVaultEntryReply reply);
++  void OnSecretWriteComplete(uint64_t generation, PrometheusSecretError error);
+   void OnNativeConfirmation(uint64_t generation, bool approved);
+   void ContinueAfterApproval(uint64_t generation);
+   void OnSecretRead(uint64_t generation, PrometheusSecretReadResult result);
+@@ -249,9 +238,8 @@ class PrometheusVaultService {
+   void FinishActiveUse(PrometheusVaultStatus status);
+   std::optional<ConfirmedVaultTargetBinding> InspectTarget(
+       const PrometheusVaultUseRequest& request) const;
+-  bool BindingMatchesTarget(
+-      const PrometheusVaultConfirmationBinding& binding,
+-      const ConfirmedVaultTargetBinding& target) const;
++  bool BindingMatchesTarget(const PrometheusVaultConfirmationBinding& binding,
++                            const ConfirmedVaultTargetBinding& target) const;
+   PrometheusSecretBinding SecretBindingFor(
+       const PrometheusVaultMetadata& metadata) const;
+ 
+@@ -268,8 +256,8 @@ class PrometheusVaultService {
+   TargetInspector target_inspector_;
+   InsertionDelegate insertion_delegate_;
+   std::optional<PrometheusVaultConfirmationBinding> approval_;
++  std::map<uint64_t, std::unique_ptr<ActiveEntry>> active_entries_;
+   std::unique_ptr<ActiveUse> active_use_;
+-  std::map<uint64_t, bool> handled_entry_replies_;
+   base::WeakPtrFactory<PrometheusVaultService> weak_factory_{this};
+ };
+ 
+-- 
+2.50.1 (Apple Git-155)
+
