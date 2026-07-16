@@ -1,0 +1,875 @@
+From cacf44897f4da99811bf18e062111fe05da946eb Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 03:49:19 -0500
+Subject: [PATCH] feat(20-05): implement strict provider codecs
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   1 +
+ .../prometheus/prometheus_provider_codec.cc   | 812 +++++++++++++++++-
+ 2 files changed, 809 insertions(+), 4 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 02a998c983..c521064194 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -347,6 +347,7 @@ source_set("prometheus_provider_codec") {
+     ":prometheus_provider_registry",
+     ":prometheus_runtime_store",
+     "//base",
++    "//crypto",
+   ]
+ }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_provider_codec.cc b/chrome/browser/prometheus/prometheus_provider_codec.cc
+index 447ebe6797..0068de7dc3 100644
+--- a/chrome/browser/prometheus/prometheus_provider_codec.cc
++++ b/chrome/browser/prometheus/prometheus_provider_codec.cc
+@@ -4,7 +4,733 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_provider_codec.h"
+ 
++#include <algorithm>
++#include <set>
++#include <string>
++#include <string_view>
++#include <utility>
++
++#include "base/containers/span.h"
++#include "base/json/json_reader.h"
++#include "base/json/json_writer.h"
++#include "base/memory/raw_ptr.h"
++#include "base/strings/string_util.h"
++#include "crypto/secure_util.h"
++
+ namespace prometheus {
++namespace {
++
++constexpr size_t kMaxProviderToolDescriptionBytes = 16 * 1024;
++constexpr char kRedactedCredential[] = "[REDACTED]";
++
++class ScopedResponseBodyWiper {
++ public:
++  explicit ScopedResponseBodyWiper(std::string* body) : body_(body) {}
++  ~ScopedResponseBodyWiper() {
++    if (!body_->empty()) {
++      crypto::SecureZeroBuffer(base::as_writable_byte_span(*body_));
++      body_->clear();
++    }
++  }
++
++ private:
++  raw_ptr<std::string> body_;
++};
++
++ProviderTurnResult TurnError(ProviderFailureKind failure) {
++  return {.failure = failure};
++}
++
++bool IsKnownFamily(PrometheusProviderFamily family) {
++  switch (family) {
++    case PrometheusProviderFamily::kOpenAICompatible:
++    case PrometheusProviderFamily::kAnthropicMessages:
++    case PrometheusProviderFamily::kGeminiGenerateContent:
++      return true;
++  }
++  return false;
++}
++
++bool IsValidModelId(std::string_view model_id, size_t max_bytes) {
++  if (model_id.empty() || model_id.size() > max_bytes ||
++      !base::IsStringASCII(model_id) || model_id.front() == '/' ||
++      model_id.back() == '/') {
++    return false;
++  }
++  for (char value : model_id) {
++    if (!base::IsAsciiAlphaNumeric(value) && value != '-' && value != '_' &&
++        value != '.' && value != ':' && value != '/') {
++      return false;
++    }
++  }
++  size_t segment_start = 0;
++  while (segment_start < model_id.size()) {
++    const size_t segment_end = model_id.find('/', segment_start);
++    const std::string_view segment =
++        model_id.substr(segment_start, segment_end == std::string_view::npos
++                                           ? std::string_view::npos
++                                           : segment_end - segment_start);
++    if (segment.empty() || segment == "." || segment == "..") {
++      return false;
++    }
++    if (segment_end == std::string_view::npos) {
++      break;
++    }
++    segment_start = segment_end + 1;
++  }
++  return true;
++}
++
++bool IsValidToolName(std::string_view name) {
++  if (name.empty() || name.size() > kMaxProviderToolNameBytes ||
++      !base::IsAsciiLower(name.front())) {
++    return false;
++  }
++  return std::ranges::all_of(name, [](char value) {
++    return base::IsAsciiLower(value) || base::IsAsciiDigit(value) ||
++           value == '_';
++  });
++}
++
++bool IsValidToolSchema(const base::DictValue& schema) {
++  const std::string* type = schema.FindString("type");
++  if (!type || *type != "object" ||
++      schema.FindBool("additionalProperties") != false) {
++    return false;
++  }
++  std::string encoded;
++  return base::JSONWriter::Write(schema, &encoded) &&
++         encoded.size() <= kMaxProviderToolArgumentsBytes;
++}
++
++bool IsValidRequest(const ProviderTurnRequest& request) {
++  if (!IsKnownFamily(request.family) ||
++      (request.use_responses_api &&
++       request.family != PrometheusProviderFamily::kOpenAICompatible) ||
++      !IsValidModelId(request.model, kMaxPrometheusProviderModelIdBytes) ||
++      !base::IsStringUTF8(request.system_instruction) ||
++      request.system_instruction.size() > kMaxProviderTextBytes ||
++      !base::IsStringUTF8(request.user_text) ||
++      request.user_text.size() > kMaxProviderTextBytes ||
++      request.max_output_tokens <= 0 ||
++      request.max_output_tokens > kMaxProviderOutputTokens) {
++    return false;
++  }
++  std::set<std::string> names;
++  for (const ProviderToolDefinition& tool : request.tools) {
++    if (!IsValidToolName(tool.name) || !names.insert(tool.name).second ||
++        tool.description.size() > kMaxProviderToolDescriptionBytes ||
++        !base::IsStringUTF8(tool.description) ||
++        !IsValidToolSchema(tool.input_schema)) {
++      return false;
++    }
++  }
++  return true;
++}
++
++base::DictValue MakeMessage(std::string role, std::string content) {
++  base::DictValue message;
++  message.Set("role", std::move(role));
++  message.Set("content", std::move(content));
++  return message;
++}
++
++base::ListValue MakeOpenAIResponsesTools(
++    const std::vector<ProviderToolDefinition>& tools) {
++  base::ListValue encoded_tools;
++  for (const ProviderToolDefinition& tool : tools) {
++    base::DictValue encoded;
++    encoded.Set("type", "function");
++    encoded.Set("name", tool.name);
++    encoded.Set("description", tool.description);
++    encoded.Set("parameters", tool.input_schema.Clone());
++    encoded.Set("strict", true);
++    encoded_tools.Append(std::move(encoded));
++  }
++  return encoded_tools;
++}
++
++base::ListValue MakeOpenAIChatTools(
++    const std::vector<ProviderToolDefinition>& tools) {
++  base::ListValue encoded_tools;
++  for (const ProviderToolDefinition& tool : tools) {
++    base::DictValue function;
++    function.Set("name", tool.name);
++    function.Set("description", tool.description);
++    function.Set("parameters", tool.input_schema.Clone());
++    function.Set("strict", true);
++    base::DictValue encoded;
++    encoded.Set("type", "function");
++    encoded.Set("function", std::move(function));
++    encoded_tools.Append(std::move(encoded));
++  }
++  return encoded_tools;
++}
++
++base::DictValue EncodeOpenAIResponses(const ProviderTurnRequest& request) {
++  base::ListValue input;
++  input.Append(MakeMessage("user", request.user_text));
++  base::DictValue root;
++  root.Set("model", request.model);
++  root.Set("store", false);
++  root.Set("parallel_tool_calls", false);
++  root.Set("max_output_tokens", static_cast<int>(request.max_output_tokens));
++  root.Set("instructions", request.system_instruction);
++  root.Set("input", std::move(input));
++  root.Set("tools", MakeOpenAIResponsesTools(request.tools));
++  return root;
++}
++
++base::DictValue EncodeOpenAIChat(const ProviderTurnRequest& request) {
++  base::ListValue messages;
++  messages.Append(MakeMessage("system", request.system_instruction));
++  messages.Append(MakeMessage("user", request.user_text));
++  base::DictValue root;
++  root.Set("model", request.model);
++  root.Set("store", false);
++  root.Set("parallel_tool_calls", false);
++  root.Set("max_tokens", static_cast<int>(request.max_output_tokens));
++  root.Set("messages", std::move(messages));
++  root.Set("tools", MakeOpenAIChatTools(request.tools));
++  root.Set("tool_choice", "auto");
++  return root;
++}
++
++base::DictValue EncodeAnthropic(const ProviderTurnRequest& request) {
++  base::ListValue messages;
++  messages.Append(MakeMessage("user", request.user_text));
++  base::ListValue tools;
++  for (const ProviderToolDefinition& tool : request.tools) {
++    base::DictValue encoded;
++    encoded.Set("name", tool.name);
++    encoded.Set("description", tool.description);
++    encoded.Set("input_schema", tool.input_schema.Clone());
++    tools.Append(std::move(encoded));
++  }
++  base::DictValue tool_choice;
++  tool_choice.Set("type", "auto");
++  tool_choice.Set("disable_parallel_tool_use", true);
++  base::DictValue root;
++  root.Set("model", request.model);
++  root.Set("max_tokens", static_cast<int>(request.max_output_tokens));
++  root.Set("system", request.system_instruction);
++  root.Set("messages", std::move(messages));
++  root.Set("tools", std::move(tools));
++  root.Set("tool_choice", std::move(tool_choice));
++  return root;
++}
++
++base::DictValue EncodeGemini(const ProviderTurnRequest& request) {
++  base::DictValue system_part;
++  system_part.Set("text", request.system_instruction);
++  base::ListValue system_parts;
++  system_parts.Append(std::move(system_part));
++  base::DictValue system_instruction;
++  system_instruction.Set("parts", std::move(system_parts));
++
++  base::DictValue user_part;
++  user_part.Set("text", request.user_text);
++  base::ListValue user_parts;
++  user_parts.Append(std::move(user_part));
++  base::DictValue content;
++  content.Set("role", "user");
++  content.Set("parts", std::move(user_parts));
++  base::ListValue contents;
++  contents.Append(std::move(content));
++
++  base::ListValue declarations;
++  for (const ProviderToolDefinition& tool : request.tools) {
++    base::DictValue declaration;
++    declaration.Set("name", tool.name);
++    declaration.Set("description", tool.description);
++    declaration.Set("parameters", tool.input_schema.Clone());
++    declarations.Append(std::move(declaration));
++  }
++  base::DictValue declarations_wrapper;
++  declarations_wrapper.Set("functionDeclarations", std::move(declarations));
++  base::ListValue tools;
++  tools.Append(std::move(declarations_wrapper));
++
++  base::DictValue generation_config;
++  generation_config.Set("maxOutputTokens",
++                        static_cast<int>(request.max_output_tokens));
++  base::DictValue function_calling;
++  function_calling.Set("mode", "AUTO");
++  base::DictValue tool_config;
++  tool_config.Set("functionCallingConfig", std::move(function_calling));
++
++  base::DictValue root;
++  root.Set("systemInstruction", std::move(system_instruction));
++  root.Set("contents", std::move(contents));
++  root.Set("tools", std::move(tools));
++  root.Set("generationConfig", std::move(generation_config));
++  root.Set("toolConfig", std::move(tool_config));
++  return root;
++}
++
++bool ReadUsage(const base::DictValue* usage,
++               std::string_view input_key,
++               std::string_view output_key,
++               RuntimeUsage* result) {
++  if (!usage) {
++    return false;
++  }
++  std::optional<int> input = usage->FindInt(input_key);
++  std::optional<int> output = usage->FindInt(output_key);
++  if (!input || !output) {
++    return false;
++  }
++  result->input_tokens = *input;
++  result->output_tokens = *output;
++  return IsValidRuntimeUsage(*result);
++}
++
++ProviderFailureKind AppendText(std::string_view text, std::string* output) {
++  if (!base::IsStringUTF8(text)) {
++    return ProviderFailureKind::kInvalidOutput;
++  }
++  if (text.size() > kMaxProviderTextBytes - output->size()) {
++    return ProviderFailureKind::kBounds;
++  }
++  output->append(text);
++  return ProviderFailureKind::kNone;
++}
++
++bool HasAdvertisedTool(const ProviderTurnRequest& request,
++                       std::string_view name) {
++  return std::ranges::any_of(
++      request.tools, [&](const auto& tool) { return tool.name == name; });
++}
++
++ProviderFailureKind SetToolCall(const ProviderTurnRequest& request,
++                                std::string_view call_id,
++                                std::string_view name,
++                                const base::DictValue& arguments,
++                                ProviderTurnResult* result) {
++  if (result->tool_call || call_id.empty() ||
++      call_id.size() > kMaxProviderToolCallIdBytes ||
++      !base::IsStringUTF8(call_id) || !IsValidToolName(name) ||
++      !HasAdvertisedTool(request, name)) {
++    return ProviderFailureKind::kInvalidOutput;
++  }
++  std::string encoded_arguments;
++  if (!base::JSONWriter::Write(arguments, &encoded_arguments)) {
++    return ProviderFailureKind::kInvalidOutput;
++  }
++  if (encoded_arguments.size() > kMaxProviderToolArgumentsBytes) {
++    return ProviderFailureKind::kBounds;
++  }
++  result->tool_call = ValidatedToolCall{
++      .call_id = std::string(call_id),
++      .name = std::string(name),
++      .arguments = arguments.Clone(),
++  };
++  result->usage.tool_calls = 1;
++  return ProviderFailureKind::kNone;
++}
++
++ProviderFailureKind ParseStringArguments(const ProviderTurnRequest& request,
++                                         std::string_view call_id,
++                                         std::string_view name,
++                                         const std::string& arguments,
++                                         ProviderTurnResult* result) {
++  if (arguments.size() > kMaxProviderToolArgumentsBytes) {
++    return ProviderFailureKind::kBounds;
++  }
++  std::optional<base::DictValue> parsed =
++      base::JSONReader::ReadDict(arguments, base::JSON_PARSE_RFC);
++  if (!parsed) {
++    return ProviderFailureKind::kInvalidOutput;
++  }
++  return SetToolCall(request, call_id, name, *parsed, result);
++}
++
++ProviderTurnResult ParseOpenAIResponses(const ProviderTurnRequest& request,
++                                        const base::DictValue& root) {
++  ProviderTurnResult result;
++  if (!ReadUsage(root.FindDict("usage"), "input_tokens", "output_tokens",
++                 &result.usage)) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  const base::ListValue* output = root.FindList("output");
++  if (!output) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  for (const base::Value& item_value : *output) {
++    if (!item_value.is_dict()) {
++      return TurnError(ProviderFailureKind::kInvalidOutput);
++    }
++    const base::DictValue& item = item_value.GetDict();
++    const std::string* type = item.FindString("type");
++    if (!type) {
++      return TurnError(ProviderFailureKind::kInvalidOutput);
++    }
++    if (*type == "message") {
++      const base::ListValue* content = item.FindList("content");
++      if (!content) {
++        return TurnError(ProviderFailureKind::kInvalidOutput);
++      }
++      for (const base::Value& part_value : *content) {
++        if (!part_value.is_dict()) {
++          return TurnError(ProviderFailureKind::kInvalidOutput);
++        }
++        const base::DictValue& part = part_value.GetDict();
++        const std::string* part_type = part.FindString("type");
++        const std::string* text = part.FindString("text");
++        if (!part_type || *part_type != "output_text" || !text) {
++          return TurnError(ProviderFailureKind::kInvalidOutput);
++        }
++        ProviderFailureKind error = AppendText(*text, &result.safe_result.text);
++        if (error != ProviderFailureKind::kNone) {
++          return TurnError(error);
++        }
++      }
++    } else if (*type == "function_call") {
++      const std::string* call_id = item.FindString("call_id");
++      const std::string* name = item.FindString("name");
++      const std::string* arguments = item.FindString("arguments");
++      if (!call_id || !name || !arguments) {
++        return TurnError(ProviderFailureKind::kInvalidOutput);
++      }
++      ProviderFailureKind error =
++          ParseStringArguments(request, *call_id, *name, *arguments, &result);
++      if (error != ProviderFailureKind::kNone) {
++        return TurnError(error);
++      }
++    } else {
++      return TurnError(ProviderFailureKind::kInvalidOutput);
++    }
++  }
++  const std::string* status = root.FindString("status");
++  if (result.tool_call) {
++    result.stop_reason = ProviderStopReason::kToolCall;
++  } else if (!status || *status == "completed") {
++    result.stop_reason = ProviderStopReason::kComplete;
++  } else if (*status == "incomplete") {
++    result.stop_reason = ProviderStopReason::kLength;
++  } else {
++    result.stop_reason = ProviderStopReason::kUnknown;
++  }
++  return result;
++}
++
++ProviderTurnResult ParseOpenAIChat(const ProviderTurnRequest& request,
++                                   const base::DictValue& root) {
++  ProviderTurnResult result;
++  if (!ReadUsage(root.FindDict("usage"), "prompt_tokens", "completion_tokens",
++                 &result.usage)) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  const base::ListValue* choices = root.FindList("choices");
++  if (!choices || choices->size() != 1 || !(*choices)[0].is_dict()) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  const base::DictValue& choice = (*choices)[0].GetDict();
++  const base::DictValue* message = choice.FindDict("message");
++  if (!message) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  if (const base::Value* content = message->Find("content")) {
++    if (content->is_string()) {
++      ProviderFailureKind error =
++          AppendText(content->GetString(), &result.safe_result.text);
++      if (error != ProviderFailureKind::kNone) {
++        return TurnError(error);
++      }
++    } else if (!content->is_none()) {
++      return TurnError(ProviderFailureKind::kInvalidOutput);
++    }
++  }
++  if (const base::Value* tool_calls_value = message->Find("tool_calls")) {
++    if (!tool_calls_value->is_list() ||
++        tool_calls_value->GetList().size() > 1) {
++      return TurnError(ProviderFailureKind::kInvalidOutput);
++    }
++    for (const base::Value& call_value : tool_calls_value->GetList()) {
++      if (!call_value.is_dict()) {
++        return TurnError(ProviderFailureKind::kInvalidOutput);
++      }
++      const base::DictValue& call = call_value.GetDict();
++      const std::string* id = call.FindString("id");
++      const std::string* type = call.FindString("type");
++      const base::DictValue* function = call.FindDict("function");
++      const std::string* name =
++          function ? function->FindString("name") : nullptr;
++      const std::string* arguments =
++          function ? function->FindString("arguments") : nullptr;
++      if (!id || !type || *type != "function" || !name || !arguments) {
++        return TurnError(ProviderFailureKind::kInvalidOutput);
++      }
++      ProviderFailureKind error =
++          ParseStringArguments(request, *id, *name, *arguments, &result);
++      if (error != ProviderFailureKind::kNone) {
++        return TurnError(error);
++      }
++    }
++  }
++  const std::string* finish_reason = choice.FindString("finish_reason");
++  if (result.tool_call) {
++    result.stop_reason = ProviderStopReason::kToolCall;
++  } else if (finish_reason && *finish_reason == "length") {
++    result.stop_reason = ProviderStopReason::kLength;
++  } else if (!finish_reason || *finish_reason == "stop") {
++    result.stop_reason = ProviderStopReason::kComplete;
++  } else {
++    result.stop_reason = ProviderStopReason::kUnknown;
++  }
++  return result;
++}
++
++ProviderTurnResult ParseAnthropic(const ProviderTurnRequest& request,
++                                  const base::DictValue& root) {
++  ProviderTurnResult result;
++  if (!ReadUsage(root.FindDict("usage"), "input_tokens", "output_tokens",
++                 &result.usage)) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  const base::ListValue* content = root.FindList("content");
++  if (!content) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  for (const base::Value& block_value : *content) {
++    if (!block_value.is_dict()) {
++      return TurnError(ProviderFailureKind::kInvalidOutput);
++    }
++    const base::DictValue& block = block_value.GetDict();
++    const std::string* type = block.FindString("type");
++    if (!type) {
++      return TurnError(ProviderFailureKind::kInvalidOutput);
++    }
++    if (*type == "text") {
++      const std::string* text = block.FindString("text");
++      if (!text) {
++        return TurnError(ProviderFailureKind::kInvalidOutput);
++      }
++      ProviderFailureKind error = AppendText(*text, &result.safe_result.text);
++      if (error != ProviderFailureKind::kNone) {
++        return TurnError(error);
++      }
++    } else if (*type == "tool_use") {
++      const std::string* id = block.FindString("id");
++      const std::string* name = block.FindString("name");
++      const base::DictValue* input = block.FindDict("input");
++      if (!id || !name || !input) {
++        return TurnError(ProviderFailureKind::kInvalidOutput);
++      }
++      ProviderFailureKind error =
++          SetToolCall(request, *id, *name, *input, &result);
++      if (error != ProviderFailureKind::kNone) {
++        return TurnError(error);
++      }
++    } else {
++      return TurnError(ProviderFailureKind::kInvalidOutput);
++    }
++  }
++  const std::string* stop_reason = root.FindString("stop_reason");
++  if (result.tool_call) {
++    result.stop_reason = ProviderStopReason::kToolCall;
++  } else if (stop_reason && *stop_reason == "max_tokens") {
++    result.stop_reason = ProviderStopReason::kLength;
++  } else if (!stop_reason || *stop_reason == "end_turn") {
++    result.stop_reason = ProviderStopReason::kComplete;
++  } else {
++    result.stop_reason = ProviderStopReason::kUnknown;
++  }
++  return result;
++}
++
++ProviderTurnResult ParseGemini(const ProviderTurnRequest& request,
++                               const base::DictValue& root) {
++  ProviderTurnResult result;
++  if (!ReadUsage(root.FindDict("usageMetadata"), "promptTokenCount",
++                 "candidatesTokenCount", &result.usage)) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  const base::ListValue* candidates = root.FindList("candidates");
++  if (!candidates || candidates->size() != 1 || !(*candidates)[0].is_dict()) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  const base::DictValue& candidate = (*candidates)[0].GetDict();
++  const base::DictValue* content = candidate.FindDict("content");
++  const base::ListValue* parts = content ? content->FindList("parts") : nullptr;
++  if (!parts) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  for (const base::Value& part_value : *parts) {
++    if (!part_value.is_dict()) {
++      return TurnError(ProviderFailureKind::kInvalidOutput);
++    }
++    const base::DictValue& part = part_value.GetDict();
++    const std::string* text = part.FindString("text");
++    const base::DictValue* call = part.FindDict("functionCall");
++    if ((text != nullptr) == (call != nullptr)) {
++      return TurnError(ProviderFailureKind::kInvalidOutput);
++    }
++    if (text) {
++      ProviderFailureKind error = AppendText(*text, &result.safe_result.text);
++      if (error != ProviderFailureKind::kNone) {
++        return TurnError(error);
++      }
++      continue;
++    }
++    const std::string* id = call->FindString("id");
++    const std::string* name = call->FindString("name");
++    const base::DictValue* args = call->FindDict("args");
++    if (!id || !name || !args) {
++      return TurnError(ProviderFailureKind::kInvalidOutput);
++    }
++    ProviderFailureKind error =
++        SetToolCall(request, *id, *name, *args, &result);
++    if (error != ProviderFailureKind::kNone) {
++      return TurnError(error);
++    }
++  }
++  const std::string* finish_reason = candidate.FindString("finishReason");
++  if (result.tool_call) {
++    result.stop_reason = ProviderStopReason::kToolCall;
++  } else if (finish_reason && *finish_reason == "MAX_TOKENS") {
++    result.stop_reason = ProviderStopReason::kLength;
++  } else if (!finish_reason || *finish_reason == "STOP") {
++    result.stop_reason = ProviderStopReason::kComplete;
++  } else {
++    result.stop_reason = ProviderStopReason::kUnknown;
++  }
++  return result;
++}
++
++bool SanitizeCredential(std::string_view credential,
++                        ProviderTurnResult* result) {
++  if (credential.empty()) {
++    return true;
++  }
++  if (result->tool_call) {
++    std::string encoded_arguments;
++    if (!base::JSONWriter::Write(result->tool_call->arguments,
++                                 &encoded_arguments) ||
++        result->tool_call->call_id.find(credential) != std::string::npos ||
++        encoded_arguments.find(credential) != std::string::npos) {
++      return false;
++    }
++  }
++  base::ReplaceSubstringsAfterOffset(&result->safe_result.text, 0, credential,
++                                     kRedactedCredential);
++  return true;
++}
++
++bool IsPaginationRefused(const base::DictValue& root,
++                         std::string_view token_key) {
++  if (const base::Value* has_more = root.Find("has_more")) {
++    if (!has_more->is_bool() || has_more->GetBool()) {
++      return true;
++    }
++  }
++  if (const base::Value* token = root.Find(token_key)) {
++    return !token->is_string() || !token->GetString().empty();
++  }
++  return false;
++}
++
++ProviderModelListResult ModelListError(ProviderModelListState state) {
++  return {.state = state};
++}
++
++ProviderModelListState AddModel(std::string_view model,
++                                const ProviderModelListRequest& request,
++                                std::set<std::string>* seen,
++                                std::vector<std::string>* models) {
++  if (model.size() > request.max_model_id_bytes) {
++    return ProviderModelListState::kBounds;
++  }
++  if (!IsValidModelId(model, request.max_model_id_bytes)) {
++    return ProviderModelListState::kInvalidOutput;
++  }
++  if (seen->insert(std::string(model)).second) {
++    if (models->size() >= request.max_models) {
++      return ProviderModelListState::kBounds;
++    }
++    models->emplace_back(model);
++  }
++  return ProviderModelListState::kReady;
++}
++
++ProviderModelListResult ParseOpenAIStyleModelList(
++    const ProviderModelListRequest& request,
++    const base::DictValue& root) {
++  if (IsPaginationRefused(root, "next_page")) {
++    return ModelListError(ProviderModelListState::kInvalidOutput);
++  }
++  const base::ListValue* data = root.FindList("data");
++  if (!data) {
++    return ModelListError(ProviderModelListState::kInvalidOutput);
++  }
++  std::set<std::string> seen;
++  ProviderModelListResult result{.state = ProviderModelListState::kReady};
++  for (const base::Value& entry_value : *data) {
++    if (!entry_value.is_dict()) {
++      return ModelListError(ProviderModelListState::kInvalidOutput);
++    }
++    const std::string* id = entry_value.GetDict().FindString("id");
++    if (!id) {
++      return ModelListError(ProviderModelListState::kInvalidOutput);
++    }
++    ProviderModelListState state =
++        AddModel(*id, request, &seen, &result.models);
++    if (state != ProviderModelListState::kReady) {
++      return ModelListError(state);
++    }
++  }
++  return result;
++}
++
++ProviderModelListResult ParseGeminiModelList(
++    const ProviderModelListRequest& request,
++    const base::DictValue& root) {
++  if (IsPaginationRefused(root, "nextPageToken")) {
++    return ModelListError(ProviderModelListState::kInvalidOutput);
++  }
++  const base::ListValue* entries = root.FindList("models");
++  if (!entries) {
++    return ModelListError(ProviderModelListState::kInvalidOutput);
++  }
++  std::set<std::string> seen;
++  ProviderModelListResult result{.state = ProviderModelListState::kReady};
++  for (const base::Value& entry_value : *entries) {
++    if (!entry_value.is_dict()) {
++      return ModelListError(ProviderModelListState::kInvalidOutput);
++    }
++    const base::DictValue& entry = entry_value.GetDict();
++    const std::string* name = entry.FindString("name");
++    const base::ListValue* methods =
++        entry.FindList("supportedGenerationMethods");
++    if (!name || !methods) {
++      return ModelListError(ProviderModelListState::kInvalidOutput);
++    }
++    bool supports_generation = false;
++    for (const base::Value& method : *methods) {
++      if (!method.is_string()) {
++        return ModelListError(ProviderModelListState::kInvalidOutput);
++      }
++      supports_generation |= method.GetString() == "generateContent";
++    }
++    if (!supports_generation) {
++      continue;
++    }
++    constexpr std::string_view kModelsPrefix = "models/";
++    if (!std::string_view(*name).starts_with(kModelsPrefix)) {
++      return ModelListError(ProviderModelListState::kInvalidOutput);
++    }
++    std::string_view normalized =
++        std::string_view(*name).substr(kModelsPrefix.size());
++    ProviderModelListState state =
++        AddModel(normalized, request, &seen, &result.models);
++    if (state != ProviderModelListState::kReady) {
++      return ModelListError(state);
++    }
++  }
++  return result;
++}
++
++}  // namespace
+ 
+ bool IsRetryableProviderFailure(ProviderFailureKind failure) {
+   return failure == ProviderFailureKind::kNetwork ||
+@@ -14,14 +740,66 @@ bool IsRetryableProviderFailure(ProviderFailureKind failure) {
+ 
+ std::optional<std::string> EncodeProviderTurnRequest(
+     const ProviderTurnRequest& request) {
+-  return std::nullopt;
++  if (!IsValidRequest(request)) {
++    return std::nullopt;
++  }
++  base::DictValue root;
++  switch (request.family) {
++    case PrometheusProviderFamily::kOpenAICompatible:
++      root = request.use_responses_api ? EncodeOpenAIResponses(request)
++                                       : EncodeOpenAIChat(request);
++      break;
++    case PrometheusProviderFamily::kAnthropicMessages:
++      root = EncodeAnthropic(request);
++      break;
++    case PrometheusProviderFamily::kGeminiGenerateContent:
++      root = EncodeGemini(request);
++      break;
++  }
++  std::string encoded;
++  if (!base::JSONWriter::Write(root, &encoded) ||
++      encoded.size() > kMaxProviderRequestBytes) {
++    return std::nullopt;
++  }
++  return encoded;
+ }
+ 
+ ProviderTurnResult ParseProviderTurnResponse(
+     const ProviderTurnRequest& request,
+     std::string response_body,
+     std::string_view active_credential) {
+-  return {.failure = ProviderFailureKind::kInvalidOutput};
++  ScopedResponseBodyWiper wipe_body(&response_body);
++  if (!IsKnownFamily(request.family)) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  if (response_body.size() > kMaxProviderResponseBytes) {
++    return TurnError(ProviderFailureKind::kBounds);
++  }
++  if (!base::IsStringUTF8(response_body)) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  std::optional<base::DictValue> root =
++      base::JSONReader::ReadDict(response_body, base::JSON_PARSE_RFC);
++  if (!root) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  ProviderTurnResult result;
++  switch (request.family) {
++    case PrometheusProviderFamily::kOpenAICompatible:
++      result = request.use_responses_api ? ParseOpenAIResponses(request, *root)
++                                         : ParseOpenAIChat(request, *root);
++      break;
++    case PrometheusProviderFamily::kAnthropicMessages:
++      result = ParseAnthropic(request, *root);
++      break;
++    case PrometheusProviderFamily::kGeminiGenerateContent:
++      result = ParseGemini(request, *root);
++      break;
++  }
++  if (result.ok() && !SanitizeCredential(active_credential, &result)) {
++    return TurnError(ProviderFailureKind::kInvalidOutput);
++  }
++  return result;
+ }
+ 
+ ProviderModelListRequest MakeProviderModelListRequest(
+@@ -29,14 +807,40 @@ ProviderModelListRequest MakeProviderModelListRequest(
+   return {
+       .family = provider.family,
+       .supported = provider.capabilities.model_discovery,
++      .max_models = kMaxPrometheusDiscoveredModels,
++      .max_model_id_bytes = kMaxPrometheusProviderModelIdBytes,
+   };
+ }
+ 
+ ProviderModelListResult ParseProviderModelListResponse(
+     const ProviderModelListRequest& request,
+     std::string response_body) {
+-  return {.state = request.supported ? ProviderModelListState::kInvalidOutput
+-                                     : ProviderModelListState::kUnsupported};
++  ScopedResponseBodyWiper wipe_body(&response_body);
++  if (!request.supported) {
++    return ModelListError(ProviderModelListState::kUnsupported);
++  }
++  if (!IsKnownFamily(request.family)) {
++    return ModelListError(ProviderModelListState::kInvalidOutput);
++  }
++  if (response_body.size() > kMaxProviderResponseBytes) {
++    return ModelListError(ProviderModelListState::kBounds);
++  }
++  if (!base::IsStringUTF8(response_body)) {
++    return ModelListError(ProviderModelListState::kInvalidOutput);
++  }
++  std::optional<base::DictValue> root =
++      base::JSONReader::ReadDict(response_body, base::JSON_PARSE_RFC);
++  if (!root) {
++    return ModelListError(ProviderModelListState::kInvalidOutput);
++  }
++  switch (request.family) {
++    case PrometheusProviderFamily::kOpenAICompatible:
++    case PrometheusProviderFamily::kAnthropicMessages:
++      return ParseOpenAIStyleModelList(request, *root);
++    case PrometheusProviderFamily::kGeminiGenerateContent:
++      return ParseGeminiModelList(request, *root);
++  }
++  return ModelListError(ProviderModelListState::kInvalidOutput);
+ }
+ 
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+
