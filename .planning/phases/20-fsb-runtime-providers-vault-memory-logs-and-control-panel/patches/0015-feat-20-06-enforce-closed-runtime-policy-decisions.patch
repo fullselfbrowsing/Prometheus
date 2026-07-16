@@ -1,0 +1,548 @@
+From c1bfa54a0504702a182037e1fb9d1b21b05eaf45 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 04:40:04 -0500
+Subject: [PATCH] feat(20-06): enforce closed runtime policy decisions
+
+Add fresh task, agent, dispatch, ownership, and telemetry decisions.
+
+Persist a local max_active_agents cap and reject new sessions without eviction.
+
+Keep vault, ownership, confirmation, and supervision boundaries locked.
+---
+ .../prometheus/prometheus_agent_session.cc    |  25 +++-
+ .../prometheus/prometheus_agent_session.h     |   2 +
+ .../prometheus_agent_session_unittest.cc      |  50 ++++++++
+ .../prometheus/prometheus_runtime_prefs.cc    |  18 +--
+ .../prometheus/prometheus_runtime_prefs.h     |  15 ---
+ .../prometheus/prometheus_runtime_types.cc    | 105 +++++++++++++++
+ .../prometheus/prometheus_runtime_types.h     |  53 ++++++++
+ .../prometheus_runtime_types_unittest.cc      | 120 ++++++++++++++++++
+ 8 files changed, 355 insertions(+), 33 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_session.cc b/chrome/browser/prometheus/prometheus_agent_session.cc
+index 3f6d048015..5f50b73605 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session.cc
++++ b/chrome/browser/prometheus/prometheus_agent_session.cc
+@@ -55,10 +55,10 @@ AgentSessionRegistry::~AgentSessionRegistry() = default;
+ AgentSessionResult AgentSessionRegistry::CreateSession(
+     std::string display_label,
+     base::Time now) {
+-  if (active_session_count() >= max_active_sessions_) {
+-    return AgentSessionResult::Failure(
+-        AgentErrorCode::kAgentCapReached, "Agent session cap reached",
+-        "Close an existing session before creating another agent session");
++  const AgentRouteResult admission = CheckAdmission();
++  if (!admission.ok) {
++    return AgentSessionResult::Failure(admission.error_code, admission.message,
++                                       admission.recovery);
+   }
+ 
+   AgentSession session;
+@@ -156,10 +156,23 @@ size_t AgentSessionRegistry::active_session_count() const {
+   return count;
+ }
+ 
++AgentRouteResult AgentSessionRegistry::CheckAdmission() const {
++  if (active_session_count() >= max_active_sessions_) {
++    return AgentRouteResult::Failure(
++        AgentErrorCode::kAgentCapReached, "Agent session cap reached",
++        "Close an existing session before creating another agent session");
++  }
++  return AgentRouteResult::Success({});
++}
++
++void AgentSessionRegistry::SetMaxActiveAgents(size_t max_active_agents) {
++  max_active_sessions_ = std::clamp(max_active_agents, kMinimumAgentSessions,
++                                    kMaximumAgentSessions);
++}
++
+ void AgentSessionRegistry::set_max_active_sessions_for_testing(
+     size_t max_active_sessions) {
+-  max_active_sessions_ = std::clamp(max_active_sessions, kMinimumAgentSessions,
+-                                    kMaximumAgentSessions);
++  SetMaxActiveAgents(max_active_sessions);
+ }
+ 
+ const AgentSession* AgentSessionRegistry::GetSessionForTesting(
+diff --git a/chrome/browser/prometheus/prometheus_agent_session.h b/chrome/browser/prometheus/prometheus_agent_session.h
+index 6bdc31a546..96047cf76d 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session.h
++++ b/chrome/browser/prometheus/prometheus_agent_session.h
+@@ -66,6 +66,8 @@ class AgentSessionRegistry {
+   AgentRouteResult TouchSession(std::string_view session_id, base::Time now);
+   AgentRouteResult CloseSession(std::string_view session_id);
+   std::vector<std::string> ExpireSessions(base::Time now);
++  AgentRouteResult CheckAdmission() const;
++  void SetMaxActiveAgents(size_t max_active_agents);
+ 
+   bool HasSession(std::string_view session_id) const;
+   size_t active_session_count() const;
+diff --git a/chrome/browser/prometheus/prometheus_agent_session_unittest.cc b/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
+index 1e4022858b..ca1e9b0262 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
+@@ -110,6 +110,56 @@ TEST_F(PrometheusAgentSessionTest, ConfiguredCapClampsToOneAndSixtyFour) {
+                 .route_result.error_code);
+ }
+ 
++TEST_F(PrometheusAgentSessionTest,
++       ProductionSetMaxActiveAgentsRejectsOnlyNewWorkWithoutEviction) {
++  AgentSessionRegistry registry(4, kAgentReconnectGrace);
++  std::vector<std::string> active_ids;
++  for (size_t index = 0; index < 3; ++index) {
++    AgentSessionResult created = registry.CreateSession("Agent", now());
++    ASSERT_TRUE(created.session.has_value());
++    active_ids.push_back(created.session->id);
++  }
++
++  registry.SetMaxActiveAgents(1);
++  EXPECT_EQ(3u, registry.active_session_count());
++  EXPECT_EQ(3u, registry.stored_session_count_for_testing());
++  EXPECT_FALSE(registry.CheckAdmission().ok);
++  EXPECT_EQ(AgentErrorCode::kAgentCapReached,
++            registry.CheckAdmission().error_code);
++  EXPECT_EQ(AgentErrorCode::kAgentCapReached,
++            registry.CreateSession("Rejected", now()).route_result.error_code);
++
++  for (const std::string& session_id : active_ids) {
++    EXPECT_TRUE(registry.HasSession(session_id));
++    EXPECT_TRUE(registry.ValidateSession(session_id, now()).route_result.ok);
++  }
++
++  EXPECT_TRUE(registry.CloseSession(active_ids[0]).ok);
++  EXPECT_TRUE(registry.CloseSession(active_ids[1]).ok);
++  EXPECT_FALSE(registry.CheckAdmission().ok);
++  EXPECT_TRUE(registry.CloseSession(active_ids[2]).ok);
++  EXPECT_TRUE(registry.CheckAdmission().ok);
++  EXPECT_TRUE(registry.CreateSession("Replacement", now()).route_result.ok);
++}
++
++TEST_F(PrometheusAgentSessionTest,
++       ProductionSetMaxActiveAgentsClampsToOneAndSixtyFour) {
++  AgentSessionRegistry registry(4, kAgentReconnectGrace);
++  registry.SetMaxActiveAgents(0);
++  EXPECT_TRUE(registry.CreateSession("First", now()).route_result.ok);
++  EXPECT_EQ(AgentErrorCode::kAgentCapReached,
++            registry.CreateSession("Second", now()).route_result.error_code);
++
++  registry.SetMaxActiveAgents(kMaximumAgentSessions + 100);
++  for (size_t index = 1; index < kMaximumAgentSessions; ++index) {
++    EXPECT_TRUE(registry.CreateSession("Agent", now()).route_result.ok)
++        << index;
++  }
++  EXPECT_EQ(
++      AgentErrorCode::kAgentCapReached,
++      registry.CreateSession("Sixty fifth", now()).route_result.error_code);
++}
++
+ TEST_F(PrometheusAgentSessionTest, UnknownSessionReturnsUnauthorized) {
+   AgentSessionRegistry registry(4, base::Minutes(5));
+ 
+diff --git a/chrome/browser/prometheus/prometheus_runtime_prefs.cc b/chrome/browser/prometheus/prometheus_runtime_prefs.cc
+index 871dd33648..71217a9d27 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_prefs.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_prefs.cc
+@@ -27,6 +27,7 @@ constexpr char kMaxTurnsKey[] = "max_turns";
+ constexpr char kMaxTotalTokensKey[] = "max_total_tokens";
+ constexpr char kMaxDurationMsKey[] = "max_duration_ms";
+ constexpr char kMaxConcurrentTasksKey[] = "max_concurrent_tasks";
++constexpr char kMaxActiveAgentsKey[] = "max_active_agents";
+ constexpr char kAllowBackgroundActionsKey[] = "allow_background_actions";
+ constexpr char kTelemetryEnabledKey[] = "telemetry_enabled";
+ constexpr char kTabOwnershipRequiredKey[] = "tab_ownership_required";
+@@ -57,6 +58,7 @@ base::DictValue PolicyToValue(const RuntimePolicy& policy) {
+   base::DictValue settings;
+   settings.Set(kAllowInternalSurfacesKey, policy.allow_internal_surfaces);
+   settings.Set(kLimitsKey, std::move(limits));
++  settings.Set(kMaxActiveAgentsKey, static_cast<int>(policy.max_active_agents));
+   settings.Set(kAllowBackgroundActionsKey, policy.allow_background_actions);
+   settings.Set(kTelemetryEnabledKey, policy.telemetry_enabled);
+   settings.Set(kTabOwnershipRequiredKey, true);
+@@ -101,6 +103,8 @@ RuntimePolicy GetEffectivePrometheusRuntimePolicy(const PrefService& prefs) {
+       settings->FindBool(kAllowBackgroundActionsKey).value_or(false);
+   policy.telemetry_enabled =
+       settings->FindBool(kTelemetryEnabledKey).value_or(false);
++  policy.max_active_agents = settings->FindInt(kMaxActiveAgentsKey)
++                                 .value_or(kDefaultRuntimeActiveAgents);
+ 
+   if (const base::DictValue* limits = settings->FindDict(kLimitsKey)) {
+     policy.limits.max_prompt_bytes = StoredLimitOrDefault(
+@@ -118,22 +122,12 @@ RuntimePolicy GetEffectivePrometheusRuntimePolicy(const PrefService& prefs) {
+     policy.limits = ClampRuntimeLimits(policy.limits);
+   }
+ 
+-  // Never accept persisted values for native-only enforcement boundaries.
+-  policy.tab_ownership_required = true;
+-  policy.vault_native_only = true;
+-  policy.vault_confirm_each_use = true;
+-  policy.supervision_ready = false;
+-  return policy;
++  return ClampRuntimePolicy(policy);
+ }
+ 
+ void SetPrometheusRuntimePolicy(PrefService& prefs,
+                                 const RuntimePolicy& requested_policy) {
+-  RuntimePolicy effective = requested_policy;
+-  effective.limits = ClampRuntimeLimits(requested_policy.limits);
+-  effective.tab_ownership_required = true;
+-  effective.vault_native_only = true;
+-  effective.vault_confirm_each_use = true;
+-  effective.supervision_ready = false;
++  const RuntimePolicy effective = ClampRuntimePolicy(requested_policy);
+ 
+   base::DictValue root = prefs.GetDict(kPrometheusRuntimeProfileData).Clone();
+   if (root.FindInt(kSchemaVersionKey) != kPrometheusRuntimeSchemaVersion) {
+diff --git a/chrome/browser/prometheus/prometheus_runtime_prefs.h b/chrome/browser/prometheus/prometheus_runtime_prefs.h
+index f3cd131547..4db1c3c6b2 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_prefs.h
++++ b/chrome/browser/prometheus/prometheus_runtime_prefs.h
+@@ -18,21 +18,6 @@ namespace prometheus {
+ inline constexpr char kPrometheusRuntimeProfileData[] = "prometheus.runtime";
+ inline constexpr int kPrometheusRuntimeSchemaVersion = 1;
+ 
+-struct RuntimePolicy {
+-  bool allow_internal_surfaces = false;
+-  RuntimeLimits limits;
+-  bool allow_background_actions = false;
+-  bool telemetry_enabled = false;
+-
+-  // These are native enforcement boundaries, not user-configurable settings.
+-  bool tab_ownership_required = true;
+-  bool vault_native_only = true;
+-  bool vault_confirm_each_use = true;
+-  bool supervision_ready = false;
+-
+-  bool operator==(const RuntimePolicy&) const = default;
+-};
+-
+ void RegisterPrometheusRuntimeProfilePrefs(
+     user_prefs::PrefRegistrySyncable* registry);
+ 
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types.cc b/chrome/browser/prometheus/prometheus_runtime_types.cc
+index a9d4385352..941dba21d3 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_types.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_types.cc
+@@ -316,6 +316,111 @@ RuntimeLimits ClampRuntimeLimits(const RuntimeLimits& limits) {
+   };
+ }
+ 
++RuntimePolicy ClampRuntimePolicy(const RuntimePolicy& policy) {
++  RuntimePolicy effective = policy;
++  effective.limits = ClampRuntimeLimits(policy.limits);
++  effective.max_active_agents =
++      std::clamp(policy.max_active_agents, kMinimumRuntimeActiveAgents,
++                 kMaximumRuntimeActiveAgents);
++  effective.tab_ownership_required = true;
++  effective.vault_native_only = true;
++  effective.vault_confirm_each_use = true;
++  effective.supervision_ready = false;
++  return effective;
++}
++
++std::string_view RuntimePolicyDecisionToString(RuntimePolicyDecision decision) {
++  switch (decision) {
++    case RuntimePolicyDecision::kAllowed:
++      return "ALLOWED";
++    case RuntimePolicyDecision::kTaskCapReached:
++      return "TASK_CAP_REACHED";
++    case RuntimePolicyDecision::kAgentCapReached:
++      return "AGENT_CAP_REACHED";
++    case RuntimePolicyDecision::kTabOwnershipRequired:
++      return "TAB_OWNERSHIP_REQUIRED";
++    case RuntimePolicyDecision::kInternalSurfaceDenied:
++      return "INTERNAL_SURFACE_DENIED";
++    case RuntimePolicyDecision::kBackgroundActionDenied:
++      return "BACKGROUND_ACTION_DENIED";
++    case RuntimePolicyDecision::kTelemetryDisabled:
++      return "TELEMETRY_DISABLED";
++  }
++  return "TELEMETRY_DISABLED";
++}
++
++std::string_view RuntimeTelemetryEventKindToString(
++    RuntimeTelemetryEventKind event) {
++  switch (event) {
++    case RuntimeTelemetryEventKind::kTaskState:
++      return "task_state";
++    case RuntimeTelemetryEventKind::kPolicyDenial:
++      return "policy_denial";
++    case RuntimeTelemetryEventKind::kProviderHealth:
++      return "provider_health";
++    case RuntimeTelemetryEventKind::kStoreCapacity:
++      return "store_capacity";
++  }
++  return "policy_denial";
++}
++
++bool IsRuntimePolicyDecisionAllowed(RuntimePolicyDecision decision) {
++  return decision == RuntimePolicyDecision::kAllowed;
++}
++
++RuntimePolicyDecision EvaluateRuntimeTaskAdmission(const RuntimePolicy& policy,
++                                                   size_t active_task_count) {
++  const RuntimePolicy effective = ClampRuntimePolicy(policy);
++  if (active_task_count >=
++      static_cast<size_t>(effective.limits.max_concurrent_tasks)) {
++    return RuntimePolicyDecision::kTaskCapReached;
++  }
++  return RuntimePolicyDecision::kAllowed;
++}
++
++RuntimePolicyDecision EvaluateRuntimeAgentAdmission(const RuntimePolicy& policy,
++                                                    size_t active_agent_count) {
++  const RuntimePolicy effective = ClampRuntimePolicy(policy);
++  if (active_agent_count >= static_cast<size_t>(effective.max_active_agents)) {
++    return RuntimePolicyDecision::kAgentCapReached;
++  }
++  return RuntimePolicyDecision::kAllowed;
++}
++
++RuntimePolicyDecision EvaluateRuntimeDispatch(const RuntimePolicy& policy,
++                                              bool internal_surface,
++                                              bool background_action,
++                                              bool target_owned) {
++  const RuntimePolicy effective = ClampRuntimePolicy(policy);
++  if (internal_surface && !effective.allow_internal_surfaces) {
++    return RuntimePolicyDecision::kInternalSurfaceDenied;
++  }
++  if (background_action && !effective.allow_background_actions) {
++    return RuntimePolicyDecision::kBackgroundActionDenied;
++  }
++  if (!target_owned) {
++    return RuntimePolicyDecision::kTabOwnershipRequired;
++  }
++  return RuntimePolicyDecision::kAllowed;
++}
++
++RuntimePolicyDecision EvaluateRuntimeTelemetryEmission(
++    const RuntimePolicy& policy,
++    RuntimeTelemetryEventKind event) {
++  const RuntimePolicy effective = ClampRuntimePolicy(policy);
++  if (!effective.telemetry_enabled) {
++    return RuntimePolicyDecision::kTelemetryDisabled;
++  }
++  switch (event) {
++    case RuntimeTelemetryEventKind::kTaskState:
++    case RuntimeTelemetryEventKind::kPolicyDenial:
++    case RuntimeTelemetryEventKind::kProviderHealth:
++    case RuntimeTelemetryEventKind::kStoreCapacity:
++      return RuntimePolicyDecision::kAllowed;
++  }
++  return RuntimePolicyDecision::kTelemetryDisabled;
++}
++
+ bool IsValidRuntimeUsage(const RuntimeUsage& usage) {
+   if (usage.input_tokens < 0 || usage.output_tokens < 0 ||
+       usage.tool_calls < 0 || usage.duration_ms < 0 ||
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types.h b/chrome/browser/prometheus/prometheus_runtime_types.h
+index 90e52204e5..8fbd1879e8 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_types.h
++++ b/chrome/browser/prometheus/prometheus_runtime_types.h
+@@ -78,6 +78,9 @@ inline constexpr int64_t kHardRuntimeCostMicrounits = 1000 * 1000 * 1000;
+ inline constexpr size_t kMaxRuntimeTaskIdBytes = 128;
+ inline constexpr size_t kMaxRuntimeSafeTitleBytes = 96;
+ inline constexpr char kRuntimeSafeTitleFallback[] = "Browser task";
++inline constexpr int64_t kMinimumRuntimeActiveAgents = 1;
++inline constexpr int64_t kDefaultRuntimeActiveAgents = 4;
++inline constexpr int64_t kMaximumRuntimeActiveAgents = 64;
+ 
+ struct RuntimeLimits {
+   int64_t max_prompt_bytes = kDefaultRuntimePromptBytes;
+@@ -90,6 +93,40 @@ struct RuntimeLimits {
+   bool operator==(const RuntimeLimits&) const = default;
+ };
+ 
++struct RuntimePolicy {
++  bool allow_internal_surfaces = false;
++  RuntimeLimits limits;
++  int64_t max_active_agents = kDefaultRuntimeActiveAgents;
++  bool allow_background_actions = false;
++  // Enabled telemetry is local-only and accepts only the closed event enum.
++  bool telemetry_enabled = false;
++
++  // Native enforcement boundaries cannot be weakened by persisted input.
++  bool tab_ownership_required = true;
++  bool vault_native_only = true;
++  bool vault_confirm_each_use = true;
++  bool supervision_ready = false;
++
++  bool operator==(const RuntimePolicy&) const = default;
++};
++
++enum class RuntimePolicyDecision {
++  kAllowed,
++  kTaskCapReached,
++  kAgentCapReached,
++  kTabOwnershipRequired,
++  kInternalSurfaceDenied,
++  kBackgroundActionDenied,
++  kTelemetryDisabled,
++};
++
++enum class RuntimeTelemetryEventKind {
++  kTaskState,
++  kPolicyDenial,
++  kProviderHealth,
++  kStoreCapacity,
++};
++
+ struct RuntimeUsage {
+   int64_t input_tokens = 0;
+   int64_t output_tokens = 0;
+@@ -135,6 +172,22 @@ bool IsLegalRuntimeTaskTransition(RuntimeTaskState from, RuntimeTaskState to);
+ bool IsTerminalRuntimeTaskState(RuntimeTaskState state);
+ 
+ RuntimeLimits ClampRuntimeLimits(const RuntimeLimits& limits);
++RuntimePolicy ClampRuntimePolicy(const RuntimePolicy& policy);
++std::string_view RuntimePolicyDecisionToString(RuntimePolicyDecision decision);
++std::string_view RuntimeTelemetryEventKindToString(
++    RuntimeTelemetryEventKind event);
++bool IsRuntimePolicyDecisionAllowed(RuntimePolicyDecision decision);
++RuntimePolicyDecision EvaluateRuntimeTaskAdmission(const RuntimePolicy& policy,
++                                                   size_t active_task_count);
++RuntimePolicyDecision EvaluateRuntimeAgentAdmission(const RuntimePolicy& policy,
++                                                    size_t active_agent_count);
++RuntimePolicyDecision EvaluateRuntimeDispatch(const RuntimePolicy& policy,
++                                              bool internal_surface,
++                                              bool background_action,
++                                              bool target_owned);
++RuntimePolicyDecision EvaluateRuntimeTelemetryEmission(
++    const RuntimePolicy& policy,
++    RuntimeTelemetryEventKind event);
+ bool IsValidRuntimeUsage(const RuntimeUsage& usage);
+ std::optional<RuntimeUsage> AddRuntimeUsage(const RuntimeUsage& left,
+                                             const RuntimeUsage& right);
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
+index eced89ee9e..068d41c126 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
+@@ -445,6 +445,126 @@ TEST_F(PrometheusRuntimeTypesTest, WritesOnlyClampedEffectivePolicy) {
+   EXPECT_FALSE(stored->FindBool("supervision_ready").value_or(true));
+ }
+ 
++TEST_F(PrometheusRuntimeTypesTest, PolicyAdmissionUsesFreshTaskAndAgentCaps) {
++  RuntimePolicy policy;
++  policy.limits.max_concurrent_tasks = 2;
++  policy.max_active_agents = 3;
++
++  EXPECT_EQ(RuntimePolicyDecision::kAllowed,
++            EvaluateRuntimeTaskAdmission(policy, 1));
++  EXPECT_EQ(RuntimePolicyDecision::kTaskCapReached,
++            EvaluateRuntimeTaskAdmission(policy, 2));
++  EXPECT_EQ(RuntimePolicyDecision::kAllowed,
++            EvaluateRuntimeAgentAdmission(policy, 2));
++  EXPECT_EQ(RuntimePolicyDecision::kAgentCapReached,
++            EvaluateRuntimeAgentAdmission(policy, 3));
++  EXPECT_EQ("TASK_CAP_REACHED", RuntimePolicyDecisionToString(
++                                    RuntimePolicyDecision::kTaskCapReached));
++  EXPECT_EQ("AGENT_CAP_REACHED", RuntimePolicyDecisionToString(
++                                     RuntimePolicyDecision::kAgentCapReached));
++}
++
++TEST_F(PrometheusRuntimeTypesTest,
++       PolicyAdmissionPrefsDefaultClampAndLocalScope) {
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusRuntimeProfilePrefs(prefs.registry());
++
++  EXPECT_EQ(kDefaultRuntimeActiveAgents,
++            GetEffectivePrometheusRuntimePolicy(prefs).max_active_agents);
++  EXPECT_EQ(0u, prefs.registry()->GetRegistrationFlags(
++                    kPrometheusRuntimeProfileData));
++
++  RuntimePolicy requested;
++  requested.max_active_agents = 0;
++  SetPrometheusRuntimePolicy(prefs, requested);
++  EXPECT_EQ(kMinimumRuntimeActiveAgents,
++            GetEffectivePrometheusRuntimePolicy(prefs).max_active_agents);
++
++  requested.max_active_agents = kMaximumRuntimeActiveAgents + 100;
++  SetPrometheusRuntimePolicy(prefs, requested);
++  EXPECT_EQ(kMaximumRuntimeActiveAgents,
++            GetEffectivePrometheusRuntimePolicy(prefs).max_active_agents);
++  const base::DictValue* stored =
++      prefs.GetDict(kPrometheusRuntimeProfileData).FindDict("settings");
++  ASSERT_NE(nullptr, stored);
++  EXPECT_EQ(static_cast<int>(kMaximumRuntimeActiveAgents),
++            stored->FindInt("max_active_agents"));
++}
++
++TEST_F(PrometheusRuntimeTypesTest,
++       PolicyDispatchDeniesBeforeDelegateAndRequiresOwnership) {
++  RuntimePolicy policy;
++  int dispatch_count = 0;
++  const auto maybe_dispatch =
++      [&dispatch_count](const RuntimePolicy& current, bool internal_surface,
++                        bool background_action, bool target_owned) {
++        const RuntimePolicyDecision decision = EvaluateRuntimeDispatch(
++            current, internal_surface, background_action, target_owned);
++        if (IsRuntimePolicyDecisionAllowed(decision)) {
++          ++dispatch_count;
++        }
++        return decision;
++      };
++
++  EXPECT_EQ(RuntimePolicyDecision::kInternalSurfaceDenied,
++            maybe_dispatch(policy, true, false, true));
++  EXPECT_EQ(RuntimePolicyDecision::kBackgroundActionDenied,
++            maybe_dispatch(policy, false, true, true));
++  EXPECT_EQ(0, dispatch_count);
++
++  policy.allow_internal_surfaces = true;
++  policy.allow_background_actions = true;
++  EXPECT_EQ(RuntimePolicyDecision::kTabOwnershipRequired,
++            maybe_dispatch(policy, true, true, false));
++  EXPECT_EQ(0, dispatch_count);
++  EXPECT_EQ(RuntimePolicyDecision::kAllowed,
++            maybe_dispatch(policy, true, true, true));
++  EXPECT_EQ(1, dispatch_count);
++}
++
++TEST_F(PrometheusRuntimeTypesTest,
++       TelemetryOffBlocksClosedEventsAtEmissionSource) {
++  RuntimePolicy policy;
++  int emitted_events = 0;
++  const auto maybe_emit = [&emitted_events](const RuntimePolicy& current,
++                                            RuntimeTelemetryEventKind event) {
++    const RuntimePolicyDecision decision =
++        EvaluateRuntimeTelemetryEmission(current, event);
++    if (IsRuntimePolicyDecisionAllowed(decision)) {
++      ++emitted_events;
++    }
++    return decision;
++  };
++
++  EXPECT_EQ(RuntimePolicyDecision::kTelemetryDisabled,
++            maybe_emit(policy, RuntimeTelemetryEventKind::kTaskState));
++  EXPECT_EQ(RuntimePolicyDecision::kTelemetryDisabled,
++            maybe_emit(policy, RuntimeTelemetryEventKind::kPolicyDenial));
++  EXPECT_EQ(0, emitted_events);
++
++  policy.telemetry_enabled = true;
++  EXPECT_EQ(RuntimePolicyDecision::kAllowed,
++            maybe_emit(policy, RuntimeTelemetryEventKind::kProviderHealth));
++  EXPECT_EQ(1, emitted_events);
++  EXPECT_EQ("store_capacity", RuntimeTelemetryEventKindToString(
++                                  RuntimeTelemetryEventKind::kStoreCapacity));
++}
++
++TEST_F(PrometheusRuntimeTypesTest,
++       LockedVaultPolicyIgnoresEveryWeakeningInput) {
++  RuntimePolicy requested;
++  requested.tab_ownership_required = false;
++  requested.vault_native_only = false;
++  requested.vault_confirm_each_use = false;
++  requested.supervision_ready = true;
++
++  const RuntimePolicy effective = ClampRuntimePolicy(requested);
++  EXPECT_TRUE(effective.tab_ownership_required);
++  EXPECT_TRUE(effective.vault_native_only);
++  EXPECT_TRUE(effective.vault_confirm_each_use);
++  EXPECT_FALSE(effective.supervision_ready);
++}
++
+ }  // namespace
+ 
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+
