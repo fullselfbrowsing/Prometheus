@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 20
 current_phase_name: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
-current_plan: 8
+current_plan: 9
 status: executing
-stopped_at: Completed 20-07-PLAN.md
-last_updated: "2026-07-16T14:02:22-05:00"
+stopped_at: Completed 20-08-PLAN.md
+last_updated: "2026-07-16T15:23:22-05:00"
 last_activity: 2026-07-16
 progress:
   total_phases: 14
   completed_phases: 9
   total_plans: 66
-  completed_plans: 59
-  percent: 89
+  completed_plans: 60
+  percent: 91
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: `.planning/PROJECT.md` (updated 2026-07-13)
 **Core value:** Agents get fast, precise, auditable whole-browser control
 through DOM/native structure rather than screenshots or extension injection.
 
-**Current focus:** Execute Phase 20 Plan 8 of 14: vault metadata, private
-Agent-authority secret insertion, exact-target confirmation, and fail-closed
-secret lifecycle behavior.
+**Current focus:** Execute Phase 20 Plan 9 of 14: expose the 27 closed runtime
+commands through the authenticated native gateway without weakening exact
+Browser, secret, or caller authority.
 
 **Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
 external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
@@ -37,22 +37,26 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 20 (FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel) — EXECUTING
-Plan: 8 of 14
+Plan: 9 of 14
 **Current Phase:** 20
 **Current Phase Name:** FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
 **Total Phases:** 14
 **Completed Phases:** 9
-**Current Plan:** 8
+**Current Plan:** 9
 **Total Plans in Phase:** 14
 **Status:** Ready to execute
-**Progress:** [█████████░] 89%
+**Progress:** [█████████░] 91%
 **Last Activity:** 2026-07-16
-**Last Activity Description:** Completed Phase 20 Plan 7 native runtime assembly, bounded fallback, cancellation, and 20-case evaluation
+**Last Activity Description:** Completed Phase 20 Plan 8 native vault metadata, private exact-window insertion authority, and fail-closed confirmation races
 
-Milestone work is 59 of 66 plans complete (89%); cumulative project work is
-110 of 117 existing plans summarized (94%).
+Milestone work is 60 of 66 plans complete (91%); cumulative project work is
+111 of 117 existing plans summarized (95%).
 
 ## Latest Evidence
+
+- Phase 20 Plan 8: exact list guards select 7 Vault, 5 confirmed-Agent, 11
+  SecretStore, and 5 browser cases; focused units are 23/23 green and serial
+  exact-window browser confirmation is 5/5 green.
 
 - Phase 20 Plan 7: exact combined Runtime, Store, Codec, Transport, Registry,
   Agent-session, and Bootstrap regression is 121/121 green; the executor runs
@@ -109,6 +113,9 @@ Milestone work is 59 of 66 plans complete (89%); cumulative project work is
 | 20 | Keep local runtime authority in a private move-only exact-Browser/tab principal and never serialize prompt or authority identifiers. |
 | 20 | Retry only typed pre-mutation provider failures in registry order while preserving the exact bounded request and requiring unchanged current provider configuration. |
 | 20 | Generation-fence every asynchronous continuation, revalidate fresh policy and authority, and retain known usage while leaving unavailable cost unknown. |
+| 20 | Keep confirmed vault insertion as a move-only C++-only Agent authority method with no Agent/runtime route, transport schema, catalog entry, or model tool. |
+| 20 | Bind vault confirmation to the exact Browser/profile/window/tab/owner/origin/frame/document/refs/focus and revalidate before decrypt, before insertion, and before every typed field. |
+| 20 | Give MCP only a short-lived one-use identical-retry approval; no approval token or secret crosses the response. |
 
 ## Performance Metrics
 
@@ -117,6 +124,7 @@ Milestone work is 59 of 66 plans complete (89%); cumulative project work is
 | Phase 20 P05 | 55min | 3 tasks | 15 files |
 | Phase 20 P06 | 25min | 2 tasks | 17 files |
 | Phase 20 P07 | 9h11min | 4 tasks | 19 files |
+| Phase 20 P08 | 1h16min | 3 tasks | 18 files |
 
 ## Blockers and Deferred Items
 
@@ -126,11 +134,11 @@ Milestone work is 59 of 66 plans complete (89%); cumulative project work is
 
 ## Session
 
-**Last Date:** 2026-07-16T14:02:22-05:00
-**Stopped At:** Completed 20-07-PLAN.md
+**Last Date:** 2026-07-16T15:23:22-05:00
+**Stopped At:** Completed 20-08-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute Phase 20 Plan 8, then continue Plans 9-14 with mandatory automated
+Execute Phase 20 Plan 9, then continue Plans 10-14 with mandatory automated
 gates. Do not run human UAT.
