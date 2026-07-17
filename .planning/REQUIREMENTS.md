@@ -111,7 +111,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 - [ ] **FSB-02**: Browser can run tasks through Auto-selected hosted/routed/local execution or explicit Provider/Local execution, with visible progress, cancellation, final result, and failure reporting; external MCP is a submission/provenance adapter to the same native runtime, never an execution mode or embedded engine.
 - [ ] **FSB-03**: User can configure providers for OpenAI, Anthropic, Gemini, xAI, OpenRouter, LM Studio, hosted/routed/local/custom endpoints, and fallback order.
 - [ ] **FSB-04**: Provider secrets are saved through platform/browser secure storage and never displayed after save.
-- [ ] **FSB-05**: Browser stores and displays task logs, action history, diagnostics, metrics, token/cost accounting, and task outcomes.
+- [x] **FSB-05**: Browser stores and displays task logs, action history, diagnostics, metrics, token/cost accounting, and task outcomes.
 - [x] **FSB-06**: Browser provides memory and site-guide primitives for saving, listing, retrieving, and applying site-specific automation knowledge.
 - [ ] **FSB-07**: Browser provides vault metadata and native-only secret flows with explicit confirmation for autofill-like actions.
 - [ ] **FSB-08**: User-facing settings expose internal-surface permissions, agent caps, tab ownership, background actions, telemetry, vault boundaries, and supervision pairing.
@@ -177,7 +177,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 | AGENT-01..AGENT-08 | Phase 17 | Complete |
 | PAGE-01..PAGE-08 | Phase 18 | Complete |
 | MCP-01..MCP-07 | Phase 19 | Complete |
-| FSB-01..FSB-08 | Phase 20 | In Progress (FSB-01 and FSB-06 complete; FSB-02/FSB-05/FSB-08 progressed; FSB-07 native authority complete but its UI remains pending) |
+| FSB-01..FSB-08 | Phase 20 | In Progress (FSB-01, FSB-05, and FSB-06 complete; FSB-02/FSB-03/FSB-08 progressed; FSB-07 native authority complete but its UI remains pending) |
 | SUP-01..SUP-05 | Phase 21 | Planned |
 | EXT-01..EXT-06 | Phase 22 | Planned |
 | REL-01..REL-07 | Phases 23-24 | Planned |
@@ -187,10 +187,10 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 - v2 active requirements: 92 total
 - mapped to phases: 92
 - unmapped: 0
-- complete through Phase 20 so far: 68
-- in progress: 6
+- complete through Phase 20 so far: 69
+- in progress: 5
 - planned in Phases 21-24: 18
 - planned phases: 14
 
 ---
-*Requirements defined: 2026-06-17; reconciled: 2026-07-16*
+*Requirements defined: 2026-06-17; reconciled: 2026-07-17*
