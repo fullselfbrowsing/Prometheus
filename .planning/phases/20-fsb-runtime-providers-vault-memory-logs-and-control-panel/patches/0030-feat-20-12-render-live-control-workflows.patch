@@ -1,0 +1,1725 @@
+From 26c97bd4b4806c296273c78b713947a60c50e63f Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 23:39:00 -0500
+Subject: [PATCH] feat(20-12): render live control workflows
+
+---
+ .../prometheus/prometheus_control_panel.html  | 239 +++++--
+ .../resources/prometheus/prometheus_webui.css | 311 ++++++++-
+ .../resources/prometheus/prometheus_webui.js  | 658 +++++++++++++++++-
+ .../prometheus_web_ui_browsertest.cc          | 304 +++++++-
+ 4 files changed, 1438 insertions(+), 74 deletions(-)
+
+diff --git a/chrome/browser/resources/prometheus/prometheus_control_panel.html b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+index bb52434507..be00f626c3 100644
+--- a/chrome/browser/resources/prometheus/prometheus_control_panel.html
++++ b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+@@ -16,33 +16,43 @@
+           <div class="brand__meta">Powered by FSB</div>
+         </div>
+         <div class="control-status" aria-label="Control panel status">
+-          <span class="status">shell ready</span>
+-          <span class="status">metadata only</span>
++          <span class="status" id="control-native-status">loading runtime</span>
++          <span class="status" id="control-provider-status">providers loading</span>
+         </div>
+       </header>
+       <div class="control-shell">
+-        <nav class="section-rail" aria-label="FSB Control Panel sections">
+-          <button data-section-target="tasks" aria-selected="true">Tasks</button>
+-          <button data-section-target="providers" aria-selected="false">
++        <nav class="section-rail" aria-label="FSB Control Panel sections"
++            role="tablist" aria-orientation="vertical">
++          <button data-section-target="tasks" role="tab" tabindex="0"
++              aria-controls="section-tasks" aria-selected="true">Tasks</button>
++          <button data-section-target="providers" role="tab" tabindex="-1"
++              aria-controls="section-providers" aria-selected="false">
+             Providers &amp; Models
+           </button>
+-          <button data-section-target="mcp" aria-selected="false">
++          <button data-section-target="mcp" role="tab" tabindex="-1"
++              aria-controls="section-mcp" aria-selected="false">
+             MCP Status
+           </button>
+-          <button data-section-target="permissions" aria-selected="false">
++          <button data-section-target="permissions" role="tab" tabindex="-1"
++              aria-controls="section-permissions" aria-selected="false">
+             Permissions &amp; Agents
+           </button>
+-          <button data-section-target="vault" aria-selected="false">Vault</button>
+-          <button data-section-target="memory" aria-selected="false">
++          <button data-section-target="vault" role="tab" tabindex="-1"
++              aria-controls="section-vault" aria-selected="false">Vault</button>
++          <button data-section-target="memory" role="tab" tabindex="-1"
++              aria-controls="section-memory" aria-selected="false">
+             Memory &amp; Site Guides
+           </button>
+-          <button data-section-target="logs" aria-selected="false">
++          <button data-section-target="logs" role="tab" tabindex="-1"
++              aria-controls="section-logs" aria-selected="false">
+             Logs &amp; Diagnostics
+           </button>
+-          <button data-section-target="supervision" aria-selected="false">
++          <button data-section-target="supervision" role="tab" tabindex="-1"
++              aria-controls="section-supervision" aria-selected="false">
+             Supervision &amp; Pairing
+           </button>
+-          <button data-section-target="parity" aria-selected="false">
++          <button data-section-target="parity" role="tab" tabindex="-1"
++              aria-controls="section-parity" aria-selected="false">
+             Parity Matrix
+           </button>
+         </nav>
+@@ -58,55 +68,126 @@
+           <option value="supervision">Supervision &amp; Pairing</option>
+           <option value="parity">Parity Matrix</option>
+         </select>
+-        <section class="section-panel" id="section-tasks"
+-            data-section-panel="tasks">
+-          <h1>Tasks</h1>
+-          <h2>No tasks yet</h2>
+-          <p class="empty-copy">
+-            Ask Prometheus to work in this browser. Tasks will appear here with
+-            progress, cost, and final result.
+-          </p>
+-          <table class="meta-table" aria-label="Task metadata">
+-            <tbody>
+-              <tr><th scope="row">Queue</th><td>Empty</td></tr>
+-              <tr><th scope="row">Runtime</th><td>Not connected</td></tr>
+-            </tbody>
+-          </table>
++        <section class="section-panel control-workflow" id="section-tasks"
++            data-section-panel="tasks" role="tabpanel" tabindex="-1"
++            aria-labelledby="control-tasks-heading">
++          <div class="control-heading-row">
++            <div>
++              <h1 id="control-tasks-heading">Tasks</h1>
++              <p class="control-state" id="control-tasks-state"
++                  role="status" aria-live="polite">Loading native tasks</p>
++            </div>
++            <button class="quiet-button control-refresh" type="button"
++                id="control-refresh">Refresh</button>
++          </div>
++          <label class="control-search" for="control-task-search">
++            Search safe task metadata
++            <input id="control-task-search" type="search"
++                autocomplete="off"
++                placeholder="Safe title, task ID, provider, or model">
++          </label>
++          <div class="control-list" id="control-task-list" role="list"
++              aria-label="Profile tasks" aria-busy="true"></div>
+         </section>
+-        <section class="section-panel" id="section-providers"
+-            data-section-panel="providers" hidden>
+-          <h1>Providers &amp; Models</h1>
+-          <h2>No provider configured</h2>
+-          <p class="empty-copy">
+-            Choose a provider, model, endpoint, and save from the control panel.
+-          </p>
++        <section class="section-panel control-workflow" id="section-providers"
++            data-section-panel="providers" role="tabpanel" tabindex="-1"
++            aria-labelledby="control-providers-heading" hidden>
++          <div class="control-heading-row">
++            <div>
++              <h1 id="control-providers-heading">Providers &amp; Models</h1>
++              <p class="control-state" id="control-providers-state"
++                  role="status" aria-live="polite">Loading provider metadata</p>
++            </div>
++            <button class="primary control-add-provider" type="button"
++                id="control-add-provider">Add provider</button>
++          </div>
++          <div class="control-list" id="control-provider-list" role="list"
++              aria-label="Configured providers" aria-busy="true"></div>
++          <form class="control-provider-form" id="control-provider-form" hidden>
++            <h2 id="control-provider-form-title">Add provider metadata</h2>
++            <div class="control-form-grid">
++              <label>Provider ID
++                <input name="provider_id" maxlength="64" required
++                    autocomplete="off" pattern="[A-Za-z0-9._-]+">
++              </label>
++              <label>Label
++                <input name="label" maxlength="256" required autocomplete="off">
++              </label>
++              <label>Kind
++                <select name="kind" required>
++                  <option value="openai">OpenAI</option>
++                  <option value="anthropic">Anthropic</option>
++                  <option value="gemini">Gemini</option>
++                  <option value="xai">xAI</option>
++                  <option value="openrouter">OpenRouter</option>
++                  <option value="lm_studio">LM Studio</option>
++                  <option value="hosted">Hosted</option>
++                  <option value="routed">Routed</option>
++                  <option value="local">Local</option>
++                  <option value="custom">Custom</option>
++                </select>
++              </label>
++              <label>Route class
++                <select name="route_class" required>
++                  <option value="hosted">Hosted</option>
++                  <option value="routed">Routed</option>
++                  <option value="local">Local</option>
++                  <option value="custom">Custom</option>
++                </select>
++              </label>
++              <label class="control-field-wide">Canonical endpoint
++                <input name="endpoint" type="url" maxlength="2048" required
++                    autocomplete="off" placeholder="https://host.example/v1/">
++              </label>
++              <label>Model ID
++                <input name="model_id" maxlength="256" required
++                    autocomplete="off">
++              </label>
++              <label>Fallback rank
++                <input name="fallback_rank" type="number" min="0" max="31"
++                    step="1" value="0" required>
++              </label>
++              <label>Input rate (microunits)
++                <input name="input_rate_microunits" type="number" min="0"
++                    max="1000000000" step="1" value="0" required>
++              </label>
++              <label>Output rate (microunits)
++                <input name="output_rate_microunits" type="number" min="0"
++                    max="1000000000" step="1" value="0" required>
++              </label>
++              <label class="control-check"><input name="enabled"
++                  type="checkbox" checked> Enabled</label>
++              <label class="control-check"><input name="trusted"
++                  type="checkbox"> Trusted metadata</label>
++            </div>
++            <div class="control-form-actions">
++              <button class="primary" type="submit">Save metadata</button>
++              <button class="quiet-button" type="button"
++                  id="control-provider-form-cancel">Cancel</button>
++            </div>
++          </form>
+           <p class="security-note">
+-            Provider secret blocked. Store keys from the native Prometheus UI.
++            Provider secrets stay in native secure storage. This form accepts
++            metadata only and has no key, secret, authorization, or header field.
+           </p>
++          <p class="control-operation" id="control-provider-operation"
++              role="alert" aria-live="assertive"></p>
+         </section>
+         <section class="section-panel" id="section-mcp" data-section-panel="mcp"
+-            hidden>
++            role="tabpanel" tabindex="-1" hidden>
+           <h1>MCP Status</h1>
+-          <h2>MCP bridge offline</h2>
+-          <p class="empty-copy">
+-            Start Prometheus with the native agent server enabled, then refresh
+-            diagnostics.
+-          </p>
++          <h2 id="control-mcp-state">Loading native transport</h2>
++          <p class="empty-copy" id="control-mcp-policy"></p>
+         </section>
+         <section class="section-panel" id="section-permissions"
+-            data-section-panel="permissions" hidden>
++            data-section-panel="permissions" role="tabpanel" tabindex="-1"
++            hidden>
+           <h1>Permissions &amp; Agents</h1>
+-          <h2>No agent permissions granted</h2>
+-          <p class="empty-copy">
+-            Grant per-scope internal-surface access before agents control
+-            browser state.
+-          </p>
+-          <p class="security-note">
+-            Permission blocked. Enable internal-surface control for this scope.
+-          </p>
++          <div class="control-metric-grid" id="control-permissions-summary"
++              aria-live="polite"></div>
+         </section>
+         <section class="section-panel" id="section-vault"
+-            data-section-panel="vault" hidden>
++            data-section-panel="vault" role="tabpanel" tabindex="-1" hidden>
+           <h1>Vault</h1>
+           <h2>No vault entries</h2>
+           <p class="empty-copy">
+@@ -117,7 +198,7 @@
+           </p>
+         </section>
+         <section class="section-panel" id="section-memory"
+-            data-section-panel="memory" hidden>
++            data-section-panel="memory" role="tabpanel" tabindex="-1" hidden>
+           <h1>Memory &amp; Site Guides</h1>
+           <h2>No memory guides</h2>
+           <p class="empty-copy">
+@@ -125,22 +206,48 @@
+             native runtime is connected.
+           </p>
+         </section>
+-        <section class="section-panel" id="section-logs"
+-            data-section-panel="logs" hidden>
+-          <h1>Logs &amp; Diagnostics</h1>
+-          <h2>No runtime logs yet</h2>
+-          <p class="empty-copy">Run a task or refresh diagnostics.</p>
++        <section class="section-panel control-workflow" id="section-logs"
++            data-section-panel="logs" role="tabpanel" tabindex="-1"
++            aria-labelledby="control-logs-heading" hidden>
++          <div class="control-heading-row">
++            <div>
++              <h1 id="control-logs-heading">Logs &amp; Diagnostics</h1>
++              <p class="control-state" id="control-logs-state"
++                  role="status" aria-live="polite">Loading observability data</p>
++            </div>
++            <button class="danger-button" type="button"
++                id="control-clear-logs">Clear logs</button>
++          </div>
++          <div class="control-filter-grid">
++            <label>Record class
++              <select id="control-log-class">
++                <option value="all">All records</option>
++                <option value="event">Events</option>
++                <option value="action">Actions</option>
++                <option value="diagnostic">Diagnostics</option>
++              </select>
++            </label>
++            <label>Task ID
++              <input id="control-log-task" maxlength="128"
++                  autocomplete="off" placeholder="Optional exact task ID">
++            </label>
++          </div>
++          <div class="control-metric-grid" id="control-usage-summary"></div>
++          <div class="control-list control-log-list" id="control-log-list"
++              role="list" aria-label="Content-free runtime records"
++              aria-busy="true"></div>
+         </section>
+         <section class="section-panel" id="section-supervision"
+-            data-section-panel="supervision" hidden>
++            data-section-panel="supervision" role="tabpanel" tabindex="-1"
++            hidden>
+           <h1>Supervision &amp; Pairing</h1>
+-          <h2>No active supervision session</h2>
++          <h2>Not ready</h2>
+           <p class="empty-copy">
+-            Pair a dashboard to begin supervised DOM-native viewing.
++            Supervision and pairing remain unavailable until Phase 21.
+           </p>
+         </section>
+         <section class="section-panel" id="section-parity"
+-            data-section-panel="parity" hidden>
++            data-section-panel="parity" role="tabpanel" tabindex="-1" hidden>
+           <h1>Parity Matrix</h1>
+           <h2>No parity rows loaded</h2>
+           <p class="empty-copy">
+@@ -148,6 +255,18 @@
+           </p>
+         </section>
+       </div>
++      <dialog id="control-clear-logs-dialog"
++          aria-labelledby="control-clear-logs-title">
++        <form method="dialog">
++          <h2 id="control-clear-logs-title">Clear logs and diagnostics?</h2>
++          <p>Task records and accounting stay intact.</p>
++          <div class="dialog-actions">
++            <button class="quiet-button" value="cancel" autofocus>Keep logs</button>
++            <button class="danger-button" value="confirm"
++                id="control-clear-logs-confirm">Clear logs</button>
++          </div>
++        </form>
++      </dialog>
+     </main>
+   </body>
+ </html>
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.css b/chrome/browser/resources/prometheus/prometheus_webui.css
+index 9a157eacd4..8878ea6952 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.css
++++ b/chrome/browser/resources/prometheus/prometheus_webui.css
+@@ -628,6 +628,7 @@ textarea {
+   display: grid;
+   gap: 16px;
+   grid-template-columns: minmax(180px, 240px) 1fr;
++  min-width: 0;
+ }
+ 
+ .control-status {
+@@ -648,7 +649,7 @@ textarea {
+   border: 1px solid var(--prometheus-surface-3);
+   border-radius: 8px;
+   color: var(--prometheus-text);
+-  min-height: 36px;
++  min-height: 48px;
+   overflow: hidden;
+   padding: 0 10px;
+   text-align: left;
+@@ -667,12 +668,13 @@ textarea {
+   border-radius: 8px;
+   color: var(--prometheus-text);
+   display: none;
+-  min-height: 40px;
++  min-height: 48px;
+   padding: 0 10px;
+ }
+ 
+ .section-panel {
+   min-height: 260px;
++  min-width: 0;
+   padding: 16px;
+ }
+ 
+@@ -731,6 +733,262 @@ textarea {
+   font-size: 11px;
+ }
+ 
++.control-workflow {
++  display: flex;
++  flex-direction: column;
++  gap: 16px;
++}
++
++.control-heading-row {
++  align-items: flex-start;
++  display: flex;
++  gap: 16px;
++  justify-content: space-between;
++}
++
++.control-state,
++.control-operation,
++.control-note {
++  color: var(--prometheus-text-muted);
++  font-size: 12px;
++  margin: 6px 0 0;
++}
++
++.control-operation {
++  min-height: 18px;
++}
++
++.control-search,
++.control-form-grid label,
++.control-filter-grid label {
++  color: var(--prometheus-text-muted);
++  display: grid;
++  font-size: 12px;
++  gap: 6px;
++}
++
++.control-search input,
++.control-form-grid input,
++.control-form-grid select,
++.control-filter-grid input,
++.control-filter-grid select {
++  background: var(--prometheus-surface-2);
++  border: 1px solid var(--prometheus-surface-3);
++  border-radius: 8px;
++  box-sizing: border-box;
++  color: var(--prometheus-text);
++  min-height: 48px;
++  min-width: 0;
++  padding: 0 12px;
++  width: 100%;
++}
++
++.control-list {
++  display: grid;
++  gap: 12px;
++  min-width: 0;
++}
++
++.control-empty,
++.control-card,
++.control-log-row,
++.control-provider-form,
++.control-metric {
++  background: var(--prometheus-surface-2);
++  border: 1px solid var(--prometheus-surface-3);
++  border-radius: 8px;
++  box-sizing: border-box;
++  min-width: 0;
++  padding: 14px;
++}
++
++.control-empty h2,
++.control-card h2,
++.control-log-row h2,
++.control-provider-form h2 {
++  font-size: 16px;
++  margin: 0;
++}
++
++.control-card-heading {
++  align-items: flex-start;
++  display: flex;
++  gap: 12px;
++  justify-content: space-between;
++}
++
++.control-card-title,
++.control-detail dd,
++.control-log-row code {
++  overflow-wrap: anywhere;
++  word-break: break-word;
++}
++
++.control-badge {
++  background: var(--prometheus-color-accent-soft);
++  border: 1px solid rgba(255, 107, 53, 0.35);
++  border-radius: 999px;
++  color: var(--prometheus-color-accent);
++  flex: 0 0 auto;
++  font-size: 11px;
++  padding: 4px 8px;
++}
++
++.control-details {
++  display: grid;
++  gap: 1px;
++  grid-template-columns: repeat(2, minmax(0, 1fr));
++  margin: 14px 0 0;
++}
++
++.control-detail {
++  border-top: 1px solid var(--prometheus-surface-3);
++  min-width: 0;
++  padding: 9px 8px 9px 0;
++}
++
++.control-detail dt {
++  color: var(--prometheus-text-muted);
++  font-size: 11px;
++}
++
++.control-detail dd {
++  font-size: 13px;
++  margin: 3px 0 0;
++}
++
++.control-result,
++.control-recovery {
++  border-left: 2px solid var(--prometheus-color-accent);
++  margin: 12px 0 0;
++  overflow-wrap: anywhere;
++  padding-left: 10px;
++}
++
++.control-recovery {
++  border-color: var(--prometheus-warning);
++  color: #f3d18e;
++}
++
++.control-card-actions,
++.control-form-actions {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 8px;
++  margin-top: 14px;
++}
++
++.control-card-actions button,
++.control-form-actions button,
++.control-card-action,
++.control-refresh,
++.control-add-provider {
++  min-height: 48px;
++}
++
++.control-card-actions button:disabled {
++  cursor: not-allowed;
++  opacity: 0.45;
++}
++
++.control-provider-form {
++  scroll-margin-top: 16px;
++}
++
++.control-form-grid,
++.control-filter-grid {
++  display: grid;
++  gap: 12px;
++  grid-template-columns: repeat(2, minmax(0, 1fr));
++  margin-top: 14px;
++}
++
++.control-field-wide {
++  grid-column: 1 / -1;
++}
++
++.control-form-grid .control-check {
++  align-items: center;
++  display: flex;
++  min-height: 48px;
++}
++
++.control-form-grid .control-check input {
++  min-height: 20px;
++  width: 20px;
++}
++
++.control-metric-grid {
++  display: grid;
++  gap: 8px;
++  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
++}
++
++.control-metric {
++  display: grid;
++  gap: 4px;
++}
++
++.control-metric-label {
++  color: var(--prometheus-text-muted);
++  font-size: 11px;
++}
++
++.control-log-row {
++  align-items: center;
++  display: grid;
++  gap: 8px 12px;
++  grid-template-columns: auto minmax(0, 1fr) auto;
++}
++
++.control-log-row h2,
++.control-log-row p {
++  margin: 0;
++}
++
++.control-log-row p,
++.control-log-row code {
++  grid-column: 2 / -1;
++}
++
++.control-log-row time {
++  white-space: nowrap;
++}
++
++.section-rail button:focus-visible,
++.section-select:focus-visible,
++.control-search input:focus-visible,
++.control-form-grid input:focus-visible,
++.control-form-grid select:focus-visible,
++.control-filter-grid input:focus-visible,
++.control-filter-grid select:focus-visible,
++.control-card-actions button:focus-visible,
++.control-form-actions button:focus-visible,
++.control-heading-row button:focus-visible {
++  outline: 2px solid var(--prometheus-color-accent);
++  outline-offset: 2px;
++}
++
++#control-clear-logs-dialog {
++  background: var(--prometheus-surface);
++  border: 1px solid var(--prometheus-surface-3);
++  border-radius: 8px;
++  color: var(--prometheus-text);
++  max-width: min(420px, calc(100vw - 32px));
++}
++
++#control-clear-logs-dialog::backdrop {
++  background: rgba(0, 0, 0, 0.72);
++}
++
++@media (prefers-reduced-motion: reduce) {
++  .control-workflow *,
++  .section-rail * {
++    scroll-behavior: auto;
++    transition: none;
++  }
++}
++
+ @media (max-width: 719px) {
+   .control-shell {
+     grid-template-columns: 1fr;
+@@ -744,3 +1002,52 @@ textarea {
+     display: block;
+   }
+ }
++
++@media (max-width: 479px) {
++  .surface[data-prometheus-surface="control-panel"] {
++    gap: 16px;
++    padding: 12px;
++  }
++
++  .surface[data-prometheus-surface="control-panel"] .brand {
++    align-items: flex-start;
++    flex-wrap: wrap;
++  }
++
++  .control-status {
++    margin-left: 0;
++    width: 100%;
++  }
++
++  .section-panel {
++    padding: 12px;
++  }
++
++  .control-heading-row {
++    align-items: stretch;
++    flex-direction: column;
++  }
++
++  .control-details,
++  .control-form-grid,
++  .control-filter-grid {
++    grid-template-columns: minmax(0, 1fr);
++  }
++
++  .control-field-wide {
++    grid-column: auto;
++  }
++
++  .control-card-actions button,
++  .control-form-actions button {
++    flex: 1 1 100%;
++  }
++
++  .control-log-row {
++    grid-template-columns: auto minmax(0, 1fr);
++  }
++
++  .control-log-row time {
++    grid-column: 1 / -1;
++  }
++}
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.js b/chrome/browser/resources/prometheus/prometheus_webui.js
+index e879ad3362..d81058e73e 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.js
++++ b/chrome/browser/resources/prometheus/prometheus_webui.js
+@@ -14,6 +14,19 @@ window.prometheusRuntimeOperationForTesting = null;
+ window.prometheusRuntimeObserverCountForTesting = 0;
+ window.prometheusRuntimeSubmitCountForTesting = 0;
+ window.prometheusRuntimeCancelCountForTesting = 0;
++window.prometheusControlSnapshotForTesting = null;
++window.prometheusControlOperationForTesting = null;
++window.prometheusControlObserverCountForTesting = 0;
++window.prometheusControlTaskMatchCountForTesting = 0;
++
++let controlSnapshot = {
++  status: 'NOT_IMPLEMENTED',
++  tasks: [],
++  providers: [],
++  events: [],
++  actions: [],
++  diagnostics: [],
++};
+ 
+ const runtimeStateLabels = Object.freeze({
+   queued: 'Queued',
+@@ -64,8 +77,9 @@ function activateControlPanelSection(section) {
+     return;
+   }
+   for (const button of buttons) {
+-    button.setAttribute(
+-        'aria-selected', String(button.dataset.sectionTarget === section));
++    const selected = button.dataset.sectionTarget === section;
++    button.setAttribute('aria-selected', String(selected));
++    button.tabIndex = selected ? 0 : -1;
+   }
+   for (const panel of panels) {
+     panel.hidden = panel.dataset.sectionPanel !== section;
+@@ -452,6 +466,544 @@ window.prometheusReceiveAskFsbSeed = (prompt) => {
+   updateRuntimeComposer();
+ };
+ 
++function controlArray(value) {
++  return Array.isArray(value) ? value : [];
++}
++
++function controlInteger(value) {
++  const number = Number(value);
++  return Number.isSafeInteger(number) && number >= 0 ? number : 0;
++}
++
++function controlDisplayValue(value, fallback = 'Not available') {
++  if (typeof value !== 'string' || !value) {
++    return fallback;
++  }
++  return value.replaceAll('_', ' ')
++      .replace(/\b\w/g, (letter) => letter.toUpperCase());
++}
++
++function appendControlDetail(list, label, value) {
++  const wrapper = document.createElement('div');
++  wrapper.className = 'control-detail';
++  appendTextElement(wrapper, 'dt', '', label);
++  appendTextElement(wrapper, 'dd', '', String(value));
++  list.append(wrapper);
++}
++
++function makeControlEmpty(title, copy) {
++  const empty = document.createElement('div');
++  empty.className = 'control-empty';
++  appendTextElement(empty, 'h2', '', title);
++  appendTextElement(empty, 'p', 'empty-copy', copy);
++  return empty;
++}
++
++function controlTaskSearchFields(task) {
++  return [
++    task.safe_title,
++    task.task_id,
++    task.provider_id,
++    task.provider_label,
++    task.model_id,
++  ].filter((value) => typeof value === 'string');
++}
++
++function renderControlTask(task) {
++  const card = document.createElement('article');
++  card.className = 'control-card control-task-card';
++  card.dataset.taskId = typeof task.task_id === 'string' ? task.task_id : '';
++  card.dataset.taskState = typeof task.state === 'string' ? task.state : '';
++  card.setAttribute('role', 'listitem');
++
++  const heading = document.createElement('div');
++  heading.className = 'control-card-heading';
++  appendTextElement(
++      heading, 'h2', 'control-card-title', task.safe_title || 'Browser task');
++  appendTextElement(
++      heading, 'span', 'control-badge',
++      controlDisplayValue(task.state, 'Unknown'));
++  card.append(heading);
++
++  const details = document.createElement('dl');
++  details.className = 'control-details';
++  appendControlDetail(details, 'Task ID', task.task_id || 'Unavailable');
++  appendControlDetail(
++      details, 'Origin', controlDisplayValue(task.origin, 'Unknown'));
++  appendControlDetail(
++      details, 'Requested',
++      controlDisplayValue(task.requested_execution, 'Unknown'));
++  appendControlDetail(
++      details, 'Effective',
++      controlDisplayValue(task.effective_execution, 'Pending'));
++  appendControlDetail(
++      details, 'Provider', task.provider_label || task.provider_id || 'Pending');
++  appendControlDetail(details, 'Model', task.model_id || 'Pending');
++  appendControlDetail(
++      details, 'Usage',
++      `${controlInteger(task.usage?.input_tokens) +
++          controlInteger(task.usage?.output_tokens)} tokens · ` +
++          `${controlInteger(task.usage?.tool_calls)} tools · ` +
++          `${controlInteger(task.usage?.duration_ms)} ms`);
++  appendControlDetail(
++      details, 'Cost', task.usage?.cost_known ?
++          `${controlInteger(task.usage?.cost_microunits)} microunits` :
++          'Not reported');
++  appendControlDetail(
++      details, 'Activity',
++      `${controlInteger(task.event_count)} events · ` +
++          `${controlInteger(task.action_count)} actions`);
++  card.append(details);
++
++  if (typeof task.result_preview === 'string' && task.result_preview) {
++    appendTextElement(
++        card, 'p', 'control-result', `Result: ${task.result_preview}`);
++    if (task.result_truncated) {
++      appendTextElement(card, 'p', 'control-note', 'Result preview truncated');
++    }
++  }
++  if (typeof task.recovery === 'string' && task.recovery) {
++    appendTextElement(card, 'p', 'control-recovery', task.recovery);
++  }
++
++  if (!terminalRuntimeStates.has(task.state)) {
++    const cancel = appendTextElement(
++        card, 'button', 'danger-button control-card-action', 'Cancel task');
++    cancel.type = 'button';
++    cancel.dataset.controlFocusKey = `task-cancel:${task.task_id || ''}`;
++    cancel.setAttribute('aria-label', `Cancel ${task.safe_title || 'task'}`);
++    cancel.addEventListener('click', () => {
++      chrome.send('prometheusControlCancelTask', [task.task_id || '']);
++    });
++  }
++  return card;
++}
++
++function renderControlTasks() {
++  const list = document.querySelector('#control-task-list');
++  const state = document.querySelector('#control-tasks-state');
++  if (!list || !state) {
++    return;
++  }
++  const query = document.querySelector('#control-task-search')?.value
++      .trim().toLocaleLowerCase() || '';
++  const tasks = controlArray(controlSnapshot.tasks).filter((task) => {
++    if (!query) {
++      return true;
++    }
++    return controlTaskSearchFields(task).some(
++        (field) => field.toLocaleLowerCase().includes(query));
++  });
++  window.prometheusControlTaskMatchCountForTesting = tasks.length;
++  list.setAttribute('aria-busy', 'false');
++  list.replaceChildren();
++  if (!tasks.length) {
++    const hasNativeTasks = controlArray(controlSnapshot.tasks).length > 0;
++    list.append(makeControlEmpty(
++        hasNativeTasks ? 'No safe metadata matches' : 'No tasks yet',
++        hasNativeTasks ?
++            'Search safe title, task ID, provider, or model.' :
++            'Ask Prometheus to work in this browser. Tasks will appear here ' +
++                'with progress, cost, and final result.'));
++  } else {
++    for (const task of [...tasks].reverse()) {
++      list.append(renderControlTask(task));
++    }
++  }
++  state.textContent = controlSnapshot.status === 'OK' ?
++      `${controlArray(controlSnapshot.tasks).length} profile tasks · ` +
++          `${tasks.length} shown` :
++      controlSnapshot.recovery || 'Native task data unavailable';
++}
++
++function providerFormField(name) {
++  return document.querySelector('#control-provider-form')?.elements
++      .namedItem(name) || null;
++}
++
++function closeControlProviderForm() {
++  const form = document.querySelector('#control-provider-form');
++  if (!form) {
++    return;
++  }
++  form.reset();
++  form.hidden = true;
++  form.dataset.editingProviderId = '';
++  document.querySelector('#control-add-provider')?.focus({preventScroll: true});
++}
++
++function openControlProviderForm(provider = null) {
++  const form = document.querySelector('#control-provider-form');
++  if (!form) {
++    return;
++  }
++  form.reset();
++  form.hidden = false;
++  form.dataset.editingProviderId = provider?.provider_id || '';
++  const title = document.querySelector('#control-provider-form-title');
++  if (title) {
++    title.textContent = provider ? 'Edit provider metadata' :
++                                 'Add provider metadata';
++  }
++  const assign = (name, value) => {
++    const field = providerFormField(name);
++    if (field) {
++      field.value = String(value ?? '');
++    }
++  };
++  if (provider) {
++    assign('provider_id', provider.provider_id);
++    assign('label', provider.label);
++    assign('kind', provider.kind);
++    assign('route_class', provider.route_class);
++    assign('endpoint', '');
++    const endpoint = providerFormField('endpoint');
++    if (endpoint) {
++      endpoint.placeholder =
++          `${provider.canonical_origin || 'Canonical origin'} · enter full endpoint`;
++    }
++    assign('model_id', provider.model_id);
++    assign('fallback_rank', controlInteger(provider.fallback_rank));
++    assign(
++        'input_rate_microunits',
++        controlInteger(provider.input_rate_microunits));
++    assign(
++        'output_rate_microunits',
++        controlInteger(provider.output_rate_microunits));
++    const enabled = providerFormField('enabled');
++    const trusted = providerFormField('trusted');
++    if (enabled) {
++      enabled.checked = provider.enabled === true;
++    }
++    if (trusted) {
++      trusted.checked = provider.trusted === true;
++    }
++  } else {
++    assign('fallback_rank', controlArray(controlSnapshot.providers).length);
++    assign('input_rate_microunits', 0);
++    assign('output_rate_microunits', 0);
++  }
++  providerFormField('provider_id')?.focus({preventScroll: true});
++}
++
++function renderControlProvider(provider, index, providerCount) {
++  const card = document.createElement('article');
++  card.className = 'control-card control-provider-card';
++  card.setAttribute('role', 'listitem');
++  card.dataset.providerId = provider.provider_id || '';
++
++  const heading = document.createElement('div');
++  heading.className = 'control-card-heading';
++  appendTextElement(
++      heading, 'h2', 'control-card-title', provider.label || 'Provider');
++  appendTextElement(
++      heading, 'span', 'control-badge', provider.enabled ? 'Enabled' : 'Disabled');
++  card.append(heading);
++
++  const details = document.createElement('dl');
++  details.className = 'control-details';
++  appendControlDetail(details, 'Provider ID', provider.provider_id || 'Unknown');
++  appendControlDetail(
++      details, 'Kind', controlDisplayValue(provider.kind, 'Unknown'));
++  appendControlDetail(
++      details, 'Route', controlDisplayValue(provider.route_class, 'Unknown'));
++  appendControlDetail(
++      details, 'Canonical origin', provider.canonical_origin || 'Unavailable');
++  appendControlDetail(details, 'Model', provider.model_id || 'Unavailable');
++  appendControlDetail(
++      details, 'Discovery',
++      controlDisplayValue(provider.discovery_state, 'Unknown'));
++  appendControlDetail(
++      details, 'Health', controlDisplayValue(provider.health, 'Unknown'));
++  appendControlDetail(details, 'Fallback rank', controlInteger(provider.fallback_rank));
++  appendControlDetail(
++      details, 'Rates',
++      `${controlInteger(provider.input_rate_microunits)} input · ` +
++          `${controlInteger(provider.output_rate_microunits)} output`);
++  appendControlDetail(
++      details, 'Secret configured', provider.secret_configured ? 'Yes' : 'No');
++  appendControlDetail(details, 'Trusted metadata', provider.trusted ? 'Yes' : 'No');
++  card.append(details);
++
++  const models = controlArray(provider.discovered_models);
++  appendTextElement(
++      card, 'p', 'control-note', models.length ?
++          `Discovered models: ${models.join(', ')}` :
++          'No discovered models');
++
++  const actions = document.createElement('div');
++  actions.className = 'control-card-actions';
++  const addAction = (label, key, listener, disabled = false) => {
++    const button = appendTextElement(actions, 'button', 'quiet-button', label);
++    button.type = 'button';
++    button.disabled = disabled;
++    button.dataset.controlFocusKey = `${key}:${provider.provider_id || ''}`;
++    button.addEventListener('click', listener);
++    return button;
++  };
++  addAction('Move up', 'provider-up', () => {
++    chrome.send('prometheusControlMoveProvider', [provider.provider_id, 'up']);
++  }, index === 0);
++  addAction('Move down', 'provider-down', () => {
++    chrome.send(
++        'prometheusControlMoveProvider', [provider.provider_id, 'down']);
++  }, index + 1 >= providerCount);
++  addAction('Edit', 'provider-edit', () => openControlProviderForm(provider));
++  addAction(provider.enabled ? 'Disable' : 'Enable', 'provider-enabled', () => {
++    chrome.send(
++        'prometheusControlSetProviderEnabled',
++        [provider.provider_id, !provider.enabled]);
++  });
++  addAction('Discover models', 'provider-discover', () => {
++    chrome.send('prometheusControlDiscoverModels', [provider.provider_id]);
++  }, provider.discovery_state === 'not_supported' ||
++      provider.discovery_state === 'discovering');
++  addAction('Delete', 'provider-delete', () => {
++    chrome.send('prometheusControlDeleteProvider', [provider.provider_id]);
++  });
++  card.append(actions);
++  return card;
++}
++
++function renderControlProviders() {
++  const list = document.querySelector('#control-provider-list');
++  const state = document.querySelector('#control-providers-state');
++  if (!list || !state) {
++    return;
++  }
++  const providers = controlArray(controlSnapshot.providers);
++  list.setAttribute('aria-busy', 'false');
++  list.replaceChildren();
++  if (!providers.length) {
++    list.append(makeControlEmpty(
++        'No provider configured',
++        'Choose a provider, model, endpoint, and save from the control panel.'));
++  } else {
++    providers.forEach((provider, index) => {
++      list.append(renderControlProvider(provider, index, providers.length));
++    });
++  }
++  const degraded = providers.filter(
++      (provider) => provider.health === 'degraded' ||
++          provider.health === 'unavailable').length;
++  state.textContent = controlSnapshot.status !== 'OK' ?
++      controlSnapshot.recovery || 'Provider metadata unavailable' :
++      `${providers.length} configured · ${degraded} degraded`;
++}
++
++function appendControlMetric(parent, label, value) {
++  const metric = document.createElement('div');
++  metric.className = 'control-metric';
++  appendTextElement(metric, 'span', 'control-metric-label', label);
++  appendTextElement(metric, 'strong', '', String(value));
++  parent.append(metric);
++}
++
++function renderControlPermissions() {
++  const summary = document.querySelector('#control-permissions-summary');
++  if (!summary) {
++    return;
++  }
++  const policy = controlSnapshot.permissions || {};
++  summary.replaceChildren();
++  appendControlMetric(
++      summary, 'Tasks',
++      `${controlInteger(policy.active_tasks)} / ` +
++          `${controlInteger(policy.max_concurrent_tasks)}`);
++  appendControlMetric(
++      summary, 'Agents',
++      `${controlInteger(policy.active_agents)} / ` +
++          `${controlInteger(policy.max_active_agents)}`);
++  appendControlMetric(
++      summary, 'Internal surfaces', policy.allow_internal_surfaces ?
++          'Allowed by policy' : 'Blocked by policy');
++  appendControlMetric(
++      summary, 'Background actions', policy.allow_background_actions ?
++          'Allowed by policy' : 'Blocked by policy');
++  appendControlMetric(
++      summary, 'Tab ownership', policy.tab_ownership_required ?
++          'Required' : 'Unavailable');
++  appendControlMetric(summary, 'Supervision', 'Not ready');
++}
++
++function controlLogRecords() {
++  const records = [];
++  for (const event of controlArray(controlSnapshot.events)) {
++    records.push({
++      recordClass: 'event',
++      taskId: event.task_id || '',
++      timestampMs: event.timestamp_ms,
++      title: controlDisplayValue(event.kind, 'Unknown event'),
++      detail: `${controlDisplayValue(event.error_code, 'No error')} · ` +
++          `value ${Number(event.value) || 0}`,
++    });
++  }
++  for (const action of controlArray(controlSnapshot.actions)) {
++    records.push({
++      recordClass: 'action',
++      taskId: action.task_id || '',
++      timestampMs: action.timestamp_ms,
++      title: controlDisplayValue(action.kind, 'Unknown action'),
++      detail: action.succeeded ? 'Succeeded' : 'Did not succeed',
++    });
++  }
++  for (const diagnostic of controlArray(controlSnapshot.diagnostics)) {
++    records.push({
++      recordClass: 'diagnostic',
++      taskId: '',
++      timestampMs: diagnostic.timestamp_ms,
++      title: controlDisplayValue(diagnostic.kind, 'Unknown diagnostic'),
++      detail: `Count ${controlInteger(diagnostic.count)}`,
++    });
++  }
++  return records.sort(
++      (left, right) => Number(right.timestampMs) - Number(left.timestampMs));
++}
++
++function renderControlLogs() {
++  const list = document.querySelector('#control-log-list');
++  const state = document.querySelector('#control-logs-state');
++  const usage = document.querySelector('#control-usage-summary');
++  if (!list || !state || !usage) {
++    return;
++  }
++  const recordClass = document.querySelector('#control-log-class')?.value ||
++      'all';
++  const taskId = document.querySelector('#control-log-task')?.value.trim() ||
++      '';
++  const allRecords = controlLogRecords();
++  const records = allRecords.filter((record) => {
++    return (recordClass === 'all' || record.recordClass === recordClass) &&
++        (!taskId || record.taskId === taskId);
++  });
++  list.setAttribute('aria-busy', 'false');
++  list.replaceChildren();
++  if (!records.length) {
++    list.append(makeControlEmpty(
++        'No runtime logs yet', 'Run a task or refresh diagnostics.'));
++  } else {
++    for (const record of records) {
++      const row = document.createElement('article');
++      row.className = 'control-log-row';
++      row.setAttribute('role', 'listitem');
++      appendTextElement(
++          row, 'span', 'control-badge',
++          controlDisplayValue(record.recordClass));
++      appendTextElement(row, 'h2', '', record.title);
++      appendTextElement(row, 'p', 'control-note', record.detail);
++      appendTextElement(
++          row, 'time', 'control-note', safeTimeText(record.timestampMs));
++      if (record.taskId) {
++        appendTextElement(row, 'code', '', record.taskId);
++      }
++      list.append(row);
++    }
++  }
++  state.textContent = controlSnapshot.status === 'OK' ?
++      `${allRecords.length} bounded records · ${records.length} shown` :
++      controlSnapshot.recovery || 'Observability data unavailable';
++
++  const aggregate = controlSnapshot.aggregate_usage || {};
++  usage.replaceChildren();
++  appendControlMetric(
++      usage, 'Tokens',
++      controlInteger(aggregate.input_tokens) +
++          controlInteger(aggregate.output_tokens));
++  appendControlMetric(usage, 'Tool calls', controlInteger(aggregate.tool_calls));
++  appendControlMetric(usage, 'Duration',
++      `${controlInteger(aggregate.duration_ms)} ms`);
++  appendControlMetric(
++      usage, 'Cost', aggregate.cost_known ?
++          `${controlInteger(aggregate.cost_microunits)} microunits` :
++          'Not reported');
++}
++
++function restoreControlFocus(focusKey) {
++  if (!focusKey) {
++    return;
++  }
++  const target = Array.from(
++      document.querySelectorAll('[data-control-focus-key]'))
++      .find((candidate) => candidate.dataset.controlFocusKey === focusKey);
++  target?.focus({preventScroll: true});
++}
++
++function renderControlSnapshot(snapshot) {
++  const focusKey = document.activeElement?.dataset?.controlFocusKey || '';
++  controlSnapshot = snapshot && typeof snapshot === 'object' ? snapshot : {
++    status: 'INVALID_REQUEST',
++    tasks: [],
++    providers: [],
++    events: [],
++    actions: [],
++    diagnostics: [],
++    recovery: 'Refresh the control panel and retry',
++  };
++  window.prometheusControlSnapshotForTesting = controlSnapshot;
++  window.prometheusControlObserverCountForTesting++;
++  document.documentElement.dataset.controlRuntimeStatus =
++      controlSnapshot.status || 'INVALID_REQUEST';
++  const degraded = controlArray(controlSnapshot.providers).some(
++      (provider) => provider.health === 'degraded' ||
++          provider.health === 'unavailable');
++  document.documentElement.dataset.controlState =
++      controlSnapshot.status !== 'OK' ? 'error' : degraded ? 'degraded' :
++                                                       'ready';
++
++  const nativeStatus = document.querySelector('#control-native-status');
++  const providerStatus = document.querySelector('#control-provider-status');
++  if (nativeStatus) {
++    nativeStatus.textContent = controlSnapshot.status === 'OK' ?
++        'native runtime live' : 'runtime unavailable';
++  }
++  if (providerStatus) {
++    providerStatus.textContent =
++        `${controlArray(controlSnapshot.providers).length} providers`;
++  }
++  const mcpState = document.querySelector('#control-mcp-state');
++  const mcpPolicy = document.querySelector('#control-mcp-policy');
++  if (mcpState) {
++    mcpState.textContent = controlSnapshot.mcp?.status === 'native_runtime' ?
++        'Native MCP runtime available' : 'MCP runtime unavailable';
++  }
++  if (mcpPolicy) {
++    mcpPolicy.textContent =
++        `Provider mutation: ${controlSnapshot.mcp?.provider_mutation ||
++            'LOCAL_UI_REQUIRED'}`;
++  }
++
++  renderControlTasks();
++  renderControlProviders();
++  renderControlPermissions();
++  renderControlLogs();
++  restoreControlFocus(focusKey);
++}
++
++window.prometheusControlReceiveSnapshot = (snapshot) => {
++  renderControlSnapshot(snapshot);
++};
++
++window.prometheusControlReceiveOperation = (operation) => {
++  const safeOperation = operation && typeof operation === 'object' ? operation :
++      {status: 'INVALID_REQUEST', accepted: false,
++        recovery: 'Refresh the control panel and retry'};
++  window.prometheusControlOperationForTesting = safeOperation;
++  const status = document.querySelector('#control-provider-operation');
++  if (status) {
++    status.textContent = safeOperation.accepted ? 'Native change saved' :
++        safeOperation.recovery || 'Native change rejected';
++  }
++  document.documentElement.dataset.controlOperationStatus =
++      safeOperation.status || 'INVALID_REQUEST';
++  const form = document.querySelector('#control-provider-form');
++  if (form?.dataset.pendingSave === 'true') {
++    form.dataset.pendingSave = 'false';
++    if (safeOperation.accepted) {
++      closeControlProviderForm();
++    }
++  }
++};
++
+ if (surface === 'newtab') {
+   const form = document.querySelector('#ask-fsb-form');
+   const input = document.querySelector('#ask-fsb-input');
+@@ -578,14 +1130,114 @@ if (surface === 'side-panel') {
+ }
+ 
+ if (surface === 'control-panel') {
+-  document.querySelectorAll('[data-section-target]').forEach((button) => {
++  const sectionButtons = Array.from(
++      document.querySelectorAll('[data-section-target]'));
++  sectionButtons.forEach((button) => {
+     button.addEventListener('click', () => {
+       activateControlPanelSection(button.dataset.sectionTarget);
+     });
++    button.addEventListener('keydown', (event) => {
++      const index = sectionButtons.indexOf(button);
++      let nextIndex = -1;
++      if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
++        nextIndex = (index + 1) % sectionButtons.length;
++      } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
++        nextIndex =
++            (index - 1 + sectionButtons.length) % sectionButtons.length;
++      } else if (event.key === 'Home') {
++        nextIndex = 0;
++      } else if (event.key === 'End') {
++        nextIndex = sectionButtons.length - 1;
++      }
++      if (nextIndex < 0) {
++        return;
++      }
++      event.preventDefault();
++      const next = sectionButtons[nextIndex];
++      activateControlPanelSection(next.dataset.sectionTarget);
++      next.focus();
++    });
+   });
+   document.querySelector('#section-select')?.addEventListener('change',
+       (event) => {
+         activateControlPanelSection(event.target.value);
+       });
++  document.querySelector('#control-refresh')?.addEventListener('click', () => {
++    chrome.send('prometheusControlRefresh');
++  });
++  document.querySelector('#control-task-search')?.addEventListener(
++      'input', renderControlTasks);
++  document.querySelector('#control-add-provider')?.addEventListener(
++      'click', () => openControlProviderForm());
++  document.querySelector('#control-provider-form-cancel')?.addEventListener(
++      'click', closeControlProviderForm);
++  providerFormField('kind')?.addEventListener('change', (event) => {
++    const fixedRoutes = {
++      openai: 'hosted',
++      anthropic: 'hosted',
++      gemini: 'hosted',
++      xai: 'hosted',
++      openrouter: 'routed',
++      lm_studio: 'local',
++      hosted: 'hosted',
++      routed: 'routed',
++      local: 'local',
++      custom: 'custom',
++    };
++    const route = providerFormField('route_class');
++    if (route && fixedRoutes[event.target.value]) {
++      route.value = fixedRoutes[event.target.value];
++    }
++  });
++  document.querySelector('#control-provider-form')?.addEventListener(
++      'submit', (event) => {
++        event.preventDefault();
++        const form = event.currentTarget;
++        if (!form.reportValidity()) {
++          return;
++        }
++        const numberValue = (name) => Number(providerFormField(name)?.value);
++        const fallbackRank = numberValue('fallback_rank');
++        const inputRate = numberValue('input_rate_microunits');
++        const outputRate = numberValue('output_rate_microunits');
++        if (![fallbackRank, inputRate, outputRate].every(
++            (value) => Number.isSafeInteger(value) && value >= 0)) {
++          const status = document.querySelector('#control-provider-operation');
++          if (status) {
++            status.textContent = 'Rates and fallback rank must be integers';
++          }
++          return;
++        }
++        form.dataset.pendingSave = 'true';
++        chrome.send('prometheusControlSaveProvider', [{
++          provider_id: providerFormField('provider_id')?.value.trim() || '',
++          label: providerFormField('label')?.value.trim() || '',
++          kind: providerFormField('kind')?.value || '',
++          route_class: providerFormField('route_class')?.value || '',
++          endpoint: providerFormField('endpoint')?.value.trim() || '',
++          model_id: providerFormField('model_id')?.value.trim() || '',
++          enabled: providerFormField('enabled')?.checked === true,
++          fallback_rank: fallbackRank,
++          input_rate_microunits: inputRate,
++          output_rate_microunits: outputRate,
++          trusted: providerFormField('trusted')?.checked === true,
++        }]);
++      });
++  document.querySelector('#control-log-class')?.addEventListener(
++      'change', renderControlLogs);
++  document.querySelector('#control-log-task')?.addEventListener(
++      'input', renderControlLogs);
++  const clearLogsDialog = document.querySelector('#control-clear-logs-dialog');
++  document.querySelector('#control-clear-logs')?.addEventListener('click', () => {
++    clearLogsDialog?.showModal();
++  });
++  document.querySelector('#control-clear-logs-confirm')?.addEventListener(
++      'click', () => {
++        chrome.send('prometheusControlClearLogs');
++      });
++  clearLogsDialog?.addEventListener('close', () => {
++    document.querySelector('#control-clear-logs')?.focus({preventScroll: true});
++  });
+   activateControlPanelSection('tasks');
++  chrome.send('prometheusControlInitialize');
+ }
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 1d5c03a3c1..e5c0d289b8 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -313,6 +313,12 @@ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+   EXPECT_TRUE(web_contents->GetWebUI()
+                   ->GetController()
+                   ->GetAs<PrometheusControlPanelUI>());
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlSnapshotForTesting?.status === 'OK';
++    )")
++        .ExtractBool();
++  }));
+   EXPECT_TRUE(BodyContains(web_contents, "Providers & Models"));
+   EXPECT_TRUE(BodyContains(web_contents, "Logs & Diagnostics"));
+   EXPECT_TRUE(BodyContains(web_contents, "Parity Matrix"));
+@@ -328,6 +334,12 @@ IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
+   EXPECT_TRUE(web_contents->GetWebUI()
+                   ->GetController()
+                   ->GetAs<PrometheusControlPanelUI>());
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlSnapshotForTesting?.status === 'OK';
++    )")
++        .ExtractBool();
++  }));
+ 
+   EXPECT_EQ(
+       "Tasks|Providers & Models|MCP Status|Permissions & Agents|Vault|"
+@@ -349,11 +361,10 @@ IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
+   EXPECT_TRUE(BodyTextContentContains(
+       web_contents,
+       "Choose a provider, model, endpoint, and save from the control panel."));
+-  EXPECT_TRUE(BodyTextContentContains(web_contents, "MCP bridge offline"));
++  EXPECT_TRUE(
++      BodyTextContentContains(web_contents, "Native MCP runtime available"));
+   EXPECT_TRUE(BodyTextContentContains(
+-      web_contents,
+-      "Start Prometheus with the native agent server enabled, then refresh "
+-      "diagnostics."));
++      web_contents, "Provider mutation: LOCAL_UI_REQUIRED"));
+   EXPECT_TRUE(BodyTextContentContains(web_contents, "No vault entries"));
+   EXPECT_TRUE(BodyTextContentContains(
+       web_contents,
+@@ -361,17 +372,16 @@ IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
+   EXPECT_TRUE(BodyTextContentContains(web_contents, "No runtime logs yet"));
+   EXPECT_TRUE(BodyTextContentContains(web_contents,
+                                       "Run a task or refresh diagnostics."));
+-  EXPECT_TRUE(
+-      BodyTextContentContains(web_contents, "No active supervision session"));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "Not ready"));
+   EXPECT_TRUE(BodyTextContentContains(
+-      web_contents,
+-      "Pair a dashboard to begin supervised DOM-native viewing."));
++      web_contents, "Supervision and pairing remain unavailable until Phase 21."));
+   EXPECT_TRUE(BodyTextContentContains(web_contents, "No parity rows loaded"));
+   EXPECT_TRUE(BodyTextContentContains(
+       web_contents, "Generate parity evidence before claiming FSB parity."));
+   EXPECT_TRUE(BodyTextContentContains(
+       web_contents,
+-      "Provider secret blocked. Store keys from the native Prometheus UI."));
++      "Provider secrets stay in native secure storage. This form accepts "
++      "metadata only"));
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
+@@ -593,6 +603,282 @@ IN_PROC_BROWSER_TEST_F(
+                 total_control_snapshot_delivery_count_for_testing());
+ }
+ 
++IN_PROC_BROWSER_TEST_F(
++    PrometheusControlPanelBrowserTest,
++    ControlTasksRenderSafeMetadataAndSearchWithoutPromptIndex) {
++  constexpr char kSafePrompt[] =
++      "Open the docs and summarize release notes";
++  constexpr char kSafeTitle[] =
++      "Task: Open the docs and summarize release notes";
++  constexpr char kSensitivePrompt[] =
++      "Open https://control.example/?token=CHARLIE and type password=iris";
++
++  prometheus::PrometheusRuntimeProfileService* const service =
++      ConfigureLocalRuntimeProvider();
++  ASSERT_TRUE(service);
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(web_contents);
++  tabs::TabInterface* const tab = browser()->GetActiveTabInterface();
++  ASSERT_TRUE(tab);
++  prometheus::RuntimePrincipalResult principal =
++      service->CreateSidePanelPrincipal(browser(), tab->GetHandle().raw_value());
++  ASSERT_TRUE(principal.principal);
++  ASSERT_TRUE(service
++                  ->SubmitTask(*principal.principal, kSafePrompt,
++                               prometheus::RequestedExecution::kAuto)
++                  .task);
++  ASSERT_TRUE(service
++                  ->SubmitTask(*principal.principal, kSensitivePrompt,
++                               prometheus::RequestedExecution::kAuto)
++                  .task);
++
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, content::JsReplace(R"(
++      const snapshot = window.prometheusControlSnapshotForTesting;
++      snapshot?.tasks?.length >= 2 &&
++          snapshot.tasks.some(task => task.safe_title === $1);
++    )",
++                                                            kSafeTitle))
++        .ExtractBool();
++  }));
++  principal.principal.reset();
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlSnapshotForTesting.tasks.every(
++          task => ['succeeded', 'failed', 'cancelled'].includes(task.state));
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, kSafeTitle));
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    window.prometheusControlSnapshotForTesting.tasks.every(
++        task => !Object.hasOwn(task, 'prompt'));
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    const snapshot = structuredClone(
++        window.prometheusControlSnapshotForTesting);
++    snapshot.tasks.push({
++      task_id: 'legacy-schema-v1',
++      safe_title: 'Browser task',
++      origin: 'mcp',
++      requested_execution: 'auto',
++      state: 'succeeded',
++      error_code: 'none',
++      created_at_ms: 1,
++      updated_at_ms: 2,
++      usage: {
++        input_tokens: 0,
++        output_tokens: 0,
++        tool_calls: 0,
++        duration_ms: 0,
++        cost_known: false,
++      },
++      event_count: 0,
++      action_count: 0,
++    });
++    window.prometheusControlReceiveSnapshot(snapshot);
++  )"));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "Browser task"));
++
++  const auto search = [&](std::string query) {
++    EXPECT_TRUE(content::ExecJs(web_contents, content::JsReplace(R"(
++      const input = document.querySelector('#control-task-search');
++      input.value = $1;
++      input.dispatchEvent(new Event('input', {bubbles: true}));
++    )",
++                                                             query)));
++    return content::EvalJs(
++               web_contents,
++               "window.prometheusControlTaskMatchCountForTesting")
++        .ExtractInt();
++  };
++  EXPECT_GE(search(kSafeTitle), 1);
++  EXPECT_GE(search("legacy-schema-v1"), 1);
++  EXPECT_GE(search("Local UI Test"), 1);
++  EXPECT_GE(search("prometheus-test-model"), 1);
++  EXPECT_EQ(search(kSensitivePrompt), 0);
++  EXPECT_EQ(search("control.example"), 0);
++  EXPECT_EQ(search("CHARLIE"), 0);
++  EXPECT_EQ(search("password=iris"), 0);
++
++  const std::string serialized = content::EvalJs(web_contents, R"(
++    JSON.stringify({
++      snapshot: window.prometheusControlSnapshotForTesting,
++      dom: document.documentElement.outerHTML,
++    });
++  )")
++                                     .ExtractString();
++  for (const std::string& sentinel :
++       std::vector<std::string>{kSensitivePrompt, "control.example", "CHARLIE",
++                                "password=iris", "\"prompt\""}) {
++    EXPECT_EQ(std::string::npos, serialized.find(sentinel)) << sentinel;
++  }
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusControlPanelBrowserTest,
++    ControlProvidersRenderClosedMetadataAndReorderNatively) {
++  prometheus::PrometheusRuntimeProfileService* const service =
++      ConfigureLocalRuntimeProvider();
++  ASSERT_TRUE(service);
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(web_contents);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlSnapshotForTesting?.providers?.length === 1;
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    document.querySelector('[data-section-target="providers"]').click();
++  )"));
++  for (const std::string& expected : std::vector<std::string>{
++           "Local UI Test", "LM Studio", "Local",
++           "http://127.0.0.1:12345/", "prometheus-test-model",
++           "Fallback rank", "Secret configured"}) {
++    EXPECT_TRUE(BodyTextContentContains(web_contents, expected)) << expected;
++  }
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    Array.from(document.querySelector('#control-provider-form').elements)
++        .every(control =>
++          !/(key|secret|header|authorization|ciphertext)/i.test(
++              control.name || ''));
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    chrome.send('prometheusControlSaveProvider', [{
++      provider_id: 'local-second',
++      label: 'Local Second',
++      kind: 'local',
++      route_class: 'local',
++      endpoint: 'http://localhost:23456/v1/',
++      model_id: 'second-model',
++      enabled: true,
++      fallback_rank: 1,
++      input_rate_microunits: 13,
++      output_rate_microunits: 21,
++      trusted: true,
++    }]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          window.prometheusControlSnapshotForTesting?.providers?.length === 2;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    const provider = window.prometheusControlSnapshotForTesting.providers
++        .find(item => item.provider_id === 'local-second');
++    provider?.kind === 'local' && provider.route_class === 'local' &&
++        provider.canonical_origin === 'http://localhost:23456/' &&
++        provider.model_id === 'second-model' && provider.enabled === true &&
++        provider.fallback_rank === 1 &&
++        provider.input_rate_microunits === 13 &&
++        provider.output_rate_microunits === 21 && provider.trusted === true &&
++        provider.secret_configured === false;
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    Array.from(document.querySelectorAll(
++        '[data-provider-id="local-second"] button'))
++        .find(button => button.textContent === 'Move up').click();
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      const providers = window.prometheusControlSnapshotForTesting?.providers;
++      providers?.[0]?.provider_id === 'local-second' &&
++          providers[0].fallback_rank === 0 &&
++          providers[1].fallback_rank === 1;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_EQ("local-second",
++            service->ListProvidersForTransport()[0].provider_id);
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusControlPanelBrowserTest,
++    ControlLogsRenderClosedContentFreeRecordsAndClearWithConfirmation) {
++  constexpr char kSensitivePrompt[] =
++      "Open https://logs.example/?token=DELTA and type password=violet";
++  prometheus::PrometheusRuntimeProfileService* const service =
++      ConfigureLocalRuntimeProvider();
++  ASSERT_TRUE(service);
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(web_contents);
++  tabs::TabInterface* const tab = browser()->GetActiveTabInterface();
++  ASSERT_TRUE(tab);
++  prometheus::RuntimePrincipalResult principal =
++      service->CreateSidePanelPrincipal(browser(), tab->GetHandle().raw_value());
++  ASSERT_TRUE(principal.principal);
++  ASSERT_TRUE(service
++                  ->SubmitTask(*principal.principal, kSensitivePrompt,
++                               prometheus::RequestedExecution::kAuto)
++                  .task);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlSnapshotForTesting?.events?.length > 0;
++    )")
++        .ExtractBool();
++  }));
++  principal.principal.reset();
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlSnapshotForTesting.tasks.every(
++          task => ['succeeded', 'failed', 'cancelled'].includes(task.state));
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    document.querySelector('[data-section-target="logs"]').click();
++  )"));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "Task Created"));
++  EXPECT_EQ(4, content::EvalJs(web_contents, R"(
++    document.querySelectorAll('#control-usage-summary .control-metric').length;
++  )")
++                   .ExtractInt());
++
++  const std::string serialized = content::EvalJs(web_contents, R"(
++    JSON.stringify({
++      records: window.prometheusControlSnapshotForTesting.events,
++      actions: window.prometheusControlSnapshotForTesting.actions,
++      diagnostics: window.prometheusControlSnapshotForTesting.diagnostics,
++      dom: document.querySelector('#section-logs').outerHTML,
++    });
++  )")
++                                     .ExtractString();
++  for (const std::string& sentinel : std::vector<std::string>{
++           kSensitivePrompt, "logs.example", "DELTA", "password=violet",
++           "\"prompt\"", "selector", "typed", "script", "raw_body",
++           "authorization", "ciphertext", "caller_id", "session_id",
++           "profile_path"}) {
++    EXPECT_EQ(std::string::npos, serialized.find(sentinel)) << sentinel;
++  }
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    document.querySelector('#control-clear-logs').click();
++    document.querySelector('#control-clear-logs-confirm').click();
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      const snapshot = window.prometheusControlSnapshotForTesting;
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          snapshot?.events?.length === 0 && snapshot.actions?.length === 0 &&
++          snapshot.diagnostics?.length === 0 && snapshot.tasks?.length > 0;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "No runtime logs yet"));
++}
++
+ IN_PROC_BROWSER_TEST_F(
+     PrometheusWebUIFoundationBrowserTest,
+     RuntimeComposerSubmitsSanitizedSnapshotsObservesAndCancelsOnce) {
+-- 
+2.50.1 (Apple Git-155)
+
