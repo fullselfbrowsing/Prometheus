@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 20
 current_phase_name: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
-current_plan: 10
+current_plan: 12
 status: executing
-stopped_at: Completed 20-09-PLAN.md
-last_updated: "2026-07-16T22:27:40.835Z"
+stopped_at: Completed 20-11-PLAN.md
+last_updated: "2026-07-17T03:16:50Z"
 last_activity: 2026-07-16
 progress:
   total_phases: 14
   completed_phases: 9
   total_plans: 66
-  completed_plans: 61
-  percent: 92
+  completed_plans: 62
+  percent: 94
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: `.planning/PROJECT.md` (updated 2026-07-13)
 **Core value:** Agents get fast, precise, auditable whole-browser control
 through DOM/native structure rather than screenshots or extension injection.
 
-**Current focus:** Execute Phase 20 Plan 10 of 14: map the 31 Phase 20 MCP names
-to the 27 closed native routes plus four aliases and prove built-app external
-stdio smoke without adding an alternate runtime.
+**Current focus:** Execute dependency-ordered Phase 20 Plan 12 of 14: populate
+live Tasks, Providers & Models, MCP Status, Permissions & Agents, and Logs &
+Diagnostics from the native runtime with browser-process validation.
 
 **Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
 external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
@@ -37,22 +37,26 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 20 (FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel) — EXECUTING
-Plan: 10 of 14
+Plan: 12 of 14
 **Current Phase:** 20
 **Current Phase Name:** FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
 **Total Phases:** 14
 **Completed Phases:** 9
-**Current Plan:** 10
+**Current Plan:** 12
 **Total Plans in Phase:** 14
 **Status:** Ready to execute
-**Progress:** [█████████░] 92%
+**Progress:** [█████████░] 94%
 **Last Activity:** 2026-07-16
-**Last Activity Description:** Completed Phase 20 Plan 9 authenticated 27-command runtime gateway, caller isolation, provider mutation denial, and live health
+**Last Activity Description:** Completed Phase 20 Plan 11 exact-window live FSB side panel, private native principal lifecycle, sanitized runtime state, and automated UI/privacy gates
 
-Milestone work is 61 of 66 plans complete (92%); cumulative project work is
-112 of 117 existing plans summarized (96%).
+Milestone work is 62 of 66 plans complete (94%); cumulative project work is
+113 of 117 existing plans summarized (97%).
 
 ## Latest Evidence
+
+- Phase 20 Plan 11: exact Runtime and AskFsb guards pass 2/2; the complete
+  WebUI foundation list guard passes 10/10 serially, including real 300px and
+  320px responsive, exact-window lifecycle, restart, and privacy coverage.
 
 - Phase 20 Plan 9: exact guards select 8 runtime-codec, 13 gateway, and 16
   existing Agent-transport cases; the combined regression is 37/37 green and
@@ -120,6 +124,7 @@ Milestone work is 61 of 66 plans complete (92%); cumulative project work is
 | 20 | Keep the 27 native runtime commands in a separate closed codec and derive profile, Browser, tab, and caller only from a browser-issued session binding. |
 | 20 | Deny external provider mutation at both the gateway and runtime service while preserving bounded read-only config, discovery, and diagnostics. |
 | 20 | Let RuntimeProfileService own the shared vault/secret state and publish exact ten-key health from live sanitized provider/vault owners. |
+| 20 | Break the WebUI/runtime target cycle with an opaque side-panel runtime factory and keep concrete exact-window principal acquisition in browser main extra parts. |
 
 ## Performance Metrics
 
@@ -130,6 +135,7 @@ Milestone work is 61 of 66 plans complete (92%); cumulative project work is
 | Phase 20 P07 | 9h11min | 4 tasks | 19 files |
 | Phase 20 P08 | 1h16min | 3 tasks | 18 files |
 | Phase 20 P09 | 2h | 3 tasks | 20 files |
+| Phase 20 P11 | 1h58min | 3 tasks | 18 files |
 
 ## Blockers and Deferred Items
 
@@ -139,11 +145,11 @@ Milestone work is 61 of 66 plans complete (92%); cumulative project work is
 
 ## Session
 
-**Last Date:** 2026-07-16T22:27:40.831Z
-**Stopped At:** Completed 20-09-PLAN.md
+**Last Date:** 2026-07-17T03:16:50Z
+**Stopped At:** Completed 20-11-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute Phase 20 Plan 10, then continue Plans 11-14 with mandatory automated
-gates. Do not run human UAT.
+Execute Phase 20 Plan 12, then Plan 13, deferred Wave 13 Plan 10, and Plan 14
+with mandatory automated gates. Do not run human UAT.

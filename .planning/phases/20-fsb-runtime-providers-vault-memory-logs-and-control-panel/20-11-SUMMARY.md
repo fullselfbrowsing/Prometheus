@@ -36,6 +36,7 @@ key-files:
 
 key-decisions:
   - "Keep one move-only local runtime principal in native side-panel controller state; never serialize caller, Agent session, owner, or principal identity."
+  - "Break the WebUI/runtime dependency cycle with an opaque PrometheusSidePanelRuntime factory; keep the concrete service/principal bridge in browser main extra parts."
   - "Use RuntimeStore as the persisted task/result authority and merge only provider/route metadata from the in-memory service record."
   - "Rebind a controller created by renderer reload from WebUI embedding context, never from a global or last-active Browser lookup."
 
@@ -44,7 +45,8 @@ patterns-established:
   - "Sanitized task UI: native safe_title/provenance/state/result values cross the WebUI boundary; raw prompts remain drafts only and clear after acceptance."
   - "Bounded automation: browser guards use native RunUntil waits, serial execution, and retries disabled for lifecycle-sensitive assertions."
 
-requirements-completed: [FSB-01, FSB-02, FSB-05, FSB-08]
+requirements-completed: [FSB-01]
+requirements-progressed: [FSB-02, FSB-05, FSB-08]
 
 duration: 1h 58m commit window
 completed: 2026-07-16
@@ -89,6 +91,7 @@ Each Chromium task was committed atomically and immediately exported:
 
 ## Decisions Made
 
+- Plan 11 completes FSB-01. FSB-02 remains open until external MCP promotion and final integration, FSB-05 remains open until full logs/diagnostics UI, and FSB-08 remains open until settings surfaces are live.
 - Runtime observer callbacks originate from persisted store changes, so WebUI state is reconciled from native truth instead of optimistic renderer state.
 - Cancellation follows the store's legal `queued/running/waiting -> cancelling -> cancelled` transition and still records one native finish.
 - Provider labels, kinds, route classes, health, and model IDs are renderer-safe metadata; credentials, raw authorization failures, and endpoints remain excluded.
@@ -112,7 +115,14 @@ Each Chromium task was committed atomically and immediately exported:
 - **Verification:** The reload guard passed with one new principal and the persisted sanitized title.
 - **Committed in:** `33bae0de39`
 
-**Total deviations:** 2 correctness fixes. Both preserve the plan's authority and privacy boundaries without scope expansion.
+**3. [Rule 3 - Blocking] Split the native runtime target to avoid a dependency cycle**
+- **Found during:** Task 1 exact-window host integration
+- **Issue:** Directly coupling `prometheus_web_ui.cc` to `PrometheusRuntimeProfileService` would create a Chromium target cycle and expose native authority concerns to the WebUI target.
+- **Fix:** Added an opaque `PrometheusSidePanelRuntime` interface/factory in the WebUI layer and registered its concrete service/principal bridge from `prometheus_browser_main_extra_parts.cc`.
+- **Verification:** The historical plan key link now follows the concrete bridge, `gsd-tools verify key-links` passes all links, and no principal/session/owner identity crosses the opaque interface.
+- **Committed in:** `2a5b34a410` and `45d3d2bc1a`
+
+**Total deviations:** 3 auto-fixed issues (two correctness fixes and one blocking target-graph split). All preserve the plan's authority and privacy boundaries without scope expansion.
 
 ## Issues Encountered
 
@@ -126,8 +136,14 @@ None. Local mode continues to use an already-running configured loopback provide
 
 ## Next Phase Readiness
 
-- Plans 20-12 through 20-14 can consume the exact-window side-panel runtime and its sanitized observer contract.
+- Dependency order is Plan 20-12, Plan 20-13, deferred Wave 13 Plan 20-10, then Plan 20-14; all can consume the exact-window side-panel runtime and its sanitized observer contract.
 - No known blocker remains; both the nested Chromium repository and root patch ledger are expected to be clean after this summary commit.
+
+## Self-Check: PASSED
+
+- Requirement metadata records FSB-01 complete and FSB-02, FSB-05, and FSB-08 progressed but still open.
+- Plan artifacts and key links follow the opaque WebUI runtime/concrete browser-main bridge split.
+- Completion tracking advances to dependency-ordered Plan 20-12 at 62/66 plans (94%).
 
 ---
 *Phase: 20-fsb-runtime-providers-vault-memory-logs-and-control-panel*
