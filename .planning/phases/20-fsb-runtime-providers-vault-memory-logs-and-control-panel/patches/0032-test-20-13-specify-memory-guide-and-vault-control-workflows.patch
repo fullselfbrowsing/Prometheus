@@ -1,0 +1,451 @@
+From 796cbb2d822035b5b5de6af81bbc53cc560857cc Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sat, 18 Jul 2026 10:08:59 -0500
+Subject: [PATCH] test(20-13): specify memory guide and vault control workflows
+
+---
+ .../prometheus_web_ui_browsertest.cc          | 421 +++++++++++++++++-
+ 1 file changed, 418 insertions(+), 3 deletions(-)
+
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 4472a0fe9f..3380cd530a 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -620,9 +620,9 @@ IN_PROC_BROWSER_TEST_F(
+   )")
+                                         .ExtractString();
+   for (const std::string& forbidden_key : std::vector<std::string>{
+-           "\"prompt\"", "\"authorization\"", "\"ciphertext\"",
+-           "\"caller_id\"", "\"agent_session_id\"", "\"profile_path\"",
+-           "\"owner_id\"", "\"session_id\""}) {
++           "\"prompt\"", "\"authorization\"", "\"ciphertext\"", "\"caller_id\"",
++           "\"agent_session_id\"", "\"profile_path\"", "\"owner_id\"",
++           "\"session_id\""}) {
+     EXPECT_EQ(std::string::npos, snapshot_json.find(forbidden_key))
+         << forbidden_key;
+   }
+@@ -1477,6 +1477,421 @@ IN_PROC_BROWSER_TEST_F(
+                   .ExtractBool());
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
++                       MemoryCrudShareSearchBoundsAndDeterministicEviction) {
++  auto* const service =
++      prometheus::PrometheusRuntimeProfileServiceFactory::GetForProfile(
++          browser()->profile());
++  ASSERT_TRUE(service);
++  for (size_t index = 0; index <= prometheus::kMaxStoredMemories; ++index) {
++    prometheus::MemoryStoreMutation mutation = service->SaveMemoryForTransport(
++        "memory-browser-test", prometheus::MemoryVisibility::kProfileShared,
++        "Eviction " + std::to_string(index), "Bounded body", {"bounded"});
++    ASSERT_TRUE(mutation.ok()) << index;
++  }
++
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(web_contents);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlSnapshotForTesting?.memories?.length === 128;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_FALSE(content::EvalJs(web_contents, R"(
++    window.prometheusControlSnapshotForTesting.memories.some(
++        item => item.title === 'Eviction 0');
++  )")
++                   .ExtractBool());
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    const memory = window.prometheusControlSnapshotForTesting.memories.at(-1);
++    memory.title === 'Eviction 128' &&
++        memory.visibility === 'profile_shared' && memory.byte_count > 0 &&
++        !Object.hasOwn(memory, 'caller_id') &&
++        !Object.hasOwn(memory, 'owner_key');
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlSaveMemory', [{
++      memory_id: '',
++      title: 'Release checklist',
++      text: 'Review the native browser release evidence.',
++      tags: ['release', 'native'],
++      visibility: 'profile_shared',
++    }]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          window.prometheusControlSnapshotForTesting?.memories?.some(
++              item => item.title === 'Release checklist');
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.memoryIdForTesting =
++        window.prometheusControlSnapshotForTesting.memories.find(
++            item => item.title === 'Release checklist').memory_id;
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlSearchMemory', ['release', 50]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          window.prometheusControlOperationForTesting?.results?.some(
++              item => item.memory_id === window.memoryIdForTesting);
++    )")
++        .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlSaveMemory', [{
++      memory_id: window.memoryIdForTesting,
++      title: 'Release checklist updated',
++      text: 'Review native evidence and share the bounded result.',
++      tags: ['release', 'shared'],
++      visibility: 'caller_owned',
++    }]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      const item = window.prometheusControlSnapshotForTesting?.memories?.find(
++          candidate => candidate.memory_id === window.memoryIdForTesting);
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          item?.title === 'Release checklist updated' &&
++          item.visibility === 'caller_owned';
++    )")
++        .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlDeleteMemory',
++                [window.memoryIdForTesting, false]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === false;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    window.prometheusControlSnapshotForTesting.memories.some(
++        item => item.memory_id === window.memoryIdForTesting);
++  )")
++                  .ExtractBool());
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlDeleteMemory',
++                [window.memoryIdForTesting, true]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          !window.prometheusControlSnapshotForTesting.memories.some(
++              item => item.memory_id === window.memoryIdForTesting);
++    )")
++        .ExtractBool();
++  }));
++
++  const base::DictValue prefs_before =
++      browser()
++          ->profile()
++          ->GetPrefs()
++          ->GetDict(prometheus::kPrometheusRuntimeProfileData)
++          .Clone();
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlSaveMemory', [{
++      memory_id: '', title: 'Malformed', text: 'RAW_PAGE_SENTINEL',
++      tags: Array(9).fill('tag'), visibility: 'not_visible',
++      secret: 'MEMORY_SECRET_SENTINEL',
++    }]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.status ===
++          'INVALID_REQUEST';
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_EQ(prefs_before, browser()->profile()->GetPrefs()->GetDict(
++                              prometheus::kPrometheusRuntimeProfileData));
++  EXPECT_FALSE(BodyTextContentContains(web_contents, "RAW_PAGE_SENTINEL"));
++  EXPECT_FALSE(BodyTextContentContains(web_contents, "MEMORY_SECRET_SENTINEL"));
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusControlPanelBrowserTest,
++    GuideCrudSearchAndApplyRequireExactFreshCurrentDocument) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const GURL matching_url = embedded_test_server()->GetURL("a.test", "/one");
++  const GURL changed_url = embedded_test_server()->GetURL("b.test", "/two");
++  content::WebContents* const control_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(control_contents);
++
++  ASSERT_TRUE(content::ExecJs(control_contents,
++                              content::JsReplace(R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlSaveGuide', [{
++      guide_id: '',
++      title: 'Exact origin guide',
++      instructions: 'Use the stable native workflow.',
++      tags: ['native', 'guide'],
++      visibility: 'profile_shared',
++      origin: $1,
++    }]);
++  )",
++                                                 matching_url.spec())));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          window.prometheusControlSnapshotForTesting?.site_guides?.length ===
++              1;
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.guideIdForTesting =
++        window.prometheusControlSnapshotForTesting.site_guides[0].guide_id;
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlSearchGuides', ['stable', 50]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlOperationForTesting?.results?.some(
++          item => item.guide_id === window.guideIdForTesting);
++    )")
++        .ExtractBool();
++  }));
++
++  ASSERT_TRUE(AddTabAtIndexToBrowser(browser(), 1, matching_url,
++                                     ui::PAGE_TRANSITION_TYPED));
++  browser()->tab_strip_model()->ActivateTabAt(1);
++  ASSERT_TRUE(content::WaitForLoadStop(
++      browser()->tab_strip_model()->GetActiveWebContents()));
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlRefresh');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlSnapshotForTesting?.current_guide_origin
++          ?.includes('a.test');
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlApplyGuide', [window.guideIdForTesting]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlOperationForTesting?.status === 'GUIDE_APPLIED';
++    )")
++        .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlRefresh');
++  )"));
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), changed_url));
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlApplyGuide', [window.guideIdForTesting]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlOperationForTesting?.status ===
++          'GUIDE_DOCUMENT_CHANGED';
++    )")
++        .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlRefresh');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlSnapshotForTesting?.current_guide_origin
++          ?.includes('b.test');
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlApplyGuide', [window.guideIdForTesting]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlOperationForTesting?.status ===
++          'GUIDE_ORIGIN_MISMATCH';
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(content::EvalJs(control_contents, R"(
++    window.prometheusControlSnapshotForTesting.guide_applications.filter(
++        item => item.status === 'applied').length === 1;
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlDeleteGuide',
++                [window.guideIdForTesting, true]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          window.prometheusControlSnapshotForTesting.site_guides.length === 0;
++    )")
++        .ExtractBool();
++  }));
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
++                       VaultMetadataCrudRejectsSecretsAndRendersMetadataOnly) {
++  auto* const service =
++      prometheus::PrometheusRuntimeProfileServiceFactory::GetForProfile(
++          browser()->profile());
++  ASSERT_TRUE(service);
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(web_contents);
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlSaveVaultMetadata', [{
++      entry_id: '', label: 'Example credential', kind: 'credential',
++      origin: 'https://vault.example/account',
++    }]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          window.prometheusControlSnapshotForTesting?.vault_entries?.length ===
++              1;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    const entry = window.prometheusControlSnapshotForTesting.vault_entries[0];
++    const keys = Object.keys(entry).sort().join('|');
++    keys === 'canonical_origin|id|kind|label|secret_configured|updated_time_ms' &&
++        entry.label === 'Example credential' &&
++        entry.kind === 'credential' &&
++        entry.canonical_origin === 'https://vault.example' &&
++        entry.secret_configured === false;
++  )")
++                  .ExtractBool());
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    document.querySelector('[data-section-target="vault"]').click();
++  )"));
++  for (const std::string& expected : std::vector<std::string>{
++           "Example credential", "Credential", "https://vault.example",
++           "Native-only", "Confirmation required", "No secret saved"}) {
++    EXPECT_TRUE(BodyTextContentContains(web_contents, expected)) << expected;
++  }
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.vaultIdForTesting =
++        window.prometheusControlSnapshotForTesting.vault_entries[0].id;
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlSaveVaultMetadata', [{
++      entry_id: window.vaultIdForTesting,
++      label: 'Updated credential', kind: 'credential',
++      origin: 'https://vault.example/',
++    }]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          window.prometheusControlSnapshotForTesting.vault_entries[0].label ===
++              'Updated credential';
++    )")
++        .ExtractBool();
++  }));
++
++  const size_t count_before_malformed =
++      service->ListVaultMetadataForTransport(std::nullopt).size();
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlSaveVaultMetadata', [{
++      entry_id: '', label: 'Malformed', kind: 'open',
++      origin: 'javascript:VAULT_ORIGIN_SENTINEL',
++      value: 'VAULT_VALUE_SENTINEL',
++      ciphertext: 'VAULT_CIPHER_SENTINEL',
++      approval_token: 'VAULT_APPROVAL_SENTINEL',
++    }]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.status ===
++          'INVALID_REQUEST';
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_EQ(count_before_malformed,
++            service->ListVaultMetadataForTransport(std::nullopt).size());
++
++  const std::string serialized = content::EvalJs(web_contents, R"(
++    JSON.stringify({
++      snapshot: window.prometheusControlSnapshotForTesting,
++      operation: window.prometheusControlOperationForTesting,
++      dom: document.documentElement.outerHTML,
++      accessibility: Array.from(document.querySelectorAll(
++          '#section-vault [aria-label], #section-vault [title]')).map(node => ({
++        text: node.textContent,
++        label: node.getAttribute('aria-label'),
++        title: node.getAttribute('title'),
++      })),
++    });
++  )")
++                                     .ExtractString();
++  for (const std::string& sentinel : std::vector<std::string>{
++           "VAULT_ORIGIN_SENTINEL", "VAULT_VALUE_SENTINEL",
++           "VAULT_CIPHER_SENTINEL", "VAULT_APPROVAL_SENTINEL"}) {
++    EXPECT_EQ(std::string::npos, serialized.find(sentinel)) << sentinel;
++  }
++  const std::string snapshot_json = content::EvalJs(web_contents, R"(
++    JSON.stringify(window.prometheusControlSnapshotForTesting);
++  )")
++                                        .ExtractString();
++  for (const std::string& forbidden_key : std::vector<std::string>{
++           "\"value\"", "\"suffix\"", "\"card_number\"", "\"username\"",
++           "\"password\"", "\"ciphertext\"", "\"approval_token\""}) {
++    EXPECT_EQ(std::string::npos, snapshot_json.find(forbidden_key))
++        << forbidden_key;
++  }
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlDeleteVaultMetadata',
++                [window.vaultIdForTesting, false]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === false;
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    chrome.send('prometheusControlDeleteVaultMetadata',
++                [window.vaultIdForTesting, true]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          window.prometheusControlSnapshotForTesting.vault_entries.length === 0;
++    )")
++        .ExtractBool();
++  }));
++}
++
+ IN_PROC_BROWSER_TEST_F(
+     PrometheusWebUIFoundationBrowserTest,
+     RuntimeComposerSubmitsSanitizedSnapshotsObservesAndCancelsOnce) {
+-- 
+2.50.1 (Apple Git-155)
+
