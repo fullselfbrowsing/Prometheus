@@ -1,0 +1,38 @@
+From 1253d711f06211eb41c6fad606110feb9380663f Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sat, 18 Jul 2026 17:31:23 -0500
+Subject: [PATCH] test(20-14): update live diagnostics regression
+
+---
+ .../prometheus/prometheus_mcp_integration_browsertest.cc  | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+index 88de0558fb..e7a0be6b28 100644
+--- a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+@@ -1382,8 +1382,8 @@ IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
+       "browser",          "bridge",        "active_tab", "content_adapter",
+       "internal_adapter", "webui_adapter", "vault",      "provider",
+       "supervision",      "extensions"};
+-  const std::set<std::string> later = {"vault", "provider", "supervision",
+-                                       "extensions"};
++  const std::set<std::string> not_ready = {"provider", "supervision",
++                                           "extensions"};
+   std::set<std::string> actual;
+   for (const base::Value& value : *diagnostics) {
+     const base::DictValue* component = value.GetIfDict();
+@@ -1399,7 +1399,9 @@ IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
+     actual.insert(*key);
+     EXPECT_FALSE(reason->empty());
+     EXPECT_FALSE(next_action->empty());
+-    if (later.contains(*key)) {
++    if (*key == "vault") {
++      EXPECT_EQ("ready", *status) << *key;
++    } else if (not_ready.contains(*key)) {
+       EXPECT_EQ("not_ready", *status) << *key;
+     }
+   }
+-- 
+2.50.1 (Apple Git-155)
+
