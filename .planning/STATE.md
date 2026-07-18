@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 20
 current_phase_name: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
-current_plan: 10
+current_plan: 14
 status: executing
-stopped_at: Completed 20-13-PLAN.md
-last_updated: "2026-07-18T16:59:20.143Z"
+stopped_at: Completed 20-10-PLAN.md
+last_updated: "2026-07-18T20:56:28.065Z"
 last_activity: 2026-07-18
 progress:
   total_phases: 14
   completed_phases: 9
   total_plans: 66
-  completed_plans: 64
-  percent: 64
+  completed_plans: 65
+  percent: 98
 ---
 
 # Project State
@@ -26,8 +26,8 @@ See: `.planning/PROJECT.md` (updated 2026-07-13)
 **Core value:** Agents get fast, precise, auditable whole-browser control
 through DOM/native structure rather than screenshots or extension injection.
 
-**Current focus:** Execute dependency-ordered Phase 20 Plan 10 of 14: promote
-all 31 MCP names to native routes and prove the built-app external smoke.
+**Current focus:** Execute Phase 20 Plan 14 of 14: run the 32-case integration
+corpus, full automated gates, patch export, and evidence closeout.
 
 **Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
 external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
@@ -36,22 +36,27 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 20 (FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel) — EXECUTING
-Plan: 10 of 14
+Plan: 14 of 14
 **Current Phase:** 20
 **Current Phase Name:** FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
 **Total Phases:** 14
 **Completed Phases:** 9
-**Current Plan:** 10
+**Current Plan:** 14
 **Total Plans in Phase:** 14
 **Status:** Ready to execute
-**Progress:** [██████████] 97%
+**Progress:** [██████████] 98%
 **Last Activity:** 2026-07-18
-**Last Activity Description:** Completed Phase 20 Plan 13 native control workflows and automated disclosure gates
+**Last Activity Description:** Completed Phase 20 Plan 10 external MCP runtime promotion and rebuilt-app smoke
 
-Milestone work is 64 of 66 plans complete (97%); cumulative project work is
-115 of 117 existing plans summarized (98%).
+Milestone work is 65 of 66 plans complete (98%); cumulative project work is
+116 of 117 existing plans summarized (99%).
 
 ## Latest Evidence
+
+- Phase 20 Plan 10: the complete Node suite passes 74/74, focused runtime
+  promotion gates pass 37/37, and the rebuilt app passes the deterministic
+  two-client external MCP smoke. The aggregate `prometheus_unittests` target
+  remains unable to link because of unrelated unresolved Chrome symbols.
 
 - Phase 20 Plan 13: the complete control-panel and vault browser gate passes
   23/23 serially, and the complete Runtime/Memory/Vault/Secret native gate
@@ -138,6 +143,10 @@ Milestone work is 64 of 66 plans complete (97%); cumulative project work is
 | 20 | Require exact fresh document, origin, Browser, ownership, and destination revalidation for guide apply and vault use. |
 | 20 | Render mutable policy only from the persisted and clamped effective native snapshot. |
 | 20 | Keep ownership, native-only vault transport, per-use confirmation, and unavailable supervision immutable and truthful. |
+| 20 | Keep `set_provider_config` manifest-native for compatibility but return `LOCAL_UI_REQUIRED` before reading raw arguments. |
+| 20 | Use params-only bodies for all 27 runtime-codec routes; page-action routes retain target/params/visual. |
+| 20 | Seed built smoke only through the closed native test bootstrap with a canonical disposable path, mode-0600 metadata file, and loopback fixture. |
+| 20 | Bind both independent smoke clients while the fresh regular browser and active tab are known available so task authority is deterministic. |
 
 ## Performance Metrics
 
@@ -151,6 +160,7 @@ Milestone work is 64 of 66 plans complete (97%); cumulative project work is
 | Phase 20 P11 | 1h58min | 3 tasks | 18 files |
 | Phase 20 P12 | 2h4min | 3 tasks | 20 files |
 | Phase 20 P13 | 2h 1m | 3 tasks | 18 files |
+| Phase 20 P10 | 3h47m | 3 tasks | 11 files |
 
 ## Blockers and Deferred Items
 
@@ -160,11 +170,11 @@ Milestone work is 64 of 66 plans complete (97%); cumulative project work is
 
 ## Session
 
-**Last Date:** 2026-07-18T16:59:20.136Z
-**Stopped At:** Completed 20-13-PLAN.md
+**Last Date:** 2026-07-18T20:56:28.061Z
+**Stopped At:** Completed 20-10-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute deferred Wave 13 Phase 20 Plan 10, then Plan 14 with mandatory
-automated gates. Do not run human UAT.
+Execute Wave 14 Phase 20 Plan 14 with mandatory automated gates. Do not run
+human UAT.

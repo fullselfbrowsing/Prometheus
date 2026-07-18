@@ -306,7 +306,7 @@ Plans:
 
 **Requirements:** FSB-01, FSB-02, FSB-03, FSB-04, FSB-05, FSB-06, FSB-07, FSB-08
 
-**Plans:** 12/14 plans executed
+**Plans:** 13/14 plans executed
 
 Plans:
 - [x] 20-01-PLAN.md — Define closed native runtime contracts, profile prefs, limits, and effective policy.
@@ -318,7 +318,7 @@ Plans:
 - [x] 20-07-PLAN.md — Own the closed non-official provider bootstrap and assemble the regular-profile runtime, private local principal, safe tool loop, fallback, cancellation, and evaluation seam.
 - [x] 20-08-PLAN.md — Add vault metadata, private Agent-authority insertion, and fail-closed fresh target confirmation.
 - [x] 20-09-PLAN.md — Expose 27 closed runtime commands through the authenticated native gateway.
-- [ ] 20-10-PLAN.md — Promote all 31 Phase 20 MCP names to 27 native routes plus four aliases and prove built-app external smoke.
+- [x] 20-10-PLAN.md — Promote all 31 Phase 20 MCP names to 27 native routes plus four aliases and prove built-app external smoke.
 - [x] 20-11-PLAN.md — Migrate to exact-window side-panel ownership and wire the live task UI.
 - [x] 20-12-PLAN.md — Populate live control-panel Tasks, Providers & Models, and Logs & Diagnostics.
 - [x] 20-13-PLAN.md — Complete Memory, Site Guides, Vault, Settings, and exact-window native secret dialogs.
@@ -443,7 +443,7 @@ Plans:
 | 17. Native Agent Command Service and Tab Ownership | v2.0 | 6/6 | Complete | 2026-07-07 |
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 8/8 | Complete    | 2026-07-12 |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 7/7 | Complete    | 2026-07-13 |
-| 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 12/14 | In Progress | — |
+| 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 13/14 | In Progress | — |
 | 21. Supervision, Pairing, and Remote Control | v2.0 | 0 | Planned | — |
 | 22. Chrome Extension Ecosystem and Policy | v2.0 | 0 | Planned | — |
 | 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
