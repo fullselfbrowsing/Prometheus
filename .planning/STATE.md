@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 20
 current_phase_name: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
-current_plan: 13
+current_plan: 10
 status: executing
-stopped_at: Completed 20-12-PLAN.md
-last_updated: "2026-07-17T05:31:33Z"
-last_activity: 2026-07-17
+stopped_at: Completed 20-13-PLAN.md
+last_updated: "2026-07-18T16:59:20.143Z"
+last_activity: 2026-07-18
 progress:
   total_phases: 14
   completed_phases: 9
   total_plans: 66
-  completed_plans: 63
-  percent: 95
+  completed_plans: 64
+  percent: 64
 ---
 
 # Project State
@@ -26,9 +26,8 @@ See: `.planning/PROJECT.md` (updated 2026-07-13)
 **Core value:** Agents get fast, precise, auditable whole-browser control
 through DOM/native structure rather than screenshots or extension injection.
 
-**Current focus:** Execute dependency-ordered Phase 20 Plan 13 of 14: complete
-Memory, Site Guides, Vault, enforced Settings, and exact-window native provider
-and vault secret dialogs.
+**Current focus:** Execute dependency-ordered Phase 20 Plan 10 of 14: promote
+all 31 MCP names to native routes and prove the built-app external smoke.
 
 **Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
 external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
@@ -37,22 +36,26 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 20 (FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel) — EXECUTING
-Plan: 13 of 14
+Plan: 10 of 14
 **Current Phase:** 20
 **Current Phase Name:** FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
 **Total Phases:** 14
 **Completed Phases:** 9
-**Current Plan:** 13
+**Current Plan:** 10
 **Total Plans in Phase:** 14
 **Status:** Ready to execute
-**Progress:** [█████████░] 95%
-**Last Activity:** 2026-07-17
-**Last Activity Description:** Completed Phase 20 Plan 12 exact-profile live Tasks, provider/model metadata, Logs & Diagnostics, and automated responsive/privacy gates
+**Progress:** [██████████] 97%
+**Last Activity:** 2026-07-18
+**Last Activity Description:** Completed Phase 20 Plan 13 native control workflows and automated disclosure gates
 
-Milestone work is 63 of 66 plans complete (95%); cumulative project work is
-114 of 117 existing plans summarized (97%).
+Milestone work is 64 of 66 plans complete (97%); cumulative project work is
+115 of 117 existing plans summarized (98%).
 
 ## Latest Evidence
+
+- Phase 20 Plan 13: the complete control-panel and vault browser gate passes
+  23/23 serially, and the complete Runtime/Memory/Vault/Secret native gate
+  passes 125/125 with responsive, keyboard, policy, and disclosure coverage.
 
 - Phase 20 Plan 12: exact list guard selects 11 control-panel cases; the full
   serial suite passes 11/11, including 320/480/720/1024 responsive, keyboard,
@@ -131,6 +134,10 @@ Milestone work is 63 of 66 plans complete (95%); cumulative project work is
 | 20 | Break the WebUI/runtime target cycle with an opaque side-panel runtime factory and keep concrete exact-window principal acquisition in browser main extra parts. |
 | 20 | Bind control-panel mutation authority to one exact regular Profile/WebContents and keep external MCP provider mutation denied. |
 | 20 | Publish native control-runtime availability as module-safe load-time data so OTR stays handler-free without renderer initialization. |
+| 20 | Keep secret bytes entirely in browser-owned Views and native services; WebUI sends only safe IDs, intent, and bounded non-secret settings. |
+| 20 | Require exact fresh document, origin, Browser, ownership, and destination revalidation for guide apply and vault use. |
+| 20 | Render mutable policy only from the persisted and clamped effective native snapshot. |
+| 20 | Keep ownership, native-only vault transport, per-use confirmation, and unavailable supervision immutable and truthful. |
 
 ## Performance Metrics
 
@@ -143,6 +150,7 @@ Milestone work is 63 of 66 plans complete (95%); cumulative project work is
 | Phase 20 P09 | 2h | 3 tasks | 20 files |
 | Phase 20 P11 | 1h58min | 3 tasks | 18 files |
 | Phase 20 P12 | 2h4min | 3 tasks | 20 files |
+| Phase 20 P13 | 2h 1m | 3 tasks | 18 files |
 
 ## Blockers and Deferred Items
 
@@ -152,11 +160,11 @@ Milestone work is 63 of 66 plans complete (95%); cumulative project work is
 
 ## Session
 
-**Last Date:** 2026-07-17T05:31:33Z
-**Stopped At:** Completed 20-12-PLAN.md
+**Last Date:** 2026-07-18T16:59:20.136Z
+**Stopped At:** Completed 20-13-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute Phase 20 Plan 13, then deferred Wave 13 Plan 10 and Plan 14 with
-mandatory automated gates. Do not run human UAT.
+Execute deferred Wave 13 Phase 20 Plan 10, then Plan 14 with mandatory
+automated gates. Do not run human UAT.
