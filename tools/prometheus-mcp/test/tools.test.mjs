@@ -13,8 +13,55 @@ const frozen = await loadFixture('frozen-v1-tools.json');
 const current = await loadFixture('current-fsb-tools.json');
 const expectedNames = [...new Set([...frozen.names, ...current.names])].sort();
 
-const makeHarness = (health) => {
+const phase20ForwardingCases = [
+  ['run_task', { prompt: 'Read the page', requested_execution: 'auto' }],
+  ['stop_task', { task_id: 'task-1' }],
+  ['get_task_status', { task_id: 'task-1' }],
+  ['list_tasks', { limit: 20 }],
+  ['get_provider_config', { provider_id: 'provider-1' }],
+  ['list_providers', { include_disabled: true }],
+  ['discover_models', { provider_id: 'provider-1' }],
+  ['get_logs', { limit: 20 }],
+  ['action_history', { task_id: 'task-1', limit: 20 }],
+  ['runtime_diagnostics', {}],
+  ['save_memory', { title: 'Title', text: 'Safe note', tags: ['one'], shared: false }],
+  ['list_memory', { limit: 20 }],
+  ['save_site_guide', {
+    title: 'Guide',
+    instructions: 'Use the menu',
+    canonical_origin: 'https://example.test',
+    tags: ['one'],
+    shared: true,
+  }],
+  ['list_site_guides', { limit: 20 }],
+  ['create_vault_entry', {
+    label: 'Work login',
+    kind: 'credential',
+    canonical_site_origin: 'https://example.test',
+  }],
+  ['list_vault_entries', { kind: 'credential' }],
+  ['vault_autofill', { entry_id: 'vault-1' }],
+  ['list_sessions', { limit: 20 }],
+  ['get_session_detail', { run_id: 'task-1' }],
+  ['search_memory', { query: 'menu', limit: 20 }],
+  ['get_memory_stats', {}],
+  ['get_site_guide', { guide_id: 'guide-1' }],
+  ['list_credentials', { limit: 20 }],
+  ['fill_credential', { entry_id: 'vault-1' }],
+  ['list_payment_methods', { limit: 20 }],
+  ['use_payment_method', { entry_id: 'vault-2' }],
+];
+
+const phase20AliasCases = [
+  ['submit_task', 'run_task', { prompt: 'Read the page', requested_execution: 'auto' }],
+  ['cancel_task', 'stop_task', { task_id: 'task-1' }],
+  ['task_status', 'get_task_status', { task_id: 'task-1' }],
+  ['list_runtime_logs', 'get_logs', { limit: 20 }],
+];
+
+const makeHarness = (health, options = {}) => {
   const calls = [];
+  const diagnostics = [];
   const session = {
     command: async (route, envelope, { signal } = {}) => {
       calls.push({ route, envelope, signal });
@@ -41,7 +88,15 @@ const makeHarness = (health) => {
       ],
     },
   };
-  return { calls, handler: createToolHandler({ session }) };
+  return {
+    calls,
+    diagnostics,
+    handler: createToolHandler({
+      session,
+      diagnostic: (message) => diagnostics.push(message),
+      ...options,
+    }),
+  };
 };
 
 const assertParity = (result, isError) => {
@@ -109,13 +164,13 @@ test('native tools and all eight aliases forward only canonical routes', async (
   );
 });
 
-test('compatibility disposition is selected before argument normalization', async () => {
+test('unavailable compatibility disposition is selected before argument normalization', async () => {
   const { calls, handler } = makeHarness();
   const legacyArguments = {
     retired_field: { deeply: ['legacy', 42] },
     visual_reason: 'must not be reflected',
   };
-  for (const name of ['click_at', 'run_task', 'start_supervision_session', 'start_visual_session']) {
+  for (const name of ['click_at', 'start_supervision_session', 'start_visual_session']) {
     for (const args of [{}, legacyArguments]) {
       const result = await handler.callTool({ name, arguments: args });
       assertParity(result, true);
@@ -128,6 +183,123 @@ test('compatibility disposition is selected before argument normalization', asyn
     }
   }
   assert.equal(calls.length, 0);
+});
+
+test('all 26 externally callable canonical runtime routes forward once', async () => {
+  const { calls, handler } = makeHarness();
+  assert.equal(phase20ForwardingCases.length, 26);
+  for (const [name, arguments_] of phase20ForwardingCases) {
+    const result = await handler.callTool({ name, arguments: arguments_ });
+    assertParity(result, false);
+    assert.equal(calls.at(-1).route, name, name);
+  }
+  assert.equal(calls.length, phase20ForwardingCases.length);
+});
+
+test('the four Phase 20 aliases are behaviorally identical to canonical routes', async () => {
+  assert.equal(phase20AliasCases.length, 4);
+  for (const [alias, canonical, arguments_] of phase20AliasCases) {
+    const aliasHarness = makeHarness();
+    const canonicalHarness = makeHarness();
+    const aliasResult = await aliasHarness.handler.callTool({
+      name: alias,
+      arguments: arguments_,
+    });
+    const canonicalResult = await canonicalHarness.handler.callTool({
+      name: canonical,
+      arguments: arguments_,
+    });
+    assert.deepEqual(aliasResult, canonicalResult, alias);
+    assert.deepEqual(aliasHarness.calls, canonicalHarness.calls, alias);
+    assert.equal(aliasHarness.calls[0].route, canonical, alias);
+  }
+});
+
+test('external provider mutation is denied before normalization or transport', async () => {
+  const normalizationCalls = [];
+  const sentinel = 'phase20-provider-secret-sentinel-never-echo';
+  const { calls, diagnostics, handler } = makeHarness(undefined, {
+    normalizeArguments: (...args) => {
+      normalizationCalls.push(args);
+      throw new Error(`normalizer must not inspect ${sentinel}`);
+    },
+  });
+  const inputs = [
+    { provider_id: 'provider-1', endpoint: 'https://endpoint-sentinel.test/v1' },
+    { provider_id: 'provider-1', route_class: 'local' },
+    { provider_id: 'provider-1', fallback_rank: 1 },
+    {
+      provider_id: 'provider-1',
+      input_rate_microunits: 25,
+      output_rate_microunits: 50,
+    },
+    { provider_id: 'provider-1', enabled: true, trusted: true },
+    { provider_id: 'provider-1', unknown_metadata: 'must-not-be-inspected' },
+    { provider_id: 'provider-1', api_key: sentinel },
+    { provider_id: 'provider-1', nested: [{ password: sentinel }] },
+  ];
+  const serializedResults = [];
+  for (const arguments_ of inputs) {
+    const result = await handler.callTool({
+      name: 'set_provider_config',
+      arguments: arguments_,
+    });
+    assertParity(result, true);
+    assert.equal(result.structuredContent.error.code, 'LOCAL_UI_REQUIRED');
+    assert.match(result.structuredContent.error.recovery, /local control panel/iu);
+    serializedResults.push(JSON.stringify(result));
+  }
+  assert.equal(new Set(serializedResults).size, 1);
+  assert.equal(normalizationCalls.length, 0);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(diagnostics, []);
+  const observable = JSON.stringify({ serializedResults, diagnostics });
+  assert.doesNotMatch(observable, new RegExp(sentinel, 'u'));
+  assert.doesNotMatch(observable, /endpoint-sentinel|must-not-be-inspected/iu);
+});
+
+test('runtime caller authority and recursive secrets never reach native transport', async () => {
+  const { calls, handler } = makeHarness();
+  const authority = await handler.callTool({
+    name: 'run_task',
+    arguments: {
+      prompt: 'Read the page',
+      requested_execution: 'auto',
+      caller_id: 'forged-caller',
+    },
+  });
+  assertParity(authority, true);
+  assert.equal(authority.structuredContent.error.code, 'INVALID_ARGUMENT');
+
+  const sentinel = 'phase20-recursive-secret-sentinel';
+  const secret = await handler.callTool({
+    name: 'save_memory',
+    arguments: {
+      title: 'Title',
+      text: 'Safe note',
+      unknown: [{ authorization: sentinel }],
+    },
+  });
+  assertParity(secret, true);
+  assert.equal(secret.structuredContent.error.code, 'SECRET_TRANSPORT_BLOCKED');
+  assert.doesNotMatch(JSON.stringify(secret), new RegExp(sentinel, 'u'));
+  assert.equal(calls.length, 0);
+});
+
+test('read-only model discovery stays live and forwards its bounded metadata', async () => {
+  const { calls, handler } = makeHarness();
+  const result = await handler.callTool({
+    name: 'discover_models',
+    arguments: { provider_id: 'provider-1' },
+  });
+  assertParity(result, false);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].route, 'discover_models');
+  assert.deepEqual(calls[0].envelope, {
+    target: {},
+    params: { provider_id: 'provider-1' },
+    visual: {},
+  });
 });
 
 test('every non-native catalog disposition returns a truthful local error', async () => {

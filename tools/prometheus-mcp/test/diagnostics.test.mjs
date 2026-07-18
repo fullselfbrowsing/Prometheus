@@ -51,7 +51,7 @@ test('diagnostic serialization contains no secret or page-content field names', 
   }
 });
 
-test('authenticated browser health becomes ten sanitized MCP components', async () => {
+test('authenticated browser health preserves live Phase 20 provider and vault state', async () => {
   const privateText = 'private reason, profile, page, and token material';
   let healthCalls = 0;
   let commandCalls = 0;
@@ -65,7 +65,7 @@ test('authenticated browser health becomes ten sanitized MCP components', async 
           profile_path: '/private/profile/path',
           diagnostics: expectedKeys.map((key, index) => ({
             key,
-            status: index < 6 ? 'ready' : 'degraded',
+            status: index < 8 ? 'ready' : 'not_ready',
             reason: privateText,
             next_action: privateText,
             page_text: privateText,
@@ -82,7 +82,14 @@ test('authenticated browser health becomes ten sanitized MCP components', async 
   const { components } = result.structuredContent;
   assert.deepEqual(components.map(({ key }) => key), expectedKeys);
   assert.equal(components.find(({ key }) => key === 'bridge').status, 'ready');
-  for (const key of ['vault', 'provider', 'supervision', 'extensions']) {
+  for (const key of ['vault', 'provider']) {
+    assert.equal(components.find((component) => component.key === key).status, 'ready');
+    assert.doesNotMatch(
+      components.find((component) => component.key === key).reason,
+      /not ready in this phase/iu,
+    );
+  }
+  for (const key of ['supervision', 'extensions']) {
     assert.equal(components.find((component) => component.key === key).status, 'not_ready');
   }
   for (const component of components) {
