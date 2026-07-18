@@ -16,6 +16,28 @@ const VISUAL_CLIENTS = [
 
 const badgeKey = (value) => value.toLowerCase().replace(/[\s_-]/gu, '');
 const badgesByKey = new Map(VISUAL_CLIENTS.map((name) => [badgeKey(name), name]));
+const MAX_RECURSIVE_DEPTH = 16;
+const MAX_RECURSIVE_FIELDS = 4_096;
+const SECRET_FIELDS = new Set([
+  'secret',
+  'apikey',
+  'token',
+  'password',
+  'authorization',
+  'ciphertext',
+  'paymentvalue',
+  'approvaltoken',
+]);
+const AUTHORITY_FIELDS = new Set([
+  'callerid',
+  'profileid',
+  'profilepath',
+  'ownerid',
+  'principalid',
+  'gatewaysessionid',
+  'sessionid',
+]);
+const PROTOTYPE_FIELDS = new Set(['__proto__', 'prototype', 'constructor']);
 
 export class ToolArgumentError extends Error {
   constructor(code, message, field) {
@@ -28,6 +50,50 @@ export class ToolArgumentError extends Error {
 
 const reject = (code, message, field) => {
   throw new ToolArgumentError(code, message, field);
+};
+
+const normalizeFieldName = (field) =>
+  field.replace(/[^a-z0-9]/giu, '').toLowerCase();
+
+const isRecord = (value) =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const scanReservedFields = (value, depth = 0, state = { visited: 0 }) => {
+  state.visited += 1;
+  if (depth > MAX_RECURSIVE_DEPTH || state.visited > MAX_RECURSIVE_FIELDS) {
+    reject('INVALID_ARGUMENT', 'Tool arguments exceed recursive bounds.');
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      scanReservedFields(item, depth + 1, state);
+    }
+    return;
+  }
+  if (!isRecord(value)) return;
+
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    reject(
+      'SECRET_TRANSPORT_BLOCKED',
+      'Prototype-shaped input cannot cross the MCP transport.',
+    );
+  }
+  for (const field of Object.keys(value)) {
+    const normalized = normalizeFieldName(field);
+    if (SECRET_FIELDS.has(normalized) || PROTOTYPE_FIELDS.has(field)) {
+      reject(
+        'SECRET_TRANSPORT_BLOCKED',
+        'Secret-shaped fields cannot cross the MCP transport.',
+      );
+    }
+    if (AUTHORITY_FIELDS.has(normalized)) {
+      reject(
+        'INVALID_ARGUMENT',
+        'Runtime authority is derived by the browser.',
+      );
+    }
+    scanReservedFields(value[field], depth + 1, state);
+  }
 };
 
 export const normalizeVisualClient = (client) => {
@@ -71,7 +137,44 @@ const coerceNumber = (value, schema, field) => {
   return number;
 };
 
-const normalizeProperty = (field, value, schema) => {
+const validateUri = (value, kind, field) => {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    reject('INVALID_ARGUMENT', `Field ${field} is not a valid URL.`, field);
+  }
+  const http = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  const https = parsed.protocol === 'https:';
+  const originOnly = parsed.pathname === '/' && parsed.search === ''
+    && parsed.hash === '';
+  if (!http || parsed.hostname.length === 0
+      || parsed.username.length > 0 || parsed.password.length > 0
+      || parsed.search.length > 0 || parsed.hash.length > 0
+      || (kind === 'https-origin' && (!https || !originOnly))
+      || (kind === 'http-origin' && !originOnly)) {
+    reject('INVALID_ARGUMENT', `Field ${field} is not an allowed URL.`, field);
+  }
+};
+
+const normalizeValue = (field, value, schema, depth = 0) => {
+  if (!schema || depth > MAX_RECURSIVE_DEPTH) {
+    reject('INVALID_ARGUMENT', `Field ${field} has an invalid schema.`, field);
+  }
+  if (schema.oneOf) {
+    const matches = [];
+    for (const branch of schema.oneOf) {
+      try {
+        matches.push(normalizeValue(field, value, branch, depth + 1));
+      } catch (error) {
+        if (!(error instanceof ToolArgumentError)) throw error;
+      }
+    }
+    if (matches.length !== 1) {
+      reject('INVALID_ARGUMENT', `Field ${field} matches no allowed variant.`, field);
+    }
+    return matches[0];
+  }
   if (schema.type === 'integer' || schema.type === 'number') {
     return coerceNumber(value, schema, field);
   }
@@ -91,6 +194,10 @@ const normalizeProperty = (field, value, schema) => {
     if (schema.enum && !schema.enum.includes(value)) {
       reject('INVALID_ARGUMENT', `Field ${field} is not an allowed value.`, field);
     }
+    if (schema.pattern && !(new RegExp(schema.pattern, 'u')).test(value)) {
+      reject('INVALID_ARGUMENT', `Field ${field} has an invalid format.`, field);
+    }
+    if (schema.xUriKind) validateUri(value, schema.xUriKind, field);
     return value;
   }
   if (schema.type === 'boolean') {
@@ -98,6 +205,45 @@ const normalizeProperty = (field, value, schema) => {
       reject('INVALID_ARGUMENT', `Field ${field} must be a boolean.`, field);
     }
     return value;
+  }
+  if (schema.type === 'array') {
+    if (!Array.isArray(value)) {
+      reject('INVALID_ARGUMENT', `Field ${field} must be an array.`, field);
+    }
+    if (schema.minItems !== undefined && value.length < schema.minItems) {
+      reject('INVALID_ARGUMENT', `Field ${field} is below its item bound.`, field);
+    }
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+      reject('INVALID_ARGUMENT', `Field ${field} exceeds its item bound.`, field);
+    }
+    return value.map((item, index) =>
+      normalizeValue(`${field}[${index}]`, item, schema.items, depth + 1));
+  }
+  if (schema.type === 'object') {
+    if (!isRecord(value)) {
+      reject('INVALID_ARGUMENT', `Field ${field} must be an object.`, field);
+    }
+    const properties = schema.properties ?? {};
+    for (const name of Object.keys(value)) {
+      if (!Object.hasOwn(properties, name)) {
+        reject('INVALID_ARGUMENT', `Undeclared field ${name} is not allowed.`, name);
+      }
+    }
+    for (const name of schema.required ?? []) {
+      if (!Object.hasOwn(value, name)) {
+        reject('INVALID_ARGUMENT', `Required field ${name} is missing.`, name);
+      }
+    }
+    const normalized = {};
+    for (const [name, item] of Object.entries(value)) {
+      normalized[name] = normalizeValue(
+        `${field}.${name}`,
+        item,
+        properties[name],
+        depth + 1,
+      );
+    }
+    return normalized;
   }
   reject('INVALID_ARGUMENT', `Field ${field} has an unsupported schema.`, field);
 };
@@ -138,23 +284,8 @@ export const normalizeToolArguments = (definition, raw = {}) => {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     reject('INVALID_ARGUMENT', 'Tool arguments must be an object.');
   }
-
-  const schema = definition.inputSchema;
-  const properties = schema.properties ?? {};
-  const normalized = {};
-  for (const field of Object.keys(raw)) {
-    if (!Object.hasOwn(properties, field)) {
-      reject('INVALID_ARGUMENT', `Undeclared field ${field} is not allowed.`, field);
-    }
-  }
-  for (const field of schema.required ?? []) {
-    if (!Object.hasOwn(raw, field)) {
-      reject('INVALID_ARGUMENT', `Required field ${field} is missing.`, field);
-    }
-  }
-  for (const [field, value] of Object.entries(raw)) {
-    normalized[field] = normalizeProperty(field, value, properties[field]);
-  }
+  scanReservedFields(raw);
+  const normalized = normalizeValue('arguments', raw, definition.inputSchema);
   normalizeTarget(normalized);
   if (Object.hasOwn(normalized, 'client')) {
     normalized.client = normalizeVisualClient(normalized.client);

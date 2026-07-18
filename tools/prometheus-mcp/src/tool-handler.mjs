@@ -6,6 +6,13 @@ import { compatibilityError } from './errors.mjs';
 import { normalizeToolArguments, ToolArgumentError } from './schema.mjs';
 
 const LOCAL_DISPOSITIONS = new Set(['typed_stub', 'later_phase', 'removed']);
+const PROVIDER_CONFIGURATION_DENIAL = Object.freeze({
+  ok: false,
+  error: Object.freeze({
+    code: 'LOCAL_UI_REQUIRED',
+    recovery: 'Open the Prometheus local control panel to change provider configuration.',
+  }),
+});
 const VISUAL_FIELDS = new Set(['visual_reason', 'client', 'is_final']);
 const DENIED_RESULT_FIELDS = new Set([
   'bearer',
@@ -171,8 +178,15 @@ const safeDiagnostics = (nativeResult) => {
   };
 };
 
-export const createToolHandler = ({ session, diagnostic = () => {} }) => {
+export const createToolHandler = ({
+  session,
+  diagnostic = () => {},
+  normalizeArguments = normalizeToolArguments,
+}) => {
   if (!session) throw new TypeError('A browser session is required.');
+  if (typeof normalizeArguments !== 'function') {
+    throw new TypeError('A tool argument normalizer is required.');
+  }
 
   const listTools = () => listToolDefinitions().map((definition) => ({
     name: definition.name,
@@ -197,10 +211,13 @@ export const createToolHandler = ({ session, diagnostic = () => {} }) => {
     if (LOCAL_DISPOSITIONS.has(definition.disposition)) {
       return resultFor(compatibilityError(definition));
     }
+    if (definition.nativeRoute === 'set_provider_config') {
+      return resultFor(PROVIDER_CONFIGURATION_DENIAL);
+    }
 
     let normalized;
     try {
-      normalized = normalizeToolArguments(definition, call.arguments ?? {});
+      normalized = normalizeArguments(definition, call.arguments ?? {});
     } catch (error) {
       return resultFor(argumentFailure(error));
     }

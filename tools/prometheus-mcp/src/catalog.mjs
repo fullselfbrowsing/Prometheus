@@ -60,6 +60,142 @@ const readLimitProperties = {
   compact: { type: 'boolean' },
 };
 
+const runtimeId = utf8String(128, 1);
+const providerId = utf8String(64, 1);
+const listLimit = { type: 'integer', minimum: 1, maximum: 128 };
+const tags = {
+  type: 'array',
+  items: utf8String(64, 1),
+  minItems: 0,
+  maxItems: 8,
+};
+const httpOrigin = {
+  ...utf8String(2048, 1),
+  xUriKind: 'http-origin',
+};
+const httpsOrigin = {
+  ...utf8String(2048, 1),
+  xUriKind: 'https-origin',
+};
+const providerEndpoint = {
+  ...utf8String(2048, 1),
+  xUriKind: 'http-url',
+};
+const vaultKind = {
+  oneOf: [
+    { type: 'string', enum: ['credential'] },
+    { type: 'string', enum: ['payment'] },
+  ],
+};
+
+const runtimeSchemas = {
+  run_task: objectSchema(
+    {
+      prompt: utf8String(64 * 1024, 1),
+      requested_execution: {
+        type: 'string',
+        enum: ['auto', 'provider', 'local'],
+      },
+      provider_id: providerId,
+    },
+    ['prompt', 'requested_execution'],
+  ),
+  stop_task: objectSchema({ task_id: runtimeId }, ['task_id']),
+  get_task_status: objectSchema({ task_id: runtimeId }, ['task_id']),
+  list_tasks: objectSchema({ limit: listLimit }),
+  get_provider_config: objectSchema({ provider_id: providerId }, ['provider_id']),
+  list_providers: objectSchema({ include_disabled: { type: 'boolean' } }),
+  discover_models: objectSchema({ provider_id: providerId }, ['provider_id']),
+  set_provider_config: objectSchema(
+    {
+      provider_id: providerId,
+      label: utf8String(128, 1),
+      kind: {
+        type: 'string',
+        enum: [
+          'openai',
+          'anthropic',
+          'gemini',
+          'xai',
+          'openrouter',
+          'lm_studio',
+          'hosted',
+          'routed',
+          'local',
+          'custom',
+        ],
+      },
+      route_class: {
+        type: 'string',
+        enum: ['hosted', 'routed', 'local', 'custom'],
+      },
+      endpoint: providerEndpoint,
+      model_id: utf8String(128, 1),
+      fallback_rank: { type: 'integer', minimum: 0, maximum: 31 },
+      input_rate_microunits: {
+        type: 'integer',
+        minimum: 0,
+        maximum: 1_000_000_000,
+      },
+      output_rate_microunits: {
+        type: 'integer',
+        minimum: 0,
+        maximum: 1_000_000_000,
+      },
+      enabled: { type: 'boolean' },
+      trusted: { type: 'boolean' },
+      configure_secret: { type: 'boolean' },
+    },
+    ['provider_id'],
+  ),
+  get_logs: objectSchema({ limit: listLimit }),
+  action_history: objectSchema({ task_id: runtimeId, limit: listLimit }),
+  runtime_diagnostics: emptySchema,
+  save_memory: objectSchema(
+    {
+      title: utf8String(256, 1),
+      text: utf8String(16 * 1024, 1),
+      tags,
+      shared: { type: 'boolean' },
+    },
+    ['title', 'text', 'tags'],
+  ),
+  list_memory: objectSchema({ limit: listLimit }),
+  save_site_guide: objectSchema(
+    {
+      title: utf8String(256, 1),
+      instructions: utf8String(16 * 1024, 1),
+      canonical_origin: httpOrigin,
+      tags,
+      shared: { type: 'boolean' },
+    },
+    ['title', 'instructions', 'canonical_origin', 'tags'],
+  ),
+  list_site_guides: objectSchema({ limit: listLimit }),
+  create_vault_entry: objectSchema(
+    {
+      label: utf8String(160, 1),
+      kind: vaultKind,
+      canonical_site_origin: httpsOrigin,
+    },
+    ['label', 'kind', 'canonical_site_origin'],
+  ),
+  list_vault_entries: objectSchema({ kind: vaultKind }),
+  vault_autofill: objectSchema({ entry_id: runtimeId }, ['entry_id']),
+  list_sessions: objectSchema({ limit: listLimit }),
+  get_session_detail: objectSchema({ run_id: runtimeId }, ['run_id']),
+  search_memory: objectSchema(
+    { query: utf8String(256, 1), limit: listLimit },
+    ['query'],
+  ),
+  get_memory_stats: emptySchema,
+  get_site_guide: objectSchema({ guide_id: runtimeId }, ['guide_id']),
+  list_credentials: objectSchema({ limit: listLimit }),
+  fill_credential: objectSchema({ entry_id: runtimeId }, ['entry_id']),
+  list_payment_methods: objectSchema({ limit: listLimit }),
+  use_payment_method: objectSchema({ entry_id: runtimeId }, ['entry_id']),
+};
+
 const nativeSchemas = {
   list_tabs: emptySchema,
   open_tab: objectSchema({
@@ -127,6 +263,7 @@ const nativeSchemas = {
     },
     ['surface'],
   ),
+  ...runtimeSchemas,
 };
 
 const aliasDefinitions = {
@@ -145,41 +282,23 @@ const aliasDefinitions = {
     inputSchema: nativeSchemas.select_option,
   },
   clear_input: { nativeRoute: 'clear', inputSchema: nativeSchemas.clear },
+  submit_task: {
+    nativeRoute: 'run_task',
+    inputSchema: runtimeSchemas.run_task,
+  },
+  cancel_task: {
+    nativeRoute: 'stop_task',
+    inputSchema: runtimeSchemas.stop_task,
+  },
+  task_status: {
+    nativeRoute: 'get_task_status',
+    inputSchema: runtimeSchemas.get_task_status,
+  },
+  list_runtime_logs: {
+    nativeRoute: 'get_logs',
+    inputSchema: runtimeSchemas.get_logs,
+  },
 };
-
-const phase20Names = [
-  'submit_task',
-  'cancel_task',
-  'task_status',
-  'list_tasks',
-  'get_provider_config',
-  'list_providers',
-  'discover_models',
-  'set_provider_config',
-  'list_runtime_logs',
-  'action_history',
-  'runtime_diagnostics',
-  'save_memory',
-  'list_memory',
-  'save_site_guide',
-  'list_site_guides',
-  'create_vault_entry',
-  'list_vault_entries',
-  'vault_autofill',
-  'run_task',
-  'stop_task',
-  'get_task_status',
-  'get_logs',
-  'list_sessions',
-  'get_session_detail',
-  'search_memory',
-  'get_memory_stats',
-  'get_site_guide',
-  'list_credentials',
-  'fill_credential',
-  'list_payment_methods',
-  'use_payment_method',
-];
 
 const phase21Names = [
   'create_supervision_pairing',
@@ -243,7 +362,9 @@ const catalog = [];
 for (const [name, inputSchema] of Object.entries(nativeSchemas)) {
   catalog.push({
     name,
-    description: describe(name, 'native'),
+    description: name === 'set_provider_config'
+      ? 'Provider metadata compatibility surface; use the local control UI to change configuration.'
+      : describe(name, 'native'),
     inputSchema,
     disposition: 'native',
     nativeRoute: name === 'open_internal_surface' ? 'open_internal_surface' : name,
@@ -256,18 +377,6 @@ for (const [name, definition] of Object.entries(aliasDefinitions)) {
     description: describe(name, 'alias'),
     disposition: 'alias',
     ...definition,
-  });
-}
-
-for (const name of phase20Names) {
-  catalog.push({
-    name,
-    description: describe(name, 'Phase 20'),
-    inputSchema: emptySchema,
-    disposition: 'later_phase',
-    ownerPhase: 20,
-    replacements: [],
-    recovery: 'Complete Phase 20 before calling this tool.',
   });
 }
 
