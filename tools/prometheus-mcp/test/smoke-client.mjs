@@ -32,7 +32,10 @@ const MAX_STDERR_BYTES = 1024 * 1024;
 const SESSION_GRACE_MS = 10_000;
 const DEFAULT_EXPIRY_WAIT_MS = 11_000;
 const STATUS_VALUES = new Set(['ready', 'degraded', 'not_ready', 'unavailable']);
-const LATER_DIAGNOSTICS = new Set(['vault', 'provider', 'supervision', 'extensions']);
+const LATER_DIAGNOSTICS = new Set(['supervision', 'extensions']);
+const PHASE20_PROVIDER_ID = 'phase20-smoke-local';
+const PHASE20_MODEL_ID = 'phase20-fixture-model';
+const MAX_SAFE_TITLE_BYTES = 256;
 
 const requireCondition = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -504,6 +507,36 @@ const expectToolFailure = async (bridge, name, arguments_) => {
   return structured;
 };
 
+const runtimePayload = (structured, name) => {
+  requireCondition(
+    structured?.ok === true
+      && structured.error_code === 'NONE'
+      && isRecord(structured.result),
+    `${name} did not return a successful native runtime payload.`,
+  );
+  return structured.result;
+};
+
+const assertSafeTaskView = (task, promptSentinel) => {
+  requireCondition(
+    isRecord(task)
+      && typeof task.task_id === 'string'
+      && task.task_id.length > 0
+      && typeof task.safe_title === 'string'
+      && task.safe_title.length > 0
+      && Buffer.byteLength(task.safe_title, 'utf8') <= MAX_SAFE_TITLE_BYTES,
+    'Runtime task did not contain a bounded public identity and safe title.',
+  );
+  const serialized = JSON.stringify(task);
+  requireCondition(
+    !Object.hasOwn(task, 'prompt')
+      && !serialized.includes('"prompt"')
+      && !serialized.includes(promptSentinel),
+    'Runtime task exposed its raw prompt instead of a safe title.',
+  );
+  return task;
+};
+
 const eventually = async (callback, {
   timeoutMs = 15_000,
   intervalMs = 150,
@@ -656,6 +689,9 @@ const runLiveSmoke = async () => {
   const expectedNames = await loadExpectedNames();
   const visualReason = `private-smoke-reason-${process.pid}`;
   const typedText = `private-smoke-input-${process.pid}`;
+  const primaryPromptSentinel = `phase20-primary-prompt-${process.pid}`;
+  const secondPromptSentinel = `phase20-second-prompt-${process.pid}`;
+  const providerSecretSentinel = `phase20-provider-secret-${process.pid}`;
   const sessionIds = [];
   const bridges = [];
   let primary;
@@ -672,6 +708,58 @@ const runLiveSmoke = async () => {
     return bridge;
   };
 
+  const submitStatusCancel = async (bridge, promptSentinel, aliases = false) => {
+    const submitName = aliases ? 'submit_task' : 'run_task';
+    const statusName = aliases ? 'task_status' : 'get_task_status';
+    const cancelName = aliases ? 'cancel_task' : 'stop_task';
+    const logsName = aliases ? 'list_runtime_logs' : 'get_logs';
+    const submitted = runtimePayload(await expectToolSuccess(bridge, submitName, {
+      prompt: `Inspect the fixture. token ${promptSentinel}`,
+      requested_execution: 'local',
+      provider_id: PHASE20_PROVIDER_ID,
+    }), submitName);
+    const task = assertSafeTaskView(submitted.task, promptSentinel);
+    requireCondition(
+      task.state === 'queued'
+        && task.origin === 'mcp'
+        && task.effective_execution === 'local',
+      'Runtime submission did not preserve queued MCP/local provenance.',
+    );
+
+    const status = runtimePayload(await expectToolSuccess(bridge, statusName, {
+      task_id: task.task_id,
+    }), statusName);
+    requireCondition(
+      assertSafeTaskView(status.task, promptSentinel).task_id === task.task_id,
+      'Runtime status did not return the caller-owned task.',
+    );
+    const tasks = runtimePayload(await expectToolSuccess(bridge, 'list_tasks', {
+      limit: 20,
+    }), 'list_tasks');
+    requireCondition(
+      Array.isArray(tasks.tasks)
+        && tasks.tasks.some((item) => item?.task_id === task.task_id),
+      'Runtime task list omitted the caller-owned task.',
+    );
+
+    const cancelled = runtimePayload(await expectToolSuccess(bridge, cancelName, {
+      task_id: task.task_id,
+    }), cancelName);
+    requireCondition(
+      assertSafeTaskView(cancelled.task, promptSentinel).state === 'cancelled',
+      'Runtime cancellation did not return a cancelled task.',
+    );
+    const logs = runtimePayload(await expectToolSuccess(bridge, logsName, {
+      limit: 20,
+    }), logsName);
+    requireCondition(
+      Array.isArray(logs.logs)
+        && logs.logs.some((item) => item?.task_id === task.task_id),
+      'Runtime logs omitted the caller-owned task.',
+    );
+    return task;
+  };
+
   try {
     primary = createBridge('primary smoke bridge');
     await primary.initialize();
@@ -681,6 +769,11 @@ const runLiveSmoke = async () => {
     const initial = await expectToolSuccess(primary, 'list_tabs', {});
     const initialActive = initial.tabs?.find((tab) => tab.active === true);
     requireCondition(Number.isSafeInteger(initialActive?.tab_id), 'Initial active tab handle is unavailable.');
+
+    // Bind both independent callers while the freshly launched regular
+    // browser and its initial tab are known to be active.
+    second = createBridge('second smoke bridge');
+    await second.initialize();
 
     const opened = await expectToolSuccess(primary, 'new_tab', {
       url: fixtureUrl,
@@ -782,19 +875,259 @@ const runLiveSmoke = async () => {
         && coordinate.error?.replacements?.includes('click'),
       'Coordinate tool did not return typed unsupported guidance.',
     );
-    const later = await expectToolFailure(primary, 'run_task', {});
-    requireCondition(
-      later.error?.code === 'NOT_READY' && later.error?.owner_phase === 20,
-      'Phase 20 tool did not return its truthful owner.',
-    );
     const removed = await expectToolFailure(primary, 'start_visual_session', {});
     assertRemovedToolResult(removed);
 
+    const listedProviders = runtimePayload(await expectToolSuccess(
+      primary,
+      'list_providers',
+      { include_disabled: true },
+    ), 'list_providers');
+    const fixtureProvider = listedProviders.providers?.find(
+      (provider) => provider?.provider_id === PHASE20_PROVIDER_ID,
+    );
+    requireCondition(
+      isRecord(fixtureProvider)
+        && fixtureProvider.kind === 'lm_studio'
+        && fixtureProvider.route_class === 'local'
+        && fixtureProvider.model_id === PHASE20_MODEL_ID
+        && fixtureProvider.canonical_endpoint === `${fixture.origin}/v1/`
+        && fixtureProvider.enabled === true
+        && fixtureProvider.secret_configured === false,
+      'Runtime test bootstrap provider metadata is unavailable or malformed.',
+    );
+    const providerConfig = runtimePayload(await expectToolSuccess(
+      primary,
+      'get_provider_config',
+      { provider_id: PHASE20_PROVIDER_ID },
+    ), 'get_provider_config');
+    requireCondition(
+      providerConfig.provider?.provider_id === PHASE20_PROVIDER_ID,
+      'Read-only provider configuration did not return the fixture provider.',
+    );
+    const discovery = runtimePayload(await expectToolSuccess(
+      primary,
+      'discover_models',
+      { provider_id: PHASE20_PROVIDER_ID },
+    ), 'discover_models');
+    requireCondition(
+      Array.isArray(discovery.models)
+        && typeof discovery.pending === 'boolean'
+        && (discovery.models.length === 0
+          || (discovery.models.length === 1
+            && discovery.models[0] === PHASE20_MODEL_ID)),
+      'Read-only model discovery returned an invalid fixture result.',
+    );
+
+    const providerSnapshotBeforeDenial = JSON.stringify(listedProviders.providers);
+    const normalProviderDenial = await expectToolFailure(
+      primary,
+      'set_provider_config',
+      { provider_id: PHASE20_PROVIDER_ID, enabled: false },
+    );
+    const secretProviderDenial = await expectToolFailure(
+      primary,
+      'set_provider_config',
+      { provider_id: PHASE20_PROVIDER_ID, nested: [{ api_key: providerSecretSentinel }] },
+    );
+    requireCondition(
+      normalProviderDenial.error?.code === 'LOCAL_UI_REQUIRED'
+        && JSON.stringify(normalProviderDenial) === JSON.stringify(secretProviderDenial)
+        && !JSON.stringify(secretProviderDenial).includes(providerSecretSentinel),
+      'External provider mutation denial was not stable and content-free.',
+    );
+    const providersAfterDenial = runtimePayload(await expectToolSuccess(
+      primary,
+      'list_providers',
+      { include_disabled: true },
+    ), 'list_providers');
+    requireCondition(
+      JSON.stringify(providersAfterDenial.providers) === providerSnapshotBeforeDenial,
+      'External provider mutation changed the native registry snapshot.',
+    );
+
+    const memory = runtimePayload(await expectToolSuccess(primary, 'save_memory', {
+      title: 'Phase 20 caller-owned memory',
+      text: 'Remember the bounded fixture workflow.',
+      tags: ['phase20', 'smoke'],
+      shared: false,
+    }), 'save_memory').memory;
+    requireCondition(
+      typeof memory?.memory_id === 'string'
+        && memory.owned_by_caller === true
+        && memory.visibility === 'caller_owned',
+      'Caller-owned memory was not saved safely.',
+    );
+    const memories = runtimePayload(await expectToolSuccess(
+      primary,
+      'list_memory',
+      { limit: 20 },
+    ), 'list_memory');
+    requireCondition(
+      memories.memories?.some((item) => item?.memory_id === memory.memory_id),
+      'Caller-owned memory was absent from its owner list.',
+    );
+    const searchedMemory = runtimePayload(await expectToolSuccess(
+      primary,
+      'search_memory',
+      { query: 'fixture', limit: 20 },
+    ), 'search_memory');
+    requireCondition(
+      searchedMemory.memories?.some((item) => item?.memory_id === memory.memory_id),
+      'Caller-owned memory search did not find its bounded fixture record.',
+    );
+    const memoryStats = runtimePayload(await expectToolSuccess(
+      primary,
+      'get_memory_stats',
+      {},
+    ), 'get_memory_stats');
+    requireCondition(
+      Number.isSafeInteger(memoryStats.count)
+        && memoryStats.count >= 1
+        && Number.isSafeInteger(memoryStats.total_bytes)
+        && memoryStats.total_bytes > 0,
+      'Caller-owned memory statistics were not live.',
+    );
+
+    const guide = runtimePayload(await expectToolSuccess(primary, 'save_site_guide', {
+      title: 'Phase 20 fixture guide',
+      instructions: 'Use only the bounded fixture page.',
+      canonical_origin: fixture.origin,
+      tags: ['phase20'],
+      shared: false,
+    }), 'save_site_guide').guide;
+    requireCondition(
+      typeof guide?.guide_id === 'string'
+        && guide.canonical_origin === fixture.origin
+        && guide.owned_by_caller === true,
+      'Caller-owned site guide was not saved with its exact origin.',
+    );
+    const guides = runtimePayload(await expectToolSuccess(
+      primary,
+      'list_site_guides',
+      { limit: 20 },
+    ), 'list_site_guides');
+    requireCondition(
+      guides.guides?.some((item) => item?.guide_id === guide.guide_id),
+      'Caller-owned site guide was absent from its owner list.',
+    );
+    const guideDetail = runtimePayload(await expectToolSuccess(
+      primary,
+      'get_site_guide',
+      { guide_id: guide.guide_id },
+    ), 'get_site_guide');
+    requireCondition(
+      guideDetail.guide?.guide_id === guide.guide_id,
+      'Caller-owned site guide detail did not round-trip.',
+    );
+
+    const vaultEntry = runtimePayload(await expectToolSuccess(
+      primary,
+      'create_vault_entry',
+      {
+        label: 'Phase 20 fixture login',
+        kind: 'credential',
+        canonical_site_origin: 'https://example.test',
+      },
+    ), 'create_vault_entry').entry;
+    requireCondition(
+      typeof vaultEntry?.id === 'string'
+        && vaultEntry.kind === 'credential'
+        && vaultEntry.secret_configured === false,
+      'Vault metadata creation exposed or fabricated a configured secret.',
+    );
+    const vaultEntries = runtimePayload(await expectToolSuccess(
+      primary,
+      'list_vault_entries',
+      { kind: 'credential' },
+    ), 'list_vault_entries');
+    requireCondition(
+      vaultEntries.entries?.some((entry) => entry?.id === vaultEntry.id),
+      'Vault metadata did not remain listable.',
+    );
+    const vaultUse = runtimePayload(await expectToolSuccess(
+      primary,
+      'vault_autofill',
+      { entry_id: vaultEntry.id },
+    ), 'vault_autofill');
+    requireCondition(
+      vaultUse.status === 'VAULT_NATIVE_CONFIRMATION_UNAVAILABLE',
+      'Vault use did not return native-confirmation-only status.',
+    );
+
+    const primaryTask = await submitStatusCancel(
+      primary,
+      primaryPromptSentinel,
+    );
+    requireCondition(primaryTask.safe_title.includes('[redacted]'), 'Runtime safe title did not redact prompt metadata.');
+
     const diagnostics = await expectToolSuccess(primary, 'diagnostics', {});
     assertDiagnosticInventory(diagnostics);
+    for (const key of ['vault', 'provider']) {
+      requireCondition(
+        diagnostics.components.find((component) => component.key === key)?.status === 'ready',
+        `${key} diagnostics did not report live Phase 20 state.`,
+      );
+    }
+    const runtimeDiagnostics = runtimePayload(await expectToolSuccess(
+      primary,
+      'runtime_diagnostics',
+      {},
+    ), 'runtime_diagnostics');
+    requireCondition(
+      runtimeDiagnostics.components?.some(
+        (component) => component?.key === 'provider' && component.status === 'ready',
+      )
+        && runtimeDiagnostics.components?.some(
+          (component) => component?.key === 'vault' && component.status === 'ready',
+        ),
+      'Native runtime diagnostics did not preserve live provider and vault state.',
+    );
 
-    second = createBridge('second smoke bridge');
-    await second.initialize();
+    const secondProviders = runtimePayload(await expectToolSuccess(
+      second,
+      'list_providers',
+      { include_disabled: true },
+    ), 'list_providers');
+    requireCondition(
+      secondProviders.providers?.some(
+        (provider) => provider?.provider_id === PHASE20_PROVIDER_ID,
+      ),
+      'Second external client could not read the bootstrap provider.',
+    );
+    const secondDiscovery = runtimePayload(await expectToolSuccess(
+      second,
+      'discover_models',
+      { provider_id: PHASE20_PROVIDER_ID },
+    ), 'discover_models');
+    requireCondition(
+      Array.isArray(secondDiscovery.models) && typeof secondDiscovery.pending === 'boolean',
+      'Second external client could not use read-only model discovery.',
+    );
+    const secondMemories = runtimePayload(await expectToolSuccess(
+      second,
+      'list_memory',
+      { limit: 20 },
+    ), 'list_memory');
+    const secondGuides = runtimePayload(await expectToolSuccess(
+      second,
+      'list_site_guides',
+      { limit: 20 },
+    ), 'list_site_guides');
+    const secondTasksBefore = runtimePayload(await expectToolSuccess(
+      second,
+      'list_tasks',
+      { limit: 20 },
+    ), 'list_tasks');
+    requireCondition(
+      secondMemories.memories?.every((item) => item?.memory_id !== memory.memory_id)
+        && secondGuides.guides?.every((item) => item?.guide_id !== guide.guide_id)
+        && secondTasksBefore.tasks?.every((item) => item?.task_id !== primaryTask.task_id),
+      'Second external client observed another caller\'s runtime state.',
+    );
+    await submitStatusCancel(second, secondPromptSentinel, true);
+    const secondDiagnostics = await expectToolSuccess(second, 'diagnostics', {});
+    assertDiagnosticInventory(secondDiagnostics);
     const denied = await expectToolFailure(second, 'navigate', {
       tab_id: ownedTabId,
       url: fixtureUrl,
@@ -873,6 +1206,9 @@ const runLiveSmoke = async () => {
       ...sessionIds,
       visualReason,
       typedText,
+      primaryPromptSentinel,
+      secondPromptSentinel,
+      providerSecretSentinel,
       profilePath,
     ];
     const allowedToolResultValues = [
@@ -894,6 +1230,11 @@ const runLiveSmoke = async () => {
       ok: true,
       tools: listed.tools.length,
       diagnostics: diagnostics.components.length,
+      runtime_flows: true,
+      caller_isolation: true,
+      provider_bootstrap: true,
+      provider_mutation_denied: true,
+      vault_confirmation_only: true,
       background_focus_preserved: true,
       ownership_denied: true,
       resume_proven: true,

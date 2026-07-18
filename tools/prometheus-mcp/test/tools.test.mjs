@@ -192,6 +192,7 @@ test('all 26 externally callable canonical runtime routes forward once', async (
     const result = await handler.callTool({ name, arguments: arguments_ });
     assertParity(result, false);
     assert.equal(calls.at(-1).route, name, name);
+    assert.deepEqual(calls.at(-1).envelope, { params: arguments_ }, name);
   }
   assert.equal(calls.length, phase20ForwardingCases.length);
 });
@@ -296,9 +297,7 @@ test('read-only model discovery stays live and forwards its bounded metadata', a
   assert.equal(calls.length, 1);
   assert.equal(calls[0].route, 'discover_models');
   assert.deepEqual(calls[0].envelope, {
-    target: {},
     params: { provider_id: 'provider-1' },
-    visual: {},
   });
 });
 

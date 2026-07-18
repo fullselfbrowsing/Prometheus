@@ -22,10 +22,12 @@ NODE_BIN="$(command -v node)" || fail 'Node.js is unavailable'
 
 umask 077
 TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/prometheus-mcp-live.XXXXXX")"
+TEMP_ROOT="$(cd "${TEMP_ROOT}" && pwd -P)"
 PROFILE_DIR="${TEMP_ROOT}/profile"
 CAPTURE_DIR="${TEMP_ROOT}/capture"
 DESCRIPTOR_FILE="${TEMP_ROOT}/endpoint.json"
 FIXTURE_READY_FILE="${TEMP_ROOT}/fixture.json"
+PROVIDER_BOOTSTRAP_FILE="${TEMP_ROOT}/provider-bootstrap.json"
 DENYLIST_FILE="${TEMP_ROOT}/private-denylist.json"
 BROWSER_STDOUT="${TEMP_ROOT}/browser.stdout.log"
 BROWSER_STDERR="${TEMP_ROOT}/browser.stderr.log"
@@ -123,8 +125,56 @@ FIXTURE_URL="$(${NODE_BIN} -e '
   process.stdout.write(value.url);
 ' "${FIXTURE_READY_FILE}")" || fail 'fixture readiness document is invalid'
 
+"${NODE_BIN}" - "${FIXTURE_READY_FILE}" "${PROVIDER_BOOTSTRAP_FILE}" <<'NODE' \
+  || fail 'provider bootstrap document is invalid'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const [readyFile, bootstrapFile] = process.argv.slice(2);
+const ready = JSON.parse(fs.readFileSync(readyFile, 'utf8'));
+if (!path.isAbsolute(bootstrapFile)
+    || typeof ready.origin !== 'string'
+    || !/^http:\/\/(?:127\.0\.0\.1|\[::1\]):[0-9]+$/.test(ready.origin)) {
+  process.exit(1);
+}
+const config = {
+  schema_version: 1,
+  provider_id: 'phase20-smoke-local',
+  kind: 'lm_studio',
+  route: 'local',
+  endpoint: `${ready.origin}/v1/`,
+  model: 'phase20-fixture-model',
+  enabled: true,
+};
+const descriptor = fs.openSync(bootstrapFile, 'wx', 0o600);
+try {
+  fs.writeFileSync(descriptor, JSON.stringify(config), 'utf8');
+  fs.fsyncSync(descriptor);
+} finally {
+  fs.closeSync(descriptor);
+}
+fs.chmodSync(bootstrapFile, 0o600);
+const metadata = fs.lstatSync(bootstrapFile);
+const observed = JSON.parse(fs.readFileSync(bootstrapFile, 'utf8'));
+if (!metadata.isFile() || metadata.isSymbolicLink()
+    || (metadata.mode & 0o777) !== 0o600
+    || Object.keys(observed).sort().join(',')
+      !== 'enabled,endpoint,kind,model,provider_id,route,schema_version'
+    || observed.schema_version !== 1
+    || observed.provider_id !== 'phase20-smoke-local'
+    || observed.kind !== 'lm_studio'
+    || observed.route !== 'local'
+    || observed.endpoint !== `${ready.origin}/v1/`
+    || observed.model !== 'phase20-fixture-model'
+    || observed.enabled !== true) {
+  process.exit(1);
+}
+NODE
+
 BROWSER_ARGS=(
   "--user-data-dir=${PROFILE_DIR}"
+  --test-type=prometheus-runtime
+  "--prometheus-runtime-test-provider-config=${PROVIDER_BOOTSTRAP_FILE}"
   --no-first-run
   --no-default-browser-check
   --no-proxy-server
@@ -138,7 +188,8 @@ BROWSER_ARGS=(
   "--prometheus-agent-endpoint-descriptor=${DESCRIPTOR_FILE}"
   "${FIXTURE_URL}"
 )
-"${PROMETHEUS_BIN}" "${BROWSER_ARGS[@]}" \
+MAC_CHROMIUM_TMPDIR="${TEMP_ROOT}" \
+  "${PROMETHEUS_BIN}" "${BROWSER_ARGS[@]}" \
   >"${BROWSER_STDOUT}" 2>"${BROWSER_STDERR}" &
 BROWSER_LAUNCH_PID="$!"
 record_pid "${BROWSER_LAUNCH_PID}"
@@ -203,6 +254,11 @@ const lines = resultText.trim().split('\n');
 if (lines.length !== 1) process.exit(1);
 const result = JSON.parse(lines[0]);
 if (result.ok !== true || result.tools !== 90 || result.diagnostics !== 10
+    || result.runtime_flows !== true
+    || result.caller_isolation !== true
+    || result.provider_bootstrap !== true
+    || result.provider_mutation_denied !== true
+    || result.vault_confirmation_only !== true
     || result.background_focus_preserved !== true
     || result.ownership_denied !== true
     || result.resume_proven !== true
@@ -210,7 +266,7 @@ if (result.ok !== true || result.tools !== 90 || result.diagnostics !== 10
     || result.close_released !== true) process.exit(1);
 
 const denied = JSON.parse(fs.readFileSync(denylistFile, 'utf8'));
-if (!Array.isArray(denied) || denied.length < 7) process.exit(1);
+if (!Array.isArray(denied) || denied.length < 10) process.exit(1);
 const files = [resultFile, clientErrorFile];
 for (const root of roots) {
   const metadata = fs.statSync(root);

@@ -20,14 +20,17 @@ test('typed stubs return stable nonempty compatibility failures', () => {
 });
 
 test('later-phase failures state their owner and recovery', () => {
-  for (const [name, owner] of [
-    ['run_task', 20],
-    ['start_supervision_session', 21],
+  for (const name of [
+    'create_supervision_pairing',
+    'start_supervision_session',
+    'get_supervision_snapshot',
+    'get_supervision_diff',
+    'end_supervision_session',
   ]) {
     const result = compatibilityError(getToolDefinition(name));
     assert.equal(result.ok, false);
     assert.equal(result.error.code, 'NOT_READY');
-    assert.equal(result.error.owner_phase, owner);
+    assert.equal(result.error.owner_phase, 21);
     assert.ok(result.error.recovery.length > 0);
   }
 });

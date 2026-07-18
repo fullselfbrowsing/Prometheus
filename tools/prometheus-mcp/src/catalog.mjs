@@ -196,6 +196,8 @@ const runtimeSchemas = {
   use_payment_method: objectSchema({ entry_id: runtimeId }, ['entry_id']),
 };
 
+export const RUNTIME_NATIVE_ROUTES = Object.freeze(Object.keys(runtimeSchemas));
+
 const nativeSchemas = {
   list_tabs: emptySchema,
   open_tab: objectSchema({

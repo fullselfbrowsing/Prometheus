@@ -1,6 +1,7 @@
 import {
   getToolDefinition,
   listToolDefinitions,
+  RUNTIME_NATIVE_ROUTES,
 } from './catalog.mjs';
 import { compatibilityError } from './errors.mjs';
 import { normalizeToolArguments, ToolArgumentError } from './schema.mjs';
@@ -41,11 +42,10 @@ const DIAGNOSTIC_STATUSES = new Set([
   'unavailable',
 ]);
 const LATER_DIAGNOSTICS = new Set([
-  'vault',
-  'provider',
   'supervision',
   'extensions',
 ]);
+const RUNTIME_ROUTE_SET = new Set(RUNTIME_NATIVE_ROUTES);
 
 const diagnosticCopy = Object.freeze({
   browser: ['Browser process status reported by Prometheus.', 'Keep the Prometheus browser running.'],
@@ -54,8 +54,8 @@ const diagnosticCopy = Object.freeze({
   content_adapter: ['Normal-page adapter status reported by Prometheus.', 'Use bounded page routes when ready.'],
   internal_adapter: ['Closed internal-surface adapter status reported by Prometheus.', 'Use a documented Prometheus surface when ready.'],
   webui_adapter: ['Prometheus WebUI adapter status reported by Prometheus.', 'Use browser-owned WebUI routes when ready.'],
-  vault: ['Vault support is not ready in this phase.', 'Retry after Phase 20 vault support is ready.'],
-  provider: ['Provider runtime is not ready in this phase.', 'Retry after Phase 20 provider support is ready.'],
+  vault: ['Profile-owned native vault status reported by Prometheus.', 'Use the local control panel when vault recovery is required.'],
+  provider: ['Provider runtime status reported by Prometheus.', 'Use the local control panel when provider recovery is required.'],
   supervision: ['Supervision is not ready in this phase.', 'Retry after Phase 21 supervision support is ready.'],
   extensions: ['Extension policy is not ready in this phase.', 'Retry after Phase 22 extension support is ready.'],
 });
@@ -230,7 +230,9 @@ export const createToolHandler = ({
         ...normalized,
         ...(definition.presetArguments ?? {}),
       };
-      const envelope = toNativeEnvelope(withPreset);
+      const envelope = RUNTIME_ROUTE_SET.has(definition.nativeRoute)
+        ? { params: withPreset }
+        : toNativeEnvelope(withPreset);
       const nativeResult = await session.command(
         definition.nativeRoute,
         envelope,

@@ -6,7 +6,11 @@ import test from 'node:test';
 
 import {
   FIXTURE_CHILD_TEXT,
+  FIXTURE_MODEL_ID,
   FIXTURE_PAGE_TEXT,
+  FIXTURE_PROVIDER_TEXT,
+  FIXTURE_PROVIDER_TOOL,
+  MAX_FIXTURE_PROVIDER_REQUEST_BYTES,
   startFixtureServer,
 } from './fixture-server.mjs';
 import {
@@ -80,6 +84,77 @@ test('fixture server exposes deterministic page, attributes, mutation, and child
     const child = await fetch(new URL('/child', fixture.url));
     assert.equal(child.status, 200);
     assert.match(await child.text(), new RegExp(FIXTURE_CHILD_TEXT, 'u'));
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('fixture server exposes only bounded deterministic provider routes', async () => {
+  const fixture = await startFixtureServer();
+  const providerRequest = {
+    model: FIXTURE_MODEL_ID,
+    store: false,
+    parallel_tool_calls: false,
+    max_output_tokens: 128,
+    instructions: 'Use the closed fixture tool.',
+    input: [{ role: 'user', content: 'Read the bounded fixture page.' }],
+    tools: [{
+      type: 'function',
+      name: FIXTURE_PROVIDER_TOOL,
+      description: 'Read the fixture page.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+      strict: true,
+    }],
+  };
+  try {
+    const models = await fetch(new URL('/v1/models', fixture.origin));
+    assert.equal(models.status, 200);
+    assert.deepEqual(await models.json(), { data: [{ id: FIXTURE_MODEL_ID }] });
+
+    const response = await fetch(new URL('/v1/responses', fixture.origin), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(providerRequest),
+    });
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.status, 'completed');
+    assert.deepEqual(result.usage, { input_tokens: 7, output_tokens: 3 });
+    assert.equal(result.output[0].content[0].text, FIXTURE_PROVIDER_TEXT);
+    assert.deepEqual(result.output[1], {
+      type: 'function_call',
+      call_id: 'phase20-fixture-call',
+      name: FIXTURE_PROVIDER_TOOL,
+      arguments: '{}',
+    });
+
+    const rejected = await Promise.all([
+      fetch(new URL('/v1/models', fixture.origin), {
+        method: 'POST',
+        body: '{}',
+      }),
+      fetch(new URL('/v1/responses', fixture.origin)),
+      fetch(new URL('/v1/responses', fixture.origin), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      }),
+      fetch(new URL('/v1/responses', fixture.origin), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: 'x'.repeat(MAX_FIXTURE_PROVIDER_REQUEST_BYTES + 1),
+      }),
+      fetch(new URL('/v1/unknown', fixture.origin)),
+      fetch(new URL('/v1/models?unexpected=1', fixture.origin)),
+    ]);
+    assert.deepEqual(
+      rejected.map(({ status }) => status),
+      [405, 405, 400, 413, 404, 404],
+    );
   } finally {
     await fixture.close();
   }
@@ -171,7 +246,7 @@ test('diagnostics are the exact ten closed components', () => {
   ]);
   const components = DIAGNOSTIC_KEYS.map((key, index) => ({
     key,
-    status: index < 6 ? 'ready' : 'not_ready',
+    status: index < 8 ? 'ready' : 'not_ready',
     reason: 'Bounded public status.',
     next_action: 'Use the documented recovery.',
   }));
@@ -274,9 +349,19 @@ test('shell live gate pins the built app, descriptor mode, deadlines, and proces
   assert.match(shell, /--no-first-run/u);
   assert.match(shell, /--no-default-browser-check/u);
   assert.match(shell, /--prometheus-agent-endpoint-descriptor=/u);
+  assert.match(shell, /--test-type=prometheus-runtime/u);
+  assert.match(shell, /--prometheus-runtime-test-provider-config=/u);
+  assert.match(shell, /provider-bootstrap\.json/u);
+  assert.match(shell, /phase20-smoke-local/u);
+  assert.match(shell, /phase20-fixture-model/u);
+  assert.match(shell, /kind: 'lm_studio'/u);
+  assert.match(shell, /route: 'local'/u);
+  assert.match(shell, /fs\.openSync\(bootstrapFile, 'wx', 0o600\)/u);
+  assert.match(shell, /metadata\.isSymbolicLink\(\)/u);
   assert.match(shell, /PROMETHEUS_MCP_ENDPOINT_DESCRIPTOR/u);
   assert.match(shell, /DESCRIPTOR_WAIT_SECONDS=20/u);
   assert.match(shell, /SMOKE_TIMEOUT_SECONDS=120/u);
   assert.match(shell, /descriptor mode is not 0600/u);
+  assert.doesNotMatch(shell, /set_provider_config|prometheus\.runtime/iu);
   assert.doesNotMatch(shell, /claude|cursor|codex|terminal|agent[_ -]?cli/iu);
 });
