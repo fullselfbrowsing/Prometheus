@@ -1,0 +1,878 @@
+From 701786004a0d5442b74826a446637408ec217939 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sat, 18 Jul 2026 11:54:09 -0500
+Subject: [PATCH] feat(20-13): close control panel disclosure gates
+
+---
+ .../prometheus/prometheus_control_panel.html  |  27 +-
+ .../resources/prometheus/prometheus_webui.js  |  66 ++-
+ .../prometheus_web_ui_browsertest.cc          | 445 +++++++++++++++---
+ 3 files changed, 443 insertions(+), 95 deletions(-)
+
+diff --git a/chrome/browser/resources/prometheus/prometheus_control_panel.html b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+index 31792303d9..a2c4dcb338 100644
+--- a/chrome/browser/resources/prometheus/prometheus_control_panel.html
++++ b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+@@ -101,7 +101,7 @@
+                   role="status" aria-live="polite">Loading provider metadata</p>
+             </div>
+             <button class="primary control-add-provider" type="button"
+-                id="control-add-provider">Add provider</button>
++                id="control-add-provider">Add Provider</button>
+           </div>
+           <div class="control-list" id="control-provider-list" role="list"
+               aria-label="Configured providers" aria-busy="true"></div>
+@@ -111,7 +111,7 @@
+             <div class="control-form-grid">
+               <label>Provider ID
+                 <input name="provider_id" maxlength="64" required
+-                    autocomplete="off" pattern="[A-Za-z0-9._-]+">
++                    autocomplete="off" pattern="[A-Za-z0-9._\-]+">
+               </label>
+               <label>Label
+                 <input name="label" maxlength="256" required autocomplete="off">
+@@ -181,6 +181,10 @@
+             hidden>
+           <h1 id="control-mcp-heading">MCP Status</h1>
+           <h2 id="control-mcp-state">Loading native transport</h2>
++          <p class="empty-copy">
++            External MCP clients connect through the local stdio bridge.
++            Prometheus does not bundle or launch an agent client.
++          </p>
+           <p class="empty-copy" id="control-mcp-policy"></p>
+         </section>
+         <section class="section-panel" id="section-permissions"
+@@ -256,7 +260,7 @@
+                   aria-live="polite">Loading safe vault metadata</p>
+             </div>
+             <button class="primary" type="button"
+-                id="control-add-vault-metadata">Add metadata</button>
++                id="control-add-vault-metadata">Add Vault Entry</button>
+           </div>
+           <div class="control-list" id="control-vault-list" role="list"
+               aria-label="Vault metadata" aria-busy="true"></div>
+@@ -314,7 +318,7 @@
+                 <p class="empty-copy">Reusable notes saved explicitly by you.</p>
+               </div>
+               <button class="primary" type="button"
+-                  id="control-add-memory">Add memory</button>
++                  id="control-add-memory">Add Memory</button>
+             </div>
+             <label class="control-search" for="control-memory-search">
+               Search memory
+@@ -364,7 +368,7 @@
+                 </p>
+               </div>
+               <button class="primary" type="button"
+-                  id="control-add-guide">Add guide</button>
++                  id="control-add-guide">Add Site Guide</button>
+             </div>
+             <label class="control-search" for="control-guide-search">
+               Search site guides
+@@ -421,7 +425,7 @@
+                   role="status" aria-live="polite">Loading observability data</p>
+             </div>
+             <button class="danger-button" type="button"
+-                id="control-clear-logs">Clear logs</button>
++                id="control-clear-logs">Clear Runtime Logs</button>
+           </div>
+           <div class="control-filter-grid">
+             <label>Record class
+@@ -448,7 +452,7 @@
+           <h1 id="control-supervision-heading">Supervision &amp; Pairing</h1>
+           <h2>Not ready</h2>
+           <p class="empty-copy">
+-            Supervision and pairing remain unavailable until Phase 21.
++            Supervision and dashboard pairing arrive in Phase 21.
+           </p>
+         </section>
+         <section class="section-panel" id="section-parity"
+@@ -483,14 +487,15 @@
+           aria-labelledby="control-clear-logs-title"
+           aria-describedby="control-clear-logs-copy">
+         <form method="dialog">
+-          <h2 id="control-clear-logs-title">Clear logs and diagnostics?</h2>
++          <h2 id="control-clear-logs-title">Clear runtime logs?</h2>
+           <p id="control-clear-logs-copy">
+-            Task records and accounting stay intact.
++            This removes bounded local event history from this profile. Task
++            outcomes remain available.
+           </p>
+           <div class="dialog-actions">
+             <button class="quiet-button" value="cancel" autofocus>Keep logs</button>
+             <button class="danger-button" value="confirm"
+-                id="control-clear-logs-confirm">Clear logs</button>
++                id="control-clear-logs-confirm">Clear Runtime Logs</button>
+           </div>
+         </form>
+       </dialog>
+@@ -500,7 +505,7 @@
+         <form method="dialog">
+           <h2 id="control-delete-record-title">Delete this record?</h2>
+           <p id="control-delete-record-copy">
+-            This permanently removes the selected metadata from this profile.
++            This removes the selected local record from this profile.
+           </p>
+           <div class="dialog-actions">
+             <button class="quiet-button" value="cancel" autofocus>
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.js b/chrome/browser/resources/prometheus/prometheus_webui.js
+index 4aec8a876d..8314b93f96 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.js
++++ b/chrome/browser/resources/prometheus/prometheus_webui.js
+@@ -839,9 +839,14 @@ function renderControlProvider(provider, index, providerCount) {
+           [provider.provider_id]);
+     });
+   }
+-  addAction('Delete', 'provider-delete', () => {
+-    chrome.send('prometheusControlDeleteProvider', [provider.provider_id]);
++  const remove = addAction('Delete', 'provider-delete', () => {
++    requestControlRecordDeletion(
++        'provider', provider.provider_id || '',
++        {label: provider.label || provider.provider_id || 'this provider'},
++        remove);
+   });
++  remove.setAttribute('aria-haspopup', 'dialog');
++  remove.setAttribute('aria-expanded', 'false');
+   card.append(actions);
+   return card;
+ }
+@@ -869,7 +874,8 @@ function renderControlProviders() {
+   } else if (!providers.length) {
+     list.append(makeControlEmpty(
+         'No provider configured',
+-        'Choose a provider, model, endpoint, and save from the control panel.'));
++        'Add provider metadata, then save its key in the native Prometheus ' +
++            'dialog.'));
+   } else {
+     providers.forEach((provider, index) => {
+       list.append(renderControlProvider(provider, index, providers.length));
+@@ -988,7 +994,7 @@ function openControlVaultForm(entry = null) {
+       ?.focus({preventScroll: true});
+ }
+ 
+-function requestControlRecordDeletion(kind, recordId, label, trigger) {
++function requestControlRecordDeletion(kind, recordId, context, trigger) {
+   const dialog = document.querySelector('#control-delete-record-dialog');
+   if (!dialog || !recordId || dialog.open) {
+     return;
+@@ -996,12 +1002,25 @@ function requestControlRecordDeletion(kind, recordId, label, trigger) {
+   pendingControlDelete = {kind, recordId, trigger: trigger || null};
+   const title = document.querySelector('#control-delete-record-title');
+   const copy = document.querySelector('#control-delete-record-copy');
++  const confirmation = kind === 'provider' ? {
++    title: `Delete provider ${context.label}?`,
++    copy: 'Its local metadata and encrypted key will be removed.',
++  } : kind === 'memory' ? {
++    title: `Delete memory ${context.title}?`,
++    copy: 'This removes the local note from this profile.',
++  } : kind === 'guide' ? {
++    title: `Delete the site guide for ${context.origin}?`,
++    copy: 'Future tasks will no longer apply these instructions.',
++  } : {
++    title: `Delete vault entry ${context.label}?`,
++    copy: 'Its encrypted secret and local metadata will be removed from this ' +
++        'profile.',
++  };
+   if (title) {
+-    title.textContent = `Delete ${label}?`;
++    title.textContent = confirmation.title;
+   }
+   if (copy) {
+-    copy.textContent =
+-        'This permanently removes the selected metadata from this profile.';
++    copy.textContent = confirmation.copy;
+   }
+   trigger?.setAttribute('aria-expanded', 'true');
+   dialog.showModal();
+@@ -1046,7 +1065,8 @@ function renderControlMemoryRecord(memory) {
+     const remove = appendRecordAction(
+         actions, 'Delete', `memory-delete:${memory.memory_id || ''}`, () => {
+           requestControlRecordDeletion(
+-              'memory', memory.memory_id || '', 'this memory', remove);
++              'memory', memory.memory_id || '',
++              {title: memory.title || 'this memory'}, remove);
+         }, true);
+     remove.setAttribute('aria-haspopup', 'dialog');
+     remove.setAttribute('aria-expanded', 'false');
+@@ -1082,7 +1102,7 @@ function renderControlGuideRecord(guide) {
+   const actions = document.createElement('div');
+   actions.className = 'control-card-actions';
+   appendRecordAction(
+-      actions, 'Apply to current page',
++      actions, 'Apply to Current Task',
+       `guide-apply:${guide.guide_id || ''}`, () => {
+         chrome.send('prometheusControlApplyGuide', [guide.guide_id]);
+       });
+@@ -1093,7 +1113,8 @@ function renderControlGuideRecord(guide) {
+     const remove = appendRecordAction(
+         actions, 'Delete', `guide-delete:${guide.guide_id || ''}`, () => {
+           requestControlRecordDeletion(
+-              'guide', guide.guide_id || '', 'this site guide', remove);
++              'guide', guide.guide_id || '',
++              {origin: guide.canonical_origin || 'this origin'}, remove);
+         }, true);
+     remove.setAttribute('aria-haspopup', 'dialog');
+     remove.setAttribute('aria-expanded', 'false');
+@@ -1128,7 +1149,7 @@ function renderControlVaultEntry(entry) {
+   const actions = document.createElement('div');
+   actions.className = 'control-card-actions';
+   appendRecordAction(
+-      actions, 'Edit metadata', `vault-edit:${entry.id || ''}`,
++      actions, 'Edit Metadata', `vault-edit:${entry.id || ''}`,
+       () => openControlVaultForm(entry));
+   appendRecordAction(
+       actions, entry.secret_configured ? 'Replace Secret' : 'Save Secret',
+@@ -1137,9 +1158,10 @@ function renderControlVaultEntry(entry) {
+             [entry.id, entry.secret_configured === true]);
+       });
+   const remove = appendRecordAction(
+-      actions, 'Delete metadata', `vault-delete:${entry.id || ''}`, () => {
++      actions, 'Delete Entry', `vault-delete:${entry.id || ''}`, () => {
+         requestControlRecordDeletion(
+-            'vault', entry.id || '', 'this vault metadata', remove);
++            'vault', entry.id || '',
++            {label: entry.label || 'this vault entry'}, remove);
+       }, true);
+   remove.setAttribute('aria-haspopup', 'dialog');
+   remove.setAttribute('aria-expanded', 'false');
+@@ -1174,18 +1196,18 @@ function renderControlMemoryAndGuides() {
+   } else {
+     if (!memories.length) {
+       memoryList.append(makeControlEmpty(
+-          allMemories.length ? 'No memory matches' : 'No memory yet',
++          allMemories.length ? 'No memory matches' : 'No memory saved',
+           allMemories.length ? 'Try a different bounded search.' :
+-                               'Add a note explicitly; pages are never captured.'));
++                               'Save a bounded note for future browser tasks.'));
+     } else {
+       memories.forEach((memory) => memoryList.append(
+           renderControlMemoryRecord(memory)));
+     }
+     if (!guides.length) {
+       guideList.append(makeControlEmpty(
+-          allGuides.length ? 'No guide matches' : 'No site guides yet',
++          allGuides.length ? 'No guide matches' : 'No site guides',
+           allGuides.length ? 'Try a different bounded search.' :
+-                             'Add instructions for one exact HTTP(S) origin.'));
++                             'Save instructions for the exact current origin.'));
+     } else {
+       guides.forEach((guide) => guideList.append(
+           renderControlGuideRecord(guide)));
+@@ -1227,7 +1249,8 @@ function renderControlVault() {
+   } else if (!entries.length) {
+     list.append(makeControlEmpty(
+         'No vault entries',
+-        'Save safe metadata here. Secret entry remains browser-native.'));
++        'Add metadata here, then save the secret in a native Prometheus ' +
++            'dialog.'));
+   } else {
+     entries.forEach((entry) => list.append(renderControlVaultEntry(entry)));
+   }
+@@ -1924,10 +1947,13 @@ if (surface === 'control-panel') {
+           return;
+         }
+         const {kind, recordId} = pendingControlDelete;
+-        const message = kind === 'memory' ? 'prometheusControlDeleteMemory' :
++        const message = kind === 'provider' ?
++            'prometheusControlDeleteProvider' :
++            kind === 'memory' ? 'prometheusControlDeleteMemory' :
+             kind === 'guide' ? 'prometheusControlDeleteGuide' :
+                                'prometheusControlDeleteVaultMetadata';
+-        chrome.send(message, [recordId, true]);
++        chrome.send(message, kind === 'provider' ? [recordId] :
++                                                   [recordId, true]);
+       });
+   deleteRecordDialog?.addEventListener('close', () => {
+     pendingControlDelete?.trigger?.setAttribute('aria-expanded', 'false');
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index dba5214f24..92846f2213 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -37,6 +37,7 @@
+ #include "chrome/test/base/ui_test_utils.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/tabs/public/tab_interface.h"
++#include "components/zoom/zoom_controller.h"
+ #include "content/public/browser/navigation_entry.h"
+ #include "content/public/browser/reload_type.h"
+ #include "content/public/browser/web_contents.h"
+@@ -47,6 +48,8 @@
+ #include "net/dns/mock_host_resolver.h"
+ #include "net/test/embedded_test_server/embedded_test_server.h"
+ #include "testing/gtest/include/gtest/gtest.h"
++#include "third_party/blink/public/common/page/page_zoom.h"
++#include "ui/accessibility/ax_node_data.h"
+ #include "ui/base/mojom/dialog_button.mojom.h"
+ #include "ui/gfx/geometry/rect.h"
+ #include "ui/gfx/switches.h"
+@@ -385,22 +388,33 @@ IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
+   EXPECT_TRUE(BodyTextContentContains(web_contents, "No provider configured"));
+   EXPECT_TRUE(BodyTextContentContains(
+       web_contents,
+-      "Choose a provider, model, endpoint, and save from the control panel."));
++      "Add provider metadata, then save its key in the native Prometheus "
++      "dialog."));
+   EXPECT_TRUE(
+       BodyTextContentContains(web_contents, "Native MCP runtime available"));
++  EXPECT_TRUE(BodyTextContentContains(
++      web_contents,
++      "External MCP clients connect through the local stdio bridge. "
++      "Prometheus does not bundle or launch an agent client."));
+   EXPECT_TRUE(BodyTextContentContains(web_contents,
+                                       "Provider mutation: LOCAL_UI_REQUIRED"));
+   EXPECT_TRUE(BodyTextContentContains(web_contents, "No vault entries"));
+   EXPECT_TRUE(BodyTextContentContains(
+       web_contents,
+-      "Save metadata here. Secrets stay in native secure storage."));
++      "Add metadata here, then save the secret in a native Prometheus "
++      "dialog."));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "No memory saved"));
++  EXPECT_TRUE(BodyTextContentContains(
++      web_contents, "Save a bounded note for future browser tasks."));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "No site guides"));
++  EXPECT_TRUE(BodyTextContentContains(
++      web_contents, "Save instructions for the exact current origin."));
+   EXPECT_TRUE(BodyTextContentContains(web_contents, "No runtime logs yet"));
+   EXPECT_TRUE(BodyTextContentContains(web_contents,
+                                       "Run a task or refresh diagnostics."));
+   EXPECT_TRUE(BodyTextContentContains(web_contents, "Not ready"));
+   EXPECT_TRUE(BodyTextContentContains(
+-      web_contents,
+-      "Supervision and pairing remain unavailable until Phase 21."));
++      web_contents, "Supervision and dashboard pairing arrive in Phase 21."));
+   EXPECT_TRUE(BodyTextContentContains(web_contents, "No parity rows loaded"));
+   EXPECT_TRUE(BodyTextContentContains(
+       web_contents, "Generate parity evidence before claiming FSB parity."));
+@@ -947,90 +961,334 @@ IN_PROC_BROWSER_TEST_F(
+   ASSERT_TRUE(content::ExecJs(web_contents, R"(
+     document.querySelector('[data-section-target="providers"]').click();
+     document.querySelector('#control-add-provider').click();
+-  )"));
+-
+-  for (const int width : std::array{320, 480, 720, 1024}) {
+-    web_contents->Resize(gfx::Rect(0, 0, width, 900));
+-    ASSERT_TRUE(base::test::RunUntil([&]() {
+-      return content::EvalJs(web_contents, "window.innerWidth").ExtractInt() ==
+-             width;
+-    })) << width;
+-    const std::string issues = content::EvalJs(web_contents, R"(
+-      (() => {
+-        const issues = [];
+-        const viewport = document.documentElement.clientWidth;
+-        const visible = element => {
+-          const style = getComputedStyle(element);
+-          return style.display !== 'none' && style.visibility !== 'hidden' &&
+-              element.getClientRects().length > 0;
+-        };
++    window.prometheusControlResponsiveIssuesForTesting = () => {
++      const issues = [];
++      const viewport = document.documentElement.clientWidth;
++      const visible = element => {
++        const style = getComputedStyle(element);
++        return style.display !== 'none' && style.visibility !== 'hidden' &&
++            element.getClientRects().length > 0;
++      };
++      const railVisible = visible(document.querySelector('.section-rail'));
++      const selectVisible = visible(
++          document.querySelector('.section-select-label'));
++      if (railVisible !== (innerWidth >= 720)) {
++        issues.push(`rail:${railVisible}`);
++      }
++      if (selectVisible !== (innerWidth < 720)) {
++        issues.push(`select:${selectVisible}`);
++      }
++      const sections = [
++        'tasks', 'providers', 'mcp', 'permissions', 'vault', 'memory',
++        'logs', 'supervision', 'parity',
++      ];
++      const select = document.querySelector('#section-select');
++      for (const section of sections) {
++        select.value = section;
++        select.dispatchEvent(new Event('change', {bubbles: true}));
++        const panel = document.querySelector(
++            `[data-section-panel="${section}"]`);
++        if (!panel || panel.hidden || !visible(panel)) {
++          issues.push(`hidden-section:${section}`);
++          continue;
++        }
+         if (document.documentElement.scrollWidth > viewport ||
+             document.body.scrollWidth > viewport) {
+-          issues.push(`page-overflow:${document.documentElement.scrollWidth}`);
+-        }
+-        const railVisible = getComputedStyle(
+-            document.querySelector('.section-rail')).display !== 'none';
+-        const selectVisible = visible(
+-            document.querySelector('.section-select-label'));
+-        if (railVisible !== (innerWidth >= 720)) {
+-          issues.push(`rail:${railVisible}`);
+-        }
+-        if (selectVisible !== (innerWidth < 720)) {
+-          issues.push(`select:${selectVisible}`);
++          issues.push(
++              `page-overflow:${section}:${document.documentElement.scrollWidth}`);
+         }
+-        const detailTracks = getComputedStyle(
+-            document.querySelector('.control-details')).gridTemplateColumns
+-            .trim().split(/\s+/).length;
+-        if (detailTracks !== (innerWidth >= 1024 ? 2 : 1)) {
+-          issues.push(`detail-tracks:${detailTracks}`);
++        const panelRect = panel.getBoundingClientRect();
++        if (panelRect.left < -0.5 || panelRect.right > viewport + 0.5) {
++          issues.push(`clipped-panel:${section}`);
+         }
+-        const formTracks = getComputedStyle(
+-            document.querySelector('.control-form-grid')).gridTemplateColumns
+-            .trim().split(/\s+/).length;
+-        if (formTracks !== (innerWidth >= 1024 ? 2 : 1)) {
+-          issues.push(`form-tracks:${formTracks}`);
++        const expectedTracks = innerWidth >= 1024 ? 2 : 1;
++        for (const grid of panel.querySelectorAll(
++            '.control-details, .control-form-grid, .control-filter-grid')) {
++          if (!visible(grid)) {
++            continue;
++          }
++          const tracks = getComputedStyle(grid).gridTemplateColumns.trim()
++              .split(/\s+/).length;
++          if (tracks !== expectedTracks) {
++            issues.push(`tracks:${section}:${tracks}`);
++          }
+         }
+-        const controls = Array.from(document.querySelectorAll(
++        const controls = Array.from(panel.querySelectorAll(
+             'button, input, select, textarea')).filter(visible);
+         for (const control of controls) {
+           const rect = control.getBoundingClientRect();
+           if (rect.left < -0.5 || rect.right > viewport + 0.5) {
+-            issues.push(`clipped:${control.id || control.name ||
++            issues.push(`clipped:${section}:${control.id || control.name ||
+                 control.textContent.trim()}`);
+           }
+           if (!control.disabled && control.tabIndex < 0 &&
+               control.getAttribute('role') !== 'tab') {
+-            issues.push(`unreachable:${control.id || control.name}`);
++            issues.push(`unreachable:${section}:${control.id || control.name}`);
+           }
+           if (control.matches('button, input:not([type="checkbox"]):not(' +
+               '[type="radio"]), select, textarea') && rect.height < 47.5) {
+-            issues.push(`short:${control.id || control.name ||
++            issues.push(`short:${section}:${control.id || control.name ||
+                 control.textContent.trim()}:${rect.height}`);
+           }
+           if (control.matches('input, select, textarea') &&
+               !control.labels?.length && !control.getAttribute('aria-label')) {
+-            issues.push(`unlabelled:${control.id || control.name}`);
++            issues.push(`unlabelled:${section}:${control.id || control.name}`);
+           }
+-          if (control.matches('button') &&
+-              !control.textContent.trim() &&
+-              !control.getAttribute('aria-label') &&
+-              !control.getAttribute('title')) {
+-            issues.push(`unnamed-button:${control.id}`);
++          if (control.matches('button') && !control.textContent.trim() &&
++              !control.getAttribute('aria-label') && !control.title) {
++            issues.push(`unnamed-button:${section}:${control.id}`);
+           }
+         }
+-        for (const checkbox of document.querySelectorAll(
++        for (const checkbox of panel.querySelectorAll(
+             'input[type="checkbox"]')) {
+           if (visible(checkbox) &&
+               checkbox.closest('label')?.getBoundingClientRect().height < 48) {
+-            issues.push(`small-checkbox-target:${checkbox.name}`);
++            issues.push(`small-checkbox-target:${section}:${checkbox.id}`);
+           }
+         }
+-        return issues.join('|');
+-      })();
+-    )")
+-                                   .ExtractString();
++      }
++      if (document.querySelector('#section-supervision h2')?.textContent !==
++              'Not ready' ||
++          document.querySelector('#section-parity h2')?.textContent !==
++              'No parity rows loaded') {
++        issues.push('truthful-later-phase-state');
++      }
++      return issues.join('|');
++    };
++  )"));
++
++  for (const int width : std::array{320, 480, 720, 1024}) {
++    web_contents->Resize(gfx::Rect(0, 0, width, 900));
++    ASSERT_TRUE(base::test::RunUntil([&]() {
++      return content::EvalJs(web_contents, "window.innerWidth").ExtractInt() ==
++             width;
++    })) << width;
++    const std::string issues =
++        content::EvalJs(web_contents,
++                        "window."
++                        "prometheusControlResponsiveIssuesForTesting"
++                        "()")
++            .ExtractString();
+     EXPECT_TRUE(issues.empty()) << "width=" << width << " " << issues;
+   }
++
++  web_contents->Resize(gfx::Rect(0, 0, 640, 900));
++  zoom::ZoomController* const zoom_controller =
++      zoom::ZoomController::FromWebContents(web_contents);
++  ASSERT_TRUE(zoom_controller);
++  zoom_controller->SetZoomLevel(blink::ZoomFactorToZoomLevel(2.0));
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return zoom_controller->GetZoomPercent() == 200; }));
++  const std::string zoom_issues =
++      content::EvalJs(web_contents,
++                      "window."
++                      "prometheusControlResponsiveIssuesForTesting"
++                      "()")
++          .ExtractString();
++  EXPECT_TRUE(zoom_issues.empty()) << "zoom=200% " << zoom_issues;
++  zoom_controller->SetZoomLevel(blink::ZoomFactorToZoomLevel(1.0));
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
++                       ControlPanelKeyboardCrudAndExactDestructiveCopy) {
++  ASSERT_TRUE(ConfigureLocalRuntimeProvider());
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(web_contents);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlSnapshotForTesting?.providers?.length === 1;
++    )")
++        .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    document.querySelector('[data-section-target="providers"]').click();
++    document.querySelector(
++        '[data-control-focus-key="provider-edit:local-ui-test"]').focus();
++  )"));
++  content::SimulateKeyPress(web_contents, ui::DomKey::ENTER, ui::DomCode::ENTER,
++                            ui::VKEY_RETURN, false, false, false, false);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      !document.querySelector('#control-provider-form').hidden &&
++          document.activeElement?.name === 'provider_id';
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    const form = document.querySelector('#control-provider-form');
++    form.elements.namedItem('label').value = 'Keyboard Provider';
++    form.elements.namedItem('endpoint').value =
++        'http://127.0.0.1:12345/v1/';
++    window.prometheusControlOperationForTesting = null;
++    form.querySelector('button[type="submit"]').focus();
++  )"));
++  content::SimulateKeyPress(web_contents, ui::DomKey::ENTER, ui::DomCode::ENTER,
++                            ui::VKEY_RETURN, false, false, false, false);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          window.prometheusControlSnapshotForTesting.providers[0].label ===
++              'Keyboard Provider' &&
++          document.querySelector('#control-provider-form').hidden;
++    )")
++        .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    document.querySelector(
++        '[data-control-focus-key="provider-edit:local-ui-test"]').focus();
++  )"));
++  content::SimulateKeyPress(web_contents, ui::DomKey::ENTER, ui::DomCode::ENTER,
++                            ui::VKEY_RETURN, false, false, false, false);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      !document.querySelector('#control-provider-form').hidden;
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    document.querySelector('#control-provider-form-cancel').focus();
++  )"));
++  content::SimulateKeyPress(web_contents, ui::DomKey::ENTER, ui::DomCode::ENTER,
++                            ui::VKEY_RETURN, false, false, false, false);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      document.querySelector('#control-provider-form').hidden &&
++          document.activeElement?.id === 'control-add-provider' &&
++          window.prometheusControlSnapshotForTesting.providers[0].label ===
++              'Keyboard Provider';
++    )")
++        .ExtractBool();
++  }));
++
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    (() => {
++      const snapshot = structuredClone(
++          window.prometheusControlSnapshotForTesting);
++      snapshot.memories = [{
++        memory_id: 'memory-copy', title: 'Release checklist', text: 'Safe',
++        tags: [], visibility: 'caller_owned', byte_count: 4,
++        updated_at_ms: 1, editable: true,
++      }];
++      snapshot.site_guides = [{
++        guide_id: 'guide-copy', title: 'Guide', instructions: 'Safe', tags: [],
++        visibility: 'caller_owned', canonical_origin: 'https://guide.example',
++        byte_count: 4, updated_at_ms: 1, editable: true,
++      }];
++      snapshot.vault_entries = [{
++        id: 'vault-copy', label: 'Work login', kind: 'credential',
++        canonical_origin: 'https://vault.example', updated_time_ms: 1,
++        secret_configured: true,
++      }];
++      window.prometheusControlReceiveSnapshot(snapshot);
++      const dialog = document.querySelector('#control-delete-record-dialog');
++      const cases = [
++        ['memory', 'memory-delete:memory-copy',
++          'Delete memory Release checklist?',
++          'This removes the local note from this profile.'],
++        ['memory', 'guide-delete:guide-copy',
++          'Delete the site guide for https://guide.example?',
++          'Future tasks will no longer apply these instructions.'],
++        ['vault', 'vault-delete:vault-copy',
++          'Delete vault entry Work login?',
++          'Its encrypted secret and local metadata will be removed from this ' +
++              'profile.'],
++      ];
++      for (const [section, key, title, copy] of cases) {
++        document.querySelector(
++            `[data-section-target="${section}"]`).click();
++        const trigger = document.querySelector(
++            `[data-control-focus-key="${key}"]`);
++        trigger.focus();
++        trigger.click();
++        if (!dialog.open ||
++            document.querySelector('#control-delete-record-title')
++                    .textContent !== title ||
++            document.querySelector('#control-delete-record-copy')
++                    .textContent !== copy) {
++          return false;
++        }
++        dialog.close('cancel');
++        dialog.dispatchEvent(new Event('close'));
++        if (document.activeElement?.dataset.controlFocusKey !== key) {
++          return false;
++        }
++      }
++      document.querySelector('[data-section-target="logs"]').click();
++      const clear = document.querySelector('#control-clear-logs');
++      clear.focus();
++      clear.click();
++      const clearDialog = document.querySelector(
++          '#control-clear-logs-dialog');
++      const exactClear = clearDialog.open &&
++          document.querySelector('#control-clear-logs-title').textContent ===
++              'Clear runtime logs?' &&
++          document.querySelector('#control-clear-logs-copy').textContent
++              .replace(/\s+/g, ' ').trim() ===
++              'This removes bounded local event history from this profile. ' +
++                  'Task outcomes remain available.';
++      clearDialog.close('cancel');
++      clearDialog.dispatchEvent(new Event('close'));
++      return exactClear && document.activeElement?.id === 'control-clear-logs';
++    })();
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    document.querySelector('[data-section-target="providers"]').click();
++    document.querySelector(
++        '[data-control-focus-key="provider-delete:local-ui-test"]').focus();
++  )"));
++  content::SimulateKeyPress(web_contents, ui::DomKey::ENTER, ui::DomCode::ENTER,
++                            ui::VKEY_RETURN, false, false, false, false);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      document.querySelector('#control-delete-record-dialog').open;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    document.querySelector('#control-delete-record-title').textContent ===
++        'Delete provider Keyboard Provider?' &&
++    document.querySelector('#control-delete-record-copy').textContent ===
++        'Its local metadata and encrypted key will be removed.';
++  )")
++                  .ExtractBool());
++  content::SimulateKeyPress(web_contents, ui::DomKey::ESCAPE,
++                            ui::DomCode::ESCAPE, ui::VKEY_ESCAPE, false, false,
++                            false, false);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      !document.querySelector('#control-delete-record-dialog').open &&
++          document.activeElement?.dataset.controlFocusKey ===
++              'provider-delete:local-ui-test';
++    )")
++        .ExtractBool();
++  }));
++
++  content::SimulateKeyPress(web_contents, ui::DomKey::ENTER, ui::DomCode::ENTER,
++                            ui::VKEY_RETURN, false, false, false, false);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      document.querySelector('#control-delete-record-dialog').open;
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusControlOperationForTesting = null;
++    document.querySelector('#control-delete-record-confirm').focus();
++  )"));
++  content::SimulateKeyPress(web_contents, ui::DomKey::ENTER, ui::DomCode::ENTER,
++                            ui::VKEY_RETURN, false, false, false, false);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          window.prometheusControlSnapshotForTesting.providers.length === 0;
++    )")
++        .ExtractBool();
++  }));
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(
+@@ -1058,7 +1316,7 @@ IN_PROC_BROWSER_TEST_F(
+             document.getElementById(label);
+       });
+       const labelledFields = Array.from(document.querySelectorAll(
+-          'input, select, textarea')).every(field =>
++          'input:not([type="hidden"]), select, textarea')).every(field =>
+         field.labels?.length || field.getAttribute('aria-label'));
+       const namedButtons = Array.from(document.querySelectorAll('button'))
+           .every(button => button.textContent.trim() ||
+@@ -1435,6 +1693,14 @@ IN_PROC_BROWSER_TEST_F(
+            "SESSION_SENTINEL", "PROFILE_PATH_SENTINEL", "TOKEN_SENTINEL",
+            "sensitive.example", "AUTH_MESSAGE_SENTINEL"}) {
+     EXPECT_EQ(std::string::npos, serialized.find(sentinel)) << sentinel;
++    EXPECT_EQ(std::string::npos,
++              browser()
++                  ->profile()
++                  ->GetPrefs()
++                  ->GetDict(prometheus::kPrometheusRuntimeProfileData)
++                  .DebugString()
++                  .find(sentinel))
++        << sentinel;
+   }
+   const std::string snapshot_json = content::EvalJs(web_contents, R"(
+         JSON.stringify(window.prometheusControlSnapshotForTesting);
+@@ -1449,6 +1715,8 @@ IN_PROC_BROWSER_TEST_F(
+   }
+ 
+   std::string renderer_source;
++  std::string control_html_source;
++  std::string stylesheet_source;
+   {
+     base::ScopedAllowBlockingForTesting allow_blocking;
+     base::FilePath source_root;
+@@ -1458,6 +1726,14 @@ IN_PROC_BROWSER_TEST_F(
+         source_root.AppendASCII(
+             "chrome/browser/resources/prometheus/prometheus_webui.js"),
+         &renderer_source));
++    ASSERT_TRUE(base::ReadFileToString(
++        source_root.AppendASCII("chrome/browser/resources/prometheus/"
++                                "prometheus_control_panel.html"),
++        &control_html_source));
++    ASSERT_TRUE(base::ReadFileToString(
++        source_root.AppendASCII(
++            "chrome/browser/resources/prometheus/prometheus_webui.css"),
++        &stylesheet_source));
+   }
+   for (const std::string& forbidden_path : std::vector<std::string>{
+            ".innerHTML =", ".innerHTML=", "insertAdjacentHTML",
+@@ -1465,6 +1741,25 @@ IN_PROC_BROWSER_TEST_F(
+     EXPECT_EQ(std::string::npos, renderer_source.find(forbidden_path))
+         << forbidden_path;
+   }
++  for (const std::string& forbidden_resource : std::vector<std::string>{
++           "src=\"http://", "src=\"https://", "href=\"http://",
++           "href=\"https://", "<iframe", "<frame", "<object", "<embed"}) {
++    EXPECT_EQ(std::string::npos, control_html_source.find(forbidden_resource))
++        << forbidden_resource;
++  }
++  for (const std::string& forbidden_style :
++       std::vector<std::string>{"url(http://", "url(https://", "@import"}) {
++    EXPECT_EQ(std::string::npos, stylesheet_source.find(forbidden_style))
++        << forbidden_style;
++  }
++  const std::string packaged_sources =
++      control_html_source + renderer_source + stylesheet_source;
++  for (const std::string& forbidden_ui : std::vector<std::string>{
++           "React", "react-dom", "shadcn", "CLAUDE.md", "Launch agent",
++           "Launch client", "prompt provisioner"}) {
++    EXPECT_EQ(std::string::npos, packaged_sources.find(forbidden_ui))
++        << forbidden_ui;
++  }
+ 
+   EXPECT_TRUE(content::EvalJs(web_contents, R"(
+     (() => {
+@@ -1939,8 +2234,10 @@ IN_PROC_BROWSER_TEST_F(
+       prometheus::PrometheusRuntimeDialogLaunchCountForTesting();
+   ASSERT_TRUE(content::ExecJs(web_contents, R"(
+     document.querySelector(
+-        '[data-control-focus-key="provider-secret:local-ui-test"]').click();
++        '[data-control-focus-key="provider-secret:local-ui-test"]').focus();
+   )"));
++  content::SimulateKeyPress(web_contents, ui::DomKey::ENTER, ui::DomCode::ENTER,
++                            ui::VKEY_RETURN, false, false, false, false);
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+     return prometheus::PrometheusRuntimeDialogLaunchCountForTesting() ==
+                provider_launch_count + 1u &&
+@@ -1966,12 +2263,22 @@ IN_PROC_BROWSER_TEST_F(
+   ASSERT_TRUE(provider_secret);
+   EXPECT_EQ(ui::TEXT_INPUT_TYPE_PASSWORD, provider_secret->GetTextInputType());
+   provider_secret->SetText(u"NATIVE_SECRET_VALUE_SENTINEL");
++  ui::AXNodeData provider_secret_ax;
++  provider_secret->GetViewAccessibility().GetAccessibleNodeData(
++      &provider_secret_ax);
++  EXPECT_TRUE(provider_secret_ax.HasState(ax::mojom::State::kProtected));
++  EXPECT_EQ(std::u16string::npos,
++            provider_secret_ax
++                .GetString16Attribute(ax::mojom::StringAttribute::kValue)
++                .find(u"NATIVE_SECRET_VALUE_SENTINEL"));
+   provider_delegate->AcceptDialog();
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+     return !prometheus::PrometheusRuntimeDialogWidgetForTesting() &&
+            content::EvalJs(web_contents, R"(
+              window.prometheusControlSnapshotForTesting?.providers?.[0]
+-                 ?.secret_configured === true;
++                 ?.secret_configured === true &&
++             document.activeElement?.dataset.controlFocusKey ===
++                 'provider-secret:local-ui-test';
+            )")
+                .ExtractBool();
+   }));
+@@ -2059,8 +2366,10 @@ IN_PROC_BROWSER_TEST_F(
+   ASSERT_TRUE(content::ExecJs(web_contents, R"(
+     const entry = window.prometheusControlSnapshotForTesting.vault_entries[0];
+     document.querySelector(
+-        `[data-control-focus-key="vault-secret:${entry.id}"]`).click();
++        `[data-control-focus-key="vault-secret:${entry.id}"]`).focus();
+   )"));
++  content::SimulateKeyPress(web_contents, ui::DomKey::ENTER, ui::DomCode::ENTER,
++                            ui::VKEY_RETURN, false, false, false, false);
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+     return prometheus::PrometheusRuntimeDialogLaunchCountForTesting() ==
+                vault_launch_count + 1u &&
+@@ -2085,8 +2394,16 @@ IN_PROC_BROWSER_TEST_F(
+   ASSERT_TRUE(vault_secret);
+   EXPECT_EQ(ui::TEXT_INPUT_TYPE_PASSWORD, vault_secret->GetTextInputType());
+   vault_delegate->CancelDialog();
+-  ASSERT_TRUE(base::test::RunUntil(
+-      []() { return !prometheus::PrometheusRuntimeDialogWidgetForTesting(); }));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return !prometheus::PrometheusRuntimeDialogWidgetForTesting() &&
++           content::EvalJs(web_contents, R"(
++             const entry =
++                 window.prometheusControlSnapshotForTesting.vault_entries[0];
++             document.activeElement?.dataset.controlFocusKey ===
++                 `vault-secret:${entry.id}`;
++           )")
++               .ExtractBool();
++  }));
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
+-- 
+2.50.1 (Apple Git-155)
+
