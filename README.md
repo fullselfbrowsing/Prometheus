@@ -45,7 +45,7 @@ Prometheus is a Chromium-based agent-native browser built by Full Self Browsing.
 
 Where a Chrome extension can only reach the page, Prometheus owns the browser. Agents drive normal web pages and the surfaces an extension can never touch: settings, tabs, downloads, history, and internal pages. Every action runs through a typed native command router with tab ownership, permission boundaries, change reports, and an audit log.
 
-> **Status:** v2.0 Chromium migration is active. Phases 11–19 are complete: the Chromium baseline, product identity, design assets, browser shell, Prometheus WebUI shells, native agent service, page adapter, and external MCP bridge have automated evidence. Phase 20 is next and owns the live FSB runtime, providers, vault, memory, logs, and control-panel data. The v1.0 Falkon/QtWebEngine bootstrap is preserved only as a reference at `.context/falkon-preservation/`.
+> **Status:** v2.0 Chromium migration is active. Phases 11–20 are complete with automated evidence: the Chromium baseline, product identity, design assets, browser shell, Prometheus WebUI, native agent and page services, external MCP bridge, and live FSB runtime/provider/vault/memory/log/control-panel stack. Phase 21 next owns supervision and pairing. The v1.0 Falkon/QtWebEngine bootstrap is preserved only as a reference at `.context/falkon-preservation/`.
 
 ### What it does
 
@@ -53,7 +53,7 @@ Where a Chrome extension can only reach the page, Prometheus owns the browser. A
 * Controls stable tabs, windows, navigation, Prometheus internal surfaces, and normal-page content through browser-owned authority.
 * Exposes a dependency-free stdio MCP bridge so Claude Code, Cursor, VS Code, Codex, and other external MCP clients can drive the browser.
 * Enforces browser-issued sessions and multi-agent tab ownership with typed recovery errors.
-* Provides the Prometheus side-panel and control-panel shells; Phase 20 owns their live task/provider/vault/memory/log data.
+* Provides live Prometheus side-panel and control-panel workflows for tasks, providers and models, vault metadata, memory and site guides, logs, diagnostics, and enforced FSB settings.
 * Keeps supervision, remote pairing, and extension policy as explicit later work in Phases 21 and 22 instead of claiming unavailable behavior.
 
 ## Why DOM First
@@ -81,7 +81,7 @@ Prometheus puts the control layer inside the browser process, so an agent can re
 * **Browser owned pages** through `open_internal_surface`, including settings and internal views.
 * **Tabs and windows** through native tab and window APIs rather than page level guesses.
 * **Direct page scripts** through `execute_js`, with DOM snapshots for read back and verification.
-* **Prometheus-owned internal surfaces** through closed native routes. Live runtime data arrives in Phase 20 and supervision in Phase 21.
+* **Prometheus-owned internal surfaces** through closed native routes, with the live FSB runtime in the browser process and supervision reserved for Phase 21.
 
 ---
 
@@ -136,8 +136,8 @@ caller-supplied authority, arbitrary route, or credential on the command line.
 | Page adapter | Ready | Reads bounded text, attributes, DOM/page snapshots, exact same-origin frames, and executes permissioned scripts and verified actions. |
 | Multi-agent ownership | Ready | Caps active sessions, pins profiles, preserves stable tab identity, releases ownership on close/expiry, and returns typed recovery errors. |
 | MCP bridge | Ready | Dependency-free Node 20 stdio adapter exposing the exact 90-name compatibility inventory to external MCP hosts. |
-| Prometheus WebUI shells | Ready | Side panel, control-panel shell, and new-tab handoff are browser-owned; live runtime data is not yet populated. |
-| Runtime, providers, vault, memory, logs | Phase 20 | Later-phase tools remain discoverable but return truthful `NOT_READY` results. |
+| Prometheus WebUI | Ready | Side panel, nine-section control panel, new-tab Ask FSB handoff, live tasks, provider/model state, memory/site guides, vault metadata, logs, diagnostics, and effective settings are browser-owned. |
+| Runtime, providers, vault, memory, logs | Ready | One regular-profile native state machine executes bounded provider/tool loops, persists sanitized task/accounting state, keeps secrets native, and exposes closed MCP-compatible routes. |
 | Supervision and pairing | Phase 21 | Compatibility names remain discoverable but do not claim a working remote-control path. |
 | Extension policy and health | Phase 22 | Diagnostic state remains `not_ready` until the extension authority boundary is implemented. |
 | Compact chrome and tab management | Ready | Chromium-native compact/separate layouts, tab groups/search, switching, restore, suspend, duplicate, detach, and reorder. |
@@ -153,11 +153,13 @@ every name has exactly one explicit disposition.
 
 | Disposition | Count | Behavior |
 |-------------|------:|----------|
-| Native | 22 | Calls a closed Chromium-native route. |
-| Alias | 8 | Normalizes to a closed native route. |
+| Native | 49 | Calls a closed Chromium-native route. |
+| Alias | 12 | Normalizes to a closed native route. |
 | Typed stub | 22 | Returns explicit unsupported or not-yet-safe guidance. |
-| Later phase | 36 | Returns `NOT_READY` with its Phase 20 or 21 owner. |
+| Later phase | 5 | Returns `NOT_READY` with its Phase 21 owner. |
 | Removed | 2 | Returns `TOOL_REMOVED` with replacement metadata. |
+
+The verified Phase 20 catalog is exactly 49 native, 12 alias, 22 typed stub, five Phase 21, and two removed names.
 
 The ready native surface is:
 
@@ -166,10 +168,15 @@ The ready native surface is:
 | Tabs and navigation | `list_tabs`, `open_tab`, `navigate`, `reload`, `go_back`, `go_forward`, `close_tab` |
 | Reading and snapshots | `read_page`, `get_text`, `get_attribute`, `get_dom_snapshot`, `get_page_snapshot` |
 | Page actions | `execute_js`, `click`, `type_text`, `press_key`, `scroll`, `hover`, `select_option`, `clear` |
+| Runtime and task state | `run_task`, `stop_task`, `get_task_status`, `list_tasks`, `get_session_detail`, `list_sessions`, `action_history`, `get_logs`, `runtime_diagnostics` |
+| Providers and models | `get_provider_config`, `list_providers`, `discover_models`, `set_provider_config` (local-control authority only) |
+| Memory and guides | `save_memory`, `list_memory`, `search_memory`, `get_memory_stats`, `save_site_guide`, `list_site_guides`, `get_site_guide` |
+| Vault metadata and confirmed use | `create_vault_entry`, `list_vault_entries`, `list_credentials`, `fill_credential`, `list_payment_methods`, `use_payment_method`, `vault_autofill` |
 | Browser surfaces and health | `open_internal_surface`, `diagnostics` |
 
-The eight ready aliases are `new_tab`, `switch_tab`, `refresh`, `back`,
-`type`, `press_enter`, `select`, and `clear_input`. Unsupported coordinate,
+The twelve ready aliases are `new_tab`, `switch_tab`, `refresh`, `back`,
+`type`, `press_enter`, `select`, `clear_input`, `submit_task`, `cancel_task`,
+`task_status`, and `list_runtime_logs`. Unsupported coordinate,
 drag, sheet, file-drop, and similar names remain discoverable but cannot fall
 through to an arbitrary browser route or return empty success.
 
@@ -185,7 +192,7 @@ Several agents can share one browser. Mutating tools require tab ownership, and 
 | `FRAME_RESTRICTED` | The requested document is outside the exact allowed frame boundary. |
 | `PERMISSION_DENIED` | The route requires an explicit browser-owned permission. |
 | `UNSUPPORTED_ROUTE` / `CAPABILITY_NOT_READY` | A typed stub has no safe native route yet. |
-| `NOT_READY` | A discoverable tool belongs to Phase 20 or 21. |
+| `NOT_READY` | A discoverable supervision tool belongs to Phase 21. |
 | `TOOL_REMOVED` | A legacy call has per-action replacement metadata. |
 
 Optional `client`, `visual_reason`, and `is_final` presentation metadata travels
@@ -248,9 +255,10 @@ and launch procedure. The Falkon v1 bundle can be restored for reference from
 `.context/falkon-preservation/`, but it must not be recreated as a long-lived
 production workspace or used as active v2 source.
 
-Provider and vault implementation is Phase 20 work. Those compatibility tools
-currently return `NOT_READY`; secrets must remain browser-native and must never
-enter agent or MCP transports when that phase is implemented.
+Provider configuration and vault secret entry remain local browser operations.
+External MCP clients can read sanitized provider/vault metadata and request
+confirmed use, but they cannot set provider secrets, receive vault values, or
+weaken native ownership and per-use confirmation policy.
 
 ---
 
@@ -262,7 +270,7 @@ than a bundled third-party agent runtime or indiscriminate video stream.
 
 The five supervision compatibility names are discoverable today but return
 truthful Phase 21 `NOT_READY` results. No pairing, remote-control, or supervision
-read path is claimed ready by Phase 19.
+read path is claimed ready by Phase 20.
 
 ---
 

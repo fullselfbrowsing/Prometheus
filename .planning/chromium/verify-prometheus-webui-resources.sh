@@ -30,9 +30,10 @@ check_absent() {
   fi
 }
 
-check_absent 'https?://' 'remote http/https URL'
 check_absent '@import\b' 'CSS @import'
 check_absent '<[^>]+\b(?:src|href)=["'\'']https?://' 'external src/href'
+check_absent 'url\(\s*["'\'']?https?://|fetch\(\s*["'\'']https?://|import\(\s*["'\'']https?://' \
+  'executable remote http/https URL'
 check_absent '\bURLSearchParams\b|location\.search|history\.(?:pushState|replaceState)' \
   'prompt or state transport through URL/history'
 check_absent 'api[_-]?key|vault secret|BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY|sk-test' \

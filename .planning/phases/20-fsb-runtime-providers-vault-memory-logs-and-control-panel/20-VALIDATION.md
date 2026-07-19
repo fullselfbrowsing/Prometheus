@@ -1,7 +1,7 @@
 ---
 phase: 20
 slug: fsb-runtime-providers-vault-memory-logs-and-control-panel
-status: draft
+status: passed
 nyquist_compliant: true
 wave_0_complete: true
 created: 2026-07-13
@@ -19,14 +19,14 @@ gate and remains consolidated into the non-blocking Phase 24 release review.
 | Property | Value |
 |----------|-------|
 | **Frameworks** | Chromium GTest, `InProcessBrowserTest`, renderer tests, Node 20 `node:test`, shell/static evidence. |
-| **Native unit target** | `prometheus_unittests` with runtime/store/provider/secure-store/codec filters. |
+| **Native unit execution** | Every owned object is freshly compiled and linked into focused executables. The aggregate `prometheus_unittests` component-build edge is attempted but has a known unrelated Chrome-symbol closure defect; no aggregate pass is claimed. |
 | **Browser target** | `browser_tests` with runtime profile, fake provider, WebUI, side-panel ownership, native confirmation, and MCP filters. |
 | **Node tests** | `tools/prometheus-mcp/test/*.test.mjs`, extended with Phase 20 catalog/schema/secret/runtime fixtures. |
 | **Network/secret fakes** | `network::TestURLLoaderFactory`; injected fake `PrometheusSecretStore`/encryptor. No real API key or macOS Keychain access. |
 | **Quick Node command** | `node --test tools/prometheus-mcp/test/catalog.test.mjs tools/prometheus-mcp/test/tools.test.mjs tools/prometheus-mcp/test/diagnostics.test.mjs` |
-| **Quick native command** | `cd .context/chromium/src && ./out/Default/prometheus_unittests --gtest_filter='*PrometheusRuntime*:*PrometheusProvider*:*PrometheusSecret*:*PrometheusMemory*:*PrometheusVault*'` |
+| **Quick native command** | Run the full phase command once to create the verified custom link, then `cd .context/chromium/src && ./out/Default/browser_tests --gtest_filter='PrometheusRuntimeTypesTest.*:PrometheusRuntimeStoreTest.*:PrometheusMemoryStoreTest.*:PrometheusSecretStoreTest.*:PrometheusProviderRegistryTest.*:PrometheusProviderCodecTest.*:PrometheusRuntimeProfileServiceTest.*:PrometheusRuntimeTestBootstrapTest.*:PrometheusRuntimeTransportCodecTest.*:PrometheusVaultServiceTest.*:PrometheusAgentServiceTest.*:PrometheusAgentSessionTest.*:PrometheusAgentGatewayTest.*'`. |
 | **Focused browser command** | `cd .context/chromium/src && ./out/Default/browser_tests --gtest_filter='*PrometheusRuntime*:*PrometheusProvider*:*PrometheusVault*:*Prometheus*WebUI*:*Prometheus*Mcp*' --test-launcher-jobs=1` |
-| **Full phase command** | Build `chrome browser_tests prometheus_unittests prometheus_action_dispatcher_unittests`; run Node, focused native/renderer/browser, Phase 17-19 regressions, fake-provider live smoke, and static/preservation/diff gates. |
+| **Full phase command** | `bash .planning/chromium/verify-phase-20.sh`; it rebuilds `chrome` and the renderer target, compiles every owned unit/browser object, creates verified focused/custom links, then runs Node, native/renderer/browser, Phase 17-19 regressions, built-app smoke, static, preservation, patch, and diff gates. |
 
 ## Sampling Rate
 
@@ -45,14 +45,14 @@ gate and remains consolidated into the non-blocking Phase 24 release review.
 
 | Requirement | Owning plans/tasks | Planned behavior | Threat | Automated evidence | Status |
 |-------------|--------------------|------------------|--------|--------------------|--------|
-| FSB-01 | 20-02 T1-T2; 20-07 T2-T4; 20-11 T1-T3; 20-14 T1-T2 | Ask FSB seeds without auto-submit; explicit side-panel submission creates one bounded task and renders truthful state/result. | Duplicate/oversized/blank submission; wrong-window targeting. | Runtime service/store units, exact-window side-panel browser tests, 32-case integration, and built-app MCP smoke. | pending |
-| FSB-02 | 20-01 T1-T3; 20-05 T1-T3; 20-06 T1-T2; 20-07 T1-T4; 20-09 T1-T3; 20-10 T1-T3; 20-11 T2-T3; 20-14 T1-T2 | Hosted/routed/local execution and MCP-origin tasks use one state machine with progress, cancel, timeout, terminal result, and deterministic safe fallback. | Loop/replay/double completion; external client mistaken for embedded engine. | Lifecycle/fallback/cancel units; gateway/Node contracts; fake-provider browser test; external MCP smoke; no-spawn audit. | pending |
-| FSB-03 | 20-04 T1-T3; 20-05 T1-T3; 20-07 T1-T4; 20-09 T1-T3; 20-10 T1-T3; 20-12 T1-T3; 20-13 T2-T3; 20-14 T1-T2 | All required provider kinds have metadata, endpoint policy, discovery, model selection, health, and bounded fallback order. | SSRF, redirect credential leak, ambiguous trust origin, unsafe retry. | Provider registry/codec tests, `TestURLLoaderFactory` request assertions, live control browser tests, and fake-provider integration. | pending |
-| FSB-04 | 20-04 T1-T3; 20-05 T1-T3; 20-08 T1-T3; 20-09 T1-T3; 20-10 T1-T3; 20-13 T2-T3; 20-14 T1-T2 | Provider secrets use OSCrypt-backed origin-bound envelopes and never display after native save. | Plaintext/ciphertext through prefs, WebUI, MCP, logs, errors, or renderer. | Fake encryptor round-trip/failure/re-encrypt tests, native-dialog browser tests, and recursive serialization/denylist scans. | pending |
-| FSB-05 | 20-01 T1-T3; 20-02 T1-T2; 20-05 T1-T3; 20-06 T1-T2; 20-07 T2-T4; 20-09 T1-T3; 20-10 T1-T3; 20-11 T2-T3; 20-12 T1-T3; 20-14 T1-T2 | Bounded task/log/action/diagnostic/usage/outcome persistence with integer token/cost/duration metrics. | Content-bearing telemetry, unbounded growth, fabricated zero/unknown accounting. | Store eviction/restart/redaction/accounting units plus WebUI, MCP, integration, and smoke sanitized snapshots. | pending |
-| FSB-06 | 20-03 T1-T2; 20-07 T2-T4; 20-09 T1-T3; 20-10 T1-T3; 20-13 T1-T3; 20-14 T1-T2 | Memory and site-guide CRUD/search/apply with exact-origin guides and no automatic secret ingestion. | Cross-origin guide use, secret-as-memory, quota bypass. | CRUD/search/bounds/profile/exact-origin units, control browser tests, MCP integration, and built-app smoke. | pending |
-| FSB-07 | 20-04 T1-T2; 20-08 T1-T3; 20-09 T1-T3; 20-10 T1-T3; 20-13 T1-T3; 20-14 T1-T2 | Vault metadata is listable; values remain native; every fill requires fresh confirmation and post-confirmation target revalidation. | Stale-document/wrong-origin/background/unowned/replayed secret insertion. | Native confirmation accept/deny/navigation/focus/expiry/replay unit/browser tests, MCP retry integration, and no-secret scans. | pending |
-| FSB-08 | 20-01 T1-T3; 20-02 T1-T2; 20-04 T1-T3; 20-06 T1-T2; 20-07 T2-T4; 20-09 T1-T3; 20-10 T1-T3; 20-11 T1-T3; 20-12 T1-T3; 20-13 T1-T3; 20-14 T1-T2 | Internal surfaces, caps, ownership/background actions, telemetry, vault boundaries, and Phase-21 supervision state reflect enforcement. | Decorative settings or MCP policy weakening. | Policy clamp/persistence/dispatch tests, effective-state WebUI assertions, diagnostics, full regressions, and static boundary audits. | pending |
+| FSB-01 | 20-02 T1-T2; 20-07 T2-T4; 20-11 T1-T3; 20-14 T1-T2 | Ask FSB seeds without auto-submit; explicit side-panel submission creates one bounded task and renders truthful state/result. | Duplicate/oversized/blank submission; wrong-window targeting. | Runtime service/store units, exact-window side-panel browser tests, 32-case integration, and built-app MCP smoke. | passed |
+| FSB-02 | 20-01 T1-T3; 20-05 T1-T3; 20-06 T1-T2; 20-07 T1-T4; 20-09 T1-T3; 20-10 T1-T3; 20-11 T2-T3; 20-14 T1-T2 | Hosted/routed/local execution and MCP-origin tasks use one state machine with progress, cancel, timeout, terminal result, and deterministic safe fallback. | Loop/replay/double completion; external client mistaken for embedded engine. | Lifecycle/fallback/cancel units; gateway/Node contracts; fake-provider browser test; external MCP smoke; no-spawn audit. | passed |
+| FSB-03 | 20-04 T1-T3; 20-05 T1-T3; 20-07 T1-T4; 20-09 T1-T3; 20-10 T1-T3; 20-12 T1-T3; 20-13 T2-T3; 20-14 T1-T2 | All required provider kinds have metadata, endpoint policy, discovery, model selection, health, and bounded fallback order. | SSRF, redirect credential leak, ambiguous trust origin, unsafe retry. | Provider registry/codec tests, `TestURLLoaderFactory` request assertions, live control browser tests, and fake-provider integration. | passed |
+| FSB-04 | 20-04 T1-T3; 20-05 T1-T3; 20-08 T1-T3; 20-09 T1-T3; 20-10 T1-T3; 20-13 T2-T3; 20-14 T1-T2 | Provider secrets use OSCrypt-backed origin-bound envelopes and never display after native save. | Plaintext/ciphertext through prefs, WebUI, MCP, logs, errors, or renderer. | Fake encryptor round-trip/failure/re-encrypt tests, native-dialog browser tests, and recursive serialization/denylist scans. | passed |
+| FSB-05 | 20-01 T1-T3; 20-02 T1-T2; 20-05 T1-T3; 20-06 T1-T2; 20-07 T2-T4; 20-09 T1-T3; 20-10 T1-T3; 20-11 T2-T3; 20-12 T1-T3; 20-14 T1-T2 | Bounded task/log/action/diagnostic/usage/outcome persistence with integer token/cost/duration metrics. | Content-bearing telemetry, unbounded growth, fabricated zero/unknown accounting. | Store eviction/restart/redaction/accounting units plus WebUI, MCP, integration, and smoke sanitized snapshots. | passed |
+| FSB-06 | 20-03 T1-T2; 20-07 T2-T4; 20-09 T1-T3; 20-10 T1-T3; 20-13 T1-T3; 20-14 T1-T2 | Memory and site-guide CRUD/search/apply with exact-origin guides and no automatic secret ingestion. | Cross-origin guide use, secret-as-memory, quota bypass. | CRUD/search/bounds/profile/exact-origin units, control browser tests, MCP integration, and built-app smoke. | passed |
+| FSB-07 | 20-04 T1-T2; 20-08 T1-T3; 20-09 T1-T3; 20-10 T1-T3; 20-13 T1-T3; 20-14 T1-T2 | Vault metadata is listable; values remain native; every fill requires fresh confirmation and post-confirmation target revalidation. | Stale-document/wrong-origin/background/unowned/replayed secret insertion. | Native confirmation accept/deny/navigation/focus/expiry/replay unit/browser tests, MCP retry integration, and no-secret scans. | passed |
+| FSB-08 | 20-01 T1-T3; 20-02 T1-T2; 20-04 T1-T3; 20-06 T1-T2; 20-07 T2-T4; 20-09 T1-T3; 20-10 T1-T3; 20-11 T1-T3; 20-12 T1-T3; 20-13 T1-T3; 20-14 T1-T2 | Internal surfaces, caps, ownership/background actions, telemetry, vault boundaries, and Phase-21 supervision state reflect enforcement. | Decorative settings or MCP policy weakening. | Policy clamp/persistence/dispatch tests, effective-state WebUI assertions, diagnostics, full regressions, and static boundary audits. | passed |
 
 ## Threat References
 
@@ -165,18 +165,48 @@ compileable fixture scaffolding, proves the intended behavior fails, and guards
 
 ## Final Gate Checklist
 
-- [ ] `autoninja -C out/Default chrome browser_tests prometheus_unittests prometheus_action_dispatcher_unittests`
-- [ ] all Node tests pass with zero failures/skips/TODOs
-- [ ] all focused Phase 20 native units pass
-- [ ] all Phase 20 browser tests pass serially
-- [ ] Phase 17-19 unit/browser/MCP regressions pass
-- [ ] fake-provider built-app live smoke passes
-- [ ] exact 90-name manifest reports 49 native, 12 alias, 22 typed stub, five Phase 21, two removed
-- [ ] recursive secret/content/privacy audit passes
-- [ ] no embedded runtime/process/terminal/engine/`CLAUDE.md` audit passes
-- [ ] packaged WebUI remote-resource/layout/keyboard gates pass
-- [ ] preservation, GPL, artifact-isolation, root/nested diff, patch inventory, and `git diff --check` pass
-- [ ] human visual UAT recorded `not_run` and routed to non-blocking Phase 24 review
+- [x] `chrome` and `prometheus_action_dispatcher_unittests` build; every owned native and browser object compiles and the focused/custom links verify. The aggregate unit link limitation is recorded without a pass claim.
+- [x] all 74 Node tests pass with zero failures/skips/TODOs/cancellations
+- [x] all 210 focused Phase 20 native/content/renderer units pass (`187 + 23`)
+- [x] all 36 Phase 20 browser tests pass serially
+- [x] 84 Phase 17-19 native and 82 Phase 17-19 browser/MCP regressions pass
+- [x] fake-provider built-app external MCP smoke passes
+- [x] exact 90-name manifest reports 49 native, 12 alias, 22 typed stub, five Phase 21, two removed
+- [x] recursive secret/content/privacy audit passes
+- [x] no embedded runtime/process/terminal/engine/`CLAUDE.md` audit passes
+- [x] packaged WebUI remote-resource/layout/keyboard gates pass
+- [x] preservation, GPL, artifact-isolation, root/nested diff, 42-patch inventory, and `git diff --check` pass
+- [x] human visual UAT recorded `not_run` and routed to non-blocking Phase 24 review
+
+## Fresh Closeout Evidence
+
+`bash .planning/chromium/verify-phase-20.sh` is the reproducible fail-fast
+entrypoint. It writes fresh secret-free logs below
+`.context/chromium/src/out/Default/phase20-closeout/`.
+
+| Gate | Result | Named log |
+|------|--------|-----------|
+| Chrome and renderer build | passed | `phase20-chrome-renderer-build.log` |
+| Aggregate native target | known unrelated component-build link limitation; attempted and signature-checked, no pass claimed | `phase20-aggregate-unit-link.log` |
+| Owned-object focused/custom links | passed, signed, and verified | `phase20-content-link.log`, `phase20-browser-build.log` |
+| Phase 20 native units | 187/187 | `phase20-native-units.log` |
+| Content/Mojo/renderer units | 23/23 | `phase20-content-units.log` |
+| Phase 17-19 native regressions | 84/84 | `phase20-regression-native-units.log` |
+| Phase 20 MCP/vault/control browser fixtures | 36/36 serial | `phase20-browser-tests.log` |
+| Phase 17-19 browser regressions | 82/82 serial | `phase20-regression-browser-tests.log` |
+| Node MCP suite | 74/74; fail/cancelled/skipped/todo all zero | `phase20-node-tap.log` |
+| Built-app external MCP smoke | passed with mode-0600 test bootstrap and loopback fixture | `phase20-built-smoke.log` |
+| Corpus/catalog | 32 cases, groups `6/5/5/5/4/4/3`, 28 real loops across four families; catalog `49/12/22/5/2` | `phase20-inventory.log` |
+| Environment/security/preservation/patch/diff | passed | `phase20-environment.log`, `phase20-static-boundaries.log`, `phase20-preservation.log`, `phase20-patches.log` |
+
+The aggregate `prometheus_unittests` executable cannot currently close its
+component-build link because the target omits unrelated Chrome dependencies
+such as navigation, prefetch, upgrade-detector, and file-selection symbols.
+The verifier accepts only that audited failure signature and then freshly
+compiles every one of the 31 owned unit objects. Plain native suites execute in
+the custom browser link; Mojo/content/renderer suites execute in a focused link
+reconstructed from generated Ninja metadata. This substitution is explicit and
+does not turn the aggregate failure into a passing result.
 
 ## Manual-Only Verifications
 
@@ -190,9 +220,9 @@ non-blocking release check and cannot replace or waive any automated gate above.
 - [x] No watch-mode command or live provider credential is required.
 - [x] Human UAT is explicitly excluded without being claimed complete.
 - [x] No separate Wave 0 is needed; every owning RED task creates and list-guards its fixture before asserting the intended failure.
-- [ ] Final evidence captured after execution.
+- [x] Final evidence captured after execution.
 
-**Approval:** pending execution
+**Approval:** passed automated closeout; `human_uat: not_run`
 
 ---
 *Phase: 20-fsb-runtime-providers-vault-memory-logs-and-control-panel*
