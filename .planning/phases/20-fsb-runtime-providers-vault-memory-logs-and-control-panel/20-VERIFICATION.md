@@ -33,7 +33,7 @@ documentation checks pass.
 
 | Evidence | Result |
 |----------|--------|
-| Phase 20 native suites | 202/202 across runtime types/store, memory, secret store, provider registry/codec, runtime profile/bootstrap/transport codec, vault, agent service/session/gateway |
+| Phase 20 native suites | 203/203 across runtime types/store, memory, secret store, provider registry/codec, runtime profile/bootstrap/transport codec, vault, agent service/session/gateway |
 | Content/Mojo/renderer suites | 24/24 across provider transport, tab state, and action dispatcher |
 | Phase 17-19 native regressions | 84/84 |
 | Phase 20 browser fixtures | 36/36 serial across MCP integration, vault confirmation, and control panel |
@@ -42,7 +42,7 @@ documentation checks pass.
 | Built-app external MCP smoke | passed against the built Prometheus app and deterministic loopback fixture |
 | Corpus | exactly 32; groups `6/5/5/5/4/4/3`; 28 real provider loops across OpenAI Responses, OpenAI Chat, Anthropic Messages, and Gemini generateContent |
 | Compatibility catalog | exactly 49 native, 12 alias, 22 typed stub, five Phase 21, two removed |
-| Chromium patch export | 51 ordered non-empty source-only patches for the exact nested range `460caac2f9e7deecd9fa6294c41d13e5a6dd6115..HEAD` |
+| Chromium patch export | 52 ordered non-empty source-only patches with exact stable patch identities for the nested range `460caac2f9e7deecd9fa6294c41d13e5a6dd6115..HEAD` |
 
 The aggregate `prometheus_unittests` target is not reported as passing. Its
 current component-build edge cannot close an unrelated Chrome symbol set
@@ -72,7 +72,7 @@ must remain byte-identical from start to finish.
   credential prompts. Raw prompts are absent from persisted task records,
   search indexing, WebUI DOM, snapshots, diagnostics, logs, and errors.
 - `PolicyAdmission`, `PolicyDispatch`, `TelemetryOff`, and
-  `LockedVaultPolicy` filters execute inside the 202-test native gate. They
+  `LockedVaultPolicy` filters execute inside the 203-test native gate. They
   prove real admission/delegate/emission effects and immutable ownership,
   native-vault, fresh-confirmation, and supervision invariants.
 - `PrometheusRuntimeTestBootstrapTest.*` proves the bootstrap requires a
@@ -108,9 +108,10 @@ must remain byte-identical from start to finish.
 - Production browser/renderer/MCP sources contain no embedded-agent process,
   terminal, engine-selection, provider-SDK, unsafe redirect, ambient credential,
   remote WebUI, or false supervision-ready path.
-- The exact 51-commit nested range has one ordered non-empty source-only patch
-  per commit; patches reject output, object, library, response, dependency, and
-  other build artifacts.
+- The exact 52-commit nested range has one ordered non-empty source-only patch
+  per commit; stable patch IDs must match every claimed commit, and a valid but
+  mutated patch must fail the verifier self-test. Patches reject output, object,
+  library, response, dependency, and other build artifacts.
 - Root and nested `git diff --check` pass. The nested Chromium worktree is clean
   after each exported implementation or regression commit.
 

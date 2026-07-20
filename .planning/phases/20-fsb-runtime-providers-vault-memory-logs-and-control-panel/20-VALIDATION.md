@@ -167,7 +167,7 @@ compileable fixture scaffolding, proves the intended behavior fails, and guards
 
 - [x] every owned native, renderer, and browser object compiles directly; the app runtime and focused/custom links verify; reviewed Ninja metadata remains byte-identical. The aggregate unit link limitation is recorded without a pass claim.
 - [x] all 75 Node tests pass with zero failures/skips/TODOs/cancellations
-- [x] all 226 focused Phase 20 native/content/renderer units pass (`202 + 24`)
+- [x] all 227 focused Phase 20 native/content/renderer units pass (`203 + 24`)
 - [x] all 36 Phase 20 browser tests pass serially
 - [x] 84 Phase 17-19 native and 83 Phase 17-19 browser/MCP regressions pass
 - [x] fake-provider built-app external MCP smoke passes
@@ -175,7 +175,7 @@ compileable fixture scaffolding, proves the intended behavior fails, and guards
 - [x] recursive secret/content/privacy audit passes
 - [x] no embedded runtime/process/terminal/engine/`CLAUDE.md` audit passes
 - [x] packaged WebUI remote-resource/layout/keyboard gates pass
-- [x] preservation, GPL, artifact-isolation, root/nested diff, 51-patch inventory, and `git diff --check` pass
+- [x] preservation, GPL, artifact-isolation, root/nested diff, 52-patch stable-identity inventory, and `git diff --check` pass
 - [x] human visual UAT recorded `not_run` and routed to non-blocking Phase 24 review
 
 ## Fresh Closeout Evidence
@@ -189,7 +189,7 @@ entrypoint. It writes fresh secret-free logs below
 | Owned-object direct compile and app-runtime relink | passed; reviewed `.ninja_log` and `.ninja_deps` preserved | `phase20-direct-build.log`, `phase20-app-runtime-link.log` |
 | Aggregate native target | known unrelated component-build link limitation; not run and no pass claimed | `phase20-aggregate-unit-link.log` |
 | Owned-object focused/custom links | passed, signed, and verified | `phase20-content-link.log`, `phase20-browser-build.log` |
-| Phase 20 native units | 202/202 | `phase20-native-units.log` |
+| Phase 20 native units | 203/203 | `phase20-native-units.log` |
 | Content/Mojo/renderer units | 24/24 | `phase20-content-units.log` |
 | Phase 17-19 native regressions | 84/84 | `phase20-regression-native-units.log` |
 | Phase 20 MCP/vault/control browser fixtures | 36/36 serial | `phase20-browser-tests.log` |

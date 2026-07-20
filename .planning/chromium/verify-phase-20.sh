@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PATCHES_ONLY=false
+case "$#" in
+  0) ;;
+  1)
+    if [[ "$1" != '--patches-only' ]]; then
+      printf 'Usage: %s [--patches-only]\n' "$0" >&2
+      exit 2
+    fi
+    PATCHES_ONLY=true
+    ;;
+  *)
+    printf 'Usage: %s [--patches-only]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
 CHROMIUM_DIR="${ROOT_DIR}/.context/chromium/src"
@@ -16,7 +32,12 @@ COMPILE_COMMANDS="${LOG_DIR}/phase20-direct-compile-commands.log"
 COMPILE_OBJECTS="${LOG_DIR}/phase20-direct-compile-objects.log"
 
 mkdir -p "${LOG_DIR}"
-find "${LOG_DIR}" -maxdepth 1 -type f -name 'phase20-*.log' -delete
+if [[ "${PATCHES_ONLY}" == true ]]; then
+  find "${LOG_DIR}" -maxdepth 1 -type f \
+    -name 'phase20-patch*.log' -delete
+else
+  find "${LOG_DIR}" -maxdepth 1 -type f -name 'phase20-*.log' -delete
+fi
 
 fail() {
   printf 'Phase 20 verification failed: %s\n' "$1" >&2
@@ -450,11 +471,13 @@ verify_patches() {
     patches+=("${patch}")
   done < <(find "${PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | sort)
   [[ "${#commits[@]}" -gt 0 ]] || fail 'nested Phase 20 commit range is empty'
+  [[ "${#commits[@]}" -eq 52 ]] \
+    || fail "expected 52 nested Phase 20 commits, found ${#commits[@]}"
   [[ "${#commits[@]}" -eq "${#patches[@]}" ]] \
     || fail "patch count ${#patches[@]} does not match commit count ${#commits[@]}"
 
   : >"${log}"
-  local index patch expected_prefix first_line
+  local index patch expected_prefix first_line patch_id commit_patch_id
   for index in "${!commits[@]}"; do
     patch="${patches[$index]}"
     printf -v expected_prefix '%04d-' "$((index + 1))"
@@ -468,8 +491,104 @@ verify_patches() {
       fail "build artifact found in $(basename "${patch}")"
     fi
     git -C "${CHROMIUM_DIR}" apply --stat "${patch}" >>"${log}"
-    printf '%s %s\n' "${commits[$index]}" "$(basename "${patch}")" >>"${log}"
+    patch_id="$(stable_patch_id_for_file "${patch}")" \
+      || fail "could not derive one stable patch ID from $(basename "${patch}")"
+    commit_patch_id="$(stable_patch_id_for_commit "${commits[$index]}")" \
+      || fail "could not derive one stable patch ID from ${commits[$index]}"
+    [[ "${patch_id}" == "${commit_patch_id}" ]] \
+      || fail "patch body $(basename "${patch}") does not match ${commits[$index]}"
+    printf '%s %s %s\n' "${commits[$index]}" "${patch_id}" \
+      "$(basename "${patch}")" >>"${log}"
   done
+
+  local last_index="$((${#commits[@]} - 1))"
+  verify_patch_identity_self_test "${patches[$last_index]}" \
+    "${commits[$last_index]}"
+}
+
+extract_single_stable_patch_id() {
+  local output="$1"
+  local patch_id
+  patch_id="$(printf '%s\n' "${output}" | LC_ALL=C awk '
+    NF != 2 { invalid = 1 }
+    NF == 2 { count += 1; patch_id = $1 }
+    END {
+      if (invalid || count != 1) exit 1
+      print patch_id
+    }
+  ')" || return 1
+  [[ "${patch_id}" =~ ^[0-9a-f]{40}$ ]] || return 1
+  printf '%s\n' "${patch_id}"
+}
+
+stable_patch_id_for_file() {
+  local output
+  output="$(git patch-id --stable <"$1")" || return 1
+  extract_single_stable_patch_id "${output}"
+}
+
+stable_patch_id_for_commit() {
+  local output
+  output="$(git -C "${CHROMIUM_DIR}" show --pretty=format: --binary "$1" \
+    | git patch-id --stable)" || return 1
+  extract_single_stable_patch_id "${output}"
+}
+
+stable_patch_identity_matches() {
+  local patch_id commit_patch_id
+  patch_id="$(stable_patch_id_for_file "$1")" || return 1
+  commit_patch_id="$(stable_patch_id_for_commit "$2")" || return 1
+  [[ "${patch_id}" == "${commit_patch_id}" ]]
+}
+
+verify_patch_identity_self_test() {
+  local source_patch="$1"
+  local commit="$2"
+  local mutated_patch="${LOG_DIR}/phase20-patch-identity-mutated.patch"
+  local test_index="${LOG_DIR}/phase20-patch-identity-self-test.index"
+  local log="${LOG_DIR}/phase20-patch-identity-self-test.log"
+  local mutated_patch_id commit_patch_id
+
+  rm -f "${mutated_patch}" "${test_index}"
+  if ! LC_ALL=C awk '
+    !mutated && substr($0, 1, 1) == "+" && substr($0, 1, 3) != "+++" {
+      if ($0 == "+") {
+        print "+WR09_MUTATED_PATCH_BODY"
+      } else {
+        print $0 "WR09_MUTATED_PATCH_BODY"
+      }
+      mutated = 1
+      next
+    }
+    { print }
+    END { if (!mutated) exit 1 }
+  ' "${source_patch}" >"${mutated_patch}"; then
+    fail 'patch identity self-test could not create a deterministic mutation'
+  fi
+  require_file "${mutated_patch}"
+  if ! git -C "${CHROMIUM_DIR}" apply --stat "${mutated_patch}" \
+      >"${log}" 2>&1; then
+    fail 'patch identity self-test mutation was not a valid patch'
+  fi
+  GIT_INDEX_FILE="${test_index}" git -C "${CHROMIUM_DIR}" \
+    read-tree "${commit}^" \
+    || fail 'patch identity self-test could not load the commit parent'
+  if ! GIT_INDEX_FILE="${test_index}" git -C "${CHROMIUM_DIR}" \
+      apply --check --cached "${mutated_patch}" >>"${log}" 2>&1; then
+    fail 'patch identity self-test mutation did not apply to the commit parent'
+  fi
+  mutated_patch_id="$(stable_patch_id_for_file "${mutated_patch}")" \
+    || fail 'patch identity self-test mutation had no stable patch ID'
+  commit_patch_id="$(stable_patch_id_for_commit "${commit}")" \
+    || fail 'patch identity self-test commit had no stable patch ID'
+  [[ "${mutated_patch_id}" != "${commit_patch_id}" ]] \
+    || fail 'patch identity self-test mutation preserved the original identity'
+  if stable_patch_identity_matches "${mutated_patch}" "${commit}"; then
+    fail 'patch identity verifier accepted a valid but mutated patch body'
+  fi
+  printf 'PASS valid mutation rejected: %s != %s\n' \
+    "${mutated_patch_id}" "${commit_patch_id}" >>"${log}"
+  rm -f "${mutated_patch}" "${test_index}"
 }
 
 verify_static_boundaries() {
@@ -527,6 +646,12 @@ verify_static_boundaries() {
   printf 'static boundary checks passed\n' >>"${log}"
 }
 
+if [[ "${PATCHES_ONLY}" == true ]]; then
+  verify_patches
+  note 'all real patch identities passed and the mutation self-test failed closed'
+  exit 0
+fi
+
 cd "${OUT_DIR}"
 require_file build.ninja
 [[ -x "${SISO}" ]] || fail "Siso not found at ${SISO}"
@@ -557,8 +682,8 @@ PHASE20_NATIVE_SUITES=(
 )
 list_guard ./browser_tests "${PHASE20_NATIVE_FILTER}" phase20-native-list "${PHASE20_NATIVE_SUITES[@]}"
 run_logged phase20-native-units ./browser_tests --gtest_filter="${PHASE20_NATIVE_FILTER}"
-rg -q '\[202/202\]' "${LOG_DIR}/phase20-native-units.log" \
-  || fail 'Phase 20 native unit count was not exactly 202'
+rg -q '\[203/203\]' "${LOG_DIR}/phase20-native-units.log" \
+  || fail 'Phase 20 native unit count was not exactly 203'
 
 CONTENT_FILTER='PrometheusProviderTransportTest.*:PrometheusTabStateTest.*:PrometheusTabStateWebContentsTest.*:PrometheusActionDispatcherTest.*'
 CONTENT_SUITES=(PrometheusProviderTransportTest PrometheusTabStateTest PrometheusTabStateWebContentsTest PrometheusActionDispatcherTest)
