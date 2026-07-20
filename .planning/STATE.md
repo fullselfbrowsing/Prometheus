@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Chromium Engine Migration
-current_phase: 20
-current_phase_name: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
-current_plan: 14
-status: executing
-stopped_at: Completed 20-10-PLAN.md
-last_updated: "2026-07-18T20:56:28.065Z"
-last_activity: 2026-07-18
+current_phase: 21
+current_phase_name: Supervision, Pairing, and Remote Control
+current_plan: null
+status: ready_to_plan
+stopped_at: Phase 20 complete (14/14) — ready to discuss Phase 21
+last_updated: 2026-07-20T19:02:18.818Z
+last_activity: 2026-07-20
 progress:
   total_phases: 14
-  completed_phases: 9
+  completed_phases: 10
   total_plans: 66
-  completed_plans: 65
-  percent: 98
+  completed_plans: 66
+  percent: 100
 ---
 
 # Project State
@@ -26,8 +26,8 @@ See: `.planning/PROJECT.md` (updated 2026-07-13)
 **Core value:** Agents get fast, precise, auditable whole-browser control
 through DOM/native structure rather than screenshots or extension injection.
 
-**Current focus:** Execute Phase 20 Plan 14 of 14: run the 32-case integration
-corpus, full automated gates, patch export, and evidence closeout.
+**Current focus:** Discuss and plan Phase 21 supervision, pairing, and remote
+control on the verified Chromium-native runtime and session authority model.
 
 **Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
 external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
@@ -35,23 +35,39 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 
 ## Current Position
 
-Phase: 20 (FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel) — EXECUTING
-Plan: 14 of 14
-**Current Phase:** 20
-**Current Phase Name:** FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
+Phase: 21 (Supervision, Pairing, and Remote Control) — READY TO DISCUSS
+Plan: Not started
+**Current Phase:** 21
+**Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
-**Completed Phases:** 9
-**Current Plan:** 14
-**Total Plans in Phase:** 14
-**Status:** Ready to execute
-**Progress:** [██████████] 98%
-**Last Activity:** 2026-07-18
-**Last Activity Description:** Completed Phase 20 Plan 10 external MCP runtime promotion and rebuilt-app smoke
+**Completed Phases:** 10
+**Current Plan:** Not started
+**Total Plans in Phase:** 0
+**Status:** Ready to discuss
+**Progress:** [██████████] 100% of existing plans
+**Last Activity:** 2026-07-20
+**Last Activity Description:** Completed Phase 20 after three code-review/fix
+iterations, independent goal verification, and an advisory UI audit.
 
-Milestone work is 65 of 66 plans complete (98%); cumulative project work is
-116 of 117 existing plans summarized (99%).
+Milestone work is 66 of 66 existing plans complete (100%); cumulative project
+work is 117 of 117 existing plans summarized (100%).
 
 ## Latest Evidence
+
+- Phase 20 final closeout: the exact verifier passes 208/208 Phase 20 native,
+  24/24 content/renderer, 84/84 native regression, 37/37 Phase 20 browser,
+  83/83 browser regression, and 75/75 Node tests plus built-app MCP smoke,
+  security/preservation, and 54/54 stable patch-identity gates.
+
+- Phase 20 code review: three automated review/fix iterations resolved two
+  critical and ten warning findings, including restart-safe vault metadata,
+  production task execution, guarded provider fallback, bounded bookkeeping,
+  agent-cap admission, and close/expiry/shutdown runtime cleanup.
+
+- Phase 20 UI audit: code/evidence score 12/24. Functional/security acceptance
+  remains passed; missing foreground confirmation affordances, transactional
+  vault-save behavior, control-panel information architecture, token cleanup,
+  and subjective desktop polish are explicit non-blocking carry-forward work.
 
 - Phase 20 Plan 10: the complete Node suite passes 74/74, focused runtime
   promotion gates pass 37/37, and the rebuilt app passes the deterministic
@@ -147,6 +163,9 @@ Milestone work is 65 of 66 plans complete (98%); cumulative project work is
 | 20 | Use params-only bodies for all 27 runtime-codec routes; page-action routes retain target/params/visual. |
 | 20 | Seed built smoke only through the closed native test bootstrap with a canonical disposable path, mode-0600 metadata file, and loopback fixture. |
 | 20 | Bind both independent smoke clients while the fresh regular browser and active tab are known available so task authority is deterministic. |
+| 20 | Revalidate generation, live authority, current policy and limits, and exact provider configuration immediately before every automatic fallback send. |
+| 20 | Treat profile-service close, expiry, and shutdown as the authoritative session-loss boundary that synchronously cancels matching runtime work exactly once. |
+| 20 | Require stable patch-body identity for every exported Chromium commit and prove the gate rejects a parent-applicable mutation. |
 
 ## Performance Metrics
 
@@ -161,20 +180,25 @@ Milestone work is 65 of 66 plans complete (98%); cumulative project work is
 | Phase 20 P12 | 2h4min | 3 tasks | 20 files |
 | Phase 20 P13 | 2h 1m | 3 tasks | 18 files |
 | Phase 20 P10 | 3h47m | 3 tasks | 11 files |
+| Phase 20 P14 | 5h45m | 2 tasks | 21 files |
 
 ## Blockers and Deferred Items
 
 - Blockers: none.
 - Human desktop visual review: deferred to the non-blocking Phase 24 release review.
+- UI audit carry-forward: add `Review in Prometheus` for waiting confirmation,
+  add a browser-owned `Use in Current Tab` vault action, keep the vault secret
+  dialog open on encryption failure, complete task/log/header/permission detail
+  models, and normalize light/accent/type/spacing tokens before release.
 - Signed/notarized public distribution: beyond the local v2.0 validation package.
 
 ## Session
 
-**Last Date:** 2026-07-18T20:56:28.061Z
-**Stopped At:** Completed 20-10-PLAN.md
+**Last Date:** 2026-07-20T19:02:18.818Z
+**Stopped At:** Phase 20 complete (14/14) — ready to discuss Phase 21
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute Wave 14 Phase 20 Plan 14 with mandatory automated gates. Do not run
-human UAT.
+Run the Phase 21 smart discussion for supervision state, structured stream
+semantics, pairing lifecycle, and remote-control confirmation boundaries.

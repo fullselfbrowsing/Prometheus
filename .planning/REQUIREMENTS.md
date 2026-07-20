@@ -193,4 +193,4 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 - planned phases: 14
 
 ---
-*Requirements defined: 2026-06-17; reconciled: 2026-07-18*
+*Requirements defined: 2026-06-17; reconciled: 2026-07-20*

@@ -7,7 +7,7 @@
 
 ## v2.0 Chromium Engine Migration
 
-**Status:** In progress — Phase 20 Plan 13 is complete and dependency-ordered Plan 10 is current.
+**Status:** In progress — Phase 20 is complete; Phase 21 is ready for discussion and planning.
 
 ## Milestone Thesis
 
@@ -24,7 +24,7 @@ Prometheus keeps its product, design, and agent-native control thesis, but retir
 - [x] **Phase 17: Native Agent Command Service and Tab Ownership** — Rebuild the core native command router as a Chromium browser-process service with authenticated sessions and stable tab ownership. (completed 2026-07-07)
 - [x] **Phase 18: Page Adapter, DOM Snapshot, and Action Verification** — Rebuild page reads, DOM snapshots, JS execution, action tools, waits, and verification on Chromium WebContents/frame primitives. (completed 2026-07-12)
 - [x] **Phase 19: MCP Bridge and Multi-Agent Runtime Compatibility** — Reconnect existing FSB-style MCP clients to the Chromium-native service with multi-agent policy and typed compatibility errors. (completed 2026-07-13)
-- [ ] **Phase 20: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel** — Restore provider-backed tasks, logs, memory/site guides, vault boundaries, diagnostics, and dense operator controls.
+- [x] **Phase 20: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel** — Restore provider-backed tasks, logs, memory/site guides, vault boundaries, diagnostics, and dense operator controls. (completed 2026-07-20)
 - [ ] **Phase 21: Supervision, Pairing, and Remote Control** — Rebuild PhantomStream-style supervision and safe dashboard pairing on Chromium sessions.
 - [ ] **Phase 22: Chrome Extension Ecosystem and Policy** — Preserve or enable Chromium extension support while separating extension permissions from Prometheus agent permissions.
 - [ ] **Phase 23: Migration Parity, Security Hardening, and De-Falkon Gate** — Prove v1/FSB parity, complete security review, retire Falkon assumptions, and fail the build on unreviewed legacy dependencies.
@@ -306,7 +306,7 @@ Plans:
 
 **Requirements:** FSB-01, FSB-02, FSB-03, FSB-04, FSB-05, FSB-06, FSB-07, FSB-08
 
-**Plans:** 13/14 plans executed
+**Plans:** 14/14 plans complete
 
 Plans:
 - [x] 20-01-PLAN.md — Define closed native runtime contracts, profile prefs, limits, and effective policy.
@@ -322,7 +322,7 @@ Plans:
 - [x] 20-11-PLAN.md — Migrate to exact-window side-panel ownership and wire the live task UI.
 - [x] 20-12-PLAN.md — Populate live control-panel Tasks, Providers & Models, and Logs & Diagnostics.
 - [x] 20-13-PLAN.md — Complete Memory, Site Guides, Vault, Settings, and exact-window native secret dialogs.
-- [ ] 20-14-PLAN.md — Run the 32-case integration corpus, full gates, patch export, and evidence closeout.
+- [x] 20-14-PLAN.md — Run the 32-case integration corpus, full gates, patch export, and evidence closeout.
 
 **Success criteria:**
 
@@ -427,6 +427,9 @@ Plans:
 - Add release docs and source guidance.
 - Run all validation gates.
 - Offer the consolidated human visual review and record it as passed, skipped, or findings-reported without making it a packaging gate.
+- Resolve or explicitly disposition the Phase 20 UI audit carry-forward:
+  waiting-confirmation review, current-tab vault use, transactional vault-save
+  failure handling, control-panel detail/filter gaps, and token normalization.
 - Archive v2.0 milestone artifacts.
 - Prepare next milestone candidates.
 
@@ -443,14 +446,14 @@ Plans:
 | 17. Native Agent Command Service and Tab Ownership | v2.0 | 6/6 | Complete | 2026-07-07 |
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 8/8 | Complete    | 2026-07-12 |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 7/7 | Complete    | 2026-07-13 |
-| 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 13/14 | In Progress | — |
+| 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 14/14 | Complete    | 2026-07-20 |
 | 21. Supervision, Pairing, and Remote Control | v2.0 | 0 | Planned | — |
 | 22. Chrome Extension Ecosystem and Policy | v2.0 | 0 | Planned | — |
 | 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
 | 24. Packaging, Release Validation, and Handoff | v2.0 | 0 | Planned | — |
 
-**Totals:** 14 phases, 9 complete; 64 of 66 existing v2.0 plans summarized.
-Phase 20 is current and executing; Phase 21 follows.
+**Totals:** 14 phases, 10 complete; 66 of 66 existing v2.0 plans summarized.
+Phase 20 is complete; Phase 21 is current and ready for discussion.
 
 ## Future Work Beyond Current Milestone
 
