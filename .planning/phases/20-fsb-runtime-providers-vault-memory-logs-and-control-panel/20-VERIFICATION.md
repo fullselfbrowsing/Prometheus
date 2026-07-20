@@ -1,6 +1,6 @@
 ---
 phase: 20-fsb-runtime-providers-vault-memory-logs-and-control-panel
-verified: 2026-07-18
+verified: 2026-07-20
 status: passed
 human_uat: not_run
 ---
@@ -33,25 +33,25 @@ documentation checks pass.
 
 | Evidence | Result |
 |----------|--------|
-| Phase 20 native suites | 187/187 across runtime types/store, memory, secret store, provider registry/codec, runtime profile/bootstrap/transport codec, vault, agent service/session/gateway |
-| Content/Mojo/renderer suites | 23/23 across provider transport, tab state, and action dispatcher |
+| Phase 20 native suites | 202/202 across runtime types/store, memory, secret store, provider registry/codec, runtime profile/bootstrap/transport codec, vault, agent service/session/gateway |
+| Content/Mojo/renderer suites | 24/24 across provider transport, tab state, and action dispatcher |
 | Phase 17-19 native regressions | 84/84 |
 | Phase 20 browser fixtures | 36/36 serial across MCP integration, vault confirmation, and control panel |
-| Phase 17-19 browser regressions | 82/82 serial across gateway, profile/service, page/frame/action, tab commands, and WebUI foundation |
+| Phase 17-19 browser regressions | 83/83 serial across gateway, profile/service, page/frame/action, tab commands, and WebUI foundation |
 | Node MCP tests | 74/74 with exact fail `0`, cancelled `0`, skipped `0`, todo `0` |
 | Built-app external MCP smoke | passed against the built Prometheus app and deterministic loopback fixture |
 | Corpus | exactly 32; groups `6/5/5/5/4/4/3`; 28 real provider loops across OpenAI Responses, OpenAI Chat, Anthropic Messages, and Gemini generateContent |
 | Compatibility catalog | exactly 49 native, 12 alias, 22 typed stub, five Phase 21, two removed |
-| Chromium patch export | 42 ordered non-empty source-only patches for the exact nested range `460caac2f9e7deecd9fa6294c41d13e5a6dd6115..HEAD` |
+| Chromium patch export | 51 ordered non-empty source-only patches for the exact nested range `460caac2f9e7deecd9fa6294c41d13e5a6dd6115..HEAD` |
 
 The aggregate `prometheus_unittests` target is not reported as passing. Its
-current component-build edge compiles the Prometheus sources but cannot close
-an unrelated Chrome symbol set (navigation, prefetch, upgrade-detector, file
-selection, and related helpers). The closeout command attempts the aggregate,
-accepts only that known linker signature, freshly compiles all 31 owned unit
-objects, and runs them through verified focused/custom links. The stock
-`chrome` and renderer targets build, and the custom browser/content executables
-are linked from generated Ninja metadata, signed, and verified before use.
+current component-build edge cannot close an unrelated Chrome symbol set
+(navigation, prefetch, upgrade-detector, file selection, and related helpers).
+The closeout command does not invoke Ninja or that aggregate edge. It queries
+exact commands through Siso, directly compiles every owned object, reconstructs
+the app/browser/content response files from generated metadata, and signs and
+verifies each executable link. Reviewed `.ninja_log` and `.ninja_deps` hashes
+must remain byte-identical from start to finish.
 
 ## Requirement Evidence
 
@@ -72,7 +72,7 @@ are linked from generated Ninja metadata, signed, and verified before use.
   credential prompts. Raw prompts are absent from persisted task records,
   search indexing, WebUI DOM, snapshots, diagnostics, logs, and errors.
 - `PolicyAdmission`, `PolicyDispatch`, `TelemetryOff`, and
-  `LockedVaultPolicy` filters execute inside the 187-test native gate. They
+  `LockedVaultPolicy` filters execute inside the 202-test native gate. They
   prove real admission/delegate/emission effects and immutable ownership,
   native-vault, fresh-confirmation, and supervision invariants.
 - `PrometheusRuntimeTestBootstrapTest.*` proves the bootstrap requires a
@@ -108,7 +108,7 @@ are linked from generated Ninja metadata, signed, and verified before use.
 - Production browser/renderer/MCP sources contain no embedded-agent process,
   terminal, engine-selection, provider-SDK, unsafe redirect, ambient credential,
   remote WebUI, or false supervision-ready path.
-- The exact 42-commit nested range has one ordered non-empty source-only patch
+- The exact 51-commit nested range has one ordered non-empty source-only patch
   per commit; patches reject output, object, library, response, dependency, and
   other build artifacts.
 - Root and nested `git diff --check` pass. The nested Chromium worktree is clean

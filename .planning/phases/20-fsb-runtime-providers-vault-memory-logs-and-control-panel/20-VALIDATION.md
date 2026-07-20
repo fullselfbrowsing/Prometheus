@@ -19,14 +19,14 @@ gate and remains consolidated into the non-blocking Phase 24 release review.
 | Property | Value |
 |----------|-------|
 | **Frameworks** | Chromium GTest, `InProcessBrowserTest`, renderer tests, Node 20 `node:test`, shell/static evidence. |
-| **Native unit execution** | Every owned object is freshly compiled and linked into focused executables. The aggregate `prometheus_unittests` component-build edge is attempted but has a known unrelated Chrome-symbol closure defect; no aggregate pass is claimed. |
+| **Native unit execution** | Every owned object is freshly compiled from exact Siso-queried commands and linked into focused executables without invoking Ninja or mutating its reviewed metadata. The unrelated aggregate `prometheus_unittests` component-build edge is not claimed. |
 | **Browser target** | `browser_tests` with runtime profile, fake provider, WebUI, side-panel ownership, native confirmation, and MCP filters. |
 | **Node tests** | `tools/prometheus-mcp/test/*.test.mjs`, extended with Phase 20 catalog/schema/secret/runtime fixtures. |
 | **Network/secret fakes** | `network::TestURLLoaderFactory`; injected fake `PrometheusSecretStore`/encryptor. No real API key or macOS Keychain access. |
 | **Quick Node command** | `node --test tools/prometheus-mcp/test/catalog.test.mjs tools/prometheus-mcp/test/tools.test.mjs tools/prometheus-mcp/test/diagnostics.test.mjs` |
 | **Quick native command** | Run the full phase command once to create the verified custom link, then `cd .context/chromium/src && ./out/Default/browser_tests --gtest_filter='PrometheusRuntimeTypesTest.*:PrometheusRuntimeStoreTest.*:PrometheusMemoryStoreTest.*:PrometheusSecretStoreTest.*:PrometheusProviderRegistryTest.*:PrometheusProviderCodecTest.*:PrometheusRuntimeProfileServiceTest.*:PrometheusRuntimeTestBootstrapTest.*:PrometheusRuntimeTransportCodecTest.*:PrometheusVaultServiceTest.*:PrometheusAgentServiceTest.*:PrometheusAgentSessionTest.*:PrometheusAgentGatewayTest.*'`. |
 | **Focused browser command** | `cd .context/chromium/src && ./out/Default/browser_tests --gtest_filter='*PrometheusRuntime*:*PrometheusProvider*:*PrometheusVault*:*Prometheus*WebUI*:*Prometheus*Mcp*' --test-launcher-jobs=1` |
-| **Full phase command** | `bash .planning/chromium/verify-phase-20.sh`; it rebuilds `chrome` and the renderer target, compiles every owned unit/browser object, creates verified focused/custom links, then runs Node, native/renderer/browser, Phase 17-19 regressions, built-app smoke, static, preservation, patch, and diff gates. |
+| **Full phase command** | `bash .planning/chromium/verify-phase-20.sh`; it queries Siso for exact commands, directly compiles every owned production/unit/browser object, relinks the app runtime and focused test executables, verifies Ninja metadata is unchanged, then runs Node, native/renderer/browser, Phase 17-19 regressions, built-app smoke, static, preservation, patch, and diff gates. |
 
 ## Sampling Rate
 
@@ -165,17 +165,17 @@ compileable fixture scaffolding, proves the intended behavior fails, and guards
 
 ## Final Gate Checklist
 
-- [x] `chrome` and `prometheus_action_dispatcher_unittests` build; every owned native and browser object compiles and the focused/custom links verify. The aggregate unit link limitation is recorded without a pass claim.
+- [x] every owned native, renderer, and browser object compiles directly; the app runtime and focused/custom links verify; reviewed Ninja metadata remains byte-identical. The aggregate unit link limitation is recorded without a pass claim.
 - [x] all 74 Node tests pass with zero failures/skips/TODOs/cancellations
-- [x] all 210 focused Phase 20 native/content/renderer units pass (`187 + 23`)
+- [x] all 226 focused Phase 20 native/content/renderer units pass (`202 + 24`)
 - [x] all 36 Phase 20 browser tests pass serially
-- [x] 84 Phase 17-19 native and 82 Phase 17-19 browser/MCP regressions pass
+- [x] 84 Phase 17-19 native and 83 Phase 17-19 browser/MCP regressions pass
 - [x] fake-provider built-app external MCP smoke passes
 - [x] exact 90-name manifest reports 49 native, 12 alias, 22 typed stub, five Phase 21, two removed
 - [x] recursive secret/content/privacy audit passes
 - [x] no embedded runtime/process/terminal/engine/`CLAUDE.md` audit passes
 - [x] packaged WebUI remote-resource/layout/keyboard gates pass
-- [x] preservation, GPL, artifact-isolation, root/nested diff, 42-patch inventory, and `git diff --check` pass
+- [x] preservation, GPL, artifact-isolation, root/nested diff, 51-patch inventory, and `git diff --check` pass
 - [x] human visual UAT recorded `not_run` and routed to non-blocking Phase 24 review
 
 ## Fresh Closeout Evidence
@@ -186,14 +186,14 @@ entrypoint. It writes fresh secret-free logs below
 
 | Gate | Result | Named log |
 |------|--------|-----------|
-| Chrome and renderer build | passed | `phase20-chrome-renderer-build.log` |
-| Aggregate native target | known unrelated component-build link limitation; attempted and signature-checked, no pass claimed | `phase20-aggregate-unit-link.log` |
+| Owned-object direct compile and app-runtime relink | passed; reviewed `.ninja_log` and `.ninja_deps` preserved | `phase20-direct-build.log`, `phase20-app-runtime-link.log` |
+| Aggregate native target | known unrelated component-build link limitation; not run and no pass claimed | `phase20-aggregate-unit-link.log` |
 | Owned-object focused/custom links | passed, signed, and verified | `phase20-content-link.log`, `phase20-browser-build.log` |
-| Phase 20 native units | 187/187 | `phase20-native-units.log` |
-| Content/Mojo/renderer units | 23/23 | `phase20-content-units.log` |
+| Phase 20 native units | 202/202 | `phase20-native-units.log` |
+| Content/Mojo/renderer units | 24/24 | `phase20-content-units.log` |
 | Phase 17-19 native regressions | 84/84 | `phase20-regression-native-units.log` |
 | Phase 20 MCP/vault/control browser fixtures | 36/36 serial | `phase20-browser-tests.log` |
-| Phase 17-19 browser regressions | 82/82 serial | `phase20-regression-browser-tests.log` |
+| Phase 17-19 browser regressions | 83/83 serial | `phase20-regression-browser-tests.log` |
 | Node MCP suite | 74/74; fail/cancelled/skipped/todo all zero | `phase20-node-tap.log` |
 | Built-app external MCP smoke | passed with mode-0600 test bootstrap and loopback fixture | `phase20-built-smoke.log` |
 | Corpus/catalog | 32 cases, groups `6/5/5/5/4/4/3`, 28 real loops across four families; catalog `49/12/22/5/2` | `phase20-inventory.log` |
@@ -202,11 +202,12 @@ entrypoint. It writes fresh secret-free logs below
 The aggregate `prometheus_unittests` executable cannot currently close its
 component-build link because the target omits unrelated Chrome dependencies
 such as navigation, prefetch, upgrade-detector, and file-selection symbols.
-The verifier accepts only that audited failure signature and then freshly
-compiles every one of the 31 owned unit objects. Plain native suites execute in
-the custom browser link; Mojo/content/renderer suites execute in a focused link
-reconstructed from generated Ninja metadata. This substitution is explicit and
-does not turn the aggregate failure into a passing result.
+The verifier does not invoke that edge. It queries exact commands through Siso,
+freshly compiles all owned objects, and directly reconstructs the app, browser,
+and content link response files from generated build metadata. Plain native
+suites execute in the custom browser link; Mojo/content/renderer suites execute
+in the focused content link. This substitution is explicit and does not turn
+the aggregate limitation into a passing result.
 
 ## Manual-Only Verifications
 

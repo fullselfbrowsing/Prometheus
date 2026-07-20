@@ -9,7 +9,11 @@ LOG_DIR="${OUT_DIR}/phase20-closeout"
 PHASE_DIR="${ROOT_DIR}/.planning/phases/20-fsb-runtime-providers-vault-memory-logs-and-control-panel"
 PATCH_DIR="${PHASE_DIR}/patches"
 BASELINE="460caac2f9e7deecd9fa6294c41d13e5a6dd6115"
-NINJA="/opt/homebrew/bin/ninja"
+SISO="${CHROMIUM_DIR}/third_party/siso/cipd/siso"
+EXPECTED_NINJA_LOG_SHA256="eccf79f3dfdc6c8d51af20f56bf1973eb35ff486b1dab9b2b0653cc37b586dce"
+EXPECTED_NINJA_DEPS_SHA256="ab1a6ad4639e8db53459384f8636dc53f396397363f3c2751bcdadc0349947c0"
+COMPILE_COMMANDS="${LOG_DIR}/phase20-direct-compile-commands.log"
+COMPILE_OBJECTS="${LOG_DIR}/phase20-direct-compile-objects.log"
 
 mkdir -p "${LOG_DIR}"
 find "${LOG_DIR}" -maxdepth 1 -type f -name 'phase20-*.log' -delete
@@ -27,6 +31,28 @@ require_file() {
   [[ -s "$1" ]] || fail "missing or empty file: $1"
 }
 
+sha256_file() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
+capture_build_metadata() {
+  require_file "${OUT_DIR}/.ninja_log"
+  require_file "${OUT_DIR}/.ninja_deps"
+  NINJA_LOG_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/.ninja_log")"
+  NINJA_DEPS_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/.ninja_deps")"
+  [[ "${NINJA_LOG_SHA256_BEFORE}" == "${EXPECTED_NINJA_LOG_SHA256}" ]] \
+    || fail 'the restored .ninja_log does not match the reviewed build metadata'
+  [[ "${NINJA_DEPS_SHA256_BEFORE}" == "${EXPECTED_NINJA_DEPS_SHA256}" ]] \
+    || fail 'the restored .ninja_deps does not match the reviewed build metadata'
+}
+
+verify_build_metadata_preserved() {
+  [[ "$(sha256_file "${OUT_DIR}/.ninja_log")" == "${NINJA_LOG_SHA256_BEFORE}" ]] \
+    || fail 'direct verification changed .ninja_log'
+  [[ "$(sha256_file "${OUT_DIR}/.ninja_deps")" == "${NINJA_DEPS_SHA256_BEFORE}" ]] \
+    || fail 'direct verification changed .ninja_deps'
+}
+
 run_logged() {
   local log_name="$1"
   shift
@@ -40,10 +66,183 @@ run_logged() {
 compile_object() {
   local object="$1"
   local command
-  command="$("${NINJA}" -t commands "${object}" 2>&1 \
-    | rg --fixed-strings -- ' -c ../../' | tail -n 1 || true)"
+  command="$(awk -v output=" -o ${object}" \
+    'index($0, output) { command = $0 } END { print command }' \
+    "${COMPILE_COMMANDS}")"
   [[ -n "${command}" ]] || fail "compile command not found for ${object}"
   /bin/zsh -c "${command}"
+}
+
+collect_compile_objects() {
+  PHASE20_PRODUCTION_OBJECTS=()
+  while IFS= read -r object; do
+    PHASE20_PRODUCTION_OBJECTS+=("${object}")
+  done < <(find obj/chrome/browser/prometheus -mindepth 2 -maxdepth 3 \
+    -type f -name 'prometheus*.o' \
+    ! -path '*/prometheus_unittests/*' | sort)
+  PHASE20_UNIT_OBJECTS=(
+    obj/chrome/browser/prometheus/prometheus_unittests/*_unittest.o
+  )
+  PHASE20_BROWSER_OBJECTS=(
+    obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus*.o
+  )
+  PHASE20_RENDERER_OBJECTS=(
+    obj/chrome/renderer/prometheus_action_dispatcher_unittests/prometheus_action_dispatcher.o
+    obj/chrome/renderer/prometheus_action_dispatcher_unittests/prometheus_action_dispatcher_unittest.o
+    obj/chrome/renderer/renderer/prometheus_action_dispatcher.o
+    obj/chrome/renderer/renderer/prometheus_render_frame_observer.o
+  )
+  PHASE20_OTHER_OBJECTS=(
+    obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o
+  )
+
+  [[ "${#PHASE20_PRODUCTION_OBJECTS[@]}" -eq 39 ]] \
+    || fail "expected 39 Prometheus production objects, found ${#PHASE20_PRODUCTION_OBJECTS[@]}"
+  [[ "${#PHASE20_UNIT_OBJECTS[@]}" -eq 31 ]] \
+    || fail "expected 31 Prometheus unit objects, found ${#PHASE20_UNIT_OBJECTS[@]}"
+  [[ "${#PHASE20_BROWSER_OBJECTS[@]}" -eq 11 ]] \
+    || fail "expected 11 Prometheus browser-test objects, found ${#PHASE20_BROWSER_OBJECTS[@]}"
+
+  PHASE20_COMPILE_OBJECTS=(
+    "${PHASE20_PRODUCTION_OBJECTS[@]}"
+    "${PHASE20_UNIT_OBJECTS[@]}"
+    "${PHASE20_BROWSER_OBJECTS[@]}"
+    "${PHASE20_RENDERER_OBJECTS[@]}"
+    "${PHASE20_OTHER_OBJECTS[@]}"
+  )
+}
+
+prepare_compile_commands() {
+  note 'querying exact direct compile commands with Siso'
+  local runtime_contract="obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o"
+  local runtime_template="obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_profile_service.o"
+  local query_objects=()
+  local object
+  for object in "${PHASE20_COMPILE_OBJECTS[@]}"; do
+    if [[ "${object}" != "${runtime_contract}" ]]; then
+      query_objects+=("${object}")
+    fi
+  done
+  printf '%s\n' "${PHASE20_COMPILE_OBJECTS[@]}" >"${COMPILE_OBJECTS}"
+  printf '%s\n' "${query_objects[@]}" >"${COMPILE_OBJECTS}.query"
+  if ! LC_ALL=C "${SISO}" query commands -C "${OUT_DIR}" \
+      "${query_objects[@]}" \
+      2>"${LOG_DIR}/phase20-direct-compile-query-errors.log" \
+      | LC_ALL=C awk '
+          NR == FNR { wanted[$0] = 1; next }
+          {
+            for (field = 1; field < NF; ++field) {
+              if ($field == "-o" && wanted[$(field + 1)]) {
+                print
+                break
+              }
+            }
+          }
+        ' "${COMPILE_OBJECTS}.query" - >"${COMPILE_COMMANDS}"; then
+    fail 'Siso compile-command query failed'
+  fi
+  local template_command
+  template_command="$(awk -v output=" -o ${runtime_template}" \
+    'index($0, output) { command = $0 } END { print command }' \
+    "${COMPILE_COMMANDS}")"
+  [[ -n "${template_command}" ]] \
+    || fail 'runtime tool contract compile template was not found'
+  local old_stem="${runtime_template%.o}"
+  local new_stem="${runtime_contract%.o}"
+  template_command="${template_command//${old_stem}/${new_stem}}"
+  template_command="${template_command//..\/..\/chrome\/browser\/prometheus\/prometheus_runtime_profile_service.cc/..\/..\/chrome\/browser\/prometheus\/prometheus_runtime_tool_contract.cc}"
+  printf '%s\n' "${template_command}" >>"${COMPILE_COMMANDS}"
+  require_file "${COMPILE_COMMANDS}"
+  [[ "$(wc -l <"${COMPILE_COMMANDS}" | tr -d ' ')" -eq \
+      "${#PHASE20_COMPILE_OBJECTS[@]}" ]] \
+    || fail 'Siso query did not return one command per owned object'
+}
+
+compile_phase20_objects() {
+  local log="${LOG_DIR}/phase20-direct-build.log"
+  : >"${log}"
+  local object
+  for object in "${PHASE20_COMPILE_OBJECTS[@]}"; do
+    printf 'compile %s\n' "${object}" >>"${log}"
+    compile_object "${object}" >>"${log}" 2>&1 || {
+      tail -n 80 "${log}" >&2 || true
+      fail "direct compile failed for ${object}"
+    }
+  done
+}
+
+query_link_command() {
+  local target="$1"
+  local response_file="$2"
+  LC_ALL=C "${SISO}" query commands -C "${OUT_DIR}" "${target}" 2>/dev/null \
+    | LC_ALL=C awk -v marker="@./${response_file}" \
+        'index($0, "linker_driver.py") && index($0, marker) {
+           command = $0
+         }
+         END { print command }'
+}
+
+write_link_response() {
+  local target_ninja="$1"
+  local edge_output="$2"
+  local response_file="$3"
+  shift 3
+
+  {
+    perl -0777 -pe 's/\$\r?\n//g' "${target_ninja}" \
+      | awk -v output="${edge_output}" '
+          $1 == "build" {
+            first = $2
+            sub(/:$/, "", first)
+            if (first != output) next
+            start = 0
+            for (i = 1; i <= NF; ++i) {
+              if ($i == "link" || $i == "solink" ||
+                  $i == "solink_module") {
+                start = i + 1
+                break
+              }
+            }
+            if (!start) exit 2
+            for (i = start; i <= NF; ++i) {
+              if ($i == "|" || $i == "||") break
+              printf "%s ", $i
+            }
+            found = 1
+            exit
+          }
+          END { if (!found) exit 2 }
+        '
+    local extra
+    for extra in "$@"; do
+      printf '%s ' "${extra}"
+    done
+    perl -0777 -pe 's/\$\r?\n//g' "${target_ninja}" \
+      | awk -v output="${edge_output}" '
+          function value(prefix) {
+            return substr($0, length(prefix) + 1)
+          }
+          $1 == "build" {
+            if (active) exit
+            first = $2
+            sub(/:$/, "", first)
+            if (first == output) {
+              active = 1
+              found = 1
+            }
+            next
+          }
+          active && /^  frameworks = / { frameworks = value("  frameworks = ") }
+          active && /^  swiftmodules = / { swiftmodules = value("  swiftmodules = ") }
+          active && /^  solibs = / { solibs = value("  solibs = ") }
+          active && /^  libs = / { libs = value("  libs = ") }
+          END {
+            if (!found) exit 2
+            printf "%s %s %s %s\n", frameworks, swiftmodules, solibs, libs
+          }
+        '
+  } >"${response_file}"
+  require_file "${response_file}"
 }
 
 list_guard() {
@@ -63,8 +262,7 @@ list_guard() {
 build_content_focused_binary() {
   local target_ninja="obj/chrome/renderer/prometheus_action_dispatcher_unittests.ninja"
   local response_file="phase20_content_focused_unittests.rsp"
-  local query_file="${LOG_DIR}/phase20-content-link-query.log"
-  local link_command frameworks swiftmodules solibs libs
+  local link_command
 
   local extras=(
     obj/chrome/browser/prometheus/prometheus_unittests/prometheus_provider_transport_unittest.o
@@ -74,6 +272,7 @@ build_content_focused_binary() {
     obj/chrome/browser/prometheus/prometheus_provider_codec/prometheus_provider_codec.o
     obj/chrome/browser/prometheus/prometheus_secret_store/prometheus_secret_store.o
     obj/chrome/browser/prometheus/prometheus_runtime_prefs/prometheus_runtime_prefs.o
+    obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o
     obj/chrome/browser/prometheus/prometheus_runtime_types/prometheus_runtime_types.o
     obj/chrome/browser/prometheus/prometheus_tab_state/prometheus_tab_state.o
     obj/chrome/browser/prometheus/prometheus_agent_tab_data/prometheus_agent_tab_data.o
@@ -89,31 +288,15 @@ build_content_focused_binary() {
   )
 
   local object
-  for object in "${extras[@]:0:11}"; do
-    compile_object "${object}"
-  done
   for object in "${extras[@]}"; do
     require_file "${object}"
   done
 
-  "${NINJA}" -t query prometheus_action_dispatcher_unittests >"${query_file}"
-  frameworks="$(sed -n 's/^  frameworks = //p' "${target_ninja}" | tail -n 1)"
-  swiftmodules="$(sed -n 's/^  swiftmodules = //p' "${target_ninja}" | tail -n 1)"
-  solibs="$(sed -n 's/^  solibs = //p' "${target_ninja}" | tail -n 1)"
-  libs="$(sed -n 's/^  libs = //p' "${target_ninja}" | tail -n 1)"
-
-  {
-    awk '/^  input: link$/ { in_link=1; next }
-         in_link && /^    \|/ { exit }
-         in_link && /^    / { sub(/^    /, ""); print }' "${query_file}"
-    printf '%s\n' "${extras[@]}"
-    printf '%s\n' "${frameworks}" "${swiftmodules}" "${solibs}" "${libs}"
-  } >"${response_file}"
-  require_file "${response_file}"
-
-  link_command="$("${NINJA}" -t commands prometheus_action_dispatcher_unittests 2>&1 \
-    | rg 'linker_driver.py.*prometheus_action_dispatcher_unittests\.rsp' \
-    | tail -n 1 || true)"
+  write_link_response "${target_ninja}" \
+    ./prometheus_action_dispatcher_unittests "${response_file}" \
+    "${extras[@]}"
+  link_command="$(query_link_command prometheus_action_dispatcher_unittests \
+    prometheus_action_dispatcher_unittests.rsp)"
   [[ -n "${link_command}" ]] || fail 'renderer unit link command not found'
   link_command="${link_command//prometheus_action_dispatcher_unittests/phase20_content_focused_unittests}"
   /bin/zsh -c "${link_command}" >"${LOG_DIR}/phase20-content-link.log" 2>&1 || {
@@ -130,34 +313,74 @@ build_browser_test_binary() {
   local build_log="${LOG_DIR}/phase20-browser-build.log"
   : >"${build_log}"
 
+  require_file ./browser_tests.rsp
+  local runtime_dialogs="obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o"
+  local runtime_contract="obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o"
+
+  local candidates=(
+    "${runtime_dialogs}"
+    "${runtime_contract}"
+    "${PHASE20_UNIT_OBJECTS[@]}"
+  )
+  local extra_objects=()
   local object
-  local unit_objects=(obj/chrome/browser/prometheus/prometheus_unittests/*_unittest.o)
-  local browser_objects=(obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus*.o)
-  [[ "${#unit_objects[@]}" -eq 31 ]] \
-    || fail "expected 31 Prometheus unit objects, found ${#unit_objects[@]}"
-  [[ "${#browser_objects[@]}" -eq 11 ]] \
-    || fail "expected 11 Prometheus browser-test objects, found ${#browser_objects[@]}"
-
-  for object in "${unit_objects[@]}" "${browser_objects[@]}"; do
-    printf 'compile %s\n' "${object}" >>"${build_log}"
-    compile_object "${object}" >>"${build_log}" 2>&1
+  for object in "${candidates[@]}"; do
+    require_file "${object}"
+    if ! rg -q --fixed-strings -- "${object}" ./browser_tests.rsp; then
+      extra_objects+=("${object}")
+    fi
   done
-  compile_object \
-    obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o \
-    >>"${build_log}" 2>&1
 
-  local link_command extra_objects
-  link_command="$("${NINJA}" -t commands browser_tests 2>&1 \
-    | rg 'linker_driver.py.*browser_tests\.rsp' | tail -n 1 || true)"
+  local link_command
+  link_command="$(query_link_command browser_tests browser_tests.rsp)"
   [[ -n "${link_command}" ]] || fail 'browser_tests link command not found'
-  extra_objects="obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o ${unit_objects[*]}"
-  link_command="${link_command} ${extra_objects}"
+  local original_output='-o "./browser_tests"'
+  local temporary_output='-o "./phase20_browser_tests"'
+  [[ "${link_command}" == *"${original_output}"* ]] \
+    || fail 'browser_tests output argument was not found'
+  link_command="${link_command/${original_output}/${temporary_output}}"
+  link_command="${link_command} ${extra_objects[*]}"
+  rm -f ./phase20_browser_tests
   /bin/zsh -c "${link_command}" >>"${build_log}" 2>&1 || {
     tail -n 80 "${build_log}" >&2 || true
     fail 'focused browser test link failed'
   }
-  codesign --force --sign - ./browser_tests >>"${build_log}" 2>&1
-  codesign --verify --strict ./browser_tests >>"${build_log}" 2>&1
+  require_file ./phase20_browser_tests
+  codesign --force --sign - ./phase20_browser_tests >>"${build_log}" 2>&1
+  codesign --verify --strict ./phase20_browser_tests >>"${build_log}" 2>&1
+  mv -f ./phase20_browser_tests ./browser_tests
+}
+
+build_app_runtime() {
+  local build_log="${LOG_DIR}/phase20-app-runtime-link.log"
+  local target_ninja="obj/chrome/chrome_dll.ninja"
+  local runtime_contract="obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o"
+  require_file "${target_ninja}"
+  require_file "${runtime_contract}"
+
+  write_link_response "${target_ninja}" ./libchrome_dll.dylib \
+    ./libchrome_dll.dylib.rsp "${runtime_contract}"
+  local link_command
+  link_command="$(query_link_command libchrome_dll.dylib \
+    libchrome_dll.dylib.rsp)"
+  [[ -n "${link_command}" ]] || fail 'libchrome_dll link command not found'
+  local original_output='-o "./libchrome_dll.dylib"'
+  local temporary_output='-o "./phase20_libchrome_dll.dylib"'
+  [[ "${link_command}" == *"${original_output}"* ]] \
+    || fail 'libchrome_dll output argument was not found'
+  link_command="${link_command/${original_output}/${temporary_output}}"
+
+  rm -f ./phase20_libchrome_dll.dylib
+  /bin/zsh -c "${link_command}" >"${build_log}" 2>&1 || {
+    tail -n 80 "${build_log}" >&2 || true
+    fail 'direct libchrome_dll link failed'
+  }
+  require_file ./phase20_libchrome_dll.dylib
+  codesign --force --sign - ./phase20_libchrome_dll.dylib \
+    >>"${build_log}" 2>&1
+  codesign --verify --strict ./phase20_libchrome_dll.dylib \
+    >>"${build_log}" 2>&1
+  mv -f ./phase20_libchrome_dll.dylib ./libchrome_dll.dylib
 }
 
 verify_corpus_and_catalog() {
@@ -306,30 +529,19 @@ verify_static_boundaries() {
 
 cd "${OUT_DIR}"
 require_file build.ninja
-[[ -x "${NINJA}" ]] || fail "ninja not found at ${NINJA}"
-
-run_logged phase20-chrome-renderer-build "${NINJA}" chrome prometheus_action_dispatcher_unittests
-
-# The aggregate target is attempted and its existing component-build linker
-# defect is accepted only when it fails with the already-audited unrelated
-# Chrome symbol set. Focused binaries below compile every owned object and are
-# the executable Phase 20 gate; no aggregate result is claimed.
-if "${NINJA}" prometheus_unittests \
-    >"${LOG_DIR}/phase20-aggregate-unit-link.log" 2>&1; then
-  note 'aggregate prometheus_unittests linked successfully'
-else
-  rg -q 'Undefined symbols|undefined symbol' \
-    "${LOG_DIR}/phase20-aggregate-unit-link.log" \
-    || fail 'aggregate unit link failed without the known linker signature'
-  rg -q 'NavigateParams|TaskTabHelper|NoStatePrefetch|UpgradeDetector|FileSelectHelper' \
-    "${LOG_DIR}/phase20-aggregate-unit-link.log" \
-    || fail 'aggregate unit link failed outside the known unrelated Chrome symbol set'
-  printf '\nKNOWN_LIMITATION: aggregate component-build linker closure is incomplete; focused owned-object gates substitute.\n' \
-    >>"${LOG_DIR}/phase20-aggregate-unit-link.log"
-fi
+[[ -x "${SISO}" ]] || fail "Siso not found at ${SISO}"
+shopt -s nullglob
+capture_build_metadata
+collect_compile_objects
+prepare_compile_commands
+compile_phase20_objects
+printf '%s\n' \
+  'NOT_RUN: the aggregate component-build unit closure is unrelated to the owned focused gates.' \
+  >"${LOG_DIR}/phase20-aggregate-unit-link.log"
 
 build_content_focused_binary
 build_browser_test_binary
+build_app_runtime
 require_file ./Prometheus.app/Contents/MacOS/Prometheus
 require_file ./browser_tests
 require_file ./prometheus_action_dispatcher_unittests
@@ -345,15 +557,15 @@ PHASE20_NATIVE_SUITES=(
 )
 list_guard ./browser_tests "${PHASE20_NATIVE_FILTER}" phase20-native-list "${PHASE20_NATIVE_SUITES[@]}"
 run_logged phase20-native-units ./browser_tests --gtest_filter="${PHASE20_NATIVE_FILTER}"
-rg -q '\[187/187\]' "${LOG_DIR}/phase20-native-units.log" \
-  || fail 'Phase 20 native unit count was not exactly 187'
+rg -q '\[202/202\]' "${LOG_DIR}/phase20-native-units.log" \
+  || fail 'Phase 20 native unit count was not exactly 202'
 
 CONTENT_FILTER='PrometheusProviderTransportTest.*:PrometheusTabStateTest.*:PrometheusTabStateWebContentsTest.*:PrometheusActionDispatcherTest.*'
 CONTENT_SUITES=(PrometheusProviderTransportTest PrometheusTabStateTest PrometheusTabStateWebContentsTest PrometheusActionDispatcherTest)
 list_guard ./phase20_content_focused_unittests "${CONTENT_FILTER}" phase20-content-list "${CONTENT_SUITES[@]}"
 run_logged phase20-content-units ./phase20_content_focused_unittests --gtest_filter="${CONTENT_FILTER}"
-rg -q '\[23/23\]' "${LOG_DIR}/phase20-content-units.log" \
-  || fail 'Phase 20 content/renderer unit count was not exactly 23'
+rg -q '\[24/24\]' "${LOG_DIR}/phase20-content-units.log" \
+  || fail 'Phase 20 content/renderer unit count was not exactly 24'
 
 REGRESSION_NATIVE_FILTER='PrometheusAgentAuditTest.*:PrometheusAgentRouteTest.*:PrometheusAgentTabDataTest.*:PrometheusAgentTransportTest.*:PrometheusEndpointDescriptorTest.*:PrometheusPageActionDispatcherTest.*:PrometheusPageActionHistoryTest.*:PrometheusPageAdapterTest.*:PrometheusPageErrorTest.*:PrometheusPageJsExecutorTest.*:PrometheusPageSnapshotTest.*:PrometheusWebUIHandoffTest.*:PrometheusWebUIResourceTest.*'
 REGRESSION_NATIVE_SUITES=(
@@ -390,8 +602,8 @@ list_guard ./browser_tests "${REGRESSION_BROWSER_FILTER}" phase20-regression-bro
 run_logged phase20-regression-browser-tests ./browser_tests --gtest_filter="${REGRESSION_BROWSER_FILTER}" --test-launcher-jobs=1 --test-launcher-retry-limit=0
 rg -q 'SUCCESS: all tests passed\.' "${LOG_DIR}/phase20-regression-browser-tests.log" \
   || fail 'Phase 17-19 browser regressions did not all pass'
-rg -q '\[82/82\]' "${LOG_DIR}/phase20-regression-browser-tests.log" \
-  || fail 'Phase 17-19 browser regression count was not exactly 82'
+rg -q '\[83/83\]' "${LOG_DIR}/phase20-regression-browser-tests.log" \
+  || fail 'Phase 17-19 browser regression count was not exactly 83'
 
 cd "${ROOT_DIR}"
 run_logged phase20-node-tap node --test tools/prometheus-mcp/test/*.test.mjs
@@ -414,6 +626,7 @@ run_logged phase20-artifact-isolation bash .planning/chromium/verify-artifact-is
 run_logged phase20-webui-resources bash .planning/chromium/verify-prometheus-webui-resources.sh
 run_logged phase20-preservation bash .planning/preservation/verify-preservation.sh
 verify_patches
+verify_build_metadata_preserved
 
 git diff --check >"${LOG_DIR}/phase20-root-diff-check.log"
 git -C "${CHROMIUM_DIR}" diff --check >"${LOG_DIR}/phase20-nested-diff-check.log"
