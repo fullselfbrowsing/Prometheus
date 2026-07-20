@@ -1,0 +1,52 @@
+From 9c9d8d424c7d88b318807df77603afa8c7f2b8d7 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 20 Jul 2026 09:22:36 -0500
+Subject: [PATCH] test(20): preserve queued browser fixtures
+
+---
+ .../prometheus/prometheus_mcp_integration_browsertest.cc       | 1 +
+ chrome/browser/prometheus/prometheus_runtime_profile_service.h | 3 +++
+ .../ui/webui/prometheus/prometheus_web_ui_browsertest.cc       | 1 +
+ 3 files changed, 5 insertions(+)
+
+diff --git a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+index e7a0be6b28..1c41d319a5 100644
+--- a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+@@ -919,6 +919,7 @@ IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
+       PrometheusRuntimeProfileServiceFactory::GetForProfile(
+           browser()->profile());
+   ASSERT_TRUE(runtime);
++  runtime->SetAutoStartTasksForTesting(false);
+   const PrometheusProviderConfig provider =
+       MakeCorpusProvider("openai_responses", 1000);
+   ASSERT_EQ(
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.h b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+index 235172cc3d..3561352c89 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+@@ -396,6 +396,9 @@ class PrometheusRuntimeProfileService
+   size_t discovery_record_count_for_testing() const {
+     return discoveries_.size();
+   }
++  void SetAutoStartTasksForTesting(bool auto_start_tasks) {
++    hooks_.auto_start_tasks = auto_start_tasks;
++  }
+   std::optional<RuntimeTaskSnapshot> GetTask(std::string_view task_id) const;
+   PrometheusRuntimeTestBootstrapResult startup_bootstrap_result_for_testing()
+       const;
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 8ae67368d0..1a2c69b6b1 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -181,6 +181,7 @@ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
+     if (!service) {
+       return nullptr;
+     }
++    service->SetAutoStartTasksForTesting(false);
+     prometheus::PrometheusProviderConfig provider;
+     provider.provider_id = "local-ui-test";
+     provider.label = "Local UI Test";
+-- 
+2.50.1 (Apple Git-155)
+
