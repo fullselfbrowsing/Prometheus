@@ -46,7 +46,7 @@ gate and remains consolidated into the non-blocking Phase 24 release review.
 | Requirement | Owning plans/tasks | Planned behavior | Threat | Automated evidence | Status |
 |-------------|--------------------|------------------|--------|--------------------|--------|
 | FSB-01 | 20-02 T1-T2; 20-07 T2-T4; 20-11 T1-T3; 20-14 T1-T2 | Ask FSB seeds without auto-submit; explicit side-panel submission creates one bounded task and renders truthful state/result. | Duplicate/oversized/blank submission; wrong-window targeting. | Runtime service/store units, exact-window side-panel browser tests, 32-case integration, and built-app MCP smoke. | passed |
-| FSB-02 | 20-01 T1-T3; 20-05 T1-T3; 20-06 T1-T2; 20-07 T1-T4; 20-09 T1-T3; 20-10 T1-T3; 20-11 T2-T3; 20-14 T1-T2 | Hosted/routed/local execution and MCP-origin tasks use one state machine with progress, cancel, timeout, terminal result, and deterministic safe fallback. | Loop/replay/double completion; external client mistaken for embedded engine. | Lifecycle/fallback/cancel units; gateway/Node contracts; fake-provider browser test; external MCP smoke; no-spawn audit. | passed |
+| FSB-02 | 20-01 T1-T3; 20-05 T1-T3; 20-06 T1-T2; 20-07 T1-T4; 20-09 T1-T3; 20-10 T1-T3; 20-11 T2-T3; 20-14 T1-T2 | Hosted/routed/local execution and MCP-origin tasks use one state machine with progress, cancel, timeout, terminal result, fresh fallback authorization, and authoritative session-loss cleanup. | Loop/replay/double completion; authority revoked between provider attempts; close/expiry/shutdown leaving provider work live; external client mistaken for embedded engine. | Lifecycle/fallback/cancel units; production MCP close/expiry/shutdown browser coverage; gateway/Node contracts; fake-provider browser test; external MCP smoke; no-spawn audit. | passed |
 | FSB-03 | 20-04 T1-T3; 20-05 T1-T3; 20-07 T1-T4; 20-09 T1-T3; 20-10 T1-T3; 20-12 T1-T3; 20-13 T2-T3; 20-14 T1-T2 | All required provider kinds have metadata, endpoint policy, discovery, model selection, health, and bounded fallback order. | SSRF, redirect credential leak, ambiguous trust origin, unsafe retry. | Provider registry/codec tests, `TestURLLoaderFactory` request assertions, live control browser tests, and fake-provider integration. | passed |
 | FSB-04 | 20-04 T1-T3; 20-05 T1-T3; 20-08 T1-T3; 20-09 T1-T3; 20-10 T1-T3; 20-13 T2-T3; 20-14 T1-T2 | Provider secrets use OSCrypt-backed origin-bound envelopes and never display after native save. | Plaintext/ciphertext through prefs, WebUI, MCP, logs, errors, or renderer. | Fake encryptor round-trip/failure/re-encrypt tests, native-dialog browser tests, and recursive serialization/denylist scans. | passed |
 | FSB-05 | 20-01 T1-T3; 20-02 T1-T2; 20-05 T1-T3; 20-06 T1-T2; 20-07 T2-T4; 20-09 T1-T3; 20-10 T1-T3; 20-11 T2-T3; 20-12 T1-T3; 20-14 T1-T2 | Bounded task/log/action/diagnostic/usage/outcome persistence with integer token/cost/duration metrics. | Content-bearing telemetry, unbounded growth, fabricated zero/unknown accounting. | Store eviction/restart/redaction/accounting units plus WebUI, MCP, integration, and smoke sanitized snapshots. | passed |
@@ -167,15 +167,15 @@ compileable fixture scaffolding, proves the intended behavior fails, and guards
 
 - [x] every owned native, renderer, and browser object compiles directly; the app runtime and focused/custom links verify; reviewed Ninja metadata remains byte-identical. The aggregate unit link limitation is recorded without a pass claim.
 - [x] all 75 Node tests pass with zero failures/skips/TODOs/cancellations
-- [x] all 227 focused Phase 20 native/content/renderer units pass (`203 + 24`)
-- [x] all 36 Phase 20 browser tests pass serially
+- [x] all 232 focused Phase 20 native/content/renderer units pass (`208 + 24`)
+- [x] all 37 Phase 20 browser tests pass serially
 - [x] 84 Phase 17-19 native and 83 Phase 17-19 browser/MCP regressions pass
 - [x] fake-provider built-app external MCP smoke passes
 - [x] exact 90-name manifest reports 49 native, 12 alias, 22 typed stub, five Phase 21, two removed
 - [x] recursive secret/content/privacy audit passes
 - [x] no embedded runtime/process/terminal/engine/`CLAUDE.md` audit passes
 - [x] packaged WebUI remote-resource/layout/keyboard gates pass
-- [x] preservation, GPL, artifact-isolation, root/nested diff, 52-patch stable-identity inventory, and `git diff --check` pass
+- [x] preservation, GPL, artifact-isolation, root/nested diff, 54-patch stable-identity inventory, and `git diff --check` pass
 - [x] human visual UAT recorded `not_run` and routed to non-blocking Phase 24 review
 
 ## Fresh Closeout Evidence
@@ -189,10 +189,10 @@ entrypoint. It writes fresh secret-free logs below
 | Owned-object direct compile and app-runtime relink | passed; reviewed `.ninja_log` and `.ninja_deps` preserved | `phase20-direct-build.log`, `phase20-app-runtime-link.log` |
 | Aggregate native target | known unrelated component-build link limitation; not run and no pass claimed | `phase20-aggregate-unit-link.log` |
 | Owned-object focused/custom links | passed, signed, and verified | `phase20-content-link.log`, `phase20-browser-build.log` |
-| Phase 20 native units | 203/203 | `phase20-native-units.log` |
+| Phase 20 native units | 208/208 | `phase20-native-units.log` |
 | Content/Mojo/renderer units | 24/24 | `phase20-content-units.log` |
 | Phase 17-19 native regressions | 84/84 | `phase20-regression-native-units.log` |
-| Phase 20 MCP/vault/control browser fixtures | 36/36 serial | `phase20-browser-tests.log` |
+| Phase 20 MCP/vault/control browser fixtures | 37/37 serial | `phase20-browser-tests.log` |
 | Phase 17-19 browser regressions | 83/83 serial | `phase20-regression-browser-tests.log` |
 | Node MCP suite | 75/75; fail/cancelled/skipped/todo all zero | `phase20-node-tap.log` |
 | Built-app external MCP smoke | passed with mode-0600 test bootstrap and loopback fixture | `phase20-built-smoke.log` |

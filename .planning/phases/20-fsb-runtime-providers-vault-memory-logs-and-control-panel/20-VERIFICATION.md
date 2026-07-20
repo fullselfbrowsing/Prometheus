@@ -33,16 +33,16 @@ documentation checks pass.
 
 | Evidence | Result |
 |----------|--------|
-| Phase 20 native suites | 203/203 across runtime types/store, memory, secret store, provider registry/codec, runtime profile/bootstrap/transport codec, vault, agent service/session/gateway |
+| Phase 20 native suites | 208/208 across runtime types/store, memory, secret store, provider registry/codec, runtime profile/bootstrap/transport codec, vault, agent service/session/gateway |
 | Content/Mojo/renderer suites | 24/24 across provider transport, tab state, and action dispatcher |
 | Phase 17-19 native regressions | 84/84 |
-| Phase 20 browser fixtures | 36/36 serial across MCP integration, vault confirmation, and control panel |
+| Phase 20 browser fixtures | 37/37 serial across MCP integration, vault confirmation, and control panel |
 | Phase 17-19 browser regressions | 83/83 serial across gateway, profile/service, page/frame/action, tab commands, and WebUI foundation |
 | Node MCP tests | 75/75 with exact fail `0`, cancelled `0`, skipped `0`, todo `0` |
 | Built-app external MCP smoke | passed against the built Prometheus app and deterministic loopback fixture |
 | Corpus | exactly 32; groups `6/5/5/5/4/4/3`; 28 real provider loops across OpenAI Responses, OpenAI Chat, Anthropic Messages, and Gemini generateContent |
 | Compatibility catalog | exactly 49 native, 12 alias, 22 typed stub, five Phase 21, two removed |
-| Chromium patch export | 52 ordered non-empty source-only patches with exact stable patch identities for the nested range `460caac2f9e7deecd9fa6294c41d13e5a6dd6115..HEAD` |
+| Chromium patch export | 54 ordered non-empty source-only patches with exact stable patch identities for the nested range `460caac2f9e7deecd9fa6294c41d13e5a6dd6115..HEAD` |
 
 The aggregate `prometheus_unittests` target is not reported as passing. Its
 current component-build edge cannot close an unrelated Chrome symbol set
@@ -58,7 +58,7 @@ must remain byte-identical from start to finish.
 | Requirement | Result | Evidence |
 |-------------|--------|----------|
 | FSB-01 | passed | Ask FSB seeds the exact-window side panel without URL/history prompt leakage or auto-submit. Explicit submit creates one bounded task; safe title, progress, terminal result, cancel, recovery, and restart rendering pass in native and browser fixtures. |
-| FSB-02 | passed | Hosted, routed, local, Agent-side, and MCP-side work share the native state machine. Exactly-once cancel/timeout/shutdown, pre-mutation-only fallback, lifecycle generation, bounded tool authority, and external-smoke submit/status/cancel/log flows pass. No third-party engine is embedded or launched. |
+| FSB-02 | passed | Hosted, routed, local, Agent-side, and MCP-side work share the native state machine. Exactly-once cancel/timeout/shutdown, pre-mutation-only fallback with fresh generation/authority/policy/provider checks, close/expiry/gateway session-loss cleanup, bounded tool authority, and external-smoke submit/status/cancel/log flows pass. No third-party engine is embedded or launched. |
 | FSB-03 | passed | OpenAI-compatible, Anthropic, Gemini, Ollama, LM Studio, and fixed hosted metadata obey closed endpoint policy, strict codecs, discovery/model selection, direct `SimpleURLLoader` transport, redirect rejection, omitted ambient credentials, bounded bodies/timeouts, and typed fallback. |
 | FSB-04 | passed | Provider and vault values use profile-owned injectable OSCrypt envelopes. Entry/use remains native; renderer, WebUI, MCP, prefs snapshots, logs, errors, diagnostics, corpus output, and captured smoke output remain value-free. Re-encrypt and failure preservation pass. |
 | FSB-05 | passed | Tasks, events, actions, diagnostics, outcomes, integer token/duration/action/cost accounting, and known-versus-unknown cost survive bounded deterministic persistence without prompts, page content, selectors, scripts, typed text, raw provider bodies, profile paths, or gateway authority. |
@@ -72,7 +72,7 @@ must remain byte-identical from start to finish.
   credential prompts. Raw prompts are absent from persisted task records,
   search indexing, WebUI DOM, snapshots, diagnostics, logs, and errors.
 - `PolicyAdmission`, `PolicyDispatch`, `TelemetryOff`, and
-  `LockedVaultPolicy` filters execute inside the 203-test native gate. They
+  `LockedVaultPolicy` filters execute inside the 208-test native gate. They
   prove real admission/delegate/emission effects and immutable ownership,
   native-vault, fresh-confirmation, and supervision invariants.
 - `PrometheusRuntimeTestBootstrapTest.*` proves the bootstrap requires a
@@ -108,7 +108,7 @@ must remain byte-identical from start to finish.
 - Production browser/renderer/MCP sources contain no embedded-agent process,
   terminal, engine-selection, provider-SDK, unsafe redirect, ambient credential,
   remote WebUI, or false supervision-ready path.
-- The exact 52-commit nested range has one ordered non-empty source-only patch
+- The exact 54-commit nested range has one ordered non-empty source-only patch
   per commit; stable patch IDs must match every claimed commit, and a valid but
   mutated patch must fail the verifier self-test. Patches reject output, object,
   library, response, dependency, and other build artifacts.

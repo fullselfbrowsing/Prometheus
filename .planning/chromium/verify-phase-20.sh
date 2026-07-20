@@ -471,8 +471,8 @@ verify_patches() {
     patches+=("${patch}")
   done < <(find "${PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | sort)
   [[ "${#commits[@]}" -gt 0 ]] || fail 'nested Phase 20 commit range is empty'
-  [[ "${#commits[@]}" -eq 52 ]] \
-    || fail "expected 52 nested Phase 20 commits, found ${#commits[@]}"
+  [[ "${#commits[@]}" -eq 54 ]] \
+    || fail "expected 54 nested Phase 20 commits, found ${#commits[@]}"
   [[ "${#commits[@]}" -eq "${#patches[@]}" ]] \
     || fail "patch count ${#patches[@]} does not match commit count ${#commits[@]}"
 
@@ -682,8 +682,8 @@ PHASE20_NATIVE_SUITES=(
 )
 list_guard ./browser_tests "${PHASE20_NATIVE_FILTER}" phase20-native-list "${PHASE20_NATIVE_SUITES[@]}"
 run_logged phase20-native-units ./browser_tests --gtest_filter="${PHASE20_NATIVE_FILTER}"
-rg -q '\[203/203\]' "${LOG_DIR}/phase20-native-units.log" \
-  || fail 'Phase 20 native unit count was not exactly 203'
+rg -q '\[208/208\]' "${LOG_DIR}/phase20-native-units.log" \
+  || fail 'Phase 20 native unit count was not exactly 208'
 
 CONTENT_FILTER='PrometheusProviderTransportTest.*:PrometheusTabStateTest.*:PrometheusTabStateWebContentsTest.*:PrometheusActionDispatcherTest.*'
 CONTENT_SUITES=(PrometheusProviderTransportTest PrometheusTabStateTest PrometheusTabStateWebContentsTest PrometheusActionDispatcherTest)
@@ -711,8 +711,8 @@ list_guard ./browser_tests "${PHASE20_BROWSER_FILTER}" phase20-browser-list "${P
 run_logged phase20-browser-tests ./browser_tests --gtest_filter="${PHASE20_BROWSER_FILTER}" --test-launcher-jobs=1 --test-launcher-retry-limit=0
 rg -q 'SUCCESS: all tests passed\.' "${LOG_DIR}/phase20-browser-tests.log" \
   || fail 'Phase 20 browser fixtures did not all pass'
-rg -q '\[36/36\]' "${LOG_DIR}/phase20-browser-tests.log" \
-  || fail 'Phase 20 browser count was not exactly 36'
+rg -q '\[37/37\]' "${LOG_DIR}/phase20-browser-tests.log" \
+  || fail 'Phase 20 browser count was not exactly 37'
 
 REGRESSION_BROWSER_FILTER='PrometheusAgentGatewayBrowserTest.*:PrometheusAgentGatewayLifecycleBrowserTest.*:PrometheusAgentProfileServiceBrowserTest.*:PrometheusAgentServiceBrowserTest.*:PrometheusAgentInternalSurfaceBrowserTest.*:PrometheusPageAdapterBrowserTest.*:PrometheusPrerenderedFrameBrowserTest.*:PrometheusFencedFrameBrowserTest.*:PrometheusPageActionBrowserTest.*:PrometheusTabCommandsBrowserTest.*:PrometheusWebUIFoundationBrowserTest.*'
 REGRESSION_BROWSER_SUITES=(
