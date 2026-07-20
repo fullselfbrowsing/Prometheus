@@ -289,15 +289,24 @@ test('runtime caller authority and recursive secrets never reach native transpor
 
 test('read-only model discovery stays live and forwards its bounded metadata', async () => {
   const { calls, handler } = makeHarness();
-  const result = await handler.callTool({
+  const started = await handler.callTool({
     name: 'discover_models',
     arguments: { provider_id: 'provider-1' },
   });
-  assertParity(result, false);
-  assert.equal(calls.length, 1);
+  assertParity(started, false);
+  const completed = await handler.callTool({
+    name: 'discover_models',
+    arguments: { operation_id: '17' },
+  });
+  assertParity(completed, false);
+  assert.equal(calls.length, 2);
   assert.equal(calls[0].route, 'discover_models');
   assert.deepEqual(calls[0].envelope, {
     params: { provider_id: 'provider-1' },
+  });
+  assert.equal(calls[1].route, 'discover_models');
+  assert.deepEqual(calls[1].envelope, {
+    params: { operation_id: '17' },
   });
 });
 

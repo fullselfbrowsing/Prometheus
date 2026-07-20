@@ -555,6 +555,36 @@ const eventually = async (callback, {
   throw lastError ?? new Error('Live condition did not become ready before its deadline.');
 };
 
+const discoverModelsThroughStatus = async (bridge, providerId) => {
+  const started = runtimePayload(await expectToolSuccess(
+    bridge,
+    'discover_models',
+    { provider_id: providerId },
+  ), 'discover_models');
+  requireCondition(
+    typeof started.operation_id === 'string'
+      && /^[1-9][0-9]{0,19}$/u.test(started.operation_id)
+      && Array.isArray(started.models)
+      && typeof started.pending === 'boolean',
+    'Model discovery did not return a bounded polling operation.',
+  );
+  if (!started.pending) return started;
+  return eventually(async () => {
+    const status = runtimePayload(await expectToolSuccess(
+      bridge,
+      'discover_models',
+      { operation_id: started.operation_id },
+    ), 'discover_models');
+    requireCondition(
+      status.operation_id === started.operation_id
+        && Array.isArray(status.models)
+        && typeof status.pending === 'boolean',
+      'Model discovery status did not preserve its polling operation.',
+    );
+    return status.pending ? false : status;
+  });
+};
+
 const readDescriptor = async (descriptorPath) => {
   const metadata = await lstat(descriptorPath);
   requireCondition(metadata.isFile() && !metadata.isSymbolicLink(), 'Descriptor must be a regular file.');
@@ -905,17 +935,15 @@ const runLiveSmoke = async () => {
       providerConfig.provider?.provider_id === PHASE20_PROVIDER_ID,
       'Read-only provider configuration did not return the fixture provider.',
     );
-    const discovery = runtimePayload(await expectToolSuccess(
+    const discovery = await discoverModelsThroughStatus(
       primary,
-      'discover_models',
-      { provider_id: PHASE20_PROVIDER_ID },
-    ), 'discover_models');
+      PHASE20_PROVIDER_ID,
+    );
     requireCondition(
       Array.isArray(discovery.models)
-        && typeof discovery.pending === 'boolean'
-        && (discovery.models.length === 0
-          || (discovery.models.length === 1
-            && discovery.models[0] === PHASE20_MODEL_ID)),
+        && discovery.pending === false
+        && discovery.models.length === 1
+        && discovery.models[0] === PHASE20_MODEL_ID,
       'Read-only model discovery returned an invalid fixture result.',
     );
 
@@ -1095,13 +1123,14 @@ const runLiveSmoke = async () => {
       ),
       'Second external client could not read the bootstrap provider.',
     );
-    const secondDiscovery = runtimePayload(await expectToolSuccess(
+    const secondDiscovery = await discoverModelsThroughStatus(
       second,
-      'discover_models',
-      { provider_id: PHASE20_PROVIDER_ID },
-    ), 'discover_models');
+      PHASE20_PROVIDER_ID,
+    );
     requireCondition(
-      Array.isArray(secondDiscovery.models) && typeof secondDiscovery.pending === 'boolean',
+      Array.isArray(secondDiscovery.models)
+        && secondDiscovery.pending === false
+        && secondDiscovery.models.includes(PHASE20_MODEL_ID),
       'Second external client could not use read-only model discovery.',
     );
     const secondMemories = runtimePayload(await expectToolSuccess(

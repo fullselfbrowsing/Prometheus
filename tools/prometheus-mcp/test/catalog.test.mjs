@@ -255,6 +255,12 @@ test('runtime schemas reject route-specific invalid values and prototype keys', 
     ['list_tasks', { limit: 129 }],
     ['list_providers', { include_disabled: 'true' }],
     ['discover_models', { provider_id: '' }],
+    ['discover_models', {}],
+    ['discover_models', { operation_id: '0' }],
+    ['discover_models', {
+      provider_id: 'provider-1',
+      operation_id: '17',
+    }],
     ['set_provider_config', { provider_id: 'provider-1', fallback_rank: 32 }],
     ['save_memory', { title: 'Title', text: 'Text', tags: Array(9).fill('tag') }],
     ['save_memory', { title: 'Title', text: 'Text', tags: [7] }],
@@ -306,6 +312,14 @@ test('provider mutation stays native metadata-only and documents local UI recove
   ]) {
     assert.equal(serialized.includes(`\"${forbidden}\"`), false, forbidden);
   }
+});
+
+test('model discovery schema accepts a bounded status operation', () => {
+  const definition = getToolDefinition('discover_models');
+  assert.deepEqual(
+    normalizeToolArguments(definition, { operation_id: '17' }),
+    { operation_id: '17' },
+  );
 });
 
 test('native schemas enforce surface, field, and numeric boundaries', () => {

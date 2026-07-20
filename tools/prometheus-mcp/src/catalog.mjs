@@ -62,6 +62,10 @@ const readLimitProperties = {
 
 const runtimeId = utf8String(128, 1);
 const providerId = utf8String(64, 1);
+const discoveryOperationId = {
+  ...utf8String(20, 1),
+  pattern: '^[1-9][0-9]{0,19}$',
+};
 const listLimit = { type: 'integer', minimum: 1, maximum: 128 };
 const tags = {
   type: 'array',
@@ -105,7 +109,16 @@ const runtimeSchemas = {
   list_tasks: objectSchema({ limit: listLimit }),
   get_provider_config: objectSchema({ provider_id: providerId }, ['provider_id']),
   list_providers: objectSchema({ include_disabled: { type: 'boolean' } }),
-  discover_models: objectSchema({ provider_id: providerId }, ['provider_id']),
+  discover_models: {
+    ...objectSchema({
+      provider_id: providerId,
+      operation_id: discoveryOperationId,
+    }),
+    oneOf: [
+      objectSchema({ provider_id: providerId }, ['provider_id']),
+      objectSchema({ operation_id: discoveryOperationId }, ['operation_id']),
+    ],
+  },
   set_provider_config: objectSchema(
     {
       provider_id: providerId,
