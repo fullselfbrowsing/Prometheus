@@ -11,6 +11,65 @@ export const FIXTURE_MODEL_ID = 'phase20-fixture-model';
 export const FIXTURE_PROVIDER_TEXT = 'Phase 20 fixture provider result';
 export const FIXTURE_PROVIDER_TOOL = 'read_page';
 export const MAX_FIXTURE_PROVIDER_REQUEST_BYTES = 128 * 1024;
+export const MAX_FIXTURE_PROVIDER_DELAY_MS = 15_000;
+
+const integerProperty = (minimum, maximum) => ({
+  type: 'integer',
+  minimum,
+  maximum,
+});
+const stringProperty = (maxLength, allowEmpty = false) => ({
+  type: 'string',
+  ...(allowEmpty ? {} : { minLength: 1 }),
+  maxLength,
+});
+const objectSchema = (properties, required = []) => ({
+  type: 'object',
+  properties,
+  required,
+  additionalProperties: false,
+});
+const providerTool = (name, properties, required) => ({
+  type: 'function',
+  name,
+  description: 'Closed browser-owned page operation',
+  parameters: objectSchema(properties, required),
+  strict: true,
+});
+const elementRef = () => stringProperty(4_096);
+
+export const FIXTURE_PROVIDER_TOOLS = Object.freeze([
+  providerTool('read_page', {
+    max_chars: integerProperty(1, 200_000),
+    max_nodes: integerProperty(1, 10_000),
+    compact: { type: 'boolean' },
+  }),
+  providerTool('get_page_snapshot', {
+    max_chars: integerProperty(1, 200_000),
+    max_nodes: integerProperty(1, 10_000),
+    compact: { type: 'boolean' },
+  }),
+  providerTool('click', { element_ref: elementRef() }, ['element_ref']),
+  providerTool('type_text', {
+    element_ref: elementRef(),
+    text: stringProperty(20_000, true),
+  }, ['element_ref', 'text']),
+  providerTool('press_key', {
+    element_ref: elementRef(),
+    key: stringProperty(128),
+  }, ['element_ref', 'key']),
+  providerTool('scroll', {
+    element_ref: elementRef(),
+    scroll_delta_x: integerProperty(-2_147_483_648, 2_147_483_647),
+    scroll_delta_y: integerProperty(-2_147_483_648, 2_147_483_647),
+  }, ['element_ref', 'scroll_delta_y']),
+  providerTool('hover', { element_ref: elementRef() }, ['element_ref']),
+  providerTool('select_option', {
+    element_ref: elementRef(),
+    option_value: stringProperty(4_096),
+  }, ['element_ref', 'option_value']),
+  providerTool('clear', { element_ref: elementRef() }, ['element_ref']),
+]);
 
 const PAGE = `<!doctype html>
 <html lang="en">
@@ -75,6 +134,17 @@ const hasExactKeys = (value, keys) => {
     && actual.every((key, index) => key === expected[index]);
 };
 
+const canonicalJson = (value) => {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.keys(value).sort().map((key) => [key, canonicalJson(value[key])]),
+  );
+};
+
+const isExactJson = (actual, expected) => JSON.stringify(canonicalJson(actual))
+  === JSON.stringify(canonicalJson(expected));
+
 const isBoundedString = (value, maxBytes, allowEmpty = true) =>
   typeof value === 'string'
   && (allowEmpty || value.length > 0)
@@ -102,27 +172,10 @@ const isFixtureProviderRequest = (value) => {
       || !hasExactKeys(value.input[0], ['content', 'role'])
       || value.input[0].role !== 'user'
       || !isBoundedString(value.input[0].content, 64 * 1024, false)
-      || !Array.isArray(value.tools)
-      || value.tools.length !== 1) {
+      || !isExactJson(value.tools, FIXTURE_PROVIDER_TOOLS)) {
     return false;
   }
-  const [tool] = value.tools;
-  return hasExactKeys(tool, [
-    'description',
-    'name',
-    'parameters',
-    'strict',
-    'type',
-  ])
-    && tool.type === 'function'
-    && tool.name === FIXTURE_PROVIDER_TOOL
-    && tool.strict === true
-    && isBoundedString(tool.description, 4_096, false)
-    && hasExactKeys(tool.parameters, ['additionalProperties', 'properties', 'type'])
-    && tool.parameters.type === 'object'
-    && tool.parameters.additionalProperties === false
-    && isRecord(tool.parameters.properties)
-    && Object.keys(tool.parameters.properties).length === 0;
+  return true;
 };
 
 const readBoundedRequest = async (request) => {
@@ -154,10 +207,16 @@ const send = (response, status, contentType, body) => {
 export const startFixtureServer = async ({
   host = '127.0.0.1',
   port = 0,
+  providerDelayMs = 0,
 } = {}) => {
   if (!['127.0.0.1', '::1'].includes(host)
       || !Number.isInteger(port) || port < 0 || port > 65_535) {
     throw new TypeError('Fixture server requires a loopback port.');
+  }
+  if (!Number.isInteger(providerDelayMs)
+      || providerDelayMs < 0
+      || providerDelayMs > MAX_FIXTURE_PROVIDER_DELAY_MS) {
+    throw new TypeError('Fixture server requires a bounded provider delay.');
   }
   const server = http.createServer((request, response) => {
     void (async () => {
@@ -219,6 +278,10 @@ export const startFixtureServer = async ({
           send(response, 400, 'text/plain; charset=utf-8', 'invalid request\n');
           return;
         }
+        if (providerDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, providerDelayMs));
+        }
+        if (response.destroyed) return;
         send(response, 200, 'application/json; charset=utf-8', PROVIDER_RESPONSE);
         return;
       }
@@ -281,6 +344,9 @@ if (isMain) {
     try {
       const fixture = await startFixtureServer({
         host: process.env.PROMETHEUS_MCP_FIXTURE_HOST ?? '127.0.0.1',
+        providerDelayMs: Number(
+          process.env.PROMETHEUS_MCP_FIXTURE_PROVIDER_DELAY_MS ?? '0',
+        ),
       });
       const handle = await open(readyFile, 'wx', 0o600);
       try {

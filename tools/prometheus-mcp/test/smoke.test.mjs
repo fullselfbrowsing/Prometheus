@@ -10,6 +10,7 @@ import {
   FIXTURE_PAGE_TEXT,
   FIXTURE_PROVIDER_TEXT,
   FIXTURE_PROVIDER_TOOL,
+  FIXTURE_PROVIDER_TOOLS,
   MAX_FIXTURE_PROVIDER_REQUEST_BYTES,
   startFixtureServer,
 } from './fixture-server.mjs';
@@ -98,17 +99,7 @@ test('fixture server exposes only bounded deterministic provider routes', async 
     max_output_tokens: 128,
     instructions: 'Use the closed fixture tool.',
     input: [{ role: 'user', content: 'Read the bounded fixture page.' }],
-    tools: [{
-      type: 'function',
-      name: FIXTURE_PROVIDER_TOOL,
-      description: 'Read the fixture page.',
-      parameters: {
-        type: 'object',
-        properties: {},
-        additionalProperties: false,
-      },
-      strict: true,
-    }],
+    tools: FIXTURE_PROVIDER_TOOLS,
   };
   try {
     const models = await fetch(new URL('/v1/models', fixture.origin));
@@ -121,6 +112,20 @@ test('fixture server exposes only bounded deterministic provider routes', async 
       body: JSON.stringify(providerRequest),
     });
     assert.equal(response.status, 200);
+    assert.deepEqual(
+      FIXTURE_PROVIDER_TOOLS.map(({ name }) => name),
+      [
+        'read_page',
+        'get_page_snapshot',
+        'click',
+        'type_text',
+        'press_key',
+        'scroll',
+        'hover',
+        'select_option',
+        'clear',
+      ],
+    );
     const result = await response.json();
     assert.equal(result.status, 'completed');
     assert.deepEqual(result.usage, { input_tokens: 7, output_tokens: 3 });
@@ -146,6 +151,14 @@ test('fixture server exposes only bounded deterministic provider routes', async 
       fetch(new URL('/v1/responses', fixture.origin), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...providerRequest,
+          tools: providerRequest.tools.slice(0, 1),
+        }),
+      }),
+      fetch(new URL('/v1/responses', fixture.origin), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: 'x'.repeat(MAX_FIXTURE_PROVIDER_REQUEST_BYTES + 1),
       }),
       fetch(new URL('/v1/unknown', fixture.origin)),
@@ -153,7 +166,7 @@ test('fixture server exposes only bounded deterministic provider routes', async 
     ]);
     assert.deepEqual(
       rejected.map(({ status }) => status),
-      [405, 405, 400, 413, 404, 404],
+      [405, 405, 400, 400, 413, 404, 404],
     );
   } finally {
     await fixture.close();
@@ -354,6 +367,7 @@ test('shell live gate pins the built app, descriptor mode, deadlines, and proces
   assert.match(shell, /provider-bootstrap\.json/u);
   assert.match(shell, /phase20-smoke-local/u);
   assert.match(shell, /phase20-fixture-model/u);
+  assert.match(shell, /PROMETHEUS_MCP_FIXTURE_PROVIDER_DELAY_MS=5000/u);
   assert.match(shell, /kind: 'lm_studio'/u);
   assert.match(shell, /route: 'local'/u);
   assert.match(shell, /fs\.openSync\(bootstrapFile, 'wx', 0o600\)/u);
