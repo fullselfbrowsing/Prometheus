@@ -607,8 +607,8 @@ rg -q '\[83/83\]' "${LOG_DIR}/phase20-regression-browser-tests.log" \
 
 cd "${ROOT_DIR}"
 run_logged phase20-node-tap node --test tools/prometheus-mcp/test/*.test.mjs
-rg -q '^(#|ℹ) tests 74$' "${LOG_DIR}/phase20-node-tap.log" \
-  || fail 'Node TAP count was not exactly 74'
+rg -q '^(#|ℹ) tests 75$' "${LOG_DIR}/phase20-node-tap.log" \
+  || fail 'Node TAP count was not exactly 75'
 for field in fail cancelled skipped todo; do
   rg -q "^(#|ℹ) ${field} 0$" "${LOG_DIR}/phase20-node-tap.log" \
     || fail "Node TAP ${field} count is not zero"

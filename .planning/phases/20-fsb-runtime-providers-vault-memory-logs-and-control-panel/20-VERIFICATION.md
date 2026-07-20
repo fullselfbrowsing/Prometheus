@@ -38,7 +38,7 @@ documentation checks pass.
 | Phase 17-19 native regressions | 84/84 |
 | Phase 20 browser fixtures | 36/36 serial across MCP integration, vault confirmation, and control panel |
 | Phase 17-19 browser regressions | 83/83 serial across gateway, profile/service, page/frame/action, tab commands, and WebUI foundation |
-| Node MCP tests | 74/74 with exact fail `0`, cancelled `0`, skipped `0`, todo `0` |
+| Node MCP tests | 75/75 with exact fail `0`, cancelled `0`, skipped `0`, todo `0` |
 | Built-app external MCP smoke | passed against the built Prometheus app and deterministic loopback fixture |
 | Corpus | exactly 32; groups `6/5/5/5/4/4/3`; 28 real provider loops across OpenAI Responses, OpenAI Chat, Anthropic Messages, and Gemini generateContent |
 | Compatibility catalog | exactly 49 native, 12 alias, 22 typed stub, five Phase 21, two removed |

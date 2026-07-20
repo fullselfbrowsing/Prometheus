@@ -166,7 +166,7 @@ compileable fixture scaffolding, proves the intended behavior fails, and guards
 ## Final Gate Checklist
 
 - [x] every owned native, renderer, and browser object compiles directly; the app runtime and focused/custom links verify; reviewed Ninja metadata remains byte-identical. The aggregate unit link limitation is recorded without a pass claim.
-- [x] all 74 Node tests pass with zero failures/skips/TODOs/cancellations
+- [x] all 75 Node tests pass with zero failures/skips/TODOs/cancellations
 - [x] all 226 focused Phase 20 native/content/renderer units pass (`202 + 24`)
 - [x] all 36 Phase 20 browser tests pass serially
 - [x] 84 Phase 17-19 native and 83 Phase 17-19 browser/MCP regressions pass
@@ -194,7 +194,7 @@ entrypoint. It writes fresh secret-free logs below
 | Phase 17-19 native regressions | 84/84 | `phase20-regression-native-units.log` |
 | Phase 20 MCP/vault/control browser fixtures | 36/36 serial | `phase20-browser-tests.log` |
 | Phase 17-19 browser regressions | 83/83 serial | `phase20-regression-browser-tests.log` |
-| Node MCP suite | 74/74; fail/cancelled/skipped/todo all zero | `phase20-node-tap.log` |
+| Node MCP suite | 75/75; fail/cancelled/skipped/todo all zero | `phase20-node-tap.log` |
 | Built-app external MCP smoke | passed with mode-0600 test bootstrap and loopback fixture | `phase20-built-smoke.log` |
 | Corpus/catalog | 32 cases, groups `6/5/5/5/4/4/3`, 28 real loops across four families; catalog `49/12/22/5/2` | `phase20-inventory.log` |
 | Environment/security/preservation/patch/diff | passed | `phase20-environment.log`, `phase20-static-boundaries.log`, `phase20-preservation.log`, `phase20-patches.log` |
