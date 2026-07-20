@@ -1,0 +1,282 @@
+From f7318871dba9b8ac836b1bfe4f7af8f0a31a8052 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 20 Jul 2026 12:31:24 -0500
+Subject: [PATCH] fix(20): CR-02 revalidate automatic provider fallback
+
+---
+ .../prometheus_runtime_profile_service.cc     | 100 +++++++++++++++-
+ .../prometheus_runtime_profile_service.h      |   1 +
+ ...etheus_runtime_profile_service_unittest.cc | 108 ++++++++++++++++++
+ 3 files changed, 205 insertions(+), 4 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+index 79b0b5a7ef..eabda595cc 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+@@ -794,8 +794,8 @@ void PrometheusRuntimeProfileService::StartAutomaticProviderTurn(
+       task->second.provider.provider_id, std::move(transport_request),
+       base::BindOnce(
+           &PrometheusRuntimeProfileService::OnAutomaticProviderTurnComplete,
+-          weak_factory_.GetWeakPtr(), task_id, callback_generation,
+-          immediate_result, std::move(request)));
++          weak_factory_.GetWeakPtr(), task_id, task->second.generation,
++          callback_generation, immediate_result, std::move(request)));
+   task = tasks_.find(task_id);
+   if (task != tasks_.end() && !task->second.finished &&
+       task->second.callback_generation == callback_generation &&
+@@ -812,6 +812,7 @@ void PrometheusRuntimeProfileService::StartAutomaticProviderTurn(
+ 
+ void PrometheusRuntimeProfileService::OnAutomaticProviderTurnComplete(
+     std::string task_id,
++    uint64_t task_generation,
+     uint64_t callback_generation,
+     std::shared_ptr<std::optional<RuntimeOperationResult>> immediate_result,
+     ProviderTurnRequest request,
+@@ -825,6 +826,96 @@ void PrometheusRuntimeProfileService::OnAutomaticProviderTurnComplete(
+ 
+   if (!result.ok() && IsRetryableProviderFailure(result.failure) &&
+       !task->second.mutation_started && hooks_.execute_provider_turn) {
++    if (task->second.generation != task_generation) {
++      FinishTaskOnce(task_id, task->second.generation,
++                     RuntimeCompletionSource::kProvider, {}, {},
++                     RuntimeErrorCode::kInvalidTransition);
++      *immediate_result = RuntimeOperationResult{
++          .status = RuntimeProfileStatus::kInvalidRequest,
++          .recovery = "Refresh the task snapshot and retry",
++      };
++      return;
++    }
++
++    const RuntimePolicy policy = ReadEffectivePolicy();
++    const RuntimeProfileStatus authority_status =
++        ValidateAuthority(task->second.authority);
++    if (authority_status != RuntimeProfileStatus::kOk) {
++      const std::string lost_session_id =
++          task->second.authority.agent_session_id;
++      HandleAgentSessionLost(lost_session_id);
++      *immediate_result = RuntimeOperationResult{
++          .status = authority_status,
++          .recovery = kAuthorityRecovery,
++      };
++      return;
++    }
++
++    const size_t competing_task_count = std::ranges::count_if(
++        tasks_, [&task_id](const auto& item) {
++          return item.first != task_id && !item.second.finished;
++        });
++    const RuntimePolicyDecision admission =
++        EvaluateRuntimeTaskAdmission(policy, competing_task_count);
++    const RuntimePolicyDecision dispatch = EvaluateRuntimeDispatch(
++        policy, /*internal_surface=*/false, /*background_action=*/false,
++        /*target_owned=*/true);
++    if (!IsRuntimePolicyDecisionAllowed(admission) ||
++        !IsRuntimePolicyDecisionAllowed(dispatch)) {
++      RuntimeOperationResult operation;
++      const RuntimePolicyDecision denial =
++          IsRuntimePolicyDecisionAllowed(admission) ? dispatch : admission;
++      operation.status = PolicyDenial(denial, &operation.recovery);
++      EmitTelemetryIfEnabled(policy, RuntimeTelemetryEventKind::kPolicyDenial);
++      FinishTaskOnce(task_id, task->second.generation,
++                     RuntimeCompletionSource::kProvider, {}, {},
++                     RuntimeErrorCode::kPolicyBlocked);
++      *immediate_result = std::move(operation);
++      return;
++    }
++
++    const int64_t now_ms = hooks_.now_ms ? hooks_.now_ms.Run() : 0;
++    if (task->second.turn_count >
++            static_cast<size_t>(policy.limits.max_turns) ||
++        now_ms < task->second.started_at_ms ||
++        now_ms - task->second.started_at_ms >
++            policy.limits.max_duration_ms) {
++      FinishTaskOnce(task_id, task->second.generation,
++                     RuntimeCompletionSource::kTimeout, {},
++                     task->second.snapshot.usage);
++      *immediate_result = RuntimeOperationResult{
++          .status = RuntimeProfileStatus::kTimeout,
++          .recovery = "The bounded task duration or turn cap was reached",
++      };
++      return;
++    }
++    if (request.user_text.size() >
++        static_cast<size_t>(policy.limits.max_prompt_bytes)) {
++      FinishTaskOnce(task_id, task->second.generation,
++                     RuntimeCompletionSource::kProvider, {}, {},
++                     RuntimeErrorCode::kRequestTooLarge);
++      *immediate_result = RuntimeOperationResult{
++          .status = RuntimeProfileStatus::kRequestTooLarge,
++          .recovery = "Shorten the task prompt and retry",
++      };
++      return;
++    }
++    const int64_t used_tokens = task->second.snapshot.usage.input_tokens +
++                                task->second.snapshot.usage.output_tokens;
++    const int64_t remaining_tokens =
++        policy.limits.max_total_tokens - used_tokens;
++    if (remaining_tokens <= 0) {
++      FinishTaskOnce(task_id, task->second.generation,
++                     RuntimeCompletionSource::kProvider, {},
++                     task->second.snapshot.usage,
++                     RuntimeErrorCode::kProviderInvalidResponse);
++      *immediate_result = RuntimeOperationResult{
++          .status = RuntimeProfileStatus::kProviderUnavailable,
++          .recovery = kProviderUnavailableRecovery,
++      };
++      return;
++    }
++
+     const std::vector<PrometheusProviderConfig> fresh_providers =
+         hooks_.list_providers ? hooks_.list_providers.Run()
+                               : std::vector<PrometheusProviderConfig>();
+@@ -849,13 +940,14 @@ void PrometheusRuntimeProfileService::OnAutomaticProviderTurnComplete(
+       request.family = candidate.family;
+       request.use_responses_api = candidate.capabilities.responses_api;
+       request.model = candidate.model_id;
++      request.max_output_tokens = std::min<int64_t>(1024, remaining_tokens);
+       ProviderTurnRequest transport_request = CloneProviderTurnRequest(request);
+       const uint64_t provider_operation_id = hooks_.execute_provider_turn.Run(
+           candidate.provider_id, std::move(transport_request),
+           base::BindOnce(
+               &PrometheusRuntimeProfileService::OnAutomaticProviderTurnComplete,
+-              weak_factory_.GetWeakPtr(), task_id, callback_generation,
+-              immediate_result, std::move(request)));
++              weak_factory_.GetWeakPtr(), task_id, task_generation,
++              callback_generation, immediate_result, std::move(request)));
+       task = tasks_.find(task_id);
+       if (task != tasks_.end() && !task->second.finished &&
+           task->second.callback_generation == callback_generation &&
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.h b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+index 9046318bd2..e2a8311f18 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+@@ -458,6 +458,7 @@ class PrometheusRuntimeProfileService
+   void StartAutomaticProviderTurn(std::string task_id, std::string user_text);
+   void OnAutomaticProviderTurnComplete(
+       std::string task_id,
++      uint64_t task_generation,
+       uint64_t callback_generation,
+       std::shared_ptr<std::optional<RuntimeOperationResult>> immediate_result,
+       ProviderTurnRequest request,
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+index 385b14a188..e3eb1a3b3b 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+@@ -889,6 +889,114 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+   EXPECT_EQ(0, boundaries_.execute_route_count);
+ }
+ 
++TEST_F(PrometheusRuntimeProfileServiceTest,
++       AutomaticFallbackRevalidatesRevokedSessionBeforeSendingRawPrompt) {
++  service_.reset();
++  const std::vector<PrometheusProviderConfig> providers = {
++      MakeProvider("primary", PrometheusProviderRouteClass::kHosted, 0),
++      MakeProvider("fallback", PrometheusProviderRouteClass::kHosted, 1)};
++  boundaries_.providers_override = providers;
++  boundaries_.fallback_order_override = providers;
++  boundaries_.defer_provider_turn = true;
++  RuntimeProfileHooks hooks = boundaries_.MakeHooks();
++  hooks.expected_caller_id = "caller-1";
++  hooks.expected_browser = browser();
++  hooks.expected_stable_tab_id = 7;
++  hooks.auto_start_tasks = true;
++  service_ =
++      std::make_unique<PrometheusRuntimeProfileService>(std::move(hooks));
++
++  ASSERT_EQ(RuntimeProfileStatus::kOk, service_->SubmitTask(Request()).status);
++  ASSERT_EQ(std::vector<std::string>({"primary"}), boundaries_.provider_ids);
++  ASSERT_EQ(1u, boundaries_.provider_requests.size());
++  EXPECT_EQ("Open the page and summarize it",
++            boundaries_.provider_requests.front().user_text);
++
++  boundaries_.session_is_valid = false;
++  boundaries_.policy.limits.max_prompt_bytes = 4;
++  ASSERT_TRUE(boundaries_.CompleteProviderTurn(
++      1, ProviderFailure(ProviderFailureKind::kNetwork)));
++
++  EXPECT_EQ(std::vector<std::string>({"primary"}), boundaries_.provider_ids);
++  EXPECT_EQ(1u, boundaries_.provider_requests.size());
++  const std::optional<RuntimeTaskSnapshot> task = service_->GetTask("task-1");
++  ASSERT_TRUE(task);
++  EXPECT_EQ(RuntimeTaskState::kCancelled, task->state);
++  EXPECT_EQ(RuntimeErrorCode::kCancelled, task->error_code);
++  EXPECT_EQ(1u, service_->finish_count_for_testing("task-1"));
++  EXPECT_EQ(0u, service_->active_session_count_for_testing());
++
++  service_->HandleAgentSessionLost("browser-issued-session");
++  EXPECT_EQ(1u, service_->finish_count_for_testing("task-1"));
++}
++
++TEST_F(PrometheusRuntimeProfileServiceTest,
++       AutomaticFallbackRevalidatesCurrentPromptLimit) {
++  service_.reset();
++  const std::vector<PrometheusProviderConfig> providers = {
++      MakeProvider("primary", PrometheusProviderRouteClass::kHosted, 0),
++      MakeProvider("fallback", PrometheusProviderRouteClass::kHosted, 1)};
++  boundaries_.providers_override = providers;
++  boundaries_.fallback_order_override = providers;
++  boundaries_.defer_provider_turn = true;
++  RuntimeProfileHooks hooks = boundaries_.MakeHooks();
++  hooks.expected_caller_id = "caller-1";
++  hooks.expected_browser = browser();
++  hooks.expected_stable_tab_id = 7;
++  hooks.auto_start_tasks = true;
++  service_ =
++      std::make_unique<PrometheusRuntimeProfileService>(std::move(hooks));
++
++  ASSERT_EQ(RuntimeProfileStatus::kOk, service_->SubmitTask(Request()).status);
++  boundaries_.policy.limits.max_prompt_bytes = 4;
++  ASSERT_TRUE(boundaries_.CompleteProviderTurn(
++      1, ProviderFailure(ProviderFailureKind::kServer)));
++
++  EXPECT_EQ(std::vector<std::string>({"primary"}), boundaries_.provider_ids);
++  EXPECT_EQ(1u, boundaries_.provider_requests.size());
++  const std::optional<RuntimeTaskSnapshot> task = service_->GetTask("task-1");
++  ASSERT_TRUE(task);
++  EXPECT_EQ(RuntimeTaskState::kFailed, task->state);
++  EXPECT_EQ(RuntimeErrorCode::kRequestTooLarge, task->error_code);
++  EXPECT_EQ(1u, service_->finish_count_for_testing("task-1"));
++}
++
++TEST_F(PrometheusRuntimeProfileServiceTest,
++       AutomaticFallbackRequiresUnchangedProviderConfiguration) {
++  service_.reset();
++  const PrometheusProviderConfig primary =
++      MakeProvider("primary", PrometheusProviderRouteClass::kHosted, 0);
++  PrometheusProviderConfig fallback =
++      MakeProvider("fallback", PrometheusProviderRouteClass::kHosted, 1);
++  fallback.canonical_endpoint = "https://first.example.test/v1";
++  boundaries_.providers_override =
++      std::vector<PrometheusProviderConfig>{primary, fallback};
++  boundaries_.fallback_order_override = boundaries_.providers_override;
++  boundaries_.defer_provider_turn = true;
++  RuntimeProfileHooks hooks = boundaries_.MakeHooks();
++  hooks.expected_caller_id = "caller-1";
++  hooks.expected_browser = browser();
++  hooks.expected_stable_tab_id = 7;
++  hooks.auto_start_tasks = true;
++  service_ =
++      std::make_unique<PrometheusRuntimeProfileService>(std::move(hooks));
++
++  ASSERT_EQ(RuntimeProfileStatus::kOk, service_->SubmitTask(Request()).status);
++  fallback.canonical_endpoint = "https://changed.example.test/v1";
++  boundaries_.providers_override =
++      std::vector<PrometheusProviderConfig>{primary, fallback};
++  ASSERT_TRUE(boundaries_.CompleteProviderTurn(
++      1, ProviderFailure(ProviderFailureKind::kServer)));
++
++  EXPECT_EQ(std::vector<std::string>({"primary"}), boundaries_.provider_ids);
++  EXPECT_EQ(1u, boundaries_.provider_requests.size());
++  const std::optional<RuntimeTaskSnapshot> task = service_->GetTask("task-1");
++  ASSERT_TRUE(task);
++  EXPECT_EQ(RuntimeTaskState::kFailed, task->state);
++  EXPECT_EQ(RuntimeErrorCode::kProviderUnavailable, task->error_code);
++  EXPECT_EQ(1u, service_->finish_count_for_testing("task-1"));
++}
++
+ TEST_F(PrometheusRuntimeProfileServiceTest,
+        TaskAdmissionDoesNotReapplyTheAgentSessionCap) {
+   boundaries_.policy.limits.max_concurrent_tasks = 1;
+-- 
+2.50.1 (Apple Git-155)
+
