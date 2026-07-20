@@ -1,0 +1,461 @@
+From e74b8d647f4a6a03f5f50d733071560e466c9907 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 20 Jul 2026 07:35:22 -0500
+Subject: [PATCH] fix(20): WR-04 validate provider tool arguments
+
+---
+ .../prometheus/prometheus_provider_codec.cc   | 254 +++++++++++++++++-
+ .../prometheus_provider_codec_unittest.cc     | 110 ++++++++
+ 2 files changed, 358 insertions(+), 6 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_provider_codec.cc b/chrome/browser/prometheus/prometheus_provider_codec.cc
+index 0068de7dc3..ed9c9b95c4 100644
+--- a/chrome/browser/prometheus/prometheus_provider_codec.cc
++++ b/chrome/browser/prometheus/prometheus_provider_codec.cc
+@@ -5,6 +5,7 @@
+ #include "chrome/browser/prometheus/prometheus_provider_codec.h"
+ 
+ #include <algorithm>
++#include <initializer_list>
+ #include <set>
+ #include <string>
+ #include <string_view>
+@@ -21,6 +22,7 @@ namespace prometheus {
+ namespace {
+ 
+ constexpr size_t kMaxProviderToolDescriptionBytes = 16 * 1024;
++constexpr size_t kMaxProviderToolSchemaDepth = 16;
+ constexpr char kRedactedCredential[] = "[REDACTED]";
+ 
+ class ScopedResponseBodyWiper {
+@@ -92,10 +94,124 @@ bool IsValidToolName(std::string_view name) {
+   });
+ }
+ 
++bool HasOnlySchemaKeywords(const base::DictValue& schema,
++                           std::initializer_list<std::string_view> allowed) {
++  for (const auto [key, ignored] : schema) {
++    static_cast<void>(ignored);
++    if (std::find(allowed.begin(), allowed.end(), key) == allowed.end()) {
++      return false;
++    }
++  }
++  return true;
++}
++
++bool HasValidSchemaDescription(const base::DictValue& schema) {
++  const base::Value* description = schema.Find("description");
++  return !description ||
++         (description->is_string() &&
++          description->GetString().size() <= kMaxProviderToolDescriptionBytes &&
++          base::IsStringUTF8(description->GetString()));
++}
++
++bool HasValidNonNegativeBounds(const base::DictValue& schema,
++                               std::string_view minimum_key,
++                               std::string_view maximum_key) {
++  std::optional<int> minimum = schema.FindInt(minimum_key);
++  std::optional<int> maximum = schema.FindInt(maximum_key);
++  if ((schema.contains(minimum_key) && !minimum) ||
++      (schema.contains(maximum_key) && !maximum) || (minimum && *minimum < 0) ||
++      (maximum && *maximum < 0) ||
++      (minimum && maximum && *minimum > *maximum)) {
++    return false;
++  }
++  return true;
++}
++
++bool IsValidToolSchemaNode(const base::DictValue& schema, size_t depth) {
++  if (depth > kMaxProviderToolSchemaDepth ||
++      !HasValidSchemaDescription(schema)) {
++    return false;
++  }
++  const std::string* type = schema.FindString("type");
++  if (!type) {
++    return false;
++  }
++
++  if (*type == "object") {
++    if (!HasOnlySchemaKeywords(schema, {"type", "description", "properties",
++                                        "required", "additionalProperties"}) ||
++        schema.FindBool("additionalProperties") != false) {
++      return false;
++    }
++    const base::Value* properties_value = schema.Find("properties");
++    if (properties_value && !properties_value->is_dict()) {
++      return false;
++    }
++    const base::DictValue* properties = schema.FindDict("properties");
++    if (properties) {
++      for (const auto [name, property] : *properties) {
++        if (name.empty() || name.size() > kMaxProviderToolNameBytes ||
++            !property.is_dict() ||
++            !IsValidToolSchemaNode(property.GetDict(), depth + 1)) {
++          return false;
++        }
++      }
++    }
++    const base::Value* required_value = schema.Find("required");
++    if (required_value && !required_value->is_list()) {
++      return false;
++    }
++    std::set<std::string> required_names;
++    if (const base::ListValue* required = schema.FindList("required")) {
++      for (const base::Value& entry : *required) {
++        if (!entry.is_string() ||
++            !required_names.insert(entry.GetString()).second || !properties ||
++            !properties->contains(entry.GetString())) {
++          return false;
++        }
++      }
++    }
++    return true;
++  }
++
++  if (*type == "array") {
++    if (!HasOnlySchemaKeywords(
++            schema, {"type", "description", "items", "minItems", "maxItems"}) ||
++        !HasValidNonNegativeBounds(schema, "minItems", "maxItems")) {
++      return false;
++    }
++    const base::DictValue* items = schema.FindDict("items");
++    return items && IsValidToolSchemaNode(*items, depth + 1);
++  }
++
++  if (*type == "string") {
++    return HasOnlySchemaKeywords(
++               schema, {"type", "description", "minLength", "maxLength"}) &&
++           HasValidNonNegativeBounds(schema, "minLength", "maxLength");
++  }
++
++  if (*type == "integer") {
++    if (!HasOnlySchemaKeywords(schema,
++                               {"type", "description", "minimum", "maximum"})) {
++      return false;
++    }
++    std::optional<int> minimum = schema.FindInt("minimum");
++    std::optional<int> maximum = schema.FindInt("maximum");
++    return !(schema.contains("minimum") && !minimum) &&
++           !(schema.contains("maximum") && !maximum) &&
++           !(minimum && maximum && *minimum > *maximum);
++  }
++
++  if (*type == "boolean") {
++    return HasOnlySchemaKeywords(schema, {"type", "description"});
++  }
++  return false;
++}
++
+ bool IsValidToolSchema(const base::DictValue& schema) {
+   const std::string* type = schema.FindString("type");
+   if (!type || *type != "object" ||
+-      schema.FindBool("additionalProperties") != false) {
++      !IsValidToolSchemaNode(schema, /*depth=*/0)) {
+     return false;
+   }
+   std::string encoded;
+@@ -103,6 +219,112 @@ bool IsValidToolSchema(const base::DictValue& schema) {
+          encoded.size() <= kMaxProviderToolArgumentsBytes;
+ }
+ 
++enum class ToolArgumentValidation {
++  kValid,
++  kInvalid,
++  kBounds,
++};
++
++ToolArgumentValidation ValidateValueAgainstSchema(const base::Value& value,
++                                                  const base::DictValue& schema,
++                                                  size_t depth);
++
++ToolArgumentValidation ValidateObjectAgainstSchema(
++    const base::DictValue& value,
++    const base::DictValue& schema,
++    size_t depth) {
++  if (depth > kMaxProviderToolSchemaDepth) {
++    return ToolArgumentValidation::kInvalid;
++  }
++  const base::DictValue* properties = schema.FindDict("properties");
++  for (const auto [name, member] : value) {
++    const base::Value* property = properties ? properties->Find(name) : nullptr;
++    if (!property || !property->is_dict()) {
++      return ToolArgumentValidation::kInvalid;
++    }
++    ToolArgumentValidation validation =
++        ValidateValueAgainstSchema(member, property->GetDict(), depth + 1);
++    if (validation != ToolArgumentValidation::kValid) {
++      return validation;
++    }
++  }
++  if (const base::ListValue* required = schema.FindList("required")) {
++    for (const base::Value& entry : *required) {
++      if (!value.contains(entry.GetString())) {
++        return ToolArgumentValidation::kInvalid;
++      }
++    }
++  }
++  return ToolArgumentValidation::kValid;
++}
++
++ToolArgumentValidation ValidateValueAgainstSchema(const base::Value& value,
++                                                  const base::DictValue& schema,
++                                                  size_t depth) {
++  if (depth > kMaxProviderToolSchemaDepth) {
++    return ToolArgumentValidation::kInvalid;
++  }
++  const std::string* type = schema.FindString("type");
++  if (!type) {
++    return ToolArgumentValidation::kInvalid;
++  }
++  if (*type == "object") {
++    return value.is_dict()
++               ? ValidateObjectAgainstSchema(value.GetDict(), schema, depth)
++               : ToolArgumentValidation::kInvalid;
++  }
++  if (*type == "array") {
++    if (!value.is_list()) {
++      return ToolArgumentValidation::kInvalid;
++    }
++    const base::ListValue& list = value.GetList();
++    std::optional<int> minimum = schema.FindInt("minItems");
++    std::optional<int> maximum = schema.FindInt("maxItems");
++    if ((minimum && list.size() < static_cast<size_t>(*minimum)) ||
++        (maximum && list.size() > static_cast<size_t>(*maximum))) {
++      return ToolArgumentValidation::kBounds;
++    }
++    const base::DictValue* items = schema.FindDict("items");
++    for (const base::Value& item : list) {
++      ToolArgumentValidation validation =
++          ValidateValueAgainstSchema(item, *items, depth + 1);
++      if (validation != ToolArgumentValidation::kValid) {
++        return validation;
++      }
++    }
++    return ToolArgumentValidation::kValid;
++  }
++  if (*type == "string") {
++    if (!value.is_string() || !base::IsStringUTF8(value.GetString())) {
++      return ToolArgumentValidation::kInvalid;
++    }
++    std::optional<int> minimum = schema.FindInt("minLength");
++    std::optional<int> maximum = schema.FindInt("maxLength");
++    if ((minimum && value.GetString().size() < static_cast<size_t>(*minimum)) ||
++        (maximum && value.GetString().size() > static_cast<size_t>(*maximum))) {
++      return ToolArgumentValidation::kBounds;
++    }
++    return ToolArgumentValidation::kValid;
++  }
++  if (*type == "integer") {
++    if (!value.is_int()) {
++      return ToolArgumentValidation::kInvalid;
++    }
++    std::optional<int> minimum = schema.FindInt("minimum");
++    std::optional<int> maximum = schema.FindInt("maximum");
++    if ((minimum && value.GetInt() < *minimum) ||
++        (maximum && value.GetInt() > *maximum)) {
++      return ToolArgumentValidation::kBounds;
++    }
++    return ToolArgumentValidation::kValid;
++  }
++  if (*type == "boolean") {
++    return value.is_bool() ? ToolArgumentValidation::kValid
++                           : ToolArgumentValidation::kInvalid;
++  }
++  return ToolArgumentValidation::kInvalid;
++}
++
+ bool IsValidRequest(const ProviderTurnRequest& request) {
+   if (!IsKnownFamily(request.family) ||
+       (request.use_responses_api &&
+@@ -296,10 +518,20 @@ ProviderFailureKind AppendText(std::string_view text, std::string* output) {
+   return ProviderFailureKind::kNone;
+ }
+ 
+-bool HasAdvertisedTool(const ProviderTurnRequest& request,
+-                       std::string_view name) {
+-  return std::ranges::any_of(
+-      request.tools, [&](const auto& tool) { return tool.name == name; });
++const ProviderToolDefinition* FindAdvertisedTool(
++    const ProviderTurnRequest& request,
++    std::string_view name) {
++  const ProviderToolDefinition* match = nullptr;
++  for (const ProviderToolDefinition& tool : request.tools) {
++    if (tool.name != name) {
++      continue;
++    }
++    if (match) {
++      return nullptr;
++    }
++    match = &tool;
++  }
++  return match;
+ }
+ 
+ ProviderFailureKind SetToolCall(const ProviderTurnRequest& request,
+@@ -307,10 +539,12 @@ ProviderFailureKind SetToolCall(const ProviderTurnRequest& request,
+                                 std::string_view name,
+                                 const base::DictValue& arguments,
+                                 ProviderTurnResult* result) {
++  const ProviderToolDefinition* advertised_tool =
++      FindAdvertisedTool(request, name);
+   if (result->tool_call || call_id.empty() ||
+       call_id.size() > kMaxProviderToolCallIdBytes ||
+       !base::IsStringUTF8(call_id) || !IsValidToolName(name) ||
+-      !HasAdvertisedTool(request, name)) {
++      !advertised_tool || !IsValidToolSchema(advertised_tool->input_schema)) {
+     return ProviderFailureKind::kInvalidOutput;
+   }
+   std::string encoded_arguments;
+@@ -320,6 +554,14 @@ ProviderFailureKind SetToolCall(const ProviderTurnRequest& request,
+   if (encoded_arguments.size() > kMaxProviderToolArgumentsBytes) {
+     return ProviderFailureKind::kBounds;
+   }
++  ToolArgumentValidation validation = ValidateObjectAgainstSchema(
++      arguments, advertised_tool->input_schema, /*depth=*/0);
++  if (validation == ToolArgumentValidation::kInvalid) {
++    return ProviderFailureKind::kInvalidOutput;
++  }
++  if (validation == ToolArgumentValidation::kBounds) {
++    return ProviderFailureKind::kBounds;
++  }
+   result->tool_call = ValidatedToolCall{
+       .call_id = std::string(call_id),
+       .name = std::string(name),
+diff --git a/chrome/browser/prometheus/prometheus_provider_codec_unittest.cc b/chrome/browser/prometheus/prometheus_provider_codec_unittest.cc
+index 530f6d49a9..2592ed4a8b 100644
+--- a/chrome/browser/prometheus/prometheus_provider_codec_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_provider_codec_unittest.cc
+@@ -33,6 +33,48 @@ ProviderToolDefinition MakeNavigateTool() {
+   };
+ }
+ 
++ProviderToolDefinition MakeStructuredTool() {
++  base::DictValue label;
++  label.Set("type", "string");
++  label.Set("minLength", 1);
++  label.Set("maxLength", 4);
++  base::DictValue attempts;
++  attempts.Set("type", "integer");
++  attempts.Set("minimum", 0);
++  attempts.Set("maximum", 2);
++  base::DictValue enabled;
++  enabled.Set("type", "boolean");
++
++  base::DictValue options_properties;
++  options_properties.Set("label", std::move(label));
++  options_properties.Set("attempts", std::move(attempts));
++  options_properties.Set("enabled", std::move(enabled));
++  base::ListValue options_required;
++  options_required.Append("label");
++  options_required.Append("attempts");
++  options_required.Append("enabled");
++  base::DictValue options;
++  options.Set("type", "object");
++  options.Set("properties", std::move(options_properties));
++  options.Set("required", std::move(options_required));
++  options.Set("additionalProperties", false);
++
++  base::DictValue properties;
++  properties.Set("options", std::move(options));
++  base::ListValue required;
++  required.Append("options");
++  base::DictValue schema;
++  schema.Set("type", "object");
++  schema.Set("properties", std::move(properties));
++  schema.Set("required", std::move(required));
++  schema.Set("additionalProperties", false);
++  return {
++      .name = "structured",
++      .description = "Exercise a recursively closed tool schema.",
++      .input_schema = std::move(schema),
++  };
++}
++
+ ProviderTurnRequest MakeTurnRequest(PrometheusProviderFamily family,
+                                     bool use_responses_api = false) {
+   ProviderTurnRequest request{
+@@ -47,6 +89,28 @@ ProviderTurnRequest MakeTurnRequest(PrometheusProviderFamily family,
+   return request;
+ }
+ 
++ProviderTurnResult ParseOpenAIResponsesToolArguments(
++    const ProviderTurnRequest& request,
++    std::string arguments) {
++  base::DictValue call;
++  call.Set("type", "function_call");
++  call.Set("call_id", "schema-call");
++  call.Set("name", "structured");
++  call.Set("arguments", std::move(arguments));
++  base::ListValue output;
++  output.Append(std::move(call));
++  base::DictValue usage;
++  usage.Set("input_tokens", 1);
++  usage.Set("output_tokens", 1);
++  base::DictValue root;
++  root.Set("status", "completed");
++  root.Set("output", std::move(output));
++  root.Set("usage", std::move(usage));
++  std::string body;
++  EXPECT_TRUE(base::JSONWriter::Write(root, &body));
++  return ParseProviderTurnResponse(request, std::move(body), "secret");
++}
++
+ base::DictValue ReadEncoded(const std::optional<std::string>& encoded) {
+   EXPECT_TRUE(encoded.has_value());
+   if (!encoded.has_value()) {
+@@ -210,6 +274,52 @@ TEST(PrometheusProviderCodecTest, ParsesOpenAIResponsesClosedFunctionCall) {
+   EXPECT_EQ(result.stop_reason, ProviderStopReason::kToolCall);
+ }
+ 
++TEST(PrometheusProviderCodecTest,
++     ValidatesToolArgumentsAgainstExactAdvertisedClosedSchema) {
++  ProviderTurnRequest request =
++      MakeTurnRequest(PrometheusProviderFamily::kOpenAICompatible, true);
++  request.tools.clear();
++  request.tools.push_back(MakeStructuredTool());
++
++  for (
++      std::string invalid : {
++          R"json({})json",
++          R"json({"options":{"label":"four","attempts":2}})json",
++          R"json({"options":{"label":"four","attempts":2,"enabled":true,"extra":"value"}})json",
++          R"json({"options":{"label":4,"attempts":2,"enabled":true}})json",
++          R"json({"options":{"label":"four","attempts":"2","enabled":true}})json",
++          R"json({"options":{"label":"four","attempts":2,"enabled":"true"}})json",
++      }) {
++    EXPECT_EQ(
++        ParseOpenAIResponsesToolArguments(request, std::move(invalid)).failure,
++        ProviderFailureKind::kInvalidOutput);
++  }
++
++  EXPECT_EQ(
++      ParseOpenAIResponsesToolArguments(
++          request,
++          R"json({"options":{"label":"fives","attempts":2,"enabled":true}})json")
++          .failure,
++      ProviderFailureKind::kBounds);
++  EXPECT_EQ(
++      ParseOpenAIResponsesToolArguments(
++          request,
++          R"json({"options":{"label":"four","attempts":3,"enabled":true}})json")
++          .failure,
++      ProviderFailureKind::kBounds);
++
++  ProviderTurnResult minimum_boundary = ParseOpenAIResponsesToolArguments(
++      request,
++      R"json({"options":{"label":"x","attempts":0,"enabled":false}})json");
++  ASSERT_TRUE(minimum_boundary.ok());
++  ASSERT_TRUE(minimum_boundary.tool_call);
++  ProviderTurnResult maximum_boundary = ParseOpenAIResponsesToolArguments(
++      request,
++      R"json({"options":{"label":"four","attempts":2,"enabled":true}})json");
++  ASSERT_TRUE(maximum_boundary.ok());
++  ASSERT_TRUE(maximum_boundary.tool_call);
++}
++
+ TEST(PrometheusProviderCodecTest, ParsesOpenAIChatClosedFunctionCall) {
+   ProviderTurnRequest request =
+       MakeTurnRequest(PrometheusProviderFamily::kOpenAICompatible, false);
+-- 
+2.50.1 (Apple Git-155)
+
