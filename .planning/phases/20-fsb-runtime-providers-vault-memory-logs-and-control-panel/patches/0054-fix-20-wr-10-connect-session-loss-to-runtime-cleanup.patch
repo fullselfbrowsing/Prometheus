@@ -1,0 +1,558 @@
+From 5632dcef07121bf4c3444cc2da13f222b6a61e91 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 20 Jul 2026 12:47:00 -0500
+Subject: [PATCH] fix(20): WR-10 connect session loss to runtime cleanup
+
+---
+ .../prometheus_agent_profile_service.cc       | 46 +++++++++-
+ .../prometheus_agent_profile_service.h        | 16 ++++
+ .../prometheus/prometheus_agent_session.cc    | 12 +++
+ .../prometheus/prometheus_agent_session.h     |  1 +
+ .../prometheus_agent_session_unittest.cc      | 17 ++++
+ .../prometheus_mcp_integration_browsertest.cc | 87 +++++++++++++++++++
+ .../prometheus_runtime_profile_service.cc     | 46 ++++++++--
+ .../prometheus_runtime_profile_service.h      |  9 +-
+ ...etheus_runtime_profile_service_unittest.cc | 47 +++++++++-
+ 9 files changed, 267 insertions(+), 14 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.cc b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+index d3c5665af6..88a7e01a4a 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+@@ -40,7 +40,9 @@ PrometheusAgentProfileService::PrometheusAgentProfileService(Profile* profile)
+           .max_active_agents));
+ }
+ 
+-PrometheusAgentProfileService::~PrometheusAgentProfileService() = default;
++PrometheusAgentProfileService::~PrometheusAgentProfileService() {
++  Shutdown();
++}
+ 
+ AgentSessionResult PrometheusAgentProfileService::CreateSession(
+     std::string display_label) {
+@@ -63,7 +65,17 @@ AgentRouteResult PrometheusAgentProfileService::TouchSession(
+ AgentRouteResult PrometheusAgentProfileService::CloseSession(
+     std::string_view session_id) {
+   SweepExpiredSessions();
+-  return agent_service_.CloseSession(session_id);
++  AgentRouteResult result = agent_service_.CloseSession(session_id);
++  if (result.ok) {
++    NotifySessionLost(session_id);
++  }
++  return result;
++}
++
++AgentRouteResult PrometheusAgentProfileService::CloseSessionForRuntime(
++    std::string_view session_id) {
++  SweepExpiredSessions();
++  return sessions_.CloseSession(session_id);
+ }
+ 
+ bool PrometheusAgentProfileService::HasSession(std::string_view session_id) {
+@@ -156,6 +168,28 @@ void PrometheusAgentProfileService::SetConfirmedVaultFieldInserterForTesting(
+   agent_service_.SetConfirmedVaultFieldInserterForTesting(std::move(inserter));
+ }
+ 
++void PrometheusAgentProfileService::AddObserver(Observer* observer) {
++  if (!shutdown_) {
++    observers_.AddObserver(observer);
++  }
++}
++
++void PrometheusAgentProfileService::RemoveObserver(Observer* observer) {
++  observers_.RemoveObserver(observer);
++}
++
++void PrometheusAgentProfileService::Shutdown() {
++  if (shutdown_) {
++    return;
++  }
++  shutdown_ = true;
++  for (const std::string& session_id : sessions_.CloseAllSessions()) {
++    agent_service_.ReleaseSessionOwnership(session_id);
++    NotifySessionLost(session_id);
++  }
++  observers_.Clear();
++}
++
+ base::Time PrometheusAgentProfileService::Now() const {
+   return now_callback_.Run();
+ }
+@@ -163,6 +197,14 @@ base::Time PrometheusAgentProfileService::Now() const {
+ void PrometheusAgentProfileService::SweepExpiredSessions() {
+   for (const std::string& session_id : sessions_.ExpireSessions(Now())) {
+     agent_service_.ReleaseSessionOwnership(session_id);
++    NotifySessionLost(session_id);
++  }
++}
++
++void PrometheusAgentProfileService::NotifySessionLost(
++    std::string_view session_id) {
++  for (Observer& observer : observers_) {
++    observer.OnAgentSessionLost(session_id);
+   }
+ }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.h b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+index ec592be263..b0ebd165be 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+@@ -10,6 +10,8 @@
+ 
+ #include "base/functional/callback.h"
+ #include "base/memory/raw_ptr.h"
++#include "base/observer_list.h"
++#include "base/observer_list_types.h"
+ #include "base/time/time.h"
+ #include "chrome/browser/prometheus/prometheus_agent_service.h"
+ #include "chrome/browser/prometheus/prometheus_agent_session.h"
+@@ -25,6 +27,11 @@ class PrometheusAgentProfileService : public KeyedService {
+  public:
+   using NowCallback = base::RepeatingCallback<base::Time()>;
+ 
++  class Observer : public base::CheckedObserver {
++   public:
++    virtual void OnAgentSessionLost(std::string_view session_id) = 0;
++  };
++
+   explicit PrometheusAgentProfileService(Profile* profile);
+   PrometheusAgentProfileService(const PrometheusAgentProfileService&) = delete;
+   PrometheusAgentProfileService& operator=(
+@@ -35,6 +42,9 @@ class PrometheusAgentProfileService : public KeyedService {
+   AgentSessionResult ResumeSession(std::string_view session_id);
+   AgentRouteResult TouchSession(std::string_view session_id);
+   AgentRouteResult CloseSession(std::string_view session_id);
++  // Removes runtime-owned authority without notifying observers or releasing
++  // AgentService ownership; the runtime completes that paired release.
++  AgentRouteResult CloseSessionForRuntime(std::string_view session_id);
+   bool HasSession(std::string_view session_id);
+   size_t ActiveSessionCount();
+   void SetMaxActiveAgents(size_t max_active_agents);
+@@ -55,15 +65,21 @@ class PrometheusAgentProfileService : public KeyedService {
+       PrometheusAgentService::ConfirmedVaultTargetInspector inspector);
+   void SetConfirmedVaultFieldInserterForTesting(
+       PrometheusAgentService::ConfirmedVaultFieldInserter inserter);
++  void AddObserver(Observer* observer);
++  void RemoveObserver(Observer* observer);
++  void Shutdown() override;
+ 
+  private:
+   base::Time Now() const;
+   void SweepExpiredSessions();
++  void NotifySessionLost(std::string_view session_id);
+ 
+   raw_ptr<Profile> profile_;
+   AgentSessionRegistry sessions_;
+   PrometheusAgentService agent_service_;
+   NowCallback now_callback_;
++  base::ObserverList<Observer> observers_;
++  bool shutdown_ = false;
+ };
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_session.cc b/chrome/browser/prometheus/prometheus_agent_session.cc
+index 5f50b73605..3f3e87b3ab 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session.cc
++++ b/chrome/browser/prometheus/prometheus_agent_session.cc
+@@ -125,6 +125,18 @@ AgentRouteResult AgentSessionRegistry::CloseSession(
+   return AgentRouteResult::Success({"session_closed"});
+ }
+ 
++std::vector<std::string> AgentSessionRegistry::CloseAllSessions() {
++  std::vector<std::string> closed_ids;
++  closed_ids.reserve(sessions_.size());
++  for (const auto& [session_id, session] : sessions_) {
++    if (session.active) {
++      closed_ids.push_back(session_id);
++    }
++  }
++  sessions_.clear();
++  return closed_ids;
++}
++
+ std::vector<std::string> AgentSessionRegistry::ExpireSessions(base::Time now) {
+   std::vector<std::string> expired_ids;
+   if (!reconnect_grace_.is_positive()) {
+diff --git a/chrome/browser/prometheus/prometheus_agent_session.h b/chrome/browser/prometheus/prometheus_agent_session.h
+index 96047cf76d..b8c4807b31 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session.h
++++ b/chrome/browser/prometheus/prometheus_agent_session.h
+@@ -65,6 +65,7 @@ class AgentSessionRegistry {
+                                      base::Time now);
+   AgentRouteResult TouchSession(std::string_view session_id, base::Time now);
+   AgentRouteResult CloseSession(std::string_view session_id);
++  std::vector<std::string> CloseAllSessions();
+   std::vector<std::string> ExpireSessions(base::Time now);
+   AgentRouteResult CheckAdmission() const;
+   void SetMaxActiveAgents(size_t max_active_agents);
+diff --git a/chrome/browser/prometheus/prometheus_agent_session_unittest.cc b/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
+index ca1e9b0262..7d3fa9053e 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_agent_session.h"
+ 
++#include <algorithm>
+ #include <string>
+ #include <vector>
+ 
+@@ -263,6 +264,22 @@ TEST_F(PrometheusAgentSessionTest, GracefulCloseCannotBeRepeatedOrResumed) {
+   EXPECT_EQ(nullptr, registry.GetSessionForTesting(created.session->id));
+ }
+ 
++TEST_F(PrometheusAgentSessionTest, CloseAllSessionsReturnsEveryLiveIdOnce) {
++  AgentSessionRegistry registry(4, kAgentReconnectGrace);
++  const AgentSessionResult first = registry.CreateSession("First", now());
++  const AgentSessionResult second = registry.CreateSession("Second", now());
++  ASSERT_TRUE(first.session);
++  ASSERT_TRUE(second.session);
++
++  const std::vector<std::string> closed = registry.CloseAllSessions();
++
++  ASSERT_EQ(2u, closed.size());
++  EXPECT_NE(closed.end(), std::ranges::find(closed, first.session->id));
++  EXPECT_NE(closed.end(), std::ranges::find(closed, second.session->id));
++  EXPECT_EQ(0u, registry.active_session_count());
++  EXPECT_TRUE(registry.CloseAllSessions().empty());
++}
++
+ TEST_F(PrometheusAgentSessionTest, TouchSessionUpdatesLastSeenTime) {
+   AgentSessionRegistry registry(4, base::Minutes(5));
+   AgentSessionResult created = registry.CreateSession("Agent", now());
+diff --git a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+index 1c41d319a5..2366798fab 100644
+--- a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+@@ -1070,6 +1070,93 @@ IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
+   }
+ }
+ 
++IN_PROC_BROWSER_TEST_F(
++    PrometheusMcpIntegrationBrowserTest,
++    RuntimeSessionCloseExpiryAndGatewayShutdownCancelExactlyOnce) {
++  UseTestClock(base::Time::FromSecondsSinceUnixEpoch(4000));
++  PrometheusRuntimeProfileService* const runtime =
++      PrometheusRuntimeProfileServiceFactory::GetForProfile(
++          browser()->profile());
++  ASSERT_TRUE(runtime);
++  runtime->SetAutoStartTasksForTesting(false);
++  const PrometheusProviderConfig provider =
++      MakeCorpusProvider("openai_responses", 2000);
++  ASSERT_EQ(
++      RuntimeProfileStatus::kOk,
++      runtime->SetProviders(RuntimeCallerOrigin::kLocalControlUi, {provider}));
++
++  const auto submit_task = [this](std::string_view session_id,
++                                  std::string prompt) {
++    base::DictValue params;
++    params.Set("prompt", std::move(prompt));
++    params.Set("requested_execution", "auto");
++    base::DictValue response = Command(std::string(session_id), "run_task",
++                                       std::nullopt, std::move(params));
++    if (!response.FindBool("ok").value_or(false)) {
++      ADD_FAILURE() << base::WriteJson(response).value_or("");
++      return std::string();
++    }
++    const base::DictValue* task = response.FindDict("result")->FindDict("task");
++    if (!task || !task->FindString("task_id")) {
++      ADD_FAILURE() << "run_task omitted its task id";
++      return std::string();
++    }
++    return *task->FindString("task_id");
++  };
++  const auto expect_cancelled_once = [runtime](std::string_view task_id) {
++    const std::optional<RuntimeTaskSnapshot> task = runtime->GetTask(task_id);
++    ASSERT_TRUE(task);
++    EXPECT_EQ(RuntimeTaskState::kCancelled, task->state);
++    EXPECT_EQ(RuntimeErrorCode::kCancelled, task->error_code);
++    EXPECT_EQ(1u, runtime->finish_count_for_testing(task_id));
++  };
++
++  const std::string closed_session =
++      SessionId(CreateSession("Runtime close owner"));
++  const std::string closed_task =
++      submit_task(closed_session, "Wait for explicit session close");
++  ASSERT_FALSE(closed_task.empty());
++  ASSERT_EQ(1u, runtime->active_session_count_for_testing());
++  EXPECT_TRUE(SessionOperation("/v1/session/close", closed_session)
++                  .FindBool("ok")
++                  .value_or(false));
++  expect_cancelled_once(closed_task);
++  EXPECT_EQ(0u, runtime->active_session_count_for_testing());
++  ExpectCode(SessionOperation("/v1/session/close", closed_session),
++             "UNAUTHORIZED");
++  expect_cancelled_once(closed_task);
++
++  const std::string expiring_session =
++      SessionId(CreateSession("Runtime expiry owner"));
++  const std::string expired_task =
++      submit_task(expiring_session, "Wait for session expiry");
++  ASSERT_FALSE(expired_task.empty());
++  ASSERT_EQ(1u, runtime->active_session_count_for_testing());
++  now_ += kAgentReconnectGrace + base::Milliseconds(1);
++  const std::string shutdown_session =
++      SessionId(CreateSession("Runtime shutdown owner"));
++  ASSERT_FALSE(shutdown_session.empty());
++  expect_cancelled_once(expired_task);
++  EXPECT_EQ(0u, runtime->active_session_count_for_testing());
++  EXPECT_FALSE(service()->HasSession(expiring_session));
++  EXPECT_FALSE(service()->HasSession(expiring_session));
++  expect_cancelled_once(expired_task);
++
++  const std::string shutdown_task =
++      submit_task(shutdown_session, "Wait for gateway shutdown");
++  ASSERT_FALSE(shutdown_task.empty());
++  ASSERT_EQ(1u, runtime->active_session_count_for_testing());
++  base::test::TestFuture<void> stopped;
++  gateway_->Shutdown(stopped.GetCallback());
++  ASSERT_TRUE(stopped.Wait());
++  expect_cancelled_once(shutdown_task);
++  EXPECT_EQ(0u, runtime->active_session_count_for_testing());
++  EXPECT_EQ(0u, gateway_->session_binding_count_for_testing());
++  base::RunLoop().RunUntilIdle();
++  expect_cancelled_once(shutdown_task);
++  gateway_.reset();
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
+                        TwoSessionsEnforceCapAndOwnership) {
+   ASSERT_TRUE(service());
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+index eabda595cc..525759f37b 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+@@ -344,7 +344,7 @@ PrometheusRuntimeProfileService::PrometheusRuntimeProfileService(
+       base::BindRepeating(&PrometheusAgentProfileService::HasSession,
+                           base::Unretained(agent_profile_service_.get()));
+   hooks_.close_session =
+-      base::BindRepeating(&PrometheusAgentProfileService::CloseSession,
++      base::BindRepeating(&PrometheusAgentProfileService::CloseSessionForRuntime,
+                           base::Unretained(agent_profile_service_.get()));
+   hooks_.release_session_ownership = base::BindRepeating(
+       &PrometheusAgentProfileService::ReleaseSessionOwnership,
+@@ -407,6 +407,8 @@ PrometheusRuntimeProfileService::PrometheusRuntimeProfileService(
+       CreatePrometheusRuntimeTestBootstrapFileAccess(),
+       owned_provider_registry_.get());
+   hooks_.bootstrap_result = startup_bootstrap_result_;
++  agent_profile_service_->AddObserver(this);
++  observing_agent_profile_service_ = true;
+ }
+ 
+ PrometheusRuntimeProfileService::PrometheusRuntimeProfileService(
+@@ -2319,6 +2321,9 @@ void PrometheusRuntimeProfileService::HandleTabDetached(
+ 
+ void PrometheusRuntimeProfileService::HandleAgentSessionLost(
+     std::string_view agent_session_id) {
++  if (agent_session_id.empty()) {
++    return;
++  }
+   CancelMatchingTasks(nullptr, 0, agent_session_id);
+   std::vector<LocalRuntimePrincipal*> retired_principals;
+   for (LocalRuntimePrincipal* principal : principals_) {
+@@ -2327,9 +2332,17 @@ void PrometheusRuntimeProfileService::HandleAgentSessionLost(
+     }
+   }
+   for (LocalRuntimePrincipal* principal : retired_principals) {
+-    ReleasePrincipal(principal);
++    principals_.erase(principal);
++    principal->released_ = true;
++    principal->owner_ = nullptr;
++    principal->exact_browser_ = nullptr;
++    principal->stable_tab_id_ = 0;
++    principal->agent_session_id_.clear();
++  }
++  const auto active_session = active_sessions_.find(agent_session_id);
++  if (active_session != active_sessions_.end()) {
++    active_sessions_.erase(active_session);
+   }
+-  ReleaseSessionOnce(agent_session_id);
+ }
+ 
+ void PrometheusRuntimeProfileService::AddObserver(Observer* observer) {
+@@ -2415,6 +2428,10 @@ void PrometheusRuntimeProfileService::Shutdown() {
+   if (shutdown_) {
+     return;
+   }
++  if (observing_agent_profile_service_) {
++    agent_profile_service_->RemoveObserver(this);
++    observing_agent_profile_service_ = false;
++  }
+   shutdown_ = true;
+ 
+   std::vector<uint64_t> discovery_ids;
+@@ -2445,6 +2462,7 @@ void PrometheusRuntimeProfileService::Shutdown() {
+   for (LocalRuntimePrincipal* principal : principals_) {
+     sessions.insert(principal->agent_session_id_);
+   }
++  sessions.insert(active_sessions_.begin(), active_sessions_.end());
+   for (const std::string& session_id : sessions) {
+     ReleaseSessionOnce(session_id);
+   }
+@@ -2501,8 +2519,13 @@ RuntimeProfileStatus PrometheusRuntimeProfileService::ValidateAuthority(
+ RuntimeProfileStatus PrometheusRuntimeProfileService::ValidateLocalPrincipal(
+     const LocalRuntimePrincipal& principal) const {
+   if (shutdown_ || principal.owner_ != this || !principal.is_valid() ||
+-      !hooks_.has_session ||
+-      !hooks_.has_session.Run(principal.agent_session_id_)) {
++      !hooks_.has_session) {
++    return RuntimeProfileStatus::kUnauthorized;
++  }
++  const std::string agent_session_id = principal.agent_session_id_;
++  if (!hooks_.has_session.Run(agent_session_id) ||
++      principal.owner_ != this || !principal.is_valid() ||
++      principal.agent_session_id_ != agent_session_id) {
+     return RuntimeProfileStatus::kUnauthorized;
+   }
+   if (profile_ && principal.exact_browser_->GetProfile() != profile_) {
+@@ -2651,10 +2674,11 @@ void PrometheusRuntimeProfileService::ReleaseSessionOnce(
+     return;
+   }
+   active_sessions_.erase(active_session);
++  bool closed = true;
+   if (hooks_.close_session) {
+-    hooks_.close_session.Run(agent_session_id);
++    closed = hooks_.close_session.Run(agent_session_id).ok;
+   }
+-  if (hooks_.release_session_ownership) {
++  if (closed && hooks_.release_session_ownership) {
+     hooks_.release_session_ownership.Run(agent_session_id);
+   }
+ }
+@@ -2676,13 +2700,19 @@ void PrometheusRuntimeProfileService::ReleasePrincipal(
+   }
+   CancelMatchingTasks(principal->exact_browser_, principal->stable_tab_id_,
+                       principal->agent_session_id_);
+-  ReleaseSessionOnce(principal->agent_session_id_);
++  const std::string agent_session_id = principal->agent_session_id_;
+   principals_.erase(principal);
+   principal->released_ = true;
+   principal->owner_ = nullptr;
+   principal->exact_browser_ = nullptr;
+   principal->stable_tab_id_ = 0;
+   principal->agent_session_id_.clear();
++  ReleaseSessionOnce(agent_session_id);
++}
++
++void PrometheusRuntimeProfileService::OnAgentSessionLost(
++    std::string_view agent_session_id) {
++  HandleAgentSessionLost(agent_session_id);
+ }
+ 
+ void PrometheusRuntimeProfileService::RelocatePrincipal(
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.h b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+index e2a8311f18..5cd6ca7f03 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+@@ -21,6 +21,7 @@
+ #include "base/observer_list.h"
+ #include "base/observer_list_types.h"
+ #include "base/timer/timer.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_agent_route.h"
+ #include "chrome/browser/prometheus/prometheus_agent_session.h"
+ #include "chrome/browser/prometheus/prometheus_memory_store.h"
+@@ -38,7 +39,6 @@ class Profile;
+ 
+ namespace prometheus {
+ 
+-class PrometheusAgentProfileService;
+ class PrometheusMemoryStore;
+ class PrometheusProviderRegistry;
+ class PrometheusProviderTransport;
+@@ -236,7 +236,8 @@ struct RuntimeSidePanelSnapshotResult {
+ 
+ class PrometheusRuntimeProfileService
+     : public KeyedService,
+-      public PrometheusRuntimeStore::Observer {
++      public PrometheusRuntimeStore::Observer,
++      public PrometheusAgentProfileService::Observer {
+  public:
+   class Observer : public base::CheckedObserver {
+    public:
+@@ -409,6 +410,8 @@ class PrometheusRuntimeProfileService
+ 
+   void HandleTabDetached(BrowserWindowInterface* exact_browser,
+                          int32_t stable_tab_id);
++  // Retires runtime state for a session already removed by its authority
++  // owner. This path never closes or releases the session again.
+   void HandleAgentSessionLost(std::string_view agent_session_id);
+   void AddObserver(Observer* observer);
+   void RemoveObserver(Observer* observer);
+@@ -517,6 +520,7 @@ class PrometheusRuntimeProfileService
+       const RuntimeStoreSnapshot& snapshot);
+   void PruneCompletedDiscoveriesForAdmission();
+   void OnRuntimeStoreChanged(const RuntimeStoreSnapshot& snapshot) override;
++  void OnAgentSessionLost(std::string_view agent_session_id) override;
+ 
+   raw_ptr<Profile> profile_ = nullptr;
+   raw_ptr<PrometheusAgentProfileService> agent_profile_service_ = nullptr;
+@@ -540,6 +544,7 @@ class PrometheusRuntimeProfileService
+   PrometheusRuntimeTestBootstrapResult startup_bootstrap_result_ =
+       PrometheusRuntimeTestBootstrapResult::kNotRequested;
+   bool shutdown_ = false;
++  bool observing_agent_profile_service_ = false;
+   base::WeakPtrFactory<PrometheusRuntimeProfileService> weak_factory_{this};
+ };
+ 
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+index e3eb1a3b3b..5537700ee6 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+@@ -615,8 +615,51 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+   ASSERT_TRUE(task.has_value());
+   EXPECT_EQ(RuntimeTaskState::kCancelled, task->state);
+   EXPECT_EQ(1u, service_->finish_count_for_testing("task-1"));
+-  EXPECT_EQ(1, boundaries_.close_session_count);
+-  EXPECT_EQ(1, boundaries_.release_ownership_count);
++  EXPECT_EQ(0, boundaries_.close_session_count);
++  EXPECT_EQ(0, boundaries_.release_ownership_count);
++}
++
++TEST_F(PrometheusRuntimeProfileServiceTest,
++       AlreadyClosedSessionLossCancelsProviderAndRetiresStateOnce) {
++  boundaries_.defer_provider_turn = true;
++  RuntimePrincipalResult principal =
++      service_->CreateSidePanelPrincipal(browser(), 7);
++  ASSERT_TRUE(principal.principal);
++  ASSERT_EQ(RuntimeProfileStatus::kOk,
++            service_
++                ->SubmitTask(*principal.principal, "Read the owned page",
++                             RequestedExecution::kAuto)
++                .status);
++  ASSERT_EQ(RuntimeProfileStatus::kOk,
++            service_
++                ->DispatchTool(Tool(RuntimeSafeTool::kReadPage,
++                                    RuntimeTaskOrigin::kSidePanel))
++                .status);
++  ASSERT_EQ(1u, service_->active_session_count_for_testing());
++  ASSERT_EQ(1u, boundaries_.pending_provider_callbacks.size());
++
++  service_->HandleAgentSessionLost("browser-issued-session");
++  service_->HandleAgentSessionLost("browser-issued-session");
++
++  EXPECT_FALSE(principal.principal->is_valid());
++  EXPECT_EQ(0u, service_->active_session_count_for_testing());
++  EXPECT_EQ(1, boundaries_.provider_cancel_count);
++  EXPECT_TRUE(boundaries_.pending_provider_callbacks.empty());
++  EXPECT_EQ(0, boundaries_.close_session_count);
++  EXPECT_EQ(0, boundaries_.release_ownership_count);
++  const std::optional<RuntimeTaskSnapshot> task = service_->GetTask("task-1");
++  ASSERT_TRUE(task);
++  EXPECT_EQ(RuntimeTaskState::kCancelled, task->state);
++  EXPECT_EQ(RuntimeErrorCode::kCancelled, task->error_code);
++  EXPECT_EQ(1u, service_->finish_count_for_testing("task-1"));
++
++  EXPECT_TRUE(boundaries_.CompleteCancelledProviderTurn(
++      1, ProviderSuccess("late provider result")));
++  service_->Shutdown();
++  EXPECT_EQ(1u, service_->finish_count_for_testing("task-1"));
++  EXPECT_EQ(1, boundaries_.provider_cancel_count);
++  EXPECT_EQ(0, boundaries_.close_session_count);
++  EXPECT_EQ(0, boundaries_.release_ownership_count);
+ }
+ 
+ TEST_F(PrometheusRuntimeProfileServiceTest, SeedPromptDoesNotSubmit) {
+-- 
+2.50.1 (Apple Git-155)
+
