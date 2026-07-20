@@ -1,0 +1,238 @@
+From 5f6fc3b70b3e9ea43a9c7ecace368b8472baaf1a Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 20 Jul 2026 07:24:52 -0500
+Subject: [PATCH] fix(20): WR-03 persist current runtime generations
+
+---
+ .../prometheus_runtime_profile_service.cc     | 52 +++++++++-----
+ .../prometheus_runtime_profile_service.h      |  6 +-
+ ...etheus_runtime_profile_service_unittest.cc | 68 +++++++++++++++++++
+ 3 files changed, 108 insertions(+), 18 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+index 71cbde236a..d0bba237f3 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+@@ -322,8 +322,7 @@ PrometheusRuntimeProfileService::PrometheusRuntimeProfileService(
+   CHECK(profile_->IsRegularProfile());
+ 
+   PrefService* const prefs = profile_->GetPrefs();
+-  owned_runtime_store_ = std::make_unique<PrometheusRuntimeStore>(prefs);
+-  owned_runtime_store_->AddObserver(this);
++  InitializeOwnedRuntimeStore(prefs);
+   owned_memory_store_ = std::make_unique<PrometheusMemoryStore>(prefs);
+   owned_provider_registry_ =
+       std::make_unique<PrometheusProviderRegistry>(prefs);
+@@ -361,14 +360,6 @@ PrometheusRuntimeProfileService::PrometheusRuntimeProfileService(
+         return GetEffectivePrometheusRuntimePolicy(*prefs);
+       },
+       base::Unretained(prefs));
+-  hooks_.create_task = base::BindRepeating(
+-      [](PrometheusRuntimeStore* store, RuntimeTaskOrigin origin,
+-         RequestedExecution requested_execution, std::string safe_title,
+-         int64_t timestamp_ms) {
+-        return store->CreateTask(origin, requested_execution,
+-                                 std::move(safe_title), timestamp_ms);
+-      },
+-      base::Unretained(owned_runtime_store_.get()));
+   hooks_.list_providers = base::BindRepeating(
+       [](PrometheusProviderRegistry* registry) {
+         return registry->ListProviders();
+@@ -426,6 +417,30 @@ PrometheusRuntimeProfileService::PrometheusRuntimeProfileService(
+     : hooks_(std::move(hooks)),
+       startup_bootstrap_result_(hooks_.bootstrap_result) {}
+ 
++PrometheusRuntimeProfileService::PrometheusRuntimeProfileService(
++    RuntimeProfileHooks hooks,
++    PrefService* owned_store_prefs_for_testing)
++    : hooks_(std::move(hooks)),
++      startup_bootstrap_result_(hooks_.bootstrap_result) {
++  InitializeOwnedRuntimeStore(owned_store_prefs_for_testing);
++}
++
++void PrometheusRuntimeProfileService::InitializeOwnedRuntimeStore(
++    PrefService* prefs) {
++  CHECK(prefs);
++  CHECK(!owned_runtime_store_);
++  owned_runtime_store_ = std::make_unique<PrometheusRuntimeStore>(prefs);
++  owned_runtime_store_->AddObserver(this);
++  hooks_.create_task = base::BindRepeating(
++      [](PrometheusRuntimeStore* store, RuntimeTaskOrigin origin,
++         RequestedExecution requested_execution, std::string safe_title,
++         int64_t timestamp_ms) {
++        return store->CreateTask(origin, requested_execution,
++                                 std::move(safe_title), timestamp_ms);
++      },
++      base::Unretained(owned_runtime_store_.get()));
++}
++
+ PrometheusRuntimeProfileService::~PrometheusRuntimeProfileService() {
+   Shutdown();
+ }
+@@ -715,8 +730,7 @@ void PrometheusRuntimeProfileService::StartTask(std::string task_id) {
+     task->second.timeout_timer->Start(
+         FROM_HERE, base::Milliseconds(policy.limits.max_duration_ms),
+         base::BindOnce(&PrometheusRuntimeProfileService::OnTaskTimeout,
+-                       weak_factory_.GetWeakPtr(), task_id,
+-                       task->second.generation));
++                       weak_factory_.GetWeakPtr(), task_id));
+   }
+   EmitTelemetryIfEnabled(policy, RuntimeTelemetryEventKind::kTaskState);
+   StartAutomaticProviderTurn(std::move(task_id), task->second.prompt);
+@@ -856,10 +870,13 @@ void PrometheusRuntimeProfileService::OnAutomaticProviderTurnComplete(
+                          std::move(immediate_result), std::move(result));
+ }
+ 
+-void PrometheusRuntimeProfileService::OnTaskTimeout(std::string task_id,
+-                                                    uint64_t generation) {
+-  FinishTaskOnce(task_id, generation, RuntimeCompletionSource::kTimeout, {},
+-                 {});
++void PrometheusRuntimeProfileService::OnTaskTimeout(std::string task_id) {
++  const auto task = tasks_.find(task_id);
++  if (task == tasks_.end() || task->second.finished) {
++    return;
++  }
++  FinishTaskOnce(task_id, task->second.generation,
++                 RuntimeCompletionSource::kTimeout, {}, {});
+ }
+ 
+ RuntimeOperationResult PrometheusRuntimeProfileService::DispatchTool(
+@@ -2408,7 +2425,8 @@ RuntimeProfileStatus PrometheusRuntimeProfileService::FinishTaskOnce(
+       if (cancelling.status != RuntimeStoreStatus::kOk) {
+         return RuntimeProfileStatus::kInvalidRequest;
+       }
+-      store_generation = cancelling.generation;
++      task->second.generation = cancelling.generation;
++      store_generation = task->second.generation;
+     }
+     const RuntimeStoreStatus store_status =
+         owned_runtime_store_->FinishTaskOnce(task_id, store_generation, state,
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.h b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+index fcdd980436..94ec0b392b 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+@@ -33,6 +33,7 @@
+ #include "components/keyed_service/core/keyed_service.h"
+ 
+ class BrowserWindowInterface;
++class PrefService;
+ class Profile;
+ 
+ namespace prometheus {
+@@ -245,6 +246,8 @@ class PrometheusRuntimeProfileService
+       Profile* profile,
+       PrometheusAgentProfileService* agent_profile_service);
+   explicit PrometheusRuntimeProfileService(RuntimeProfileHooks hooks);
++  PrometheusRuntimeProfileService(RuntimeProfileHooks hooks,
++                                  PrefService* owned_store_prefs_for_testing);
+   PrometheusRuntimeProfileService(const PrometheusRuntimeProfileService&) =
+       delete;
+   PrometheusRuntimeProfileService& operator=(
+@@ -441,6 +444,7 @@ class PrometheusRuntimeProfileService
+       const LocalRuntimePrincipal& principal) const;
+   RuntimeProfileStatus PolicyDenial(RuntimePolicyDecision decision,
+                                     std::string* recovery) const;
++  void InitializeOwnedRuntimeStore(PrefService* prefs);
+   void StartTask(std::string task_id);
+   void StartAutomaticProviderTurn(std::string task_id, std::string user_text);
+   void OnAutomaticProviderTurnComplete(
+@@ -449,7 +453,7 @@ class PrometheusRuntimeProfileService
+       std::shared_ptr<std::optional<RuntimeOperationResult>> immediate_result,
+       ProviderTurnRequest request,
+       ProviderTurnResult result);
+-  void OnTaskTimeout(std::string task_id, uint64_t generation);
++  void OnTaskTimeout(std::string task_id);
+   RuntimeProfileStatus FinishTaskOnce(
+       std::string_view task_id,
+       uint64_t generation,
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+index 454baae4cb..a0cb95275d 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+@@ -21,8 +21,10 @@
+ #include "base/json/json_reader.h"
+ #include "base/json/json_writer.h"
+ #include "base/path_service.h"
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_transport_codec.h"
++#include "components/sync_preferences/testing_pref_service_syncable.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ #include "url/gurl.h"
+ 
+@@ -682,6 +684,72 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+   }
+ }
+ 
++TEST_F(PrometheusRuntimeProfileServiceTest,
++       OwnedStorePersistsRunningGenerationAndSuccessAcrossReconstruction) {
++  service_.reset();
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusRuntimeProfilePrefs(prefs.registry());
++  FakeRuntimeProfileBoundaries persisted_boundaries;
++  ProviderTurnResult tool_call = ProviderSuccess("");
++  tool_call.stop_reason = ProviderStopReason::kToolCall;
++  tool_call.tool_call.emplace();
++  tool_call.tool_call->call_id = "persisted-read-call";
++  tool_call.tool_call->name = "read_page";
++  tool_call.usage.tool_calls = 1;
++  persisted_boundaries.provider_results.push_back(std::move(tool_call));
++  persisted_boundaries.provider_results.push_back(
++      ProviderSuccess("persisted verified result"));
++
++  std::string task_id;
++  {
++    RuntimeProfileHooks hooks = persisted_boundaries.MakeHooks();
++    hooks.expected_caller_id = "caller-1";
++    hooks.expected_browser = browser();
++    hooks.expected_stable_tab_id = 7;
++    hooks.auto_start_tasks = true;
++    PrometheusRuntimeProfileService service(std::move(hooks), &prefs);
++    RuntimeSubmitRequest request = Request();
++    request.prompt = "Persist a verified result";
++    RuntimeSubmitResult submitted = service.SubmitTask(std::move(request));
++    ASSERT_EQ(submitted.status, RuntimeProfileStatus::kOk);
++    ASSERT_TRUE(submitted.task);
++    task_id = submitted.task->task_id;
++    EXPECT_EQ(persisted_boundaries.execute_route_count, 1);
++    EXPECT_EQ(persisted_boundaries.provider_turn_count, 2);
++
++    const RuntimeStoreSnapshot persisted =
++        service.GetRuntimeSnapshotForTransport();
++    ASSERT_EQ(persisted.tasks.size(), 1u);
++    EXPECT_EQ(persisted.tasks[0].snapshot.task_id, task_id);
++    EXPECT_EQ(persisted.tasks[0].snapshot.state, RuntimeTaskState::kSucceeded);
++    EXPECT_EQ(persisted.tasks[0].generation, 2u);
++    ASSERT_TRUE(persisted.tasks[0].result);
++    EXPECT_EQ(persisted.tasks[0].result->text, "persisted verified result");
++    ASSERT_EQ(persisted.events.size(), 3u);
++    EXPECT_EQ(persisted.events[0].kind, RuntimeEventKind::kTaskCreated);
++    EXPECT_EQ(persisted.events[1].kind, RuntimeEventKind::kStateChanged);
++    EXPECT_EQ(persisted.events[2].kind, RuntimeEventKind::kTaskFinished);
++  }
++
++  RuntimeProfileHooks reconstructed_hooks = persisted_boundaries.MakeHooks();
++  PrometheusRuntimeProfileService reconstructed(std::move(reconstructed_hooks),
++                                                &prefs);
++  const RuntimeStoreSnapshot after_restart =
++      reconstructed.GetRuntimeSnapshotForTransport();
++  ASSERT_EQ(after_restart.tasks.size(), 1u);
++  EXPECT_EQ(after_restart.tasks[0].snapshot.task_id, task_id);
++  EXPECT_EQ(after_restart.tasks[0].snapshot.state,
++            RuntimeTaskState::kSucceeded);
++  EXPECT_EQ(after_restart.tasks[0].generation, 2u);
++  ASSERT_TRUE(after_restart.tasks[0].result);
++  EXPECT_EQ(after_restart.tasks[0].result->text, "persisted verified result");
++  EXPECT_EQ(std::ranges::count_if(after_restart.events,
++                                  [&task_id](const RuntimeEventRecord& event) {
++                                    return event.task_id == task_id;
++                                  }),
++            3);
++}
++
+ TEST_F(PrometheusRuntimeProfileServiceTest,
+        AutoStartStopsAtBoundedProviderTurnCap) {
+   service_.reset();
+-- 
+2.50.1 (Apple Git-155)
+
