@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 2
+current_plan: 3
 status: executing
-stopped_at: Completed 21-01-PLAN.md
-last_updated: "2026-07-21T22:14:13.117Z"
+stopped_at: Completed 21-02-PLAN.md
+last_updated: "2026-07-21T22:55:21.680Z"
 last_activity: 2026-07-21
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 67
-  percent: 71
+  completed_plans: 68
+  percent: 74
 ---
 
 # Project State
@@ -36,23 +36,29 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 2 of 26
+Plan: 3 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 2
+**Current Plan:** 3
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [███████░░░] 73%
+**Progress:** [███████░░░] 74%
 **Last Activity:** 2026-07-21
-**Last Activity Description:** Completed Plan 21-01 — closed native supervision
-types, privacy-safe DTOs, and the metadata-preserving focused verifier.
+**Last Activity Description:** Completed Plan 21-02 — closed seven-operation
+supervision transport, recursive authority rejection, and privacy-separated
+result serializers.
 
-Milestone work is 67 of 92 existing plans complete (73%); cumulative project
-work is 118 of 143 existing plans summarized (83%).
+Milestone work is 68 of 92 existing plans complete (74%); cumulative project
+work is 119 of 144 existing plans summarized (83%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 2: all 13 transport codec tests and the combined 26-test
+  codec/types regression pass with exact operation/action schemas, recursive
+  authority rejection, sanitized compatibility output, and byte-identical
+  Ninja metadata.
 
 - Phase 21 Plan 1: the direct verifier selects 13 supervision contract tests;
   all pass with byte-identical Ninja metadata after exhaustive transition,
@@ -172,6 +178,9 @@ work is 118 of 143 existing plans summarized (83%).
 | 20 | Require stable patch-body identity for every exported Chromium commit and prove the gate rejects a parent-applicable mutation. |
 | 21 | Keep session, document epoch, controller lease, and generation authority in browser-only memory types with no prefs or `base::Value` serializer; sanitized projections structurally cannot carry authority. |
 | 21 | Carry stable tab identity as a positive `int32_t` in the standalone contract and resolve it only inside the owning browser service. |
+| 21 | Parse each of the seven supervision operations into a distinct typed variant and reject unknown, prototype, identity, authority, route, script, vault, secret, and stale-shape fields before dispatch. |
+| 21 | Project dashboard session, document epoch, and sequence only through the authenticated dashboard serializer; rebuild compatibility output from sanitized metadata with no authority path. |
+| 21 | Normalize the one-time pairing code only for redemption, derive the client label through the native safe-label projector, and keep malformed-input errors fixed and non-echoing. |
 
 ## Performance Metrics
 
@@ -188,6 +197,7 @@ work is 118 of 143 existing plans summarized (83%).
 | Phase 20 P10 | 3h47m | 3 tasks | 11 files |
 | Phase 20 P14 | 5h45m | 2 tasks | 21 files |
 | Phase 21 P01 | 41min | 3 tasks | 8 files |
+| Phase 21 P02 | 33min | 2 tasks | 8 files |
 
 ## Blockers and Deferred Items
 
@@ -202,11 +212,11 @@ work is 118 of 143 existing plans summarized (83%).
 
 ## Session
 
-**Last Date:** 2026-07-21T22:14:13.111Z
-**Stopped At:** Completed 21-01-PLAN.md
+**Last Date:** 2026-07-21T22:54:45.050Z
+**Stopped At:** Completed 21-02-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-02-PLAN.md` to define the bounded dashboard supervision wire codec
-and its privacy contract on top of the closed native types.
+Execute `21-03-PLAN.md` to build the privacy-safe APC baseline projection and
+deterministic structural diff/ack/resync model behind the closed transport.
