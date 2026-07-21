@@ -6,8 +6,8 @@ current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
 current_plan: Not started
 status: Ready to discuss
-stopped_at: Phase 21 context gathered
-last_updated: "2026-07-21T11:28:27.702Z"
+stopped_at: Phase 21 UI-SPEC approved
+last_updated: "2026-07-21T11:48:55.926Z"
 last_activity: 2026-07-20
 progress:
   total_phases: 14
@@ -195,9 +195,9 @@ work is 117 of 117 existing plans summarized (100%).
 
 ## Session
 
-**Last Date:** 2026-07-21T11:28:27.697Z
-**Stopped At:** Phase 21 context gathered
-**Resume File:** .planning/phases/21-supervision-pairing-and-remote-control/21-CONTEXT.md
+**Last Date:** 2026-07-21T11:48:55.921Z
+**Stopped At:** Phase 21 UI-SPEC approved
+**Resume File:** .planning/phases/21-supervision-pairing-and-remote-control/21-UI-SPEC.md
 
 ## Operator Next Step
 
