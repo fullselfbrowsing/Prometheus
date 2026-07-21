@@ -161,6 +161,12 @@ build_focused_binary() {
   local supervision_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_types_unittest.o'
   local supervision_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_types.cc"
   local supervision_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_types_unittest.cc"
+  local runtime_codec_object='obj/chrome/browser/prometheus/prometheus_runtime_transport_codec/prometheus_runtime_transport_codec.o'
+  local runtime_codec_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_runtime_transport_codec_unittest.o'
+  local supervision_codec_object='obj/chrome/browser/prometheus/prometheus_supervision_transport_codec/prometheus_supervision_transport_codec.o'
+  local supervision_codec_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_transport_codec_unittest.o'
+  local supervision_codec_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_transport_codec.cc"
+  local supervision_codec_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_transport_codec_unittest.cc"
   local extra_objects=()
 
   : >"${BUILD_LOG}"
@@ -181,6 +187,17 @@ build_focused_binary() {
       prometheus_runtime_types_unittest prometheus_supervision_types_unittest
   fi
 
+  if [[ -e "${supervision_codec_source}" || -e "${supervision_codec_test_source}" ]]; then
+    [[ -s "${supervision_codec_source}" ]] \
+      || fail 'supervision transport codec implementation is missing or empty'
+    [[ -s "${supervision_codec_test_source}" ]] \
+      || fail 'supervision transport codec test is missing or empty'
+    compile_synthesized_object "${runtime_codec_object}" "${supervision_codec_object}" \
+      prometheus_runtime_transport_codec prometheus_supervision_transport_codec
+    compile_synthesized_object "${runtime_codec_test_object}" "${supervision_codec_test_object}" \
+      prometheus_runtime_transport_codec_unittest prometheus_supervision_transport_codec_unittest
+  fi
+
   require_file "${OUT_DIR}/browser_tests.rsp"
   local runtime_contract='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o'
   local runtime_dialogs='obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o'
@@ -195,6 +212,9 @@ build_focused_binary() {
   done
   if [[ -s "${supervision_source}" ]]; then
     candidates+=("${supervision_object}")
+  fi
+  if [[ -s "${supervision_codec_source}" ]]; then
+    candidates+=("${supervision_codec_object}")
   fi
   local candidate
   for candidate in "${candidates[@]}"; do
