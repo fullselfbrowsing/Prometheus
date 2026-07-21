@@ -167,6 +167,14 @@ build_focused_binary() {
   local supervision_codec_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_transport_codec_unittest.o'
   local supervision_codec_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_transport_codec.cc"
   local supervision_codec_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_transport_codec_unittest.cc"
+  local supervision_projection_object='obj/chrome/browser/prometheus/prometheus_supervision_projection/prometheus_supervision_projection.o'
+  local supervision_projection_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_projection_unittest.o'
+  local supervision_projection_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_projection.cc"
+  local supervision_projection_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_projection_unittest.cc"
+  local supervision_diff_object='obj/chrome/browser/prometheus/prometheus_supervision_diff/prometheus_supervision_diff.o'
+  local supervision_diff_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_diff_unittest.o'
+  local supervision_diff_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_diff.cc"
+  local supervision_diff_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_diff_unittest.cc"
   local extra_objects=()
 
   : >"${BUILD_LOG}"
@@ -198,6 +206,28 @@ build_focused_binary() {
       prometheus_runtime_transport_codec_unittest prometheus_supervision_transport_codec_unittest
   fi
 
+  if [[ -e "${supervision_projection_source}" || -e "${supervision_projection_test_source}" ]]; then
+    [[ -s "${supervision_projection_source}" ]] \
+      || fail 'supervision projection implementation is missing or empty'
+    [[ -s "${supervision_projection_test_source}" ]] \
+      || fail 'supervision projection test is missing or empty'
+    compile_synthesized_object "${runtime_object}" "${supervision_projection_object}" \
+      prometheus_runtime_types prometheus_supervision_projection
+    compile_synthesized_object "${runtime_test_object}" "${supervision_projection_test_object}" \
+      prometheus_runtime_types_unittest prometheus_supervision_projection_unittest
+  fi
+
+  if [[ -e "${supervision_diff_source}" || -e "${supervision_diff_test_source}" ]]; then
+    [[ -s "${supervision_diff_source}" ]] \
+      || fail 'supervision diff implementation is missing or empty'
+    [[ -s "${supervision_diff_test_source}" ]] \
+      || fail 'supervision diff test is missing or empty'
+    compile_synthesized_object "${runtime_object}" "${supervision_diff_object}" \
+      prometheus_runtime_types prometheus_supervision_diff
+    compile_synthesized_object "${runtime_test_object}" "${supervision_diff_test_object}" \
+      prometheus_runtime_types_unittest prometheus_supervision_diff_unittest
+  fi
+
   require_file "${OUT_DIR}/browser_tests.rsp"
   local runtime_contract='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o'
   local runtime_dialogs='obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o'
@@ -215,6 +245,12 @@ build_focused_binary() {
   fi
   if [[ -s "${supervision_codec_source}" ]]; then
     candidates+=("${supervision_codec_object}")
+  fi
+  if [[ -s "${supervision_projection_source}" ]]; then
+    candidates+=("${supervision_projection_object}")
+  fi
+  if [[ -s "${supervision_diff_source}" ]]; then
+    candidates+=("${supervision_diff_object}")
   fi
   local candidate
   for candidate in "${candidates[@]}"; do
