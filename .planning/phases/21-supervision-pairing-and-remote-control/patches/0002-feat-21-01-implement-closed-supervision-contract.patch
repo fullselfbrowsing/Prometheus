@@ -1,0 +1,844 @@
+From 1b30708fba610797db293e92d9c7b797fafa7c39 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 17:10:05 -0500
+Subject: [PATCH] feat(21-01): implement closed supervision contract
+
+Implement exhaustive fail-closed enum conversion and transitions, bounded limits and identities, privacy-preserving labels/origins, and sanitized snapshot projection.
+---
+ .../prometheus_supervision_types.cc           | 676 +++++++++++++++++-
+ 1 file changed, 645 insertions(+), 31 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_supervision_types.cc b/chrome/browser/prometheus/prometheus_supervision_types.cc
+index 8749eeccc0..12770ed98a 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_types.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_types.cc
+@@ -4,181 +4,795 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_supervision_types.h"
+ 
++#include <algorithm>
++#include <array>
++#include <limits>
++#include <string>
++#include <utility>
++
++#include "base/strings/string_util.h"
++#include "url/gurl.h"
++#include "url/origin.h"
++
+ namespace prometheus {
+ 
++namespace {
++
++constexpr std::array kPairingStateNames = {
++    std::pair{SupervisionPairingState::kPending, std::string_view{"pending"}},
++    std::pair{SupervisionPairingState::kRedeemed, std::string_view{"redeemed"}},
++    std::pair{SupervisionPairingState::kCancelled,
++              std::string_view{"cancelled"}},
++    std::pair{SupervisionPairingState::kExpired, std::string_view{"expired"}},
++    std::pair{SupervisionPairingState::kTargetLost,
++              std::string_view{"target_lost"}},
++};
++
++constexpr std::array kViewerStateNames = {
++    std::pair{SupervisionViewerState::kViewOnly, std::string_view{"view_only"}},
++    std::pair{SupervisionViewerState::kController,
++              std::string_view{"controller"}},
++    std::pair{SupervisionViewerState::kExpired, std::string_view{"expired"}},
++    std::pair{SupervisionViewerState::kRevoked, std::string_view{"revoked"}},
++    std::pair{SupervisionViewerState::kTargetClosed,
++              std::string_view{"target_closed"}},
++    std::pair{SupervisionViewerState::kAuthorityLost,
++              std::string_view{"authority_lost"}},
++    std::pair{SupervisionViewerState::kEnded, std::string_view{"ended"}},
++};
++
++constexpr std::array kStreamStateNames = {
++    std::pair{SupervisionStreamState::kPreparingBaseline,
++              std::string_view{"preparing_baseline"}},
++    std::pair{SupervisionStreamState::kLive, std::string_view{"live"}},
++    std::pair{SupervisionStreamState::kResyncing,
++              std::string_view{"resyncing"}},
++    std::pair{SupervisionStreamState::kPaused, std::string_view{"paused"}},
++    std::pair{SupervisionStreamState::kEnded, std::string_view{"ended"}},
++};
++
++constexpr std::array kActionCategoryNames = {
++    std::pair{SupervisionRemoteActionCategory::kClick,
++              std::string_view{"click"}},
++    std::pair{SupervisionRemoteActionCategory::kType, std::string_view{"type"}},
++    std::pair{SupervisionRemoteActionCategory::kKeyPress,
++              std::string_view{"key_press"}},
++    std::pair{SupervisionRemoteActionCategory::kScroll,
++              std::string_view{"scroll"}},
++    std::pair{SupervisionRemoteActionCategory::kHover,
++              std::string_view{"hover"}},
++    std::pair{SupervisionRemoteActionCategory::kSelect,
++              std::string_view{"select"}},
++    std::pair{SupervisionRemoteActionCategory::kClear,
++              std::string_view{"clear"}},
++    std::pair{SupervisionRemoteActionCategory::kDrag, std::string_view{"drag"}},
++    std::pair{SupervisionRemoteActionCategory::kDrop, std::string_view{"drop"}},
++    std::pair{SupervisionRemoteActionCategory::kNavigate,
++              std::string_view{"navigate"}},
++};
++
++constexpr std::array kActionStateNames = {
++    std::pair{SupervisionRemoteActionState::kIdle, std::string_view{"idle"}},
++    std::pair{SupervisionRemoteActionState::kValidating,
++              std::string_view{"validating"}},
++    std::pair{SupervisionRemoteActionState::kExecuting,
++              std::string_view{"executing"}},
++    std::pair{SupervisionRemoteActionState::kAwaitingConfirmation,
++              std::string_view{"awaiting_confirmation"}},
++    std::pair{SupervisionRemoteActionState::kVerifying,
++              std::string_view{"verifying"}},
++    std::pair{SupervisionRemoteActionState::kCompleted,
++              std::string_view{"completed"}},
++    std::pair{SupervisionRemoteActionState::kBlocked,
++              std::string_view{"blocked"}},
++    std::pair{SupervisionRemoteActionState::kFailed,
++              std::string_view{"failed"}},
++};
++
++constexpr std::array kAuditEventNames = {
++    std::pair{SupervisionAuditEvent::kPairingCodeCreated,
++              std::string_view{"pairing_code_created"}},
++    std::pair{SupervisionAuditEvent::kPairingCodeCancelled,
++              std::string_view{"pairing_code_cancelled"}},
++    std::pair{SupervisionAuditEvent::kPairingCodeExpired,
++              std::string_view{"pairing_code_expired"}},
++    std::pair{SupervisionAuditEvent::kDashboardPaired,
++              std::string_view{"dashboard_paired"}},
++    std::pair{SupervisionAuditEvent::kViewingStarted,
++              std::string_view{"viewing_started"}},
++    std::pair{SupervisionAuditEvent::kControlEnabled,
++              std::string_view{"control_enabled"}},
++    std::pair{SupervisionAuditEvent::kRemoteActionRequested,
++              std::string_view{"remote_action_requested"}},
++    std::pair{SupervisionAuditEvent::kRemoteActionCompleted,
++              std::string_view{"remote_action_completed"}},
++    std::pair{SupervisionAuditEvent::kRemoteActionBlocked,
++              std::string_view{"remote_action_blocked"}},
++    std::pair{SupervisionAuditEvent::kControlStopped,
++              std::string_view{"control_stopped"}},
++    std::pair{SupervisionAuditEvent::kAccessRevoked,
++              std::string_view{"access_revoked"}},
++    std::pair{SupervisionAuditEvent::kAccessExpired,
++              std::string_view{"access_expired"}},
++    std::pair{SupervisionAuditEvent::kResyncRequired,
++              std::string_view{"resync_required"}},
++    std::pair{SupervisionAuditEvent::kResyncCompleted,
++              std::string_view{"resync_completed"}},
++    std::pair{SupervisionAuditEvent::kTargetClosed,
++              std::string_view{"target_closed"}},
++    std::pair{SupervisionAuditEvent::kAuthorityLost,
++              std::string_view{"authority_lost"}},
++};
++
++constexpr std::array kTerminalReasonNames = {
++    std::pair{SupervisionTerminalReason::kNone, std::string_view{"none"}},
++    std::pair{SupervisionTerminalReason::kCancelled,
++              std::string_view{"cancelled"}},
++    std::pair{SupervisionTerminalReason::kExpired, std::string_view{"expired"}},
++    std::pair{SupervisionTerminalReason::kRevoked, std::string_view{"revoked"}},
++    std::pair{SupervisionTerminalReason::kTargetClosed,
++              std::string_view{"target_closed"}},
++    std::pair{SupervisionTerminalReason::kAuthorityLost,
++              std::string_view{"authority_lost"}},
++    std::pair{SupervisionTerminalReason::kOwnerLost,
++              std::string_view{"owner_lost"}},
++    std::pair{SupervisionTerminalReason::kBrowserShutdown,
++              std::string_view{"browser_shutdown"}},
++    std::pair{SupervisionTerminalReason::kProfileShutdown,
++              std::string_view{"profile_shutdown"}},
++};
++
++constexpr std::array kErrorCodeNames = {
++    std::pair{SupervisionErrorCode::kNone, std::string_view{"NONE"}},
++    std::pair{SupervisionErrorCode::kInvalidCode,
++              std::string_view{"INVALID_CODE"}},
++    std::pair{SupervisionErrorCode::kExpiredCode,
++              std::string_view{"EXPIRED_CODE"}},
++    std::pair{SupervisionErrorCode::kAttemptCapReached,
++              std::string_view{"ATTEMPT_CAP_REACHED"}},
++    std::pair{SupervisionErrorCode::kUnknownSession,
++              std::string_view{"UNKNOWN_SESSION"}},
++    std::pair{SupervisionErrorCode::kViewOnly, std::string_view{"VIEW_ONLY"}},
++    std::pair{SupervisionErrorCode::kControllerConflict,
++              std::string_view{"CONTROLLER_CONFLICT"}},
++    std::pair{SupervisionErrorCode::kStaleTarget,
++              std::string_view{"STALE_TARGET"}},
++    std::pair{SupervisionErrorCode::kStaleEpoch,
++              std::string_view{"STALE_EPOCH"}},
++    std::pair{SupervisionErrorCode::kStaleSequence,
++              std::string_view{"STALE_SEQUENCE"}},
++    std::pair{SupervisionErrorCode::kResyncRequired,
++              std::string_view{"RESYNC_REQUIRED"}},
++    std::pair{SupervisionErrorCode::kRestrictedTarget,
++              std::string_view{"RESTRICTED_TARGET"}},
++    std::pair{SupervisionErrorCode::kTooLarge, std::string_view{"TOO_LARGE"}},
++    std::pair{SupervisionErrorCode::kConfirmationDenied,
++              std::string_view{"CONFIRMATION_DENIED"}},
++    std::pair{SupervisionErrorCode::kShutdown, std::string_view{"SHUTDOWN"}},
++};
++
++constexpr std::array<std::string_view, 12> kSensitiveDisplayMarkers = {
++    "authorization", "bearer",       "controller_lease",
++    "document",      "pairing_code", "password",
++    "profile",       "secret",       "selector",
++    "session",       "token",        "typed_value",
++};
++
++template <typename Enum, size_t N>
++std::optional<Enum> EnumFromString(
++    std::string_view value,
++    const std::array<std::pair<Enum, std::string_view>, N>& names) {
++  for (const auto& [candidate, name] : names) {
++    if (value == name) {
++      return candidate;
++    }
++  }
++  return std::nullopt;
++}
++
++template <typename Enum, size_t N>
++std::optional<std::string_view> EnumToString(
++    Enum value,
++    const std::array<std::pair<Enum, std::string_view>, N>& names) {
++  for (const auto& [candidate, name] : names) {
++    if (value == candidate) {
++      return name;
++    }
++  }
++  return std::nullopt;
++}
++
++uint64_t ClampLimit(uint64_t value,
++                    uint64_t default_value,
++                    uint64_t hard_limit) {
++  return value == 0 ? default_value : std::min(value, hard_limit);
++}
++
++bool IsBoundedUtf8(std::string_view value, size_t max_bytes) {
++  return value.size() <= max_bytes && base::IsStringUTF8(value);
++}
++
++bool HasDisallowedControl(std::string_view value) {
++  for (unsigned char character : value) {
++    if ((character < 0x20 && !base::IsAsciiWhitespace(character)) ||
++        character == 0x7f) {
++      return true;
++    }
++  }
++  return false;
++}
++
++bool ContainsAsciiWord(std::string_view value, std::string_view word) {
++  size_t position = value.find(word);
++  while (position != std::string_view::npos) {
++    const bool starts_word =
++        position == 0 || !base::IsAsciiAlphaNumeric(value[position - 1]);
++    const size_t end = position + word.size();
++    const bool ends_word =
++        end == value.size() || !base::IsAsciiAlphaNumeric(value[end]);
++    if (starts_word && ends_word) {
++      return true;
++    }
++    position = value.find(word, position + 1);
++  }
++  return false;
++}
++
++std::string CollapseWhitespace(std::string_view input) {
++  std::string collapsed;
++  collapsed.reserve(input.size());
++  bool pending_space = false;
++  for (char character : input) {
++    if (base::IsAsciiWhitespace(character)) {
++      pending_space = true;
++      continue;
++    }
++    if (pending_space && !collapsed.empty()) {
++      collapsed.push_back(' ');
++    }
++    pending_space = false;
++    collapsed.push_back(character);
++  }
++  return collapsed;
++}
++
++std::string DeriveSafeDisplayString(std::string_view input,
++                                    size_t max_bytes,
++                                    std::string_view fallback) {
++  if (!base::IsStringUTF8(input) || HasDisallowedControl(input)) {
++    return std::string(fallback);
++  }
++
++  std::string value = CollapseWhitespace(input);
++  const std::string lowercase = base::ToLowerASCII(value);
++  for (std::string_view marker : kSensitiveDisplayMarkers) {
++    if (lowercase.find(marker) != std::string::npos) {
++      return std::string(fallback);
++    }
++  }
++  if (ContainsAsciiWord(lowercase, "lease")) {
++    return std::string(fallback);
++  }
++  if (value.empty()) {
++    return std::string(fallback);
++  }
++  return std::string(base::TruncateUTF8ToByteSize(value, max_bytes));
++}
++
++bool IsSafeTimestamp(int64_t timestamp_ms) {
++  constexpr int64_t kMaximumExactJsonInteger = (int64_t{1} << 53) - 1;
++  return timestamp_ms >= 0 && timestamp_ms <= kMaximumExactJsonInteger;
++}
++
++}  // namespace
++
+ std::optional<SupervisionPairingState> SupervisionPairingStateFromString(
+     std::string_view value) {
+-  return std::nullopt;
++  return EnumFromString(value, kPairingStateNames);
+ }
+ 
+ std::optional<std::string_view> SupervisionPairingStateToString(
+     SupervisionPairingState value) {
+-  return std::nullopt;
++  return EnumToString(value, kPairingStateNames);
+ }
+ 
+ std::optional<SupervisionViewerState> SupervisionViewerStateFromString(
+     std::string_view value) {
+-  return std::nullopt;
++  return EnumFromString(value, kViewerStateNames);
+ }
+ 
+ std::optional<std::string_view> SupervisionViewerStateToString(
+     SupervisionViewerState value) {
+-  return std::nullopt;
++  return EnumToString(value, kViewerStateNames);
+ }
+ 
+ std::optional<SupervisionStreamState> SupervisionStreamStateFromString(
+     std::string_view value) {
+-  return std::nullopt;
++  return EnumFromString(value, kStreamStateNames);
+ }
+ 
+ std::optional<std::string_view> SupervisionStreamStateToString(
+     SupervisionStreamState value) {
+-  return std::nullopt;
++  return EnumToString(value, kStreamStateNames);
+ }
+ 
+ std::optional<SupervisionRemoteActionCategory>
+ SupervisionRemoteActionCategoryFromString(std::string_view value) {
+-  return std::nullopt;
++  return EnumFromString(value, kActionCategoryNames);
+ }
+ 
+ std::optional<std::string_view> SupervisionRemoteActionCategoryToString(
+     SupervisionRemoteActionCategory value) {
+-  return std::nullopt;
++  return EnumToString(value, kActionCategoryNames);
+ }
+ 
+ std::optional<SupervisionRemoteActionState>
+ SupervisionRemoteActionStateFromString(std::string_view value) {
+-  return std::nullopt;
++  return EnumFromString(value, kActionStateNames);
+ }
+ 
+ std::optional<std::string_view> SupervisionRemoteActionStateToString(
+     SupervisionRemoteActionState value) {
+-  return std::nullopt;
++  return EnumToString(value, kActionStateNames);
+ }
+ 
+ std::optional<SupervisionAuditEvent> SupervisionAuditEventFromString(
+     std::string_view value) {
+-  return std::nullopt;
++  return EnumFromString(value, kAuditEventNames);
+ }
+ 
+ std::optional<std::string_view> SupervisionAuditEventToString(
+     SupervisionAuditEvent value) {
+-  return std::nullopt;
++  return EnumToString(value, kAuditEventNames);
+ }
+ 
+ std::optional<SupervisionTerminalReason> SupervisionTerminalReasonFromString(
+     std::string_view value) {
+-  return std::nullopt;
++  return EnumFromString(value, kTerminalReasonNames);
+ }
+ 
+ std::optional<std::string_view> SupervisionTerminalReasonToString(
+     SupervisionTerminalReason value) {
+-  return std::nullopt;
++  return EnumToString(value, kTerminalReasonNames);
+ }
+ 
+ std::optional<SupervisionErrorCode> SupervisionErrorCodeFromString(
+     std::string_view value) {
+-  return std::nullopt;
++  return EnumFromString(value, kErrorCodeNames);
+ }
+ 
+ std::optional<std::string_view> SupervisionErrorCodeToString(
+     SupervisionErrorCode value) {
+-  return std::nullopt;
++  return EnumToString(value, kErrorCodeNames);
+ }
+ 
+ bool IsLegalSupervisionPairingTransition(SupervisionPairingState from,
+                                          SupervisionPairingState to) {
+-  return false;
++  return from == SupervisionPairingState::kPending &&
++         (to == SupervisionPairingState::kRedeemed ||
++          to == SupervisionPairingState::kCancelled ||
++          to == SupervisionPairingState::kExpired ||
++          to == SupervisionPairingState::kTargetLost);
+ }
+ 
+ bool IsTerminalSupervisionPairingState(SupervisionPairingState state) {
++  switch (state) {
++    case SupervisionPairingState::kPending:
++      return false;
++    case SupervisionPairingState::kRedeemed:
++    case SupervisionPairingState::kCancelled:
++    case SupervisionPairingState::kExpired:
++    case SupervisionPairingState::kTargetLost:
++      return true;
++  }
+   return false;
+ }
+ 
+ bool IsLegalSupervisionViewerTransition(SupervisionViewerState from,
+                                         SupervisionViewerState to) {
++  switch (from) {
++    case SupervisionViewerState::kViewOnly:
++      return to == SupervisionViewerState::kController ||
++             to == SupervisionViewerState::kExpired ||
++             to == SupervisionViewerState::kRevoked ||
++             to == SupervisionViewerState::kTargetClosed ||
++             to == SupervisionViewerState::kAuthorityLost ||
++             to == SupervisionViewerState::kEnded;
++    case SupervisionViewerState::kController:
++      return to == SupervisionViewerState::kViewOnly ||
++             to == SupervisionViewerState::kExpired ||
++             to == SupervisionViewerState::kRevoked ||
++             to == SupervisionViewerState::kTargetClosed ||
++             to == SupervisionViewerState::kAuthorityLost ||
++             to == SupervisionViewerState::kEnded;
++    case SupervisionViewerState::kExpired:
++    case SupervisionViewerState::kRevoked:
++    case SupervisionViewerState::kTargetClosed:
++    case SupervisionViewerState::kAuthorityLost:
++    case SupervisionViewerState::kEnded:
++      return false;
++  }
+   return false;
+ }
+ 
+ bool IsTerminalSupervisionViewerState(SupervisionViewerState state) {
++  switch (state) {
++    case SupervisionViewerState::kViewOnly:
++    case SupervisionViewerState::kController:
++      return false;
++    case SupervisionViewerState::kExpired:
++    case SupervisionViewerState::kRevoked:
++    case SupervisionViewerState::kTargetClosed:
++    case SupervisionViewerState::kAuthorityLost:
++    case SupervisionViewerState::kEnded:
++      return true;
++  }
+   return false;
+ }
+ 
+ bool IsLegalSupervisionStreamTransition(SupervisionStreamState from,
+                                         SupervisionStreamState to) {
++  switch (from) {
++    case SupervisionStreamState::kPreparingBaseline:
++      return to == SupervisionStreamState::kLive ||
++             to == SupervisionStreamState::kResyncing ||
++             to == SupervisionStreamState::kPaused ||
++             to == SupervisionStreamState::kEnded;
++    case SupervisionStreamState::kLive:
++      return to == SupervisionStreamState::kResyncing ||
++             to == SupervisionStreamState::kPaused ||
++             to == SupervisionStreamState::kEnded;
++    case SupervisionStreamState::kResyncing:
++      return to == SupervisionStreamState::kLive ||
++             to == SupervisionStreamState::kPaused ||
++             to == SupervisionStreamState::kEnded;
++    case SupervisionStreamState::kPaused:
++      return to == SupervisionStreamState::kResyncing ||
++             to == SupervisionStreamState::kEnded;
++    case SupervisionStreamState::kEnded:
++      return false;
++  }
+   return false;
+ }
+ 
+ bool IsLegalSupervisionRemoteActionTransition(SupervisionRemoteActionState from,
+                                               SupervisionRemoteActionState to) {
++  switch (from) {
++    case SupervisionRemoteActionState::kIdle:
++      return to == SupervisionRemoteActionState::kValidating;
++    case SupervisionRemoteActionState::kValidating:
++      return to == SupervisionRemoteActionState::kExecuting ||
++             to == SupervisionRemoteActionState::kAwaitingConfirmation ||
++             to == SupervisionRemoteActionState::kBlocked ||
++             to == SupervisionRemoteActionState::kFailed;
++    case SupervisionRemoteActionState::kExecuting:
++      return to == SupervisionRemoteActionState::kVerifying ||
++             to == SupervisionRemoteActionState::kCompleted ||
++             to == SupervisionRemoteActionState::kBlocked ||
++             to == SupervisionRemoteActionState::kFailed;
++    case SupervisionRemoteActionState::kAwaitingConfirmation:
++      return to == SupervisionRemoteActionState::kExecuting ||
++             to == SupervisionRemoteActionState::kBlocked ||
++             to == SupervisionRemoteActionState::kFailed;
++    case SupervisionRemoteActionState::kVerifying:
++      return to == SupervisionRemoteActionState::kCompleted ||
++             to == SupervisionRemoteActionState::kBlocked ||
++             to == SupervisionRemoteActionState::kFailed;
++    case SupervisionRemoteActionState::kCompleted:
++    case SupervisionRemoteActionState::kBlocked:
++    case SupervisionRemoteActionState::kFailed:
++      return false;
++  }
+   return false;
+ }
+ 
+ SupervisionLimits ClampSupervisionLimits(const SupervisionLimits& limits) {
+-  return SupervisionLimits();
++  return {
++      .pairing_code_characters =
++          ClampLimit(limits.pairing_code_characters,
++                     kDefaultSupervisionPairingCodeCharacters,
++                     kHardSupervisionPairingCodeCharacters),
++      .pairing_code_ttl_ms = ClampLimit(limits.pairing_code_ttl_ms,
++                                        kDefaultSupervisionPairingCodeTtlMs,
++                                        kHardSupervisionPairingCodeTtlMs),
++      .viewer_ttl_ms =
++          ClampLimit(limits.viewer_ttl_ms, kDefaultSupervisionViewerTtlMs,
++                     kHardSupervisionViewerTtlMs),
++      .viewers_per_tab =
++          ClampLimit(limits.viewers_per_tab, kDefaultSupervisionViewersPerTab,
++                     kHardSupervisionViewersPerTab),
++      .sessions_per_profile = ClampLimit(limits.sessions_per_profile,
++                                         kDefaultSupervisionSessionsPerProfile,
++                                         kHardSupervisionSessionsPerProfile),
++      .attempts_per_code = ClampLimit(limits.attempts_per_code,
++                                      kDefaultSupervisionAttemptsPerCode,
++                                      kHardSupervisionAttemptsPerCode),
++      .baseline_nodes =
++          ClampLimit(limits.baseline_nodes, kDefaultSupervisionBaselineNodes,
++                     kHardSupervisionBaselineNodes),
++      .baseline_bytes =
++          ClampLimit(limits.baseline_bytes, kDefaultSupervisionBaselineBytes,
++                     kHardSupervisionBaselineBytes),
++      .diff_operations =
++          ClampLimit(limits.diff_operations, kDefaultSupervisionDiffOperations,
++                     kHardSupervisionDiffOperations),
++      .diff_bytes = ClampLimit(limits.diff_bytes, kDefaultSupervisionDiffBytes,
++                               kHardSupervisionDiffBytes),
++      .retained_batches = ClampLimit(limits.retained_batches,
++                                     kDefaultSupervisionRetainedBatches,
++                                     kHardSupervisionRetainedBatches),
++      .retained_bytes_per_viewer =
++          ClampLimit(limits.retained_bytes_per_viewer,
++                     kDefaultSupervisionRetainedBytesPerViewer,
++                     kHardSupervisionRetainedBytesPerViewer),
++      .dirty_debounce_ms = ClampLimit(limits.dirty_debounce_ms,
++                                      kDefaultSupervisionDirtyDebounceMs,
++                                      kHardSupervisionDirtyDebounceMs),
++      .audit_rows = ClampLimit(limits.audit_rows, kDefaultSupervisionAuditRows,
++                               kHardSupervisionAuditRows),
++  };
+ }
+ 
+ std::optional<uint64_t> CheckedNextSupervisionSequence(uint64_t sequence) {
+-  return std::nullopt;
++  if (sequence == std::numeric_limits<uint64_t>::max()) {
++    return std::nullopt;
++  }
++  return sequence + 1;
+ }
+ 
+ std::optional<uint64_t> CheckedNextSupervisionGeneration(uint64_t generation) {
+-  return std::nullopt;
++  if (generation == std::numeric_limits<uint64_t>::max()) {
++    return std::nullopt;
++  }
++  return generation + 1;
+ }
+ 
+ bool IsValidSupervisionStreamStamp(const SupervisionStreamStamp& stamp) {
+-  return false;
++  return !stamp.session.is_empty() && stamp.stable_tab_id > 0 &&
++         !stamp.document_epoch.is_empty() && stamp.sequence > 0;
+ }
+ 
+ bool IsValidSupervisionTargetBinding(const SupervisionTargetBinding& binding) {
+-  return false;
++  return binding.stable_tab_id > 0 && !binding.document_epoch.is_empty() &&
++         binding.target_generation > 0 && binding.document_generation > 0;
+ }
+ 
+ bool IsValidSupervisionPairingCode(std::string_view code) {
+-  return false;
++  constexpr std::string_view kAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
++  if (code.size() != kHardSupervisionPairingCodeCharacters) {
++    return false;
++  }
++  return std::all_of(code.begin(), code.end(), [kAlphabet](char character) {
++    return kAlphabet.find(character) != std::string_view::npos;
++  });
+ }
+ 
+ std::string DeriveSupervisionSafeClientLabel(std::string_view input) {
+-  return kSupervisionClientLabelFallback;
++  return DeriveSafeDisplayString(input, kMaxSupervisionSafeLabelBytes,
++                                 kSupervisionClientLabelFallback);
+ }
+ 
+ std::string DeriveSupervisionSafeTargetTitle(std::string_view input) {
+-  return kSupervisionTargetTitleFallback;
++  return DeriveSafeDisplayString(input, kMaxSupervisionSafeTitleBytes,
++                                 kSupervisionTargetTitleFallback);
+ }
+ 
+ std::optional<std::string> CanonicalizeSupervisionSafeOrigin(
+     std::string_view input) {
+-  return std::nullopt;
++  if (!IsBoundedUtf8(input, kMaxSupervisionSafeOriginBytes)) {
++    return std::nullopt;
++  }
++  const GURL url(input);
++  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) {
++    return std::nullopt;
++  }
++  const url::Origin origin = url::Origin::Create(url);
++  if (origin.opaque()) {
++    return std::nullopt;
++  }
++  std::string serialized = origin.Serialize();
++  if (!IsBoundedUtf8(serialized, kMaxSupervisionSafeOriginBytes)) {
++    return std::nullopt;
++  }
++  return serialized;
+ }
+ 
+ std::optional<base::DictValue> SupervisionTargetSnapshotToValue(
+     const SupervisionTargetSnapshot& snapshot,
+     const SupervisionLimits& limits) {
+-  return std::nullopt;
++  const SupervisionLimits effective = ClampSupervisionLimits(limits);
++  if (!IsBoundedUtf8(snapshot.safe_title, kMaxSupervisionSafeTitleBytes) ||
++      !IsBoundedUtf8(snapshot.safe_origin, kMaxSupervisionSafeOriginBytes) ||
++      snapshot.viewer_count > effective.viewers_per_tab ||
++      (snapshot.owner_label.has_value() &&
++       !IsBoundedUtf8(*snapshot.owner_label, kMaxSupervisionSafeLabelBytes)) ||
++      (snapshot.controller_label.has_value() &&
++       !IsBoundedUtf8(*snapshot.controller_label,
++                      kMaxSupervisionSafeLabelBytes))) {
++    return std::nullopt;
++  }
++  std::optional<std::string> origin =
++      CanonicalizeSupervisionSafeOrigin(snapshot.safe_origin);
++  if (!origin.has_value()) {
++    return std::nullopt;
++  }
++
++  base::DictValue value;
++  value.Set("safe_title",
++            DeriveSupervisionSafeTargetTitle(snapshot.safe_title));
++  value.Set("safe_origin", std::move(*origin));
++  if (snapshot.owner_label.has_value()) {
++    value.Set("owner_label",
++              DeriveSupervisionSafeClientLabel(*snapshot.owner_label));
++  }
++  value.Set("eligible", snapshot.eligible);
++  value.Set("agent_active", snapshot.agent_active);
++  value.Set("viewer_count", static_cast<int>(snapshot.viewer_count));
++  if (snapshot.controller_label.has_value()) {
++    value.Set("controller_label",
++              DeriveSupervisionSafeClientLabel(*snapshot.controller_label));
++  }
++  return value;
+ }
+ 
+ std::optional<base::DictValue> SupervisionClientSnapshotToValue(
+     const SupervisionClientSnapshot& snapshot,
+     const SupervisionLimits& limits) {
+-  return std::nullopt;
++  const SupervisionLimits effective = ClampSupervisionLimits(limits);
++  if (!IsBoundedUtf8(snapshot.display_label, kMaxSupervisionSafeLabelBytes) ||
++      !IsSafeTimestamp(snapshot.connected_at_ms) ||
++      !IsSafeTimestamp(snapshot.last_seen_at_ms) ||
++      !IsSafeTimestamp(snapshot.expires_at_ms) ||
++      snapshot.last_seen_at_ms < snapshot.connected_at_ms ||
++      snapshot.expires_at_ms < snapshot.last_seen_at_ms ||
++      static_cast<uint64_t>(snapshot.expires_at_ms - snapshot.connected_at_ms) >
++          effective.viewer_ttl_ms) {
++    return std::nullopt;
++  }
++
++  base::DictValue value;
++  value.Set("display_label",
++            DeriveSupervisionSafeClientLabel(snapshot.display_label));
++  value.Set("connected_at_ms", static_cast<double>(snapshot.connected_at_ms));
++  value.Set("last_seen_at_ms", static_cast<double>(snapshot.last_seen_at_ms));
++  value.Set("expires_at_ms", static_cast<double>(snapshot.expires_at_ms));
++  return value;
+ }
+ 
+ std::optional<base::DictValue> SupervisionSessionSnapshotToValue(
+     const SupervisionSessionSnapshot& snapshot,
+     const SupervisionLimits& limits) {
+-  return std::nullopt;
++  std::optional<base::DictValue> client =
++      SupervisionClientSnapshotToValue(snapshot.client, limits);
++  const std::optional<std::string_view> viewer_state =
++      SupervisionViewerStateToString(snapshot.viewer_state);
++  const std::optional<std::string_view> stream_state =
++      SupervisionStreamStateToString(snapshot.stream_state);
++  const std::optional<std::string_view> action_state =
++      SupervisionRemoteActionStateToString(snapshot.action_state);
++  const std::optional<std::string_view> terminal_reason =
++      SupervisionTerminalReasonToString(snapshot.terminal_reason);
++  if (!client.has_value() || !viewer_state.has_value() ||
++      !stream_state.has_value() || !action_state.has_value() ||
++      !terminal_reason.has_value()) {
++    return std::nullopt;
++  }
++
++  std::optional<std::string_view> action_category;
++  if (snapshot.action_category.has_value()) {
++    action_category =
++        SupervisionRemoteActionCategoryToString(*snapshot.action_category);
++    if (!action_category.has_value()) {
++      return std::nullopt;
++    }
++  }
++
++  base::DictValue value;
++  value.Set("client", std::move(*client));
++  value.Set("viewer_state", *viewer_state);
++  value.Set("stream_state", *stream_state);
++  value.Set("action_state", *action_state);
++  if (action_category.has_value()) {
++    value.Set("action_category", *action_category);
++  }
++  value.Set("terminal_reason", *terminal_reason);
++  return value;
+ }
+ 
+ std::optional<base::DictValue> SupervisionAuditSnapshotToValue(
+     const SupervisionAuditSnapshot& snapshot,
+     const SupervisionLimits& limits) {
+-  return std::nullopt;
++  const SupervisionLimits effective = ClampSupervisionLimits(limits);
++  const std::optional<std::string_view> event =
++      SupervisionAuditEventToString(snapshot.event);
++  const std::optional<std::string_view> error_code =
++      SupervisionErrorCodeToString(snapshot.error_code);
++  if (!event.has_value() || !error_code.has_value() ||
++      !IsSafeTimestamp(snapshot.timestamp_ms) || snapshot.duration_ms < 0 ||
++      static_cast<uint64_t>(snapshot.duration_ms) > effective.viewer_ttl_ms ||
++      !IsBoundedUtf8(snapshot.safe_target_title,
++                     kMaxSupervisionSafeTitleBytes) ||
++      !IsBoundedUtf8(snapshot.safe_origin, kMaxSupervisionSafeOriginBytes) ||
++      (snapshot.client_label.has_value() &&
++       !IsBoundedUtf8(*snapshot.client_label, kMaxSupervisionSafeLabelBytes))) {
++    return std::nullopt;
++  }
++  std::optional<std::string> origin =
++      CanonicalizeSupervisionSafeOrigin(snapshot.safe_origin);
++  if (!origin.has_value()) {
++    return std::nullopt;
++  }
++
++  std::optional<std::string_view> action_category;
++  if (snapshot.action_category.has_value()) {
++    action_category =
++        SupervisionRemoteActionCategoryToString(*snapshot.action_category);
++    if (!action_category.has_value()) {
++      return std::nullopt;
++    }
++  }
++
++  base::DictValue value;
++  value.Set("event", *event);
++  value.Set("timestamp_ms", static_cast<double>(snapshot.timestamp_ms));
++  if (snapshot.client_label.has_value()) {
++    value.Set("client_label",
++              DeriveSupervisionSafeClientLabel(*snapshot.client_label));
++  }
++  value.Set("safe_target_title",
++            DeriveSupervisionSafeTargetTitle(snapshot.safe_target_title));
++  value.Set("safe_origin", std::move(*origin));
++  if (action_category.has_value()) {
++    value.Set("action_category", *action_category);
++  }
++  value.Set("error_code", *error_code);
++  value.Set("duration_ms", static_cast<double>(snapshot.duration_ms));
++  return value;
+ }
+ 
+ std::optional<base::DictValue> SanitizedSupervisionSnapshotToValue(
+     const SanitizedSupervisionSnapshot& snapshot,
+     const SupervisionLimits& limits) {
+-  return std::nullopt;
++  const SupervisionLimits effective = ClampSupervisionLimits(limits);
++  const std::optional<std::string_view> pairing_state =
++      SupervisionPairingStateToString(snapshot.pairing_state);
++  if (!pairing_state.has_value() ||
++      snapshot.sessions.size() > effective.sessions_per_profile ||
++      snapshot.audit.size() > effective.audit_rows) {
++    return std::nullopt;
++  }
++  std::optional<base::DictValue> target =
++      SupervisionTargetSnapshotToValue(snapshot.target, effective);
++  if (!target.has_value()) {
++    return std::nullopt;
++  }
++
++  base::ListValue sessions;
++  for (const SupervisionSessionSnapshot& session : snapshot.sessions) {
++    std::optional<base::DictValue> value =
++        SupervisionSessionSnapshotToValue(session, effective);
++    if (!value.has_value()) {
++      return std::nullopt;
++    }
++    sessions.Append(std::move(*value));
++  }
++
++  base::ListValue audit;
++  for (const SupervisionAuditSnapshot& row : snapshot.audit) {
++    std::optional<base::DictValue> value =
++        SupervisionAuditSnapshotToValue(row, effective);
++    if (!value.has_value()) {
++      return std::nullopt;
++    }
++    audit.Append(std::move(*value));
++  }
++
++  base::DictValue value;
++  value.Set("pairing_state", *pairing_state);
++  value.Set("target", std::move(*target));
++  value.Set("sessions", std::move(sessions));
++  value.Set("audit", std::move(audit));
++  return value;
+ }
+ 
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+
