@@ -7,7 +7,7 @@
 
 ## v2.0 Chromium Engine Migration
 
-**Status:** In progress — Phase 20 is complete; Phase 21 is ready for discussion and planning.
+**Status:** In progress — Phase 20 is complete; Phase 21 is planned and ready to execute.
 
 ## Milestone Thesis
 
@@ -41,6 +41,7 @@ Prometheus keeps its product, design, and agent-native control thesis, but retir
 **Plans:** 3/3 plans complete
 
 Plans:
+
 - [x] 11-01-PLAN.md — Create the preservation evidence gate and canonical dossier evidence/license boundary.
 - [x] 11-02-PLAN.md — Complete the capability-first Falkon-to-Chromium migration map and verifier invariants.
 - [x] 11-03-PLAN.md — Add the deferred visual-check ledger, freeze checklist, and stale-doc cleanup gate.
@@ -94,6 +95,7 @@ Plans:
 **Plans:** 4/4 plans complete
 
 Plans:
+
 - [x] 13-01-PLAN.md — Author Prometheus smoke-launch gate and GPL Falkon source guard script
 - [x] 13-02-PLAN.md — Author NOTICES.md, product identity inventory, legal notice inventory, and README update
 - [x] 13-03-PLAN.md — Apply BRANDING and GRD string patches to Chromium tree; rebuild Prometheus.app
@@ -141,23 +143,27 @@ Plans:
 
 Plans:
 **Wave 1**
+
 - [x] 14-01-PLAN.md — Wave 0: Phase 14 branch, test scaffold (RED stubs), verify-asset-pipeline.sh, convert-fa-icons.sh
 - [x] 14-02-PLAN.md — Declare kColorPrometheus* ids in COMMON_CHROME_COLOR_IDS; register mixer last in AddChromeColorMixers
 - [x] 14-04-PLAN.md — Vendor font/FA license metadata; source Poppins/SpaceMono/mark assets; write prometheus_fonts.css
 
 **Wave 2** *(blocked on Wave 1 completion)*
+
 - [x] 14-03-PLAN.md — Fill warm dark/light palette + accent derivations in prometheus_color_mixer.cc (token tests GREEN)
 - [x] 14-05-PLAN.md — Run FA icon conversion; declare prometheus_vector_icons GN target; write PrometheusAction resolver
 
 **Wave 3** *(blocked on Wave 2 completion)*
+
 - [x] 14-06-PLAN.md — Write prometheus_resources.grd; wire pak into browser bundle; IDR resource tests GREEN
 
 **Wave 4** *(blocked on Wave 3 completion)*
+
 - [x] 14-07-PLAN.md — Build chrome://prometheus-theme-preview WebUI dev surface + PrometheusTokenGalleryView
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [x] 14-08-PLAN.md — Full gate run; tag VIS satisfied-by-Ph14-harness; export Phase 14 patches
 
+- [x] 14-08-PLAN.md — Full gate run; tag VIS satisfied-by-Ph14-harness; export Phase 14 patches
 
 ### Phase 15: Chromium UI Shell, Compact Chrome, and Tab Model
 
@@ -242,6 +248,7 @@ Plans:
 **Plans:** 8/8 plans complete
 
 Plans:
+
 - [x] 18-01-PLAN.md — Extend page-route contracts and harden content-safe audit metadata.
 - [x] 18-02-PLAN.md — Add deterministic page-adapter fixtures and browser-test harness.
 - [x] 18-03-PLAN.md — Implement frame policy and `read_page` over Chromium text extraction.
@@ -276,6 +283,7 @@ Plans:
 **Plans:** 7/7 plans complete
 
 Plans:
+
 - [x] 19-01-PLAN.md — Freeze the clean-room 90-name compatibility catalog, schemas, typed errors, and Wave 0 fixtures.
 - [x] 19-02-PLAN.md — Add closed native route/result contracts and a strict bounded JSON transport codec.
 - [x] 19-03-PLAN.md — Add regular-profile keyed session lifetime, opaque resume, cap, expiry, and ownership cleanup.
@@ -309,6 +317,7 @@ Plans:
 **Plans:** 14/14 plans complete
 
 Plans:
+
 - [x] 20-01-PLAN.md — Define closed native runtime contracts, profile prefs, limits, and effective policy.
 - [x] 20-02-PLAN.md — Implement bounded task, log, action, diagnostic, outcome, and usage persistence.
 - [x] 20-03-PLAN.md — Implement bounded memory and exact-origin site-guide CRUD/search/apply.
@@ -345,6 +354,113 @@ Plans:
 **Goal:** Rebuild DOM-native supervision and safe dashboard pairing on Chromium sessions.
 
 **Requirements:** SUP-01, SUP-02, SUP-03, SUP-04, SUP-05
+
+**Plans:** 0/26 plans complete
+
+Plans:
+**Wave 1**
+
+- [ ] 21-01-PLAN.md — Freeze closed native supervision types and the focused verification scaffold.
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 21-02-PLAN.md — Define the bounded dashboard supervision wire codec and privacy contract.
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 21-03-PLAN.md — Implement the transport-independent DOM baseline, diff, sequence, and resync model.
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 21-04-PLAN.md — Build pairing, viewer, controller, and Agent-owned tab-observation lifecycles.
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 21-05-PLAN.md — Bind supervision safely to regular-profile Agent authority and teardown ordering.
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 21-06-PLAN.md — Add the Blink document supplement and bidirectional dirty-signal Mojo path.
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [ ] 21-07-PLAN.md — Create the sole browser-owned capture hub shared by all supervision consumers.
+
+**Wave 8** *(blocked on Wave 7 completion)*
+
+- [ ] 21-08-PLAN.md — Attach independent dashboard viewers to exact-target capture-hub streams.
+
+**Wave 9** *(blocked on Wave 8 completion)*
+
+- [ ] 21-09-PLAN.md — Add an abstract supervision dispatcher to the authenticated loopback gateway.
+
+**Wave 10** *(blocked on Wave 9 completion)*
+
+- [ ] 21-10-PLAN.md — Promote the five closed supervision commands into the native route contract.
+
+**Wave 11** *(blocked on Wave 10 completion)*
+
+- [ ] 21-11-PLAN.md — Wire the five commands through exact-browser Agent dispatch and composition.
+
+**Wave 12** *(blocked on Wave 11 completion)*
+
+- [ ] 21-12-PLAN.md — Implement MCP supervision semantics as an independent shared-hub consumer.
+
+**Wave 13** *(blocked on Wave 12 completion)*
+
+- [ ] 21-13-PLAN.md — Promote the five supervision tools in the dependency-free Node catalog.
+
+**Wave 14** *(blocked on Wave 13 completion)*
+
+- [ ] 21-14-PLAN.md — Route remote control through the existing typed Agent action engine.
+
+**Wave 15** *(blocked on Wave 14 completion)*
+
+- [ ] 21-15-PLAN.md — Add native consent and revalidation for control and consequential actions.
+
+**Wave 16** *(blocked on Wave 15 completion)*
+
+- [ ] 21-16-PLAN.md — Project sanitized supervision state into browser-owned tab state.
+
+**Wave 17** *(blocked on Wave 16 completion)*
+
+- [ ] 21-17-PLAN.md — Wire the existing native tab badge to live supervision state.
+
+**Wave 18** *(blocked on Wave 17 completion)*
+
+- [ ] 21-18-PLAN.md — Add exact-tab native runtime and stop actions for the side-panel strip.
+
+**Wave 19** *(blocked on Wave 18 completion)*
+
+- [ ] 21-19-PLAN.md — Render the persistent responsive supervision strip in the side panel.
+
+**Wave 20** *(blocked on Wave 19 completion)*
+
+- [ ] 21-20-PLAN.md — Add strict Control Panel snapshots and one-shot pairing creation.
+
+**Wave 21** *(blocked on Wave 20 completion)*
+
+- [ ] 21-21-PLAN.md — Complete Control Panel lifecycle actions, observation, and code erasure.
+
+**Wave 22** *(blocked on Wave 21 completion)*
+
+- [ ] 21-22-PLAN.md — Finish the responsive Supervision & Pairing Control Panel UI.
+
+**Wave 23** *(blocked on Wave 22 completion)*
+
+- [ ] 21-23-PLAN.md — Add the gated two-slot smoke bootstrap and conditional gateway contract path.
+
+**Wave 24** *(blocked on Wave 23 completion)*
+
+- [ ] 21-24-PLAN.md — Bind the test handoff only from browser composition with fail-closed teardown.
+
+**Wave 25** *(blocked on Wave 24 completion)*
+
+- [ ] 21-25-PLAN.md — Prove native dialogs and two-viewer/MCP supervision in the built app.
+
+**Wave 26** *(blocked on Wave 25 completion)*
+
+- [ ] 21-26-PLAN.md — Run exact verification, export ordered patches, and publish closeout evidence.
 
 **Success criteria:**
 
@@ -430,6 +546,7 @@ Plans:
 - Resolve or explicitly disposition the Phase 20 UI audit carry-forward:
   waiting-confirmation review, current-tab vault use, transactional vault-save
   failure handling, control-panel detail/filter gaps, and token normalization.
+
 - Archive v2.0 milestone artifacts.
 - Prepare next milestone candidates.
 
@@ -447,13 +564,13 @@ Plans:
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 8/8 | Complete    | 2026-07-12 |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 7/7 | Complete    | 2026-07-13 |
 | 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 14/14 | Complete    | 2026-07-20 |
-| 21. Supervision, Pairing, and Remote Control | v2.0 | 0 | Planned | — |
+| 21. Supervision, Pairing, and Remote Control | v2.0 | 0/26 | Planned | — |
 | 22. Chrome Extension Ecosystem and Policy | v2.0 | 0 | Planned | — |
 | 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
 | 24. Packaging, Release Validation, and Handoff | v2.0 | 0 | Planned | — |
 
-**Totals:** 14 phases, 10 complete; 66 of 66 existing v2.0 plans summarized.
-Phase 20 is complete; Phase 21 is current and ready for discussion.
+**Totals:** 14 phases, 10 complete; 66 of 92 existing v2.0 plans summarized.
+Phase 20 is complete; Phase 21 is current, planned, and ready to execute.
 
 ## Future Work Beyond Current Milestone
 

@@ -5,14 +5,14 @@ milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
 current_plan: Not started
-status: Ready to discuss
-stopped_at: Phase 21 UI-SPEC approved
-last_updated: "2026-07-21T11:48:55.926Z"
-last_activity: 2026-07-20
+status: executing
+stopped_at: Phase 21 planning complete — 26 plans ready to execute
+last_updated: "2026-07-21T21:25:47.074Z"
+last_activity: 2026-07-21
 progress:
   total_phases: 14
   completed_phases: 10
-  total_plans: 66
+  total_plans: 92
   completed_plans: 66
   percent: 71
 ---
@@ -26,8 +26,8 @@ See: `.planning/PROJECT.md` (updated 2026-07-13)
 **Core value:** Agents get fast, precise, auditable whole-browser control
 through DOM/native structure rather than screenshots or extension injection.
 
-**Current focus:** Discuss and plan Phase 21 supervision, pairing, and remote
-control on the verified Chromium-native runtime and session authority model.
+**Current focus:** Execute Phase 21 supervision, pairing, and remote control on
+the verified Chromium-native runtime and session authority model.
 
 **Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
 external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
@@ -35,22 +35,22 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 
 ## Current Position
 
-Phase: 21 (Supervision, Pairing, and Remote Control) — READY TO DISCUSS
+Phase: 21 (Supervision, Pairing, and Remote Control) — READY TO EXECUTE
 Plan: Not started
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
 **Current Plan:** Not started
-**Total Plans in Phase:** 0
-**Status:** Ready to discuss
+**Total Plans in Phase:** 26
+**Status:** Ready to execute
 **Progress:** [██████████] 100% of existing plans
-**Last Activity:** 2026-07-20
-**Last Activity Description:** Completed Phase 20 after three code-review/fix
-iterations, independent goal verification, and an advisory UI audit.
+**Last Activity:** 2026-07-21
+**Last Activity Description:** Phase 21 planning complete — 26 plans ready for
+execution after adversarial architecture, security, UI, and coverage gates.
 
-Milestone work is 66 of 66 existing plans complete (100%); cumulative project
-work is 117 of 117 existing plans summarized (100%).
+Milestone work is 66 of 92 existing plans complete (72%); cumulative project
+work is 117 of 143 existing plans summarized (82%).
 
 ## Latest Evidence
 
