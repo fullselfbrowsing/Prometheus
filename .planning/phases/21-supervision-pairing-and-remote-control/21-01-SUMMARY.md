@@ -45,7 +45,8 @@ patterns-established:
   - "Every caller-controlled resource limit maps zero to its approved default and clamps positive values at an explicit hard maximum."
   - "Sanitized output is constructed from approved metadata keys only; raw code, session, lease, bearer, profile, document, selector, and content fields are structurally absent."
 
-requirements-completed: [SUP-02, SUP-03, SUP-04, SUP-05]
+requirements-completed: []
+requirements-progressed: [SUP-02, SUP-03, SUP-04, SUP-05]
 
 duration: 41min
 completed: 2026-07-21
@@ -78,7 +79,7 @@ Each task was committed atomically; nested Chromium commits were immediately exp
 2. **Task 2 (RED): Specify closed supervision contract** - nested `5cf320abe1`; patch export `f0f8203ea`
 3. **Task 3 (GREEN): Implement closed native contract** - nested `1b30708fba`; patch export `7148ffa75`
 
-**Plan metadata:** (this commit)
+**Plan metadata:** `ec895d63d`
 
 ## Files Created/Modified
 
@@ -124,7 +125,10 @@ None. No credentials, external services, or configuration are required.
 
 ## Next Phase Readiness
 
-Plan 21-02 can build the regular-profile supervision service and exact Browser/tab authority graph against one closed contract. Later streaming, gateway, remote-control, audit, and UI plans can depend on the same bounded sanitized DTO surface.
+Plan 21-02 can define the bounded dashboard supervision wire codec and privacy
+contract against one closed native vocabulary. Later service, streaming,
+gateway, remote-control, audit, and UI plans can depend on the same sanitized
+DTO surface.
 
 No blockers or threat flags remain.
 
