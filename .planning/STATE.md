@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: null
-status: ready_to_plan
-stopped_at: Phase 20 complete (14/14) — ready to discuss Phase 21
-last_updated: 2026-07-20T19:02:18.818Z
+current_plan: Not started
+status: Ready to discuss
+stopped_at: Phase 21 context gathered
+last_updated: "2026-07-21T11:28:27.702Z"
 last_activity: 2026-07-20
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 66
   completed_plans: 66
-  percent: 100
+  percent: 71
 ---
 
 # Project State
@@ -190,13 +190,14 @@ work is 117 of 117 existing plans summarized (100%).
   add a browser-owned `Use in Current Tab` vault action, keep the vault secret
   dialog open on encryption failure, complete task/log/header/permission detail
   models, and normalize light/accent/type/spacing tokens before release.
+
 - Signed/notarized public distribution: beyond the local v2.0 validation package.
 
 ## Session
 
-**Last Date:** 2026-07-20T19:02:18.818Z
-**Stopped At:** Phase 20 complete (14/14) — ready to discuss Phase 21
-**Resume File:** None
+**Last Date:** 2026-07-21T11:28:27.697Z
+**Stopped At:** Phase 21 context gathered
+**Resume File:** .planning/phases/21-supervision-pairing-and-remote-control/21-CONTEXT.md
 
 ## Operator Next Step
 
