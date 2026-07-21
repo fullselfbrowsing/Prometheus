@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 3
+current_plan: 4
 status: executing
-stopped_at: Completed 21-02-PLAN.md
-last_updated: "2026-07-21T22:55:21.680Z"
+stopped_at: Completed 21-03-PLAN.md
+last_updated: "2026-07-21T23:42:07.286Z"
 last_activity: 2026-07-21
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 68
-  percent: 74
+  completed_plans: 69
+  percent: 71
 ---
 
 # Project State
@@ -36,17 +36,17 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 3 of 26
+Plan: 4 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 3
+**Current Plan:** 4
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [███████░░░] 74%
+**Progress:** [████████░░] 75%
 **Last Activity:** 2026-07-21
-**Last Activity Description:** Completed Plan 21-02 — closed seven-operation
+**Last Activity Description:** Completed Plan 21-03 — privacy-safe APC baseline/diff and cursor resync on the
 supervision transport, recursive authority rejection, and privacy-separated
 result serializers.
 
@@ -182,6 +182,9 @@ work is 119 of 144 existing plans summarized (83%).
 | 21 | Project dashboard session, document epoch, and sequence only through the authenticated dashboard serializer; rebuild compatibility output from sanitized metadata with no authority path. |
 | 21 | Normalize the one-time pairing code only for redemption, derive the client label through the native safe-label projector, and keep malformed-input errors fixed and non-echoing. |
 
+- [Phase 21]: Project form values only when APC explicitly marks them safe and the control is independently neither password, payment, nor OTP; absent and future redaction decisions fail closed. — Supervision must structurally omit secrets before serialization, and a plausible truncated or ambiguously redacted baseline must never appear authoritative.
+- [Phase 21]: Keep stream authority outside diff JSON and require a fresh acknowledged baseline after any malformed tree, reparenting ambiguity, authority mismatch, sequence discontinuity, wrap, or resource-cap overflow. — Canonical bounded structural operations stay transport-independent while per-viewer cursor failure remains atomic and cannot create partial authoritative state.
+
 ## Performance Metrics
 
 | Plan | Duration | Tasks | Files |
@@ -198,6 +201,7 @@ work is 119 of 144 existing plans summarized (83%).
 | Phase 20 P14 | 5h45m | 2 tasks | 21 files |
 | Phase 21 P01 | 41min | 3 tasks | 8 files |
 | Phase 21 P02 | 33min | 2 tasks | 8 files |
+| Phase 21 P03 | 38min | 3 tasks | 12 files |
 
 ## Blockers and Deferred Items
 
@@ -212,8 +216,8 @@ work is 119 of 144 existing plans summarized (83%).
 
 ## Session
 
-**Last Date:** 2026-07-21T22:54:45.050Z
-**Stopped At:** Completed 21-02-PLAN.md
+**Last Date:** 2026-07-21T23:39:52.500Z
+**Stopped At:** Completed 21-03-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step

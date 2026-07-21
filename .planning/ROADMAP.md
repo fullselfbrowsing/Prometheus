@@ -355,7 +355,7 @@ Plans:
 
 **Requirements:** SUP-01, SUP-02, SUP-03, SUP-04, SUP-05
 
-**Plans:** 2/26 plans executed
+**Plans:** 3/26 plans executed
 
 Plans:
 **Wave 1**
@@ -368,7 +368,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 21-03-PLAN.md — Implement the transport-independent DOM baseline, diff, sequence, and resync model.
+- [x] 21-03-PLAN.md — Implement the transport-independent DOM baseline, diff, sequence, and resync model.
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -564,7 +564,7 @@ Plans:
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 8/8 | Complete    | 2026-07-12 |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 7/7 | Complete    | 2026-07-13 |
 | 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 14/14 | Complete    | 2026-07-20 |
-| 21. Supervision, Pairing, and Remote Control | v2.0 | 2/26 | In Progress | — |
+| 21. Supervision, Pairing, and Remote Control | v2.0 | 3/26 | In Progress|  |
 | 22. Chrome Extension Ecosystem and Policy | v2.0 | 0 | Planned | — |
 | 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
 | 24. Packaging, Release Validation, and Handoff | v2.0 | 0 | Planned | — |
