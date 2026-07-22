@@ -1,0 +1,176 @@
+From 531fa602c2e6bb66fe64ab1ebd33f238255eac4d Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 01:31:03 -0500
+Subject: [PATCH] test(21-08): specify shared dashboard capture consumers
+
+---
+ .../prometheus_supervision_capture_hub.h      |  5 +-
+ ...etheus_supervision_capture_hub_unittest.cc | 67 +++++++++++++++++++
+ .../prometheus_supervision_profile_service.cc | 11 +++
+ .../prometheus_supervision_profile_service.h  |  2 +
+ ...us_supervision_profile_service_unittest.cc | 22 ++++++
+ 5 files changed, 106 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub.h b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+index e6cc99bb7d..417f408bb9 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+@@ -35,7 +35,10 @@ enum class SupervisionCaptureConsumerKind {
+   kAgentCompatibility,
+ };
+ 
+-using SupervisionCaptureConsumerId = uint64_t;
++// Opaque browser-only handle. It is meaningful only to the hub that issued it
++// and is never serialized as dashboard authority.
++using CaptureConsumerToken = uint64_t;
++using SupervisionCaptureConsumerId = CaptureConsumerToken;
+ 
+ // Consumer-facing deliveries carry only browser-created stream stamps and
+ // privacy-filtered projection output. Mojo endpoints and renderer identity are
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc
+index ad70f3352c..2ca37066a1 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc
+@@ -311,5 +311,72 @@ TEST_F(PrometheusSupervisionCaptureHubTest,
+   EXPECT_EQ(1u, hub->capture_count_for_testing());
+ }
+ 
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       DashboardConsumersShareCaptureAndAckIndependently) {
++  auto hub = CreateHub();
++  const auto first = hub->AttachConsumer(
++      SupervisionCaptureConsumerKind::kDashboard, now_ + base::Minutes(10));
++  const auto second = hub->AttachConsumer(
++      SupervisionCaptureConsumerKind::kDashboard, now_ + base::Minutes(10));
++  ASSERT_TRUE(first.has_value());
++  ASSERT_TRUE(second.has_value());
++  EXPECT_EQ(1u, hub->enable_count_for_testing());
++  EXPECT_EQ(1u, hub->capture_count_for_testing());
++
++  capture_source_.CompleteNext(MakeBaseline("shared baseline"));
++  const auto first_baseline = hub->ReadBaseline(*first);
++  const auto second_baseline = hub->ReadBaseline(*second);
++  ASSERT_TRUE(first_baseline.has_value());
++  ASSERT_TRUE(second_baseline.has_value());
++  EXPECT_EQ(first_baseline->baseline, second_baseline->baseline);
++  EXPECT_NE(first_baseline->stamp.session, second_baseline->stamp.session);
++  ASSERT_TRUE(hub->Ack(*first, first_baseline->stamp));
++  ASSERT_TRUE(hub->Ack(*second, second_baseline->stamp));
++
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  capture_source_.CompleteNext(MakeBaseline("shared mutation"));
++  const auto first_diff = hub->ReadNext(*first);
++  const auto second_diff = hub->ReadNext(*second);
++  ASSERT_TRUE(first_diff.has_value());
++  ASSERT_TRUE(second_diff.has_value());
++  EXPECT_EQ(first_diff->diff, second_diff->diff);
++  ASSERT_TRUE(hub->Ack(*first, first_diff->stamp));
++  EXPECT_FALSE(hub->ReadNext(*first).has_value());
++  ASSERT_TRUE(hub->ReadNext(*second).has_value());
++  EXPECT_EQ(second_diff->stamp.sequence,
++            hub->ReadNext(*second)->stamp.sequence);
++}
++
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       DashboardLagResyncAndRevocationRemainConsumerLocal) {
++  SupervisionLimits limits;
++  limits.retained_batches = 1;
++  auto hub = CreateHub(limits);
++  const auto lagging = hub->AttachConsumer(
++      SupervisionCaptureConsumerKind::kDashboard, now_ + base::Minutes(10));
++  const auto current = hub->AttachConsumer(
++      SupervisionCaptureConsumerKind::kDashboard, now_ + base::Minutes(10));
++  ASSERT_TRUE(lagging.has_value());
++  ASSERT_TRUE(current.has_value());
++  CompleteAndAckBaseline(*hub, *lagging, *current);
++
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  capture_source_.CompleteNext(MakeBaseline("first mutation"));
++  const auto current_first = hub->ReadNext(*current);
++  ASSERT_TRUE(current_first.has_value());
++  ASSERT_TRUE(hub->Ack(*current, current_first->stamp));
++
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  capture_source_.CompleteNext(MakeBaseline("second mutation"));
++  EXPECT_TRUE(hub->ConsumerNeedsBaseline(*lagging));
++  EXPECT_FALSE(hub->ConsumerNeedsBaseline(*current));
++  EXPECT_TRUE(hub->ReadNext(*current).has_value());
++
++  EXPECT_TRUE(hub->RevokeConsumer(*lagging));
++  EXPECT_EQ(1u, hub->consumer_count());
++  EXPECT_TRUE(hub->ReadNext(*current).has_value());
++  EXPECT_EQ(0u, hub->disable_count_for_testing());
++}
++
+ }  // namespace
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+index 8f47374a39..1f5d50850e 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+@@ -634,6 +634,17 @@ size_t PrometheusSupervisionProfileService::controller_count_for_testing()
+   return controllers_.size();
+ }
+ 
++size_t PrometheusSupervisionProfileService::capture_hub_count_for_testing()
++    const {
++  return 0u;
++}
++
++size_t
++PrometheusSupervisionProfileService::capture_consumer_count_for_testing(
++    int32_t stable_tab_id) const {
++  return 0u;
++}
++
+ size_t PrometheusSupervisionProfileService::audit_count_for_testing() const {
+   return audit_.size();
+ }
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.h b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+index ba326d4742..69040c575e 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+@@ -126,6 +126,8 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+   size_t viewer_count_for_testing(int32_t stable_tab_id) const;
+   size_t observed_tab_count_for_testing() const;
+   size_t controller_count_for_testing() const;
++  size_t capture_hub_count_for_testing() const;
++  size_t capture_consumer_count_for_testing(int32_t stable_tab_id) const;
+   size_t audit_count_for_testing() const;
+   size_t global_failed_attempt_count_for_testing() const;
+   std::optional<std::string> immutable_owner_for_testing(
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+index 661a619d78..249076ed1f 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+@@ -621,5 +621,27 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+   EXPECT_LE(service_->audit_count_for_testing(), kDefaultSupervisionAuditRows);
+ }
+ 
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       HubRedeemedViewersRequireOneExactTargetRegistry) {
++  SupervisionPairingCreationResult first = CreatePairing();
++  ASSERT_TRUE(first.ok);
++  SupervisionRedemptionResult viewer_a = Redeem(first, "Viewer A");
++  ASSERT_TRUE(viewer_a.ok);
++  SupervisionPairingCreationResult second = CreatePairing();
++  ASSERT_TRUE(second.ok);
++  SupervisionRedemptionResult viewer_b = Redeem(second, "Viewer B");
++  ASSERT_TRUE(viewer_b.ok);
++
++  EXPECT_EQ(1u, service_->capture_hub_count_for_testing());
++  EXPECT_EQ(2u,
++            service_->capture_consumer_count_for_testing(first.stable_tab_id));
++  EXPECT_TRUE(service_->EndSession(viewer_a.dashboard_session).ok);
++  EXPECT_EQ(1u, service_->capture_hub_count_for_testing());
++  EXPECT_EQ(1u,
++            service_->capture_consumer_count_for_testing(first.stable_tab_id));
++  EXPECT_TRUE(service_->RevokeSession(viewer_b.dashboard_session).ok);
++  EXPECT_EQ(0u, service_->capture_hub_count_for_testing());
++}
++
+ }  // namespace
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

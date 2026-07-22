@@ -233,6 +233,8 @@ verify_capture_hub_contract() {
   local hub_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc"
   local hub_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc"
   local hub_browser_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc"
+  local profile_service="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local profile_service_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.h"
   local browser_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
   local views_build="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/BUILD.gn"
 
@@ -271,6 +273,10 @@ verify_capture_hub_contract() {
     'ExecJs|EvalJs|ExecuteScript|MutationObserver' \
     'capture-hub browser proof used test-side script injection or a synthetic observer' \
     "${hub_browser_test}"
+  reject_pattern \
+    'mojo::|blink::mojom::PrometheusSupervisionDocument|optimization_guide::GetAIPageContent|SupervisionNormalizedNode|SharedBatch|document_remote_|capture_for_testing_|retained_batches_|acknowledged_sequence|next_sequence' \
+    'profile service duplicated renderer, capture-tree, history, or cursor ownership' \
+    "${profile_service}" "${profile_service_header}"
   [[ "$(rg -c --fixed-strings 'document_remote_->Enable' "${hub_source}")" -eq 1 ]] \
     || fail 'capture hub must own exactly one renderer Enable call site'
   note 'capture-hub ownership, consumer API, privacy, and GN static guards passed'
