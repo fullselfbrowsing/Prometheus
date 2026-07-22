@@ -604,6 +604,28 @@ verify_agent_supervision_transport_contract() {
   note 'Agent supervision route/result declarations, privacy fixture, and GN guards passed'
 }
 
+verify_supervision_action_controller_contract() {
+  local header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller.h"
+  local source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller.cc"
+  local test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc"
+  require_file "${header}"
+  require_file "${source}"
+  require_file "${test_source}"
+  rg -q 'PrometheusSupervisionActionController' "${header}" "${source}" \
+    || fail 'supervision action controller boundary is missing'
+  rg -q 'ExecuteBrowserLocalRoute' "${source}" \
+    || fail 'supervision actions do not reuse exact-browser Agent dispatch'
+  rg -q 'SupervisionActionClassification' "${header}" "${source}" \
+    || fail 'supervision action classification is not closed and typed'
+  rg -q 'PrometheusSupervisionActionControllerTest' "${test_source}" \
+    || fail 'supervision action controller tests are missing'
+  if rg -n 'ClaimIfUnowned|(^|[^A-Za-z])ExecuteRoute\(|ExecuteScript|MutationObserver|execute_js|ExecuteConfirmedVaultInsertion|PrometheusVault' \
+      "${header}" "${source}"; then
+    fail 'supervision action controller contains a forbidden authority, DOM, script, or vault bypass'
+  fi
+  note 'supervision action controller reuses only the closed exact-browser Agent seam'
+}
+
 sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
@@ -1037,6 +1059,10 @@ build_focused_binary() {
   local supervision_hub_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc"
   local supervision_hub_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc"
   local supervision_hub_browser_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc"
+  local supervision_action_object='obj/chrome/browser/prometheus/prometheus_supervision_action_controller/prometheus_supervision_action_controller.o'
+  local supervision_action_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_action_controller_unittest.o'
+  local supervision_action_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller.cc"
+  local supervision_action_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc"
   local gateway_contract_object='obj/chrome/browser/prometheus/prometheus_agent_gateway_contract/prometheus_agent_gateway_contract.o'
   local gateway_object='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_agent_gateway.o'
   local browser_composition_object='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_browser_main_extra_parts.o'
@@ -1168,6 +1194,17 @@ build_focused_binary() {
     fi
   fi
 
+  if [[ -e "${supervision_action_source}" || -e "${supervision_action_test_source}" ]]; then
+    [[ -s "${supervision_action_source}" ]] \
+      || fail 'supervision action controller implementation is missing or empty'
+    [[ -s "${supervision_action_test_source}" ]] \
+      || fail 'supervision action controller test is missing or empty'
+    compile_synthesized_object "${runtime_profile_object}" "${supervision_action_object}" \
+      prometheus_runtime_profile_service prometheus_supervision_action_controller
+    compile_synthesized_object "${runtime_profile_test_object}" "${supervision_action_test_object}" \
+      prometheus_runtime_profile_service_unittest prometheus_supervision_action_controller_unittest
+  fi
+
   require_file "${OUT_DIR}/browser_tests.rsp"
   local runtime_contract='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o'
   local runtime_dialogs='obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o'
@@ -1201,6 +1238,9 @@ build_focused_binary() {
   fi
   if [[ -s "${supervision_hub_source}" ]]; then
     candidates+=("${supervision_hub_object}" "${mojom_object}" "${mojom_shared_object}")
+  fi
+  if [[ -s "${supervision_action_source}" ]]; then
+    candidates+=("${supervision_action_object}")
   fi
   if [[ "${FOCUS_KIND}" == 'browser-integration' &&
         -s "${supervision_hub_browser_source}" ]]; then
@@ -1318,6 +1358,7 @@ else
   verify_gateway_contract
   verify_live_supervision_dispatch_contract
   verify_agent_supervision_transport_contract
+  verify_supervision_action_controller_contract
   if [[ -e "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h" ]]; then
     verify_capture_hub_contract
   fi
