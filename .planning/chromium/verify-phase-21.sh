@@ -152,11 +152,13 @@ verify_blink_contract() {
   local supplement_test="${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc"
   local content_build="${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/BUILD.gn"
   local modules_build="${CHROMIUM_DIR}/third_party/blink/renderer/modules/BUILD.gn"
+  local modules_initializer="${CHROMIUM_DIR}/third_party/blink/renderer/modules/modules_initializer.cc"
 
   require_file "${mojom}"
   require_file "${supplement_header}"
   require_file "${supplement_source}"
   require_file "${supplement_test}"
+  require_file "${modules_initializer}"
   require_literal 'enum PrometheusSupervisionDirtySignal {' "${mojom}"
   require_literal 'kDirty,' "${mojom}"
   require_literal 'kOverflow,' "${mojom}"
@@ -196,6 +198,18 @@ verify_blink_contract() {
     'JSONReader|JSONWriter|Serialize|innerHTML|outerHTML|ExecuteScript|ScriptState' \
     'Blink supervision gained serialization or script execution' \
     "${supplement_source}" "${supplement_header}"
+  require_literal \
+    '#include "third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h"' \
+    "${modules_initializer}"
+  require_literal \
+    '&PrometheusSupervisionDocumentSupplement::BindReceiver' \
+    "${modules_initializer}"
+  require_literal \
+    '&PrometheusSupervisionDocumentSupplement::OnReceiverDisconnected' \
+    "${supplement_source}"
+  require_literal \
+    '&PrometheusSupervisionDocumentSupplement::OnHostDisconnected' \
+    "${supplement_source}"
   note 'Blink document, Mojo privacy, and GN static guards passed'
 }
 
@@ -417,6 +431,7 @@ build_blink_focused_binary() {
   local frame_test_helpers_object='obj/third_party/blink/renderer/core/unit_test_support/frame_test_helpers.o'
   local fake_web_plugin_object='obj/third_party/blink/renderer/core/unit_test_support/fake_web_plugin.o'
   local blink_test_main_object='obj/third_party/blink/renderer/controller/blink_unittests_sources/run_all_tests.o'
+  local modules_initializer_object='obj/third_party/blink/renderer/modules/modules/modules_initializer.o'
   local target_ninja='obj/chrome/renderer/prometheus_action_dispatcher_unittests.ninja'
   local response_file='phase21_blink_tests.rsp'
   local extra_objects=(
@@ -442,6 +457,7 @@ build_blink_focused_binary() {
   compile_exact_object "${frame_test_helpers_object}"
   compile_exact_object "${fake_web_plugin_object}"
   compile_exact_object "${blink_test_main_object}"
+  compile_exact_object "${modules_initializer_object}"
 
   local object
   for object in "${extra_objects[@]}"; do
