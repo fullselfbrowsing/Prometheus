@@ -1,6 +1,13 @@
 {
   "source": "current-fsb-observable-catalog",
   "observed_count": 59,
+  "phase21_native_promotions": [
+    "create_supervision_pairing",
+    "start_supervision_session",
+    "get_supervision_snapshot",
+    "get_supervision_diff",
+    "end_supervision_session"
+  ],
   "names": [
     "back",
     "check_box",

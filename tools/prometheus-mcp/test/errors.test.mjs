@@ -33,7 +33,22 @@ test('native supervision forwarding uses empty browser-scoped envelopes', async 
     session: {
       command: async (route, envelope) => {
         calls.push({ route, envelope });
-        return { ok: true, supervision: { state: 'safe' } };
+        return {
+          ok: true,
+          supervision: {
+            state: 'safe',
+            authority: { tab_id: 7, owner_id: 'forged-owner' },
+            bearer: 'forged-bearer',
+            code: 'PAIR-CODE',
+            content: 'private page content',
+            controller_lease: 'forged-controller',
+            cursor: 'forged-cursor',
+            dashboard_session: 'forged-dashboard-session',
+            document_epoch: 'forged-epoch',
+            sequence: 99,
+            target: { tab_id: 7 },
+          },
+        };
       },
     },
   });

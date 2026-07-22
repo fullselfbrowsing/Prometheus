@@ -23,6 +23,34 @@ const DENIED_RESULT_FIELDS = new Set([
   'token',
   'visual_reason',
 ]);
+const DENIED_SUPERVISION_RESULT_FIELDS = new Set([
+  'authority',
+  'bearer',
+  'code',
+  'content',
+  'controller',
+  'controller_id',
+  'controller_lease',
+  'cursor',
+  'dashboard_session',
+  'document',
+  'document_epoch',
+  'document_token',
+  'epoch',
+  'lease',
+  'owner_id',
+  'pairing_code',
+  'profile',
+  'profile_path',
+  'raw_content',
+  'sequence',
+  'session',
+  'session_id',
+  'tab',
+  'tab_id',
+  'target',
+  'token',
+]);
 const DIAGNOSTIC_KEYS = Object.freeze([
   'browser',
   'bridge',
@@ -42,10 +70,16 @@ const DIAGNOSTIC_STATUSES = new Set([
   'unavailable',
 ]);
 const LATER_DIAGNOSTICS = new Set([
-  'supervision',
   'extensions',
 ]);
 const RUNTIME_ROUTE_SET = new Set(RUNTIME_NATIVE_ROUTES);
+const SUPERVISION_NATIVE_ROUTES = new Set([
+  'create_supervision_pairing',
+  'start_supervision_session',
+  'get_supervision_snapshot',
+  'get_supervision_diff',
+  'end_supervision_session',
+]);
 
 const diagnosticCopy = Object.freeze({
   browser: ['Browser process status reported by Prometheus.', 'Keep the Prometheus browser running.'],
@@ -56,7 +90,7 @@ const diagnosticCopy = Object.freeze({
   webui_adapter: ['Prometheus WebUI adapter status reported by Prometheus.', 'Use browser-owned WebUI routes when ready.'],
   vault: ['Profile-owned native vault status reported by Prometheus.', 'Use the local control panel when vault recovery is required.'],
   provider: ['Provider runtime status reported by Prometheus.', 'Use the local control panel when provider recovery is required.'],
-  supervision: ['Supervision is not ready in this phase.', 'Retry after Phase 21 supervision support is ready.'],
+  supervision: ['Native supervision status reported by Prometheus.', 'Use the local control panel if supervision recovery is required.'],
   extensions: ['Extension policy is not ready in this phase.', 'Retry after Phase 22 extension support is ready.'],
 });
 
@@ -83,6 +117,21 @@ const sanitizeResult = (value, depth = 0) => {
   return sanitized;
 };
 
+const sanitizeSupervisionResult = (value, depth = 0) => {
+  if (depth > 32) throw new TypeError('Native supervision result nesting is invalid.');
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeSupervisionResult(item, depth + 1));
+  }
+  if (!isRecord(value)) return value;
+  const sanitized = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (!DENIED_SUPERVISION_RESULT_FIELDS.has(key)) {
+      sanitized[key] = sanitizeSupervisionResult(item, depth + 1);
+    }
+  }
+  return sanitized;
+};
+
 export const createToolResult = (structuredContent, isError) => ({
   content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
   structuredContent,
@@ -91,6 +140,11 @@ export const createToolResult = (structuredContent, isError) => ({
 
 const resultFor = (structuredContent) => {
   const sanitized = sanitizeResult(structuredContent);
+  return createToolResult(sanitized, sanitized?.ok !== true);
+};
+
+const supervisionResultFor = (structuredContent) => {
+  const sanitized = sanitizeSupervisionResult(structuredContent);
   return createToolResult(sanitized, sanitized?.ok !== true);
 };
 
@@ -238,7 +292,9 @@ export const createToolHandler = ({
         envelope,
         { signal },
       );
-      return resultFor(nativeResult);
+      return SUPERVISION_NATIVE_ROUTES.has(definition.name)
+        ? supervisionResultFor(nativeResult)
+        : resultFor(nativeResult);
     } catch {
       diagnostic('native request unavailable');
       return resultFor(localFailure(

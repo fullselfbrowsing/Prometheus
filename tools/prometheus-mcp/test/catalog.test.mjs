@@ -80,7 +80,8 @@ const phase20CompatibilityNames = [
   ...phase20Aliases.map(([name]) => name),
 ];
 
-const phase21SupervisionNames = [
+const phase21SupervisionNames = current.phase21_native_promotions;
+const frozenPhase21SupervisionNames = [
   'create_supervision_pairing',
   'start_supervision_session',
   'get_supervision_snapshot',
@@ -138,6 +139,8 @@ test('frozen catalogs have the expected 46/59/15/90 shape', () => {
   const union = new Set([...frozen.names, ...current.names]);
   assert.equal(overlap.length, 15);
   assert.equal(union.size, 90);
+  assert.deepEqual(phase21SupervisionNames, frozenPhase21SupervisionNames);
+  assert.equal(new Set(phase21SupervisionNames).size, 5);
 });
 
 test('the compatibility catalog maps the fixture union exactly once', () => {

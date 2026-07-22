@@ -398,12 +398,10 @@ for (const [name, definition] of Object.entries(aliasDefinitions)) {
 for (const name of phase21Names) {
   catalog.push({
     name,
-    description: describe(name, 'Phase 21'),
+    description: describe(name, 'native'),
     inputSchema: emptySchema,
-    disposition: 'later_phase',
-    ownerPhase: 21,
-    replacements: [],
-    recovery: 'Complete Phase 21 before calling this tool.',
+    disposition: 'native',
+    nativeRoute: name,
   });
 }
 
