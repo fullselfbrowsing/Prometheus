@@ -777,6 +777,37 @@ verify_supervision_tab_state_contract() {
   note 'sanitized supervision tab-state, ordering, and privacy guards passed'
 }
 
+verify_supervision_tab_badge_contract() {
+  local badge_header="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h"
+  local badge_source="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc"
+  local tab_header="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/tab.h"
+  local tab_source="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/tab.cc"
+  local badge_test="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc"
+  local views_build="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/BUILD.gn"
+
+  require_file "${badge_header}"
+  require_file "${badge_source}"
+  require_file "${tab_header}"
+  require_file "${tab_source}"
+  require_file "${badge_test}"
+  require_literal 'kIconSize = 12' "${badge_header}"
+  require_literal 'kIconSpacing = 4' "${badge_header}"
+  require_literal 'SetCanProcessEventsWithinSubtree(false)' "${badge_source}"
+  require_literal 'StateSafeDefaultOwnerAgentAndSlotContract' "${badge_test}"
+  require_literal 'StateViewerControllerAndActionPriority' "${badge_test}"
+  require_literal 'StateCompleteOrderedNameAndHealthSeverity' "${badge_test}"
+  require_literal 'StateTextIsContentFreeAndEventTransparent' "${badge_test}"
+  require_literal '8J7K-2MNP' "${badge_test}"
+  require_literal 'https://private.example/path' "${badge_test}"
+  require_literal 'prometheus_tab_supervision_badge_browsertest.cc' \
+    "${views_build}"
+  reject_pattern \
+    'PrometheusSupervisionProfileService|PrometheusSupervisionProfileServiceFactory|PrometheusAgentProfileServiceFactory|controller_lease|pairing_code|session_id|document_epoch|stable_tab_id|GetURL|GetLastActive|ExecuteRoute' \
+    'native tab badge gained service, authority, fallback-target, or content access' \
+    "${badge_header}" "${badge_source}" "${tab_header}" "${tab_source}"
+  note 'native supervision badge contract and privacy guards passed'
+}
+
 sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
@@ -1215,6 +1246,10 @@ build_focused_binary() {
   local supervision_hub_browser_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc"
   local supervision_confirmation_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_supervision_confirmation_browsertest.o'
   local supervision_confirmation_browser_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc"
+  local supervision_badge_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_tab_supervision_badge_browsertest.o'
+  local supervision_badge_browser_source="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc"
+  local tab_view_object='obj/chrome/browser/ui/ui/tab.o'
+  local tab_badge_object='obj/chrome/browser/ui/ui/prometheus_tab_status_badge.o'
   local supervision_action_object='obj/chrome/browser/prometheus/prometheus_supervision_action_controller/prometheus_supervision_action_controller.o'
   local supervision_action_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_action_controller_unittest.o'
   local supervision_action_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller.cc"
@@ -1225,6 +1260,7 @@ build_focused_binary() {
   local gateway_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_gateway_unittest.o'
   local gateway_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_agent_gateway_browsertest.o'
   local browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_page_adapter_browsertest.o'
+  local views_browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_compact_chrome_browsertest.o'
   local runtime_dialogs='obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o'
   local mojom_template='obj/third_party/blink/public/mojom/mojom_platform/frame_metadata_observer_registry.mojom.o'
   local mojom_object='obj/third_party/blink/public/mojom/mojom_platform/prometheus_supervision_document.mojom.o'
@@ -1253,6 +1289,8 @@ build_focused_binary() {
     compile_exact_object "${browser_composition_object}"
     compile_exact_object "${gateway_test_object}"
     compile_exact_object "${runtime_dialogs}"
+    compile_exact_object "${tab_view_object}"
+    compile_exact_object "${tab_badge_object}"
     if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
       compile_exact_object "${gateway_browser_object}"
     fi
@@ -1355,6 +1393,10 @@ build_focused_binary() {
         || fail 'supervision confirmation browser test is missing or empty'
       compile_synthesized_object "${browser_test_template}" "${supervision_confirmation_browser_object}" \
         prometheus_page_adapter_browsertest prometheus_supervision_confirmation_browsertest
+      [[ -s "${supervision_badge_browser_source}" ]] \
+        || fail 'supervision tab badge browser test is missing or empty'
+      compile_synthesized_object "${views_browser_test_template}" "${supervision_badge_browser_object}" \
+        prometheus_compact_chrome_browsertest prometheus_tab_supervision_badge_browsertest
       build_browser_focused_blink_modules
     fi
   fi
@@ -1371,6 +1413,18 @@ build_focused_binary() {
   fi
 
   require_file "${OUT_DIR}/browser_tests.rsp"
+  local ui_archive='obj/chrome/browser/ui/libui.a'
+  require_file "${OUT_DIR}/${ui_archive}"
+  local ui_archive_members
+  ui_archive_members="$(
+    cd "${OUT_DIR}"
+    "${CHROMIUM_DIR}/third_party/llvm-build/Release+Asserts/bin/llvm-ar" \
+      t "${ui_archive}"
+  )"
+  rg -Fxq -- "${tab_view_object}" <<<"${ui_archive_members}" \
+    || fail 'fresh tab view object is not linked through the UI thin archive'
+  rg -Fxq -- "${tab_badge_object}" <<<"${ui_archive_members}" \
+    || fail 'fresh supervision tab badge object is not linked through the UI thin archive'
   local runtime_contract='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o'
   local candidates=(
     "${runtime_contract}"
@@ -1412,7 +1466,8 @@ build_focused_binary() {
     candidates+=("${supervision_hub_browser_object}")
   fi
   if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
-    candidates+=("${gateway_browser_object}" "${supervision_confirmation_browser_object}")
+    candidates+=("${gateway_browser_object}" "${supervision_confirmation_browser_object}" \
+      "${supervision_badge_browser_object}")
   fi
   local candidate
   for candidate in "${candidates[@]}"; do
@@ -1526,6 +1581,7 @@ else
   verify_supervision_action_controller_contract
   verify_supervision_dialog_contract
   verify_supervision_tab_state_contract
+  verify_supervision_tab_badge_contract
   if [[ -e "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h" ]]; then
     verify_capture_hub_contract
   fi
