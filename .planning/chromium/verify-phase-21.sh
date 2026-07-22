@@ -638,6 +638,71 @@ verify_supervision_action_controller_contract() {
   note 'supervision action controller reuses only the closed exact-browser Agent seam'
 }
 
+verify_supervision_dialog_contract() {
+  local header="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h"
+  local source="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc"
+  local test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc"
+  local browser_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
+  local views_build="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/BUILD.gn"
+  local model_block="${LOG_DIR}/phase21-supervision-dialog-model.txt"
+  local api_block="${LOG_DIR}/phase21-runtime-dialog-api-target.txt"
+  local implementation_block="${LOG_DIR}/phase21-runtime-dialog-implementation-target.txt"
+  local action_block="${LOG_DIR}/phase21-supervision-action-target.txt"
+  local profile_block="${LOG_DIR}/phase21-supervision-profile-target.txt"
+
+  require_file "${header}"
+  require_file "${source}"
+  require_file "${test_source}"
+  require_literal 'struct PrometheusSupervisionDialogModel' "${header}"
+  require_literal 'PrometheusSupervisionDialogResult' "${header}"
+  require_literal 'PrometheusSupervisionDialogLauncher' "${header}"
+  require_literal 'ShowPrometheusSupervisionDialog' "${source}"
+  require_literal 'PrometheusSupervisionConfirmationBrowserTest' "${test_source}"
+  require_literal 'Enable remote control?' "${test_source}"
+  require_literal 'Confirm remote action' "${test_source}"
+  require_literal 'Keep view only' "${test_source}"
+  require_literal 'Block action' "${test_source}"
+
+  sed -n '/struct PrometheusSupervisionDialogModel {/,/^};/p' \
+    "${header}" >"${model_block}"
+  require_file "${model_block}"
+  reject_pattern \
+    'pairing_code|dashboard_session|controller_lease|owner_session|document_epoch|sequence|selector|raw_(text|key|url)|typed_value|secret_value' \
+    'supervision dialog model carries backend authority or raw action values' \
+    "${model_block}"
+  reject_pattern \
+    '#include .*prometheus_supervision_(profile_service|action_controller)' \
+    'runtime dialog API or implementation depends back on supervision backend' \
+    "${header}" "${source}"
+
+  sed -n '/source_set("runtime_dialogs_api") {/,/^}/p' \
+    "${views_build}" >"${api_block}"
+  sed -n '/static_library("runtime_dialogs") {/,/^}/p' \
+    "${views_build}" >"${implementation_block}"
+  sed -n '/source_set("prometheus_supervision_action_controller") {/,/^}/p' \
+    "${browser_build}" >"${action_block}"
+  sed -n '/source_set("prometheus_supervision_profile_service") {/,/^}/p' \
+    "${browser_build}" >"${profile_block}"
+  require_file "${api_block}"
+  require_file "${implementation_block}"
+  require_file "${action_block}"
+  require_file "${profile_block}"
+  require_literal '":runtime_dialogs_api"' "${implementation_block}"
+  require_literal '"//chrome/browser/ui/views/prometheus:runtime_dialogs_api"' \
+    "${action_block}"
+  require_literal '"//chrome/browser/ui/views/prometheus:runtime_dialogs_api"' \
+    "${profile_block}"
+  reject_pattern \
+    'prometheus_supervision_(profile_service|action_controller)' \
+    'Views dialog API/implementation gained a supervision backend target edge' \
+    "${api_block}" "${implementation_block}"
+  require_literal 'prometheus_supervision_confirmation_browsertest.cc' \
+    "${views_build}"
+  require_literal '"//chrome/browser/prometheus:prometheus_supervision_action_controller"' \
+    "${views_build}"
+  note 'sanitized supervision dialog API and acyclic GN source guards passed'
+}
+
 sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
@@ -1071,6 +1136,8 @@ build_focused_binary() {
   local supervision_hub_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc"
   local supervision_hub_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc"
   local supervision_hub_browser_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc"
+  local supervision_confirmation_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_supervision_confirmation_browsertest.o'
+  local supervision_confirmation_browser_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc"
   local supervision_action_object='obj/chrome/browser/prometheus/prometheus_supervision_action_controller/prometheus_supervision_action_controller.o'
   local supervision_action_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_action_controller_unittest.o'
   local supervision_action_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller.cc"
@@ -1081,6 +1148,7 @@ build_focused_binary() {
   local gateway_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_gateway_unittest.o'
   local gateway_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_agent_gateway_browsertest.o'
   local browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_page_adapter_browsertest.o'
+  local runtime_dialogs='obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o'
   local mojom_template='obj/third_party/blink/public/mojom/mojom_platform/frame_metadata_observer_registry.mojom.o'
   local mojom_object='obj/third_party/blink/public/mojom/mojom_platform/prometheus_supervision_document.mojom.o'
   local mojom_shared_template='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/frame_metadata_observer_registry.mojom-shared.o'
@@ -1104,6 +1172,7 @@ build_focused_binary() {
     compile_exact_object "${gateway_object}"
     compile_exact_object "${browser_composition_object}"
     compile_exact_object "${gateway_test_object}"
+    compile_exact_object "${runtime_dialogs}"
     if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
       compile_exact_object "${gateway_browser_object}"
     fi
@@ -1202,6 +1271,10 @@ build_focused_binary() {
         || fail 'supervision capture hub browser test is missing or empty'
       compile_synthesized_object "${browser_test_template}" "${supervision_hub_browser_object}" \
         prometheus_page_adapter_browsertest prometheus_supervision_capture_hub_browsertest
+      [[ -s "${supervision_confirmation_browser_source}" ]] \
+        || fail 'supervision confirmation browser test is missing or empty'
+      compile_synthesized_object "${browser_test_template}" "${supervision_confirmation_browser_object}" \
+        prometheus_page_adapter_browsertest prometheus_supervision_confirmation_browsertest
       build_browser_focused_blink_modules
     fi
   fi
@@ -1219,7 +1292,6 @@ build_focused_binary() {
 
   require_file "${OUT_DIR}/browser_tests.rsp"
   local runtime_contract='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o'
-  local runtime_dialogs='obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o'
   local candidates=(
     "${runtime_contract}"
     "${runtime_dialogs}"
@@ -1259,7 +1331,7 @@ build_focused_binary() {
     candidates+=("${supervision_hub_browser_object}")
   fi
   if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
-    candidates+=("${gateway_browser_object}")
+    candidates+=("${gateway_browser_object}" "${supervision_confirmation_browser_object}")
   fi
   local candidate
   for candidate in "${candidates[@]}"; do
@@ -1371,6 +1443,7 @@ else
   verify_live_supervision_dispatch_contract
   verify_agent_supervision_transport_contract
   verify_supervision_action_controller_contract
+  verify_supervision_dialog_contract
   if [[ -e "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h" ]]; then
     verify_capture_hub_contract
   fi

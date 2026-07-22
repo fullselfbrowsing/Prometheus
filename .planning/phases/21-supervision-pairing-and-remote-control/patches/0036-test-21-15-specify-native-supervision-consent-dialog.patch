@@ -1,0 +1,406 @@
+From 7f641da2f31f097e1f5f9a6abaafbaea31fe013e Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 09:54:13 -0500
+Subject: [PATCH 36/36] test(21-15): specify native supervision consent dialogs
+
+- define the sanitized one-way dialog API and acyclic GN boundary
+- retain exact copy, row, safe-focus, Escape, close, and privacy browser assertions
+- keep provider and vault dialog contracts intact
+---
+ chrome/browser/prometheus/BUILD.gn            |   2 +
+ ...us_supervision_confirmation_browsertest.cc | 231 ++++++++++++++++++
+ chrome/browser/ui/views/prometheus/BUILD.gn   |  20 +-
+ .../prometheus/prometheus_runtime_dialogs.cc  |  11 +-
+ .../prometheus/prometheus_runtime_dialogs.h   |  37 +++
+ 5 files changed, 294 insertions(+), 7 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 447356917f..e830d0ad2a 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -348,6 +348,7 @@ source_set("prometheus_supervision_action_controller") {
+     ":prometheus_supervision_types",
+     "//base",
+     "//chrome/browser/ui/browser_window",
++    "//chrome/browser/ui/views/prometheus:runtime_dialogs_api",
+     "//components/optimization_guide/content/browser",
+     "//components/sessions:session_id",
+     "//components/tabs:public",
+@@ -374,6 +375,7 @@ source_set("prometheus_supervision_profile_service") {
+     "//chrome/browser/profiles",
+     "//chrome/browser/tab_list",
+     "//chrome/browser/ui/browser_window",
++    "//chrome/browser/ui/views/prometheus:runtime_dialogs_api",
+     "//chrome/common:constants",
+     "//components/keyed_service/core",
+     "//components/tabs:public",
+diff --git a/chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc b/chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc
+new file mode 100644
+index 0000000000..056ec5302c
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc
+@@ -0,0 +1,231 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <string>
++#include <vector>
++
++#include "base/run_loop.h"
++#include "base/test/run_until.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/browser_window.h"
++#include "chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "content/public/test/browser_test.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "ui/base/accelerators/accelerator.h"
++#include "ui/base/mojom/dialog_button.mojom.h"
++#include "ui/events/keycodes/keyboard_codes.h"
++#include "ui/views/controls/label.h"
++#include "ui/views/test/widget_test.h"
++#include "ui/views/view_utils.h"
++#include "ui/views/widget/widget.h"
++#include "ui/views/window/dialog_delegate.h"
++
++namespace prometheus {
++namespace {
++
++void CollectLabelText(views::View* view, std::vector<std::u16string>* text) {
++  if (auto* label = views::AsViewClass<views::Label>(view)) {
++    text->emplace_back(label->GetText());
++  }
++  for (views::View* child : view->children()) {
++    CollectLabelText(child, text);
++  }
++}
++
++bool ContainsOrderedText(const std::vector<std::u16string>& actual,
++                         const std::vector<std::u16string>& expected) {
++  size_t next = 0;
++  for (const std::u16string& text : actual) {
++    if (next < expected.size() && text == expected[next]) {
++      ++next;
++    }
++  }
++  return next == expected.size();
++}
++
++std::u16string JoinLabelText(views::View* root) {
++  std::vector<std::u16string> labels;
++  CollectLabelText(root, &labels);
++  std::u16string joined;
++  for (const std::u16string& label : labels) {
++    joined.append(label);
++    joined.push_back(u'\n');
++  }
++  return joined;
++}
++
++class PrometheusSupervisionConfirmationBrowserTest
++    : public InProcessBrowserTest {
++ protected:
++  PrometheusSupervisionDialogModel EnableModel() const {
++    PrometheusSupervisionDialogModel model;
++    model.kind = PrometheusSupervisionDialogKind::kEnableControl;
++    model.client_label = "Review console";
++    model.target_tab_title = "Quarterly report";
++    model.site_origin = "https://example.test";
++    model.expires_label = "10:45 AM";
++    return model;
++  }
++
++  PrometheusSupervisionDialogModel ConsequentialModel() const {
++    PrometheusSupervisionDialogModel model = EnableModel();
++    model.kind = PrometheusSupervisionDialogKind::kConsequentialAction;
++    model.action_label = "Navigate";
++    model.permission_boundary = "Page actions";
++    return model;
++  }
++
++  views::DialogDelegate* CurrentDialog() const {
++    views::Widget* widget = PrometheusRuntimeDialogWidgetForTesting();
++    return widget ? widget->widget_delegate()->AsDialogDelegate() : nullptr;
++  }
++
++  void ExpectSafeFocus(views::DialogDelegate* dialog) {
++    ASSERT_TRUE(dialog);
++    ASSERT_TRUE(dialog->GetCancelButton());
++    EXPECT_EQ(static_cast<int>(ui::mojom::DialogButton::kCancel),
++              dialog->GetDefaultDialogButton());
++    ASSERT_TRUE(base::test::RunUntil([&]() {
++      return dialog->GetWidget()->GetFocusManager()->GetFocusedView() ==
++             dialog->GetCancelButton();
++    }));
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(PrometheusSupervisionConfirmationBrowserTest,
++                       EnableControlHasExactCopyRowsAndSafeFocus) {
++  int replies = 0;
++  PrometheusSupervisionDialogResult result =
++      PrometheusSupervisionDialogResult::kApproved;
++  ASSERT_TRUE(ShowPrometheusSupervisionDialog(
++      browser(), EnableModel(),
++      base::BindOnce(
++          [](int* replies, PrometheusSupervisionDialogResult* result,
++             PrometheusSupervisionDialogResult reply) {
++            ++*replies;
++            *result = reply;
++          },
++          &replies, &result)));
++  views::Widget* widget = PrometheusRuntimeDialogWidgetForTesting();
++  ASSERT_TRUE(widget);
++  views::DialogDelegate* dialog = CurrentDialog();
++  ASSERT_TRUE(dialog);
++  EXPECT_EQ(PrometheusRuntimeDialogKind::kSupervisionEnableControl,
++            PrometheusRuntimeDialogKindForTesting());
++  EXPECT_EQ(u"Enable remote control?", dialog->GetWindowTitle());
++  EXPECT_EQ(u"Enable control", dialog->GetDialogButtonLabel(
++                                   ui::mojom::DialogButton::kOk));
++  EXPECT_EQ(u"Keep view only", dialog->GetDialogButtonLabel(
++                                    ui::mojom::DialogButton::kCancel));
++  std::vector<std::u16string> labels;
++  CollectLabelText(widget->GetRootView(), &labels);
++  EXPECT_TRUE(ContainsOrderedText(
++      labels,
++      {u"Review console can act in Quarterly report until 10:45 AM. "
++       u"Prometheus will still enforce tab ownership, permissions, target "
++       u"validation, and confirmations.",
++       u"Client", u"Review console", u"Target tab", u"Quarterly report",
++       u"Site origin", u"https://example.test", u"Access", u"Page actions",
++       u"Expires", u"10:45 AM", u"Vault", u"Confirmation required"}));
++  ExpectSafeFocus(dialog);
++  dialog->CancelDialog();
++  ASSERT_TRUE(base::test::RunUntil(
++      []() { return !PrometheusRuntimeDialogWidgetForTesting(); }));
++  EXPECT_EQ(1, replies);
++  EXPECT_EQ(PrometheusSupervisionDialogResult::kDenied, result);
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusSupervisionConfirmationBrowserTest,
++                       EnableControlEscapeAndCloseDenyExactlyOnce) {
++  int escape_replies = 0;
++  PrometheusSupervisionDialogResult escape_result =
++      PrometheusSupervisionDialogResult::kApproved;
++  ASSERT_TRUE(ShowPrometheusSupervisionDialog(
++      browser(), EnableModel(),
++      base::BindOnce(
++          [](int* replies, PrometheusSupervisionDialogResult* result,
++             PrometheusSupervisionDialogResult reply) {
++            ++*replies;
++            *result = reply;
++          },
++          &escape_replies, &escape_result)));
++  views::Widget* escape_widget = PrometheusRuntimeDialogWidgetForTesting();
++  ASSERT_TRUE(escape_widget);
++  views::test::WidgetDestroyedWaiter escape_waiter(escape_widget);
++  EXPECT_TRUE(escape_widget->client_view()->AcceleratorPressed(
++      ui::Accelerator(ui::VKEY_ESCAPE, 0)));
++  escape_waiter.Wait();
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ(1, escape_replies);
++  EXPECT_EQ(PrometheusSupervisionDialogResult::kDenied, escape_result);
++
++  int close_replies = 0;
++  PrometheusSupervisionDialogResult close_result =
++      PrometheusSupervisionDialogResult::kApproved;
++  ASSERT_TRUE(ShowPrometheusSupervisionDialog(
++      browser(), EnableModel(),
++      base::BindOnce(
++          [](int* replies, PrometheusSupervisionDialogResult* result,
++             PrometheusSupervisionDialogResult reply) {
++            ++*replies;
++            *result = reply;
++          },
++          &close_replies, &close_result)));
++  views::Widget* close_widget = PrometheusRuntimeDialogWidgetForTesting();
++  ASSERT_TRUE(close_widget);
++  views::test::WidgetDestroyedWaiter close_waiter(close_widget);
++  close_widget->Close();
++  close_waiter.Wait();
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ(1, close_replies);
++  EXPECT_EQ(PrometheusSupervisionDialogResult::kDenied, close_result);
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusSupervisionConfirmationBrowserTest,
++                       ConsequentialCopyIsClosedAndRawValuesStayAbsent) {
++  constexpr char16_t kRawText[] = u"RAW-TYPED-VALUE-SENTINEL";
++  constexpr char16_t kRawKey[] = u"RAW-KEY-SENTINEL";
++  constexpr char16_t kRawUrl[] = u"private-destination?secret=sentinel";
++  int replies = 0;
++  ASSERT_TRUE(ShowPrometheusSupervisionDialog(
++      browser(), ConsequentialModel(),
++      base::BindOnce(
++          [](int* replies, PrometheusSupervisionDialogResult) { ++*replies; },
++          &replies)));
++  views::Widget* widget = PrometheusRuntimeDialogWidgetForTesting();
++  ASSERT_TRUE(widget);
++  views::DialogDelegate* dialog = CurrentDialog();
++  ASSERT_TRUE(dialog);
++  EXPECT_EQ(PrometheusRuntimeDialogKind::kSupervisionConsequentialAction,
++            PrometheusRuntimeDialogKindForTesting());
++  EXPECT_EQ(u"Confirm remote action", dialog->GetWindowTitle());
++  EXPECT_EQ(u"Allow once", dialog->GetDialogButtonLabel(
++                               ui::mojom::DialogButton::kOk));
++  EXPECT_EQ(u"Block action", dialog->GetDialogButtonLabel(
++                                 ui::mojom::DialogButton::kCancel));
++  std::vector<std::u16string> labels;
++  CollectLabelText(widget->GetRootView(), &labels);
++  EXPECT_TRUE(ContainsOrderedText(
++      labels,
++      {u"Review console wants to Navigate in Quarterly report. Prometheus "
++       u"will recheck ownership, permissions, and the current page before "
++       u"acting.",
++       u"Client", u"Review console", u"Target tab", u"Quarterly report",
++       u"Site origin", u"https://example.test", u"Action", u"Navigate",
++       u"Controller expires", u"10:45 AM", u"Permission boundary",
++       u"Page actions"}));
++  const std::u16string all_text = JoinLabelText(widget->GetRootView());
++  EXPECT_EQ(std::u16string::npos, all_text.find(kRawText));
++  EXPECT_EQ(std::u16string::npos, all_text.find(kRawKey));
++  EXPECT_EQ(std::u16string::npos, all_text.find(kRawUrl));
++  ExpectSafeFocus(dialog);
++  dialog->CancelDialog();
++  ASSERT_TRUE(base::test::RunUntil(
++      []() { return !PrometheusRuntimeDialogWidgetForTesting(); }));
++  EXPECT_EQ(1, replies);
++}
++
++}  // namespace
++}  // namespace prometheus
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 9b01d8e154..283e67c8fd 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -55,17 +55,23 @@ source_set("side_panel") {
+   ]
+ }
+ 
+-static_library("runtime_dialogs") {
+-  sources = [
+-    "prometheus_runtime_dialogs.cc",
+-    "prometheus_runtime_dialogs.h",
+-  ]
++source_set("runtime_dialogs_api") {
++  sources = [ "prometheus_runtime_dialogs.h" ]
+ 
+-  deps = [
++  public_deps = [
+     "//base",
+     "//chrome/browser/prometheus:prometheus_provider_registry",
+     "//chrome/browser/prometheus:prometheus_vault_service",
+     "//chrome/browser/ui/browser_window",
++  ]
++}
++
++static_library("runtime_dialogs") {
++  sources = [ "prometheus_runtime_dialogs.cc" ]
++
++  public_deps = [ ":runtime_dialogs_api" ]
++
++  deps = [
+     "//components/constrained_window",
+     "//ui/base",
+     "//ui/gfx",
+@@ -84,6 +90,7 @@ source_set("browser_tests") {
+     "../../../prometheus/prometheus_mcp_integration_browsertest.cc",
+     "../../../prometheus/prometheus_page_adapter_browsertest.cc",
+     "../../../prometheus/prometheus_supervision_capture_hub_browsertest.cc",
++    "../../../prometheus/prometheus_supervision_confirmation_browsertest.cc",
+     "../../../prometheus/prometheus_tab_commands_browsertest.cc",
+     "../../../prometheus/prometheus_vault_confirmation_browsertest.cc",
+     "../../webui/prometheus/prometheus_web_ui_browsertest.cc",
+@@ -113,6 +120,7 @@ source_set("browser_tests") {
+     "//chrome/browser/prometheus:prometheus_runtime_transport_codec",
+     "//chrome/browser/prometheus:prometheus_secret_store",
+     "//chrome/browser/prometheus:prometheus_supervision_capture_hub",
++    "//chrome/browser/prometheus:prometheus_supervision_action_controller",
+     "//chrome/browser/prometheus:prometheus_supervision_profile_service",
+     "//chrome/browser/prometheus:prometheus_tab_commands",
+     "//chrome/browser/prometheus:prometheus_vault_service",
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc b/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc
+index 9c53563128..f1b5c4e577 100644
+--- a/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc
++++ b/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc
+@@ -436,7 +436,16 @@ bool ShowPrometheusVaultUseConfirmationDialog(
+           base::BindOnce(
+               [](PrometheusVaultService::NativeConfirmationReply callback,
+                  bool accepted) { callback.Run(accepted); },
+-              std::move(reply_callback))));
++          std::move(reply_callback))));
++}
++
++bool ShowPrometheusSupervisionDialog(
++    BrowserWindowInterface* exact_browser,
++    const PrometheusSupervisionDialogModel& model,
++    PrometheusSupervisionDialogCallback reply_callback) {
++  // Task 21-15 RED: the closed display contract exists before the native
++  // consent surface and backend authority wiring.
++  return false;
+ }
+ 
+ size_t PrometheusRuntimeDialogLaunchCountForTesting() {
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h b/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h
+index 2e129a0925..ee411b789a 100644
+--- a/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h
++++ b/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h
+@@ -27,8 +27,40 @@ enum class PrometheusRuntimeDialogKind {
+   kProviderSecretRemoval,
+   kVaultSecret,
+   kVaultUseConfirmation,
++  kSupervisionEnableControl,
++  kSupervisionConsequentialAction,
+ };
+ 
++enum class PrometheusSupervisionDialogKind {
++  kEnableControl,
++  kConsequentialAction,
++};
++
++enum class PrometheusSupervisionDialogResult {
++  kApproved,
++  kDenied,
++};
++
++// Display-only values. Browser, profile, tab, owner, session, document,
++// controller, and action-payload authority stays in the invoking backend.
++struct PrometheusSupervisionDialogModel {
++  PrometheusSupervisionDialogKind kind =
++      PrometheusSupervisionDialogKind::kEnableControl;
++  std::string client_label;
++  std::string target_tab_title;
++  std::string site_origin;
++  std::string expires_label;
++  std::string action_label;
++  std::string permission_boundary;
++};
++
++using PrometheusSupervisionDialogCallback =
++    base::OnceCallback<void(PrometheusSupervisionDialogResult)>;
++using PrometheusSupervisionDialogLauncher = base::RepeatingCallback<bool(
++    BrowserWindowInterface*,
++    const PrometheusSupervisionDialogModel&,
++    PrometheusSupervisionDialogCallback)>;
++
+ using PrometheusProviderSecretSaveCompletion = base::OnceCallback<void(bool)>;
+ using PrometheusProviderSecretSaveCallback =
+     base::RepeatingCallback<void(std::string,
+@@ -56,6 +88,11 @@ bool ShowPrometheusVaultUseConfirmationDialog(
+     const PrometheusVaultConfirmationBinding& binding,
+     PrometheusVaultService::NativeConfirmationReply reply_callback);
+ 
++bool ShowPrometheusSupervisionDialog(
++    BrowserWindowInterface* exact_browser,
++    const PrometheusSupervisionDialogModel& model,
++    PrometheusSupervisionDialogCallback reply_callback);
++
+ size_t PrometheusRuntimeDialogLaunchCountForTesting();
+ PrometheusRuntimeDialogKind PrometheusRuntimeDialogKindForTesting();
+ BrowserWindowInterface* PrometheusRuntimeDialogBrowserForTesting();
+-- 
+2.50.1 (Apple Git-155)
+
