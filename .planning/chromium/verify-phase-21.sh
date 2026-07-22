@@ -155,6 +155,9 @@ query_browser_link_command() {
 build_focused_binary() {
   local route_object='obj/chrome/browser/prometheus/prometheus_agent_route/prometheus_agent_route.o'
   local route_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_route_unittest.o'
+  local agent_service_object='obj/chrome/browser/prometheus/prometheus_agent_service/prometheus_agent_service.o'
+  local agent_service_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_service_unittest.o'
+  local agent_tab_data_object='obj/chrome/browser/prometheus/prometheus_agent_tab_data/prometheus_agent_tab_data.o'
   local runtime_object='obj/chrome/browser/prometheus/prometheus_runtime_types/prometheus_runtime_types.o'
   local runtime_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_runtime_types_unittest.o'
   local supervision_object='obj/chrome/browser/prometheus/prometheus_supervision_types/prometheus_supervision_types.o'
@@ -175,6 +178,12 @@ build_focused_binary() {
   local supervision_diff_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_diff_unittest.o'
   local supervision_diff_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_diff.cc"
   local supervision_diff_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_diff_unittest.cc"
+  local runtime_profile_object='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_profile_service.o'
+  local runtime_profile_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_runtime_profile_service_unittest.o'
+  local supervision_profile_object='obj/chrome/browser/prometheus/prometheus_supervision_profile_service/prometheus_supervision_profile_service.o'
+  local supervision_profile_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_profile_service_unittest.o'
+  local supervision_profile_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local supervision_profile_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc"
   local extra_objects=()
 
   : >"${BUILD_LOG}"
@@ -182,6 +191,9 @@ build_focused_binary() {
     cd "${OUT_DIR}"
     compile_exact_object "${route_object}"
     compile_exact_object "${route_test_object}"
+    compile_exact_object "${agent_tab_data_object}"
+    compile_exact_object "${agent_service_object}"
+    compile_exact_object "${agent_service_test_object}"
   )
 
   if [[ -e "${supervision_source}" || -e "${supervision_test_source}" ]]; then
@@ -228,6 +240,17 @@ build_focused_binary() {
       prometheus_runtime_types_unittest prometheus_supervision_diff_unittest
   fi
 
+  if [[ -e "${supervision_profile_source}" || -e "${supervision_profile_test_source}" ]]; then
+    [[ -s "${supervision_profile_source}" ]] \
+      || fail 'supervision profile service implementation is missing or empty'
+    [[ -s "${supervision_profile_test_source}" ]] \
+      || fail 'supervision profile service test is missing or empty'
+    compile_synthesized_object "${runtime_profile_object}" "${supervision_profile_object}" \
+      prometheus_runtime_profile_service prometheus_supervision_profile_service
+    compile_synthesized_object "${runtime_profile_test_object}" "${supervision_profile_test_object}" \
+      prometheus_runtime_profile_service_unittest prometheus_supervision_profile_service_unittest
+  fi
+
   require_file "${OUT_DIR}/browser_tests.rsp"
   local runtime_contract='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o'
   local runtime_dialogs='obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o'
@@ -251,6 +274,9 @@ build_focused_binary() {
   fi
   if [[ -s "${supervision_diff_source}" ]]; then
     candidates+=("${supervision_diff_object}")
+  fi
+  if [[ -s "${supervision_profile_source}" ]]; then
+    candidates+=("${supervision_profile_object}")
   fi
   local candidate
   for candidate in "${candidates[@]}"; do
