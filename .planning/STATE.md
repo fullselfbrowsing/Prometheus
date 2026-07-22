@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 14
+current_plan: 15
 status: ready
-stopped_at: Completed 21-13-PLAN.md
-last_updated: "2026-07-22T13:06:04.647Z"
+stopped_at: Completed 21-14-PLAN.md
+last_updated: "2026-07-22T14:29:37.169Z"
 last_activity: 2026-07-22
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 79
-  percent: 86
+  completed_plans: 80
+  percent: 87
 ---
 
 # Project State
@@ -36,24 +36,31 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 14 of 26
+Plan: 15 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 14
+**Current Plan:** 15
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [█████████░] 86%
+**Progress:** [█████████░] 87%
 **Last Activity:** 2026-07-22
-**Last Activity Description:** Completed Plan 21-13 — exact five-name native
-MCP catalog promotion, empty authority-free schemas, live supervision health,
-and frozen Node RED/GREEN privacy gates.
+**Last Activity Description:** Completed Plan 21-14 — exact-browser typed Agent
+action reuse, immutable owner/controller/stamp admission, one bounded
+confirmation slot, and lifecycle-first cancellation.
 
-Milestone work is 79 of 92 existing plans complete (86%); cumulative project
-work is 130 of 144 existing plans summarized (90%).
+Milestone work is 80 of 92 existing plans complete (87%); cumulative project
+work is 131 of 144 existing plans summarized (91%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 14: the intended 29-test RED gate, 3-test ordinary-action
+  GREEN gate, final 34-test controller/profile gate, and 7-test Agent
+  regression pass with exact Browser/tab/frame dispatch, immutable owner and
+  acknowledged-stamp admission, one confirmation slot, lifecycle-first
+  cancellation, metadata-only audit, stable patch identity, and byte-identical
+  reviewed build artifacts.
 
 - Phase 21 Plan 13: the 7-test exact Node GREEN gate and complete 80-test MCP
   regression pass with a 54/12/22/0/2 catalog, five deeply empty native
@@ -271,6 +278,9 @@ work is 130 of 144 existing plans summarized (90%).
 - [Phase 21]: Keep the 90-name MCP union fixed while promoting exactly five supervision dispositions to native. — Public tool identity remains stable while only browser-backed availability changes.
 - [Phase 21]: Forward supervision through the existing empty native command envelope and keep target, stream, code, cursor, and controller authority browser-owned. — The authenticated Agent binding already pins exact scope, so Node must not synthesize a second authority surface.
 - [Phase 21]: Apply recursive authority-field defense only to supervision results and pass through live supervision readiness while extensions remain Phase 22 not-ready. — This protects supervision credentials without removing legitimate content from ordinary page tools or weakening the extension boundary.
+- [Phase 21]: Classify seven implemented typed page actions as ordinary and hold drag, drop, and navigation in one consequential confirmation slot. — The ordinary path reuses working Agent verification semantics while Plan 15 owns native allow-once consent for consequential work.
+- [Phase 21]: Require immutable nonempty redemption-owner equality plus the live controller lease and current acknowledged hub stamp before every remote action. — Supervision must never claim an unowned tab, adopt a replacement owner, or mutate from a stale dashboard view.
+- [Phase 21]: Keep supervision action results and audit content-free while dispatching only through exact-browser Agent routes. — Typed codes and metadata preserve operator visibility without leaking raw refs, text, options, URLs, or Agent page payloads.
 
 ## Performance Metrics
 
@@ -299,6 +309,7 @@ work is 130 of 144 existing plans summarized (90%).
 | Phase 21 P11 | 57min | 3 tasks | 18 files |
 | Phase 21 P12 | 1h51min | 3 tasks | 18 files |
 | Phase 21 P13 | 10min | 2 tasks | 9 files |
+| Phase 21 P14 | 80min | 3 tasks | 12 files |
 
 ## Blockers and Deferred Items
 
@@ -313,11 +324,11 @@ work is 130 of 144 existing plans summarized (90%).
 
 ## Session
 
-**Last Date:** 2026-07-22T13:06:04.641Z
-**Stopped At:** Completed 21-13-PLAN.md
+**Last Date:** 2026-07-22T14:29:37.165Z
+**Stopped At:** Completed 21-14-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-14-PLAN.md` to route approved remote-control actions through the
-existing typed Agent action engine without creating a second dispatcher.
+Execute `21-15-PLAN.md` to add native control and consequential-action consent
+with fresh validation through the bounded action-controller confirmation slot.
