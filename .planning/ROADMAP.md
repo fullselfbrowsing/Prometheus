@@ -7,7 +7,7 @@
 
 ## v2.0 Chromium Engine Migration
 
-**Status:** In progress — Phase 20 is complete; Phase 21 Plan 2 is complete and Plan 3 is ready to execute.
+**Status:** In progress — Phase 20 is complete; Phase 21 Plan 4 is complete and Plan 5 is ready to execute.
 
 ## Milestone Thesis
 
@@ -355,7 +355,7 @@ Plans:
 
 **Requirements:** SUP-01, SUP-02, SUP-03, SUP-04, SUP-05
 
-**Plans:** 3/26 plans executed
+**Plans:** 4/26 plans executed
 
 Plans:
 **Wave 1**
@@ -372,7 +372,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 21-04-PLAN.md — Build pairing, viewer, controller, and Agent-owned tab-observation lifecycles.
+- [x] 21-04-PLAN.md — Build pairing, viewer, controller, and Agent-owned tab-observation lifecycles.
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
@@ -564,13 +564,13 @@ Plans:
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 8/8 | Complete    | 2026-07-12 |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 7/7 | Complete    | 2026-07-13 |
 | 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 14/14 | Complete    | 2026-07-20 |
-| 21. Supervision, Pairing, and Remote Control | v2.0 | 3/26 | In Progress|  |
+| 21. Supervision, Pairing, and Remote Control | v2.0 | 4/26 | In Progress|  |
 | 22. Chrome Extension Ecosystem and Policy | v2.0 | 0 | Planned | — |
 | 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
 | 24. Packaging, Release Validation, and Handoff | v2.0 | 0 | Planned | — |
 
-**Totals:** 14 phases, 10 complete; 68 of 92 existing v2.0 plans summarized.
-Phase 20 is complete; Phase 21 is current and in progress, with Plan 21-03 ready
+**Totals:** 14 phases, 10 complete; 70 of 92 existing v2.0 plans summarized.
+Phase 20 is complete; Phase 21 is current and in progress, with Plan 21-05 ready
 to execute.
 
 ## Future Work Beyond Current Milestone

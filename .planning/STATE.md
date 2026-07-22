@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 4
+current_plan: 5
 status: executing
-stopped_at: Completed 21-03-PLAN.md
-last_updated: "2026-07-21T23:42:07.286Z"
-last_activity: 2026-07-21
+stopped_at: Completed 21-04-PLAN.md
+last_updated: "2026-07-22T00:36:38.515Z"
+last_activity: 2026-07-22
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 69
-  percent: 71
+  completed_plans: 70
+  percent: 76
 ---
 
 # Project State
@@ -36,24 +36,32 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 4 of 26
+Plan: 5 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 4
+**Current Plan:** 5
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [████████░░] 75%
-**Last Activity:** 2026-07-21
-**Last Activity Description:** Completed Plan 21-03 — privacy-safe APC baseline/diff and cursor resync on the
-supervision transport, recursive authority rejection, and privacy-separated
-result serializers.
+**Progress:** [████████░░] 76%
+**Last Activity:** 2026-07-22
+**Last Activity Description:** Completed Plan 21-04 — exact-target digest-only
+pairing, immutable Agent-owner capture, independent viewers, sole-controller
+authority, and exact-once teardown through Agent-owned observation leases.
 
-Milestone work is 68 of 92 existing plans complete (74%); cumulative project
-work is 119 of 144 existing plans summarized (83%).
+Milestone work is 70 of 92 existing plans complete (76%); cumulative project
+work is 121 of 144 existing plans summarized (84%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 4: all 18 supervision lifecycle and 5 Agent observation tests
+  pass with exact target/owner authority, bounded authority-free audit, stable
+  patch identity, and byte-identical Ninja metadata.
+
+- Phase 21 Plan 3: all 16 projection/diff fixtures and the combined 42-test
+  supervision regression pass with strict APC privacy, canonical structural
+  operations, independent viewer cursors, and atomic resynchronization.
 
 - Phase 21 Plan 2: all 13 transport codec tests and the combined 26-test
   codec/types regression pass with exact operation/action schemas, recursive
@@ -184,6 +192,9 @@ work is 119 of 144 existing plans summarized (83%).
 
 - [Phase 21]: Project form values only when APC explicitly marks them safe and the control is independently neither password, payment, nor OTP; absent and future redaction decisions fail closed. — Supervision must structurally omit secrets before serialization, and a plausible truncated or ambiguously redacted baseline must never appear authoritative.
 - [Phase 21]: Keep stream authority outside diff JSON and require a fresh acknowledged baseline after any malformed tree, reparenting ambiguity, authority mismatch, sequence discontinuity, wrap, or resource-cap overflow. — Canonical bounded structural operations stay transport-independent while per-viewer cursor failure remains atomic and cannot create partial authoritative state.
+- [Phase 21]: Capture the current Agent owner exactly once at redemption, including empty, and terminalize on every later owner transition instead of adopting a replacement owner. — Immutable redemption authority prevents replacement-owner takeover and keeps control fail-closed.
+- [Phase 21]: Keep PrometheusAgentService as the sole creator, registrar, owner, detach observer, and destroyer of tab authority data; supervision receives only a coalesced move-only observation lease. — One lifetime owner avoids duplicate registration, observer-list violations, and use-after-free across detach and shutdown.
+- [Phase 21]: Retain only salted pairing-code digests and expose only bounded newest-first metadata through supervision snapshots and audit. — Raw credentials and browser authority remain memory-only and structurally absent from routine surfaces.
 
 ## Performance Metrics
 
@@ -202,6 +213,7 @@ work is 119 of 144 existing plans summarized (83%).
 | Phase 21 P01 | 41min | 3 tasks | 8 files |
 | Phase 21 P02 | 33min | 2 tasks | 8 files |
 | Phase 21 P03 | 38min | 3 tasks | 12 files |
+| Phase 21 P04 | 42min | 3 tasks | 14 files |
 
 ## Blockers and Deferred Items
 
@@ -216,11 +228,11 @@ work is 119 of 144 existing plans summarized (83%).
 
 ## Session
 
-**Last Date:** 2026-07-21T23:39:52.500Z
-**Stopped At:** Completed 21-03-PLAN.md
+**Last Date:** 2026-07-22T00:36:02.176Z
+**Stopped At:** Completed 21-04-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-03-PLAN.md` to build the privacy-safe APC baseline projection and
-deterministic structural diff/ack/resync model behind the closed transport.
+Execute `21-05-PLAN.md` to bind the supervision lifecycle service to the exact
+regular profile's Agent authority and browser teardown ordering.
