@@ -181,6 +181,21 @@ verify_blink_contract() {
   require_literal '"content_extraction/prometheus_supervision_document_supplement_unittest.cc"' "${modules_build}"
   require_literal 'public Supplement<Document>' "${supplement_header}"
   require_literal 'PrometheusSupervisionDocumentSupplement::BindReceiver' "${supplement_source}"
+  require_literal 'supplement_->OnMutationRecordCount(records.size());' "${supplement_source}"
+  require_literal 'kMaxPendingMutationRecords = 256u' "${supplement_header}"
+  require_literal 'kDirtyDebounce = base::Milliseconds(50)' "${supplement_header}"
+  require_literal 'init->setChildList(true);' "${supplement_source}"
+  require_literal 'init->setAttributes(true);' "${supplement_source}"
+  require_literal 'init->setCharacterData(true);' "${supplement_source}"
+  require_literal 'init->setSubtree(true);' "${supplement_source}"
+  reject_pattern \
+    '(record|records)[[:space:]]*(\[|->)|addedNodes|removedNodes|attributeName|oldValue|newValue|target\(' \
+    'Blink supervision inspected MutationRecord content' \
+    "${supplement_source}" "${supplement_header}"
+  reject_pattern \
+    'JSONReader|JSONWriter|Serialize|innerHTML|outerHTML|ExecuteScript|ScriptState' \
+    'Blink supervision gained serialization or script execution' \
+    "${supplement_source}" "${supplement_header}"
   note 'Blink document, Mojo privacy, and GN static guards passed'
 }
 

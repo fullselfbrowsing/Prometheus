@@ -1,0 +1,266 @@
+From 90bec65fc47cf815cf0ba0c6bebaacf790c01954 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 21:57:55 -0500
+Subject: [PATCH 14/14] feat(21-06): implement bounded document dirty signals
+
+---
+ ...metheus_supervision_document_supplement.cc | 108 +++++++++++++++++-
+ ...ometheus_supervision_document_supplement.h |  24 +++-
+ ...upervision_document_supplement_unittest.cc |  16 +++
+ 3 files changed, 146 insertions(+), 2 deletions(-)
+
+diff --git a/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc
+index a7d87f9328..dc789ad672 100644
+--- a/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc
++++ b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc
+@@ -4,12 +4,41 @@
+ 
+ #include "third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h"
+ 
++#include "third_party/blink/renderer/bindings/core/v8/v8_mutation_observer_init.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
++#include "third_party/blink/renderer/core/dom/element.h"
++#include "third_party/blink/renderer/core/dom/mutation_observer.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
++#include "third_party/blink/renderer/platform/bindings/exception_state.h"
+ 
+ namespace blink {
+ 
++class PrometheusSupervisionDocumentSupplement::MutationDelegate final
++    : public MutationObserver::Delegate {
++ public:
++  explicit MutationDelegate(
++      PrometheusSupervisionDocumentSupplement* supplement)
++      : supplement_(supplement) {}
++
++  ExecutionContext* GetExecutionContext() const override {
++    return supplement_->GetSupplementable()->GetExecutionContext();
++  }
++
++  void Deliver(const MutationRecordVector& records,
++               MutationObserver&) override {
++    supplement_->OnMutationRecordCount(records.size());
++  }
++
++  void Trace(Visitor* visitor) const override {
++    visitor->Trace(supplement_);
++    MutationObserver::Delegate::Trace(visitor);
++  }
++
++ private:
++  Member<PrometheusSupervisionDocumentSupplement> supplement_;
++};
++
+ const char PrometheusSupervisionDocumentSupplement::kSupplementName[] =
+     "PrometheusSupervisionDocumentSupplement";
+ 
+@@ -42,8 +71,16 @@ PrometheusSupervisionDocumentSupplement::
+         base::PassKey<PrometheusSupervisionDocumentSupplement>,
+         LocalFrame& frame)
+     : Supplement<Document>(*frame.GetDocument()),
++      ExecutionContextLifecycleObserver(frame.DomWindow()),
+       receiver_(this, frame.DomWindow()),
+-      host_(frame.DomWindow()) {}
++      host_(frame.DomWindow()),
++      mutation_delegate_(MakeGarbageCollected<MutationDelegate>(this)),
++      mutation_observer_(MutationObserver::Create(mutation_delegate_)),
++      dirty_timer_(
++          GetSupplementable()->GetTaskRunner(
++              TaskType::kInternalUserInteraction),
++          this,
++          &PrometheusSupervisionDocumentSupplement::DirtyTimerFired) {}
+ 
+ PrometheusSupervisionDocumentSupplement::
+     ~PrometheusSupervisionDocumentSupplement() = default;
+@@ -64,16 +101,85 @@ void PrometheusSupervisionDocumentSupplement::Enable(
+   host_.Bind(
+       std::move(host),
+       GetSupplementable()->GetTaskRunner(TaskType::kInternalUserInteraction));
++  enabled_ = true;
++  ObserveDocument();
+ }
+ 
+ void PrometheusSupervisionDocumentSupplement::Disable() {
++  enabled_ = false;
++  mutation_observer_->disconnect();
++  dirty_timer_.Stop();
++  pending_mutation_record_count_ = 0u;
++  overflow_pending_ = false;
+   host_.reset();
+ }
+ 
++void PrometheusSupervisionDocumentSupplement::ObserveDocument() {
++  Element* document_element = GetSupplementable()->documentElement();
++  if (!document_element) {
++    return;
++  }
++
++  MutationObserverInit* init = MutationObserverInit::Create();
++  init->setChildList(true);
++  init->setAttributes(true);
++  init->setCharacterData(true);
++  init->setSubtree(true);
++  DummyExceptionStateForTesting exception_state;
++  mutation_observer_->observe(document_element, init, exception_state);
++  DCHECK(!exception_state.HadException());
++}
++
++void PrometheusSupervisionDocumentSupplement::OnMutationRecordCount(
++    size_t record_count) {
++  if (!enabled_ || !host_.is_bound() || record_count == 0u) {
++    return;
++  }
++
++  if (!overflow_pending_) {
++    if (record_count >
++        kMaxPendingMutationRecords - pending_mutation_record_count_) {
++      overflow_pending_ = true;
++      pending_mutation_record_count_ = 0u;
++    } else {
++      pending_mutation_record_count_ += record_count;
++    }
++  }
++
++  if (!dirty_timer_.IsActive()) {
++    dirty_timer_.StartOneShot(kDirtyDebounce, FROM_HERE);
++  }
++}
++
++void PrometheusSupervisionDocumentSupplement::DirtyTimerFired(TimerBase*) {
++  if (!enabled_ || !host_.is_bound()) {
++    pending_mutation_record_count_ = 0u;
++    overflow_pending_ = false;
++    return;
++  }
++
++  const mojom::blink::PrometheusSupervisionDirtySignal signal =
++      overflow_pending_
++          ? mojom::blink::PrometheusSupervisionDirtySignal::kOverflow
++          : mojom::blink::PrometheusSupervisionDirtySignal::kDirty;
++  pending_mutation_record_count_ = 0u;
++  overflow_pending_ = false;
++  host_->OnDocumentDirty(signal);
++}
++
++void PrometheusSupervisionDocumentSupplement::ContextDestroyed() {
++  Disable();
++  receiver_.reset();
++}
++
+ void PrometheusSupervisionDocumentSupplement::Trace(Visitor* visitor) const {
+   Supplement<Document>::Trace(visitor);
++  ExecutionContextLifecycleObserver::Trace(visitor);
+   visitor->Trace(receiver_);
+   visitor->Trace(host_);
++  visitor->Trace(mutation_delegate_);
++  visitor->Trace(mutation_observer_);
++  visitor->Trace(dirty_timer_);
+ }
+ 
+ }  // namespace blink
+diff --git a/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h
+index 23a41b5565..2a3917477e 100644
+--- a/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h
++++ b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h
+@@ -5,25 +5,32 @@
+ #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_CONTENT_EXTRACTION_PROMETHEUS_SUPERVISION_DOCUMENT_SUPPLEMENT_H_
+ #define THIRD_PARTY_BLINK_RENDERER_MODULES_CONTENT_EXTRACTION_PROMETHEUS_SUPERVISION_DOCUMENT_SUPPLEMENT_H_
+ 
++#include <cstddef>
++
++#include "base/time/time.h"
+ #include "base/types/pass_key.h"
+ #include "mojo/public/cpp/bindings/pending_receiver.h"
+ #include "third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom-blink.h"
++#include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
+ #include "third_party/blink/renderer/modules/modules_export.h"
+ #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+ #include "third_party/blink/renderer/platform/mojo/heap_mojo_receiver.h"
+ #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
+ #include "third_party/blink/renderer/platform/supplementable.h"
++#include "third_party/blink/renderer/platform/timer.h"
+ 
+ namespace blink {
+ 
+ class Document;
+ class LocalFrame;
++class MutationObserver;
+ 
+ // Document-owned renderer endpoint for content-free supervision invalidation.
+ class MODULES_EXPORT PrometheusSupervisionDocumentSupplement final
+     : public GarbageCollected<PrometheusSupervisionDocumentSupplement>,
+       public mojom::blink::PrometheusSupervisionDocument,
+-      public Supplement<Document> {
++      public Supplement<Document>,
++      public ExecutionContextLifecycleObserver {
+  public:
+   static const char kSupplementName[];
+   static PrometheusSupervisionDocumentSupplement* From(Document&);
+@@ -50,14 +57,29 @@ class MODULES_EXPORT PrometheusSupervisionDocumentSupplement final
+   void Disable() override;
+ 
+  private:
++  class MutationDelegate;
++
+   void Bind(
+       mojo::PendingReceiver<mojom::blink::PrometheusSupervisionDocument>
+           receiver);
++  void ObserveDocument();
++  void OnMutationRecordCount(size_t record_count);
++  void DirtyTimerFired(TimerBase*);
++  void ContextDestroyed() override;
++
++  static constexpr size_t kMaxPendingMutationRecords = 256u;
++  static constexpr base::TimeDelta kDirtyDebounce = base::Milliseconds(50);
+ 
+   HeapMojoReceiver<mojom::blink::PrometheusSupervisionDocument,
+                    PrometheusSupervisionDocumentSupplement>
+       receiver_;
+   HeapMojoRemote<mojom::blink::PrometheusSupervisionDocumentHost> host_;
++  Member<MutationDelegate> mutation_delegate_;
++  Member<MutationObserver> mutation_observer_;
++  HeapTaskRunnerTimer<PrometheusSupervisionDocumentSupplement> dirty_timer_;
++  size_t pending_mutation_record_count_ = 0u;
++  bool overflow_pending_ = false;
++  bool enabled_ = false;
+ };
+ 
+ }  // namespace blink
+diff --git a/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc
+index abbf818280..eced2e22f3 100644
+--- a/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc
++++ b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc
+@@ -10,6 +10,7 @@
+ #include "mojo/public/cpp/bindings/remote.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
++#include "third_party/blink/renderer/core/dom/text.h"
+ #include "third_party/blink/renderer/core/frame/frame_test_helpers.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/html/html_div_element.h"
+@@ -131,6 +132,21 @@ TEST_F(PrometheusSupervisionDocumentSupplementTest, DirtyBurstCoalesces) {
+   EXPECT_EQ(host.signals()[0], DirtySignal::kDirty);
+ }
+ 
++TEST_F(PrometheusSupervisionDocumentSupplementTest, DirtyForCharacterData) {
++  Text* text = Text::Create(GetDocument(), "before");
++  GetDocument().body()->AppendChild(text);
++  test::RunPendingTasks();
++
++  RecordingHost host;
++  Enable(host);
++  text->setData("after");
++  test::RunPendingTasks();
++  AdvanceDebounce();
++
++  ASSERT_EQ(host.signals().size(), 1u);
++  EXPECT_EQ(host.signals()[0], DirtySignal::kDirty);
++}
++
+ TEST_F(PrometheusSupervisionDocumentSupplementTest, OverflowCollapsesBurst) {
+   RecordingHost host;
+   Enable(host);
+-- 
+2.50.1 (Apple Git-155)
+
