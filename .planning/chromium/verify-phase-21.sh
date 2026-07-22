@@ -76,6 +76,8 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
 CHROMIUM_DIR="${ROOT_DIR}/.context/chromium/src"
 OUT_DIR="${CHROMIUM_DIR}/out/Default"
 LOG_DIR="${OUT_DIR}/phase21-focused"
+FOCUSED_BLINK_MODULES_DIR="${LOG_DIR}/blink-modules"
+FOCUSED_BLINK_MODULES="${FOCUSED_BLINK_MODULES_DIR}/libblink_modules.dylib"
 SISO="${CHROMIUM_DIR}/third_party/siso/cipd/siso"
 FOCUSED_BINARY="${OUT_DIR}/browser_tests"
 TEMP_FOCUSED_BINARY="${OUT_DIR}/phase21_browser_tests"
@@ -243,6 +245,17 @@ verify_capture_hub_contract() {
   require_literal 'SupervisionCaptureConsumerKind::kAgentCompatibility' "${hub_test}"
   require_literal 'mojo::Remote<blink::mojom::PrometheusSupervisionDocument>' "${hub_source}"
   require_literal 'mojo::Receiver<blink::mojom::PrometheusSupervisionDocumentHost>' "${hub_source}"
+  require_literal 'content::WeakDocumentPtr requested_document' "${hub_source}"
+  require_literal 'optimization_guide::GetAIPageContent(' "${hub_source}"
+  require_literal 'options->include_same_site_only = true;' "${hub_source}"
+  require_literal 'options->include_passwords_for_redaction = true;' "${hub_source}"
+  require_literal 'options->include_sensitive_payments_for_redaction = true;' "${hub_source}"
+  require_literal 'options->include_otps_for_redaction = true;' "${hub_source}"
+  require_literal 'CollectRawFormValuesForSupervision' "${hub_source}"
+  require_literal 'RemoveRawFormValuesForSupervision' "${hub_source}"
+  require_literal 'net::test_server::ControllableHttpResponse' "${hub_browser_test}"
+  require_literal 'TwoConsumersUseOneRendererEnableAndApcCapture' "${hub_browser_test}"
+  require_literal 'kMutationMarker' "${hub_browser_test}"
   require_literal '"prometheus_supervision_capture_hub.cc"' "${browser_build}"
   require_literal '"prometheus_supervision_capture_hub_unittest.cc"' "${browser_build}"
   require_literal '"../../../prometheus/prometheus_supervision_capture_hub_browsertest.cc"' "${views_build}"
@@ -254,6 +267,12 @@ verify_capture_hub_contract() {
     'ExecuteScript|MutationObserver|MutationRecord|innerHTML|outerHTML' \
     'browser capture hub gained production script injection or raw mutation access' \
     "${hub_source}"
+  reject_pattern \
+    'ExecJs|EvalJs|ExecuteScript|MutationObserver' \
+    'capture-hub browser proof used test-side script injection or a synthetic observer' \
+    "${hub_browser_test}"
+  [[ "$(rg -c --fixed-strings 'document_remote_->Enable' "${hub_source}")" -eq 1 ]] \
+    || fail 'capture hub must own exactly one renderer Enable call site'
   note 'capture-hub ownership, consumer API, privacy, and GN static guards passed'
 }
 
@@ -264,8 +283,12 @@ sha256_file() {
 capture_build_metadata() {
   require_file "${OUT_DIR}/.ninja_log"
   require_file "${OUT_DIR}/.ninja_deps"
+  require_file "${OUT_DIR}/libblink_modules.dylib"
+  require_file "${OUT_DIR}/libblink_modules.dylib.TOC"
   NINJA_LOG_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/.ninja_log")"
   NINJA_DEPS_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/.ninja_deps")"
+  BLINK_MODULES_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/libblink_modules.dylib")"
+  BLINK_MODULES_TOC_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/libblink_modules.dylib.TOC")"
   METADATA_CAPTURED=true
 }
 
@@ -273,16 +296,24 @@ verify_build_metadata_on_exit() {
   local status="$?"
   trap - EXIT
   if [[ "${METADATA_CAPTURED}" == true ]]; then
-    local ninja_log_after ninja_deps_after
+    local ninja_log_after ninja_deps_after blink_modules_after blink_modules_toc_after
     ninja_log_after="$(sha256_file "${OUT_DIR}/.ninja_log" 2>/dev/null || true)"
     ninja_deps_after="$(sha256_file "${OUT_DIR}/.ninja_deps" 2>/dev/null || true)"
+    blink_modules_after="$(sha256_file "${OUT_DIR}/libblink_modules.dylib" 2>/dev/null || true)"
+    blink_modules_toc_after="$(sha256_file "${OUT_DIR}/libblink_modules.dylib.TOC" 2>/dev/null || true)"
     printf '[phase21] .ninja_log SHA-256 before=%s after=%s\n' \
       "${NINJA_LOG_SHA256_BEFORE}" "${ninja_log_after}"
     printf '[phase21] .ninja_deps SHA-256 before=%s after=%s\n' \
       "${NINJA_DEPS_SHA256_BEFORE}" "${ninja_deps_after}"
+    printf '[phase21] reviewed libblink_modules.dylib SHA-256 before=%s after=%s\n' \
+      "${BLINK_MODULES_SHA256_BEFORE}" "${blink_modules_after}"
+    printf '[phase21] reviewed libblink_modules.dylib.TOC SHA-256 before=%s after=%s\n' \
+      "${BLINK_MODULES_TOC_SHA256_BEFORE}" "${blink_modules_toc_after}"
     if [[ "${ninja_log_after}" != "${NINJA_LOG_SHA256_BEFORE}" ||
-          "${ninja_deps_after}" != "${NINJA_DEPS_SHA256_BEFORE}" ]]; then
-      printf 'Phase 21 focused verification failed: direct verification changed reviewed Ninja metadata\n' >&2
+          "${ninja_deps_after}" != "${NINJA_DEPS_SHA256_BEFORE}" ||
+          "${blink_modules_after}" != "${BLINK_MODULES_SHA256_BEFORE}" ||
+          "${blink_modules_toc_after}" != "${BLINK_MODULES_TOC_SHA256_BEFORE}" ]]; then
+      printf 'Phase 21 focused verification failed: direct verification changed reviewed build artifacts\n' >&2
       status=1
     fi
   fi
@@ -350,6 +381,18 @@ query_blink_link_command() {
     | LC_ALL=C awk \
         'index($0, "linker_driver.py") &&
          index($0, "@./prometheus_action_dispatcher_unittests.rsp") {
+           command = $0
+         }
+         END { print command }'
+}
+
+query_blink_modules_link_command() {
+  LC_ALL=C "${SISO}" query commands -C "${OUT_DIR}" \
+      libblink_modules.dylib 2>/dev/null \
+    | LC_ALL=C awk \
+        'index($0, "linker_driver.py") &&
+         index($0, " -o \"./libblink_modules.dylib\"") &&
+         index($0, "@./libblink_modules.dylib.rsp") {
            command = $0
          }
          END { print command }'
@@ -551,6 +594,71 @@ build_blink_focused_binary() {
   require_file "${FOCUSED_BINARY}"
 }
 
+build_browser_focused_blink_modules() {
+  local production_template='obj/third_party/blink/renderer/modules/content_extraction/content_extraction/frame_metadata_observer_registry.o'
+  local production_object='obj/third_party/blink/renderer/modules/content_extraction/content_extraction/prometheus_supervision_document_supplement.o'
+  local blink_template='obj/third_party/blink/public/mojom/mojom_platform_blink/frame_metadata_observer_registry.mojom-blink.o'
+  local blink_object='obj/third_party/blink/public/mojom/mojom_platform_blink/prometheus_supervision_document.mojom-blink.o'
+  local shared_template='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/frame_metadata_observer_registry.mojom-shared.o'
+  local shared_object='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/prometheus_supervision_document.mojom-shared.o'
+  local modules_initializer_object='obj/third_party/blink/renderer/modules/modules/modules_initializer.o'
+  local target_ninja='obj/third_party/blink/renderer/modules/modules.ninja'
+  local response_file='phase21-focused/libblink_modules.dylib.rsp'
+  local focused_output='./phase21-focused/blink-modules/libblink_modules.dylib'
+  local focused_toc='./phase21-focused/blink-modules/libblink_modules.dylib.TOC'
+  local original_output='-o "./libblink_modules.dylib"'
+  local focused_output_argument="-o \"${focused_output}\""
+  local original_toc='-Wcrl,tocname,"./libblink_modules.dylib.TOC"'
+  local focused_toc_argument="-Wcrl,tocname,\"${focused_toc}\""
+  local original_response='@./libblink_modules.dylib.rsp'
+  local focused_response="@./${response_file}"
+
+  generate_blink_mojo_bindings
+  compile_synthesized_object "${production_template}" "${production_object}" \
+    frame_metadata_observer_registry prometheus_supervision_document_supplement
+  compile_synthesized_object "${blink_template}" "${blink_object}" \
+    frame_metadata_observer_registry prometheus_supervision_document
+  compile_synthesized_object "${shared_template}" "${shared_object}" \
+    frame_metadata_observer_registry prometheus_supervision_document
+  compile_exact_object "${modules_initializer_object}"
+
+  write_link_response "${target_ninja}" ./libblink_modules.dylib \
+    "${response_file}" "${production_object}" "${blink_object}" "${shared_object}"
+
+  local link_command
+  link_command="$(query_blink_modules_link_command)"
+  [[ -n "${link_command}" ]] \
+    || fail 'libblink_modules direct link command not found'
+  link_command="${link_command/${original_toc}/${focused_toc_argument}}"
+  link_command="${link_command/${original_output}/${focused_output_argument}}"
+  link_command="${link_command/${original_response}/${focused_response}}"
+  [[ "${link_command}" == *"${focused_toc_argument}"* ]] \
+    || fail 'focused Blink modules TOC argument was not replaced'
+  [[ "${link_command}" == *"${focused_output_argument}"* ]] \
+    || fail 'focused Blink modules output argument was not replaced'
+  [[ "${link_command}" == *"@./${response_file}"* ]] \
+    || fail 'focused Blink modules response file was not replaced'
+
+  mkdir -p "${FOCUSED_BLINK_MODULES_DIR}"
+  rm -f "${FOCUSED_BLINK_MODULES}" "${FOCUSED_BLINK_MODULES}.TOC"
+  if ! (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${link_command}"
+    codesign --force --sign - "${focused_output}"
+    codesign --verify --strict "${focused_output}"
+  ) >>"${BUILD_LOG}" 2>&1; then
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused Blink modules link failed'
+  fi
+  require_file "${FOCUSED_BLINK_MODULES}"
+  local symbol_manifest="${FOCUSED_BLINK_MODULES_DIR}/symbols.txt"
+  nm -gU "${FOCUSED_BLINK_MODULES}" >"${symbol_manifest}"
+  rg -q 'PrometheusSupervisionDocumentSupplement.*BindReceiver' \
+    "${symbol_manifest}" \
+    || fail 'focused Blink modules library omitted the supervision document binder'
+  note 'temporary Blink modules library contains the supervision document endpoint'
+}
+
 build_focused_binary() {
   local route_object='obj/chrome/browser/prometheus/prometheus_agent_route/prometheus_agent_route.o'
   local route_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_route_unittest.o'
@@ -703,6 +811,7 @@ build_focused_binary() {
         || fail 'supervision capture hub browser test is missing or empty'
       compile_synthesized_object "${browser_test_template}" "${supervision_hub_browser_object}" \
         prometheus_page_adapter_browsertest prometheus_supervision_capture_hub_browsertest
+      build_browser_focused_blink_modules
     fi
   fi
 
@@ -759,6 +868,13 @@ build_focused_binary() {
   [[ "${link_command}" == *"${original_output}"* ]] \
     || fail 'browser_tests output argument was not found'
   link_command="${link_command/${original_output}/${focused_output}}"
+  if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+    local original_rpath='-Wl,-rpath,@loader_path/.'
+    local focused_rpath="-Wl,-rpath,${FOCUSED_BLINK_MODULES_DIR} ${original_rpath}"
+    [[ "${link_command}" == *"${original_rpath}"* ]] \
+      || fail 'browser_tests loader rpath argument was not found'
+    link_command="${link_command/${original_rpath}/${focused_rpath}}"
+  fi
   if [[ "${#extra_objects[@]}" -gt 0 ]]; then
     link_command="${link_command} ${extra_objects[*]}"
   fi
