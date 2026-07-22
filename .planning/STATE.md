@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 15
+current_plan: 16
 status: ready
-stopped_at: Completed 21-14-PLAN.md
-last_updated: "2026-07-22T14:29:37.169Z"
+stopped_at: Completed 21-15-PLAN.md
+last_updated: "2026-07-22T16:04:03.000Z"
 last_activity: 2026-07-22
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 80
-  percent: 87
+  completed_plans: 81
+  percent: 88
 ---
 
 # Project State
@@ -36,24 +36,31 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 15 of 26
+Plan: 16 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 15
+**Current Plan:** 16
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [█████████░] 87%
+**Progress:** [█████████░] 88%
 **Last Activity:** 2026-07-22
-**Last Activity Description:** Completed Plan 21-14 — exact-browser typed Agent
-action reuse, immutable owner/controller/stamp admission, one bounded
-confirmation slot, and lifecycle-first cancellation.
+**Last Activity Description:** Completed Plan 21-15 — browser-native safe-default
+control and consequential-action consent, post-approval exact authority
+revalidation, and preserved independent vault confirmation.
 
-Milestone work is 80 of 92 existing plans complete (87%); cumulative project
-work is 131 of 144 existing plans summarized (91%).
+Milestone work is 81 of 92 existing plans complete (88%); cumulative project
+work is 132 of 144 existing plans summarized (92%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 15: the intended 3-test browser RED gate, 3-test enable-service
+  GREEN gate, 2-test enable-browser gate, final 4-test native-dialog browser
+  gate, 5-test controller/vault gate, and 5-test profile-action regression pass
+  with safe-default native consent, fresh exact authority revalidation, sole
+  typed Agent dispatch, vault non-bypass, stable patch identity, and
+  byte-identical reviewed build artifacts.
 
 - Phase 21 Plan 14: the intended 29-test RED gate, 3-test ordinary-action
   GREEN gate, final 34-test controller/profile gate, and 7-test Agent
@@ -281,6 +288,9 @@ work is 131 of 144 existing plans summarized (91%).
 - [Phase 21]: Classify seven implemented typed page actions as ordinary and hold drag, drop, and navigation in one consequential confirmation slot. — The ordinary path reuses working Agent verification semantics while Plan 15 owns native allow-once consent for consequential work.
 - [Phase 21]: Require immutable nonempty redemption-owner equality plus the live controller lease and current acknowledged hub stamp before every remote action. — Supervision must never claim an unowned tab, adopt a replacement owner, or mutate from a stale dashboard view.
 - [Phase 21]: Keep supervision action results and audit content-free while dispatching only through exact-browser Agent routes. — Typed codes and metadata preserve operator visibility without leaking raw refs, text, options, URLs, or Agent page payloads.
+- [Phase 21]: Keep supervision dialog models sanitized and dependency-neutral while the profile service and action controller retain every authority check. — Views may return only approved or denied and cannot create a controller or dispatch an action itself.
+- [Phase 21]: Treat native approval as visible intent rather than authority and revalidate the exact session, target, immutable owner, controller lease, expiry, document, sequence, and generation afterward. — Safe focus, Escape, close, stale callbacks, and lifecycle loss all deny without mutation.
+- [Phase 21]: Bind consequential consent directly to one pending action ID and leave vault-shaped work on its separate native confirmation path. — A dashboard cannot pre-approve a later action or reuse supervision control to bypass vault policy.
 
 ## Performance Metrics
 
@@ -310,6 +320,7 @@ work is 131 of 144 existing plans summarized (91%).
 | Phase 21 P12 | 1h51min | 3 tasks | 18 files |
 | Phase 21 P13 | 10min | 2 tasks | 9 files |
 | Phase 21 P14 | 80min | 3 tasks | 12 files |
+| Phase 21 P15 | 87min | 3 tasks | 15 files |
 
 ## Blockers and Deferred Items
 
@@ -324,11 +335,11 @@ work is 131 of 144 existing plans summarized (91%).
 
 ## Session
 
-**Last Date:** 2026-07-22T14:29:37.165Z
-**Stopped At:** Completed 21-14-PLAN.md
+**Last Date:** 2026-07-22T16:04:03.000Z
+**Stopped At:** Completed 21-15-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-15-PLAN.md` to add native control and consequential-action consent
-with fresh validation through the bounded action-controller confirmation slot.
+Execute `21-16-PLAN.md` to project sanitized supervision state into the
+browser-owned tab state without exposing session or controller authority.
