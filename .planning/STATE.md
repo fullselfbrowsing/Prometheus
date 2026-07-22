@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 5
+current_plan: 6
 status: executing
-stopped_at: Completed 21-04-PLAN.md
-last_updated: "2026-07-22T00:36:38.515Z"
+stopped_at: Completed 21-05-PLAN.md
+last_updated: "2026-07-22T02:11:04.351Z"
 last_activity: 2026-07-22
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 70
-  percent: 76
+  completed_plans: 71
+  percent: 77
 ---
 
 # Project State
@@ -36,24 +36,28 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 5 of 26
+Plan: 6 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 5
+**Current Plan:** 6
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [████████░░] 76%
+**Progress:** [████████░░] 77%
 **Last Activity:** 2026-07-22
-**Last Activity Description:** Completed Plan 21-04 — exact-target digest-only
-pairing, immutable Agent-owner capture, independent viewers, sole-controller
-authority, and exact-once teardown through Agent-owned observation leases.
+**Last Activity Description:** Completed Plan 21-05 — exact regular-profile
+Agent/supervision keyed-service composition, weak observation forwarding, OTR
+denial, and safe teardown in both service destruction orders.
 
-Milestone work is 70 of 92 existing plans complete (76%); cumulative project
-work is 121 of 144 existing plans summarized (84%).
+Milestone work is 71 of 92 existing plans complete (77%); cumulative project
+work is 122 of 144 existing plans summarized (85%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 5: the exact 8-test factory/profile gate and combined 68-test
+  supervision regression pass with sole-Agent ownership guards, exact-profile
+  dependency injection, stable patch identity, and byte-identical Ninja metadata.
 
 - Phase 21 Plan 4: all 18 supervision lifecycle and 5 Agent observation tests
   pass with exact target/owner authority, bounded authority-free audit, stable
@@ -195,6 +199,7 @@ work is 121 of 144 existing plans summarized (84%).
 - [Phase 21]: Capture the current Agent owner exactly once at redemption, including empty, and terminalize on every later owner transition instead of adopting a replacement owner. — Immutable redemption authority prevents replacement-owner takeover and keeps control fail-closed.
 - [Phase 21]: Keep PrometheusAgentService as the sole creator, registrar, owner, detach observer, and destroyer of tab authority data; supervision receives only a coalesced move-only observation lease. — One lifetime owner avoids duplicate registration, observer-list violations, and use-after-free across detach and shutdown.
 - [Phase 21]: Retain only salted pairing-code digests and expose only bounded newest-first metadata through supervision snapshots and audit. — Raw credentials and browser authority remain memory-only and structurally absent from routine surfaces.
+- [Phase 21]: Compose supervision only through the exact regular profile Agent keyed service and inject a weak observation callback. — Explicit factory dependency and fail-closed null, OTR, missing, and mismatched checks preserve one tab-data owner across teardown.
 
 ## Performance Metrics
 
@@ -214,6 +219,7 @@ work is 121 of 144 existing plans summarized (84%).
 | Phase 21 P02 | 33min | 2 tasks | 8 files |
 | Phase 21 P03 | 38min | 3 tasks | 12 files |
 | Phase 21 P04 | 42min | 3 tasks | 14 files |
+| Phase 21 P05 | 1h28min | 2 tasks | 13 files |
 
 ## Blockers and Deferred Items
 
@@ -228,11 +234,11 @@ work is 121 of 144 existing plans summarized (84%).
 
 ## Session
 
-**Last Date:** 2026-07-22T00:36:02.176Z
-**Stopped At:** Completed 21-04-PLAN.md
+**Last Date:** 2026-07-22T02:11:04.246Z
+**Stopped At:** Completed 21-05-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-05-PLAN.md` to bind the supervision lifecycle service to the exact
-regular profile's Agent authority and browser teardown ordering.
+Execute `21-06-PLAN.md` to add the Blink document supplement and bidirectional
+dirty-signal Mojo path on the safely composed regular-profile service boundary.
