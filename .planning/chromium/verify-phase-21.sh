@@ -7,7 +7,7 @@ FOCUS_KIND=''
 EXPECT_FAILURE=false
 
 usage() {
-  printf 'Usage: %s (--focus FILTER | --focus-browser FILTER | --focus-blink FILTER) [--expect-failure]\n' "$0" >&2
+  printf 'Usage: %s (--focus FILTER | --focus-browser FILTER | --focus-blink FILTER | --focus-node PATTERN) [--expect-failure]\n' "$0" >&2
 }
 
 while [[ "$#" -gt 0 ]]; do
@@ -51,6 +51,19 @@ while [[ "$#" -gt 0 ]]; do
       FOCUS_KIND='blink'
       shift 2
       ;;
+    --focus-node)
+      [[ "$#" -ge 2 ]] || {
+        usage
+        exit 2
+      }
+      [[ -z "${FOCUS_FILTER}" ]] || {
+        usage
+        exit 2
+      }
+      FOCUS_FILTER="$2"
+      FOCUS_KIND='node'
+      shift 2
+      ;;
     --expect-failure)
       [[ "${EXPECT_FAILURE}" == false ]] || {
         usage
@@ -67,7 +80,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 if [[ -z "${FOCUS_FILTER//[[:space:]]/}" ]]; then
-  printf 'Phase 21 focused verification failed: --focus requires a non-empty filter\n' >&2
+  printf 'Phase 21 focused verification failed: focus selector must be non-empty\n' >&2
   exit 2
 fi
 
@@ -85,6 +98,20 @@ LIST_LOG="${LOG_DIR}/phase21-focused-list.log"
 TEST_LOG="${LOG_DIR}/phase21-focused-test.log"
 BUILD_LOG="${LOG_DIR}/phase21-focused-build.log"
 METADATA_CAPTURED=false
+NODE_TEST_FILES=(
+  "${ROOT_DIR}/tools/prometheus-mcp/test/catalog.test.mjs"
+  "${ROOT_DIR}/tools/prometheus-mcp/test/tools.test.mjs"
+  "${ROOT_DIR}/tools/prometheus-mcp/test/diagnostics.test.mjs"
+  "${ROOT_DIR}/tools/prometheus-mcp/test/visual-session.test.mjs"
+  "${ROOT_DIR}/tools/prometheus-mcp/test/errors.test.mjs"
+)
+NODE_RED_FAILURES=(
+  'Phase 21 supervision diagnostics preserves live readiness while extensions stay not_ready'
+  'Phase 21 supervision promotes exactly five identities from later to native'
+  'catalog partition is exactly 54/12/22/0/2'
+  'native supervision forwarding sanitizes thrown native failures'
+  'native supervision forwarding uses empty browser-scoped envelopes'
+)
 
 if [[ "${FOCUS_KIND}" == 'blink' ]]; then
   FOCUSED_BINARY="${OUT_DIR}/phase21_blink_tests"
@@ -119,6 +146,115 @@ reject_pattern() {
     tail -n 80 "${LOG_DIR}/phase21-static-guard.log" >&2 || true
     fail "${description}"
   fi
+}
+
+list_selected_node_tests() {
+  local file
+  for file in "${NODE_TEST_FILES[@]}"; do
+    require_file "${file}"
+    node --check "${file}" >>"${BUILD_LOG}" 2>&1 \
+      || fail "Node test syntax check failed: ${file}"
+  done
+
+  if ! node --input-type=module - "${FOCUS_FILTER}" "${NODE_TEST_FILES[@]}" \
+      >"${LIST_LOG}" 2>>"${BUILD_LOG}" <<'NODE_DISCOVERY'
+import { readFileSync } from 'node:fs';
+
+const [patternText, ...files] = process.argv.slice(2);
+let pattern;
+try {
+  pattern = new RegExp(patternText, 'u');
+} catch (error) {
+  process.stderr.write(`invalid Node test-name pattern: ${error.message}\n`);
+  process.exit(2);
+}
+
+const names = [];
+const declaration = /^\s*test\(\s*(['"])([^'"\n]+)\1\s*,/gmu;
+for (const file of files) {
+  const source = readFileSync(file, 'utf8');
+  for (const match of source.matchAll(declaration)) {
+    if (pattern.test(match[2])) names.push(match[2]);
+  }
+}
+names.sort((left, right) => left.localeCompare(right));
+if (names.length === 0 || new Set(names).size !== names.length) process.exit(3);
+process.stdout.write(`${names.join('\n')}\n`);
+NODE_DISCOVERY
+  then
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused Node test discovery failed or selected no unique tests'
+  fi
+
+  local selected_count
+  selected_count="$(awk 'NF { count += 1 } END { print count + 0 }' "${LIST_LOG}")"
+  [[ "${selected_count}" -gt 0 ]] \
+    || fail "Node pattern selected zero tests: ${FOCUS_FILTER}"
+  note "selected ${selected_count} named Node test(s)"
+}
+
+run_selected_node_tests() {
+  local test_status
+  set +e
+  node --input-type=module - "${FOCUS_FILTER}" "${NODE_TEST_FILES[@]}" \
+      >"${TEST_LOG}" 2>&1 <<'NODE_RUNNER'
+import { spawnSync } from 'node:child_process';
+
+const [pattern, ...files] = process.argv.slice(2);
+const result = spawnSync(
+  process.execPath,
+  ['--test', '--test-reporter=tap', `--test-name-pattern=${pattern}`, ...files],
+  { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 120_000 },
+);
+process.stdout.write(result.stdout ?? '');
+process.stderr.write(result.stderr ?? '');
+if (result.error?.code === 'ETIMEDOUT') {
+  process.stderr.write('Phase 21 focused Node run timed out.\n');
+  process.exit(124);
+}
+process.exit(result.status ?? 125);
+NODE_RUNNER
+  test_status="$?"
+  set -e
+
+  if rg -qi 'ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|Cannot find module|SyntaxError:|ReferenceError:|timed out|# cancelled [1-9]' \
+      "${TEST_LOG}"; then
+    tail -n 100 "${TEST_LOG}" >&2 || true
+    fail 'focused Node run rejected parser, import, startup, or timeout output'
+  fi
+
+  local selected_name
+  while IFS= read -r selected_name; do
+    rg -q --fixed-strings -- "# Subtest: ${selected_name}" "${TEST_LOG}" \
+      || fail "focused Node run did not execute discovered test: ${selected_name}"
+  done <"${LIST_LOG}"
+
+  if [[ "${EXPECT_FAILURE}" == true ]]; then
+    [[ "${test_status}" -ne 0 ]] || fail '--expect-failure requires a nonzero Node exit'
+    [[ "${test_status}" -eq 1 ]] || {
+      tail -n 100 "${TEST_LOG}" >&2 || true
+      fail "--expect-failure requires ordinary Node assertion status 1, got ${test_status}"
+    }
+    local actual_failures="${LOG_DIR}/phase21-node-actual-failures.log"
+    local expected_failures="${LOG_DIR}/phase21-node-expected-failures.log"
+    sed -nE 's/^not ok [0-9]+ - (.*)$/\1/p' "${TEST_LOG}" | LC_ALL=C sort \
+      >"${actual_failures}"
+    printf '%s\n' "${NODE_RED_FAILURES[@]}" | LC_ALL=C sort >"${expected_failures}"
+    if ! diff -u "${expected_failures}" "${actual_failures}" >"${BUILD_LOG}.failures"; then
+      cat "${BUILD_LOG}.failures" >&2
+      fail 'focused Node RED failures differ from the frozen allowlist'
+    fi
+    note "selected Node suite failed only through ${#NODE_RED_FAILURES[@]} intended assertions"
+    return
+  fi
+
+  if [[ "${test_status}" -ne 0 ]]; then
+    tail -n 100 "${TEST_LOG}" >&2 || true
+    fail "selected Node suite failed with status ${test_status}"
+  fi
+  rg -q '^# fail 0$' "${TEST_LOG}" \
+    || fail 'selected Node suite did not report zero failures'
+  note 'selected Node suite passed'
 }
 
 verify_composition_contract() {
@@ -1163,6 +1299,13 @@ run_selected_tests() {
 }
 
 mkdir -p "${LOG_DIR}"
+if [[ "${FOCUS_KIND}" == 'node' ]]; then
+  : >"${BUILD_LOG}"
+  list_selected_node_tests
+  run_selected_node_tests
+  note "focused Node verification complete; logs: ${LOG_DIR}"
+  exit 0
+fi
 [[ -x "${SISO}" ]] || fail "Siso not found at ${SISO}"
 require_file "${OUT_DIR}/build.ninja"
 capture_build_metadata

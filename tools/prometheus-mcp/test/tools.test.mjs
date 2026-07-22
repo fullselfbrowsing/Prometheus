@@ -164,19 +164,19 @@ test('native tools and all eight aliases forward only canonical routes', async (
   );
 });
 
-test('unavailable compatibility disposition is selected before argument normalization', async () => {
+test('unavailable stub and removed dispositions are selected before argument normalization', async () => {
   const { calls, handler } = makeHarness();
   const legacyArguments = {
     retired_field: { deeply: ['legacy', 42] },
     visual_reason: 'must not be reflected',
   };
-  for (const name of ['click_at', 'start_supervision_session', 'start_visual_session']) {
+  for (const name of ['click_at', 'start_visual_session']) {
     for (const args of [{}, legacyArguments]) {
       const result = await handler.callTool({ name, arguments: args });
       assertParity(result, true);
       assert.equal(result.structuredContent.ok, false);
       assert.equal(result.structuredContent.error.tool, name);
-      assert.ok(['UNSUPPORTED_ROUTE', 'NOT_READY', 'TOOL_REMOVED'].includes(
+      assert.ok(['UNSUPPORTED_ROUTE', 'TOOL_REMOVED'].includes(
         result.structuredContent.error.code,
       ));
       assert.doesNotMatch(result.content[0].text, /must not be reflected/iu);

@@ -9,6 +9,15 @@ import {
 } from '../src/schema.mjs';
 import { createToolHandler } from '../src/tool-handler.mjs';
 
+test('Phase 21 supervision keeps legacy visual-session names removed', () => {
+  for (const name of ['start_visual_session', 'end_visual_session']) {
+    const definition = getToolDefinition(name);
+    assert.equal(definition.disposition, 'removed', name);
+    assert.equal(definition.errorCode, 'TOOL_REMOVED', name);
+    assert.equal(definition.nativeRoute, undefined, name);
+  }
+});
+
 test('visual metadata is optional and preserved independently', () => {
   const action = getToolDefinition('click');
   assert.deepEqual(normalizeToolArguments(action, {}), {});

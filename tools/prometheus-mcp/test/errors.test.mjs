@@ -5,6 +5,14 @@ import { getToolDefinition } from '../src/catalog.mjs';
 import { compatibilityError } from '../src/errors.mjs';
 import { createToolHandler } from '../src/tool-handler.mjs';
 
+const phase21SupervisionNames = [
+  'create_supervision_pairing',
+  'start_supervision_session',
+  'get_supervision_snapshot',
+  'get_supervision_diff',
+  'end_supervision_session',
+];
+
 test('typed stubs return stable nonempty compatibility failures', () => {
   const result = compatibilityError(getToolDefinition('click_at'));
   assert.deepEqual(result, {
@@ -19,20 +27,66 @@ test('typed stubs return stable nonempty compatibility failures', () => {
   });
 });
 
-test('later-phase failures state their owner and recovery', () => {
-  for (const name of [
-    'create_supervision_pairing',
-    'start_supervision_session',
-    'get_supervision_snapshot',
-    'get_supervision_diff',
-    'end_supervision_session',
-  ]) {
-    const result = compatibilityError(getToolDefinition(name));
-    assert.equal(result.ok, false);
-    assert.equal(result.error.code, 'NOT_READY');
-    assert.equal(result.error.owner_phase, 21);
-    assert.ok(result.error.recovery.length > 0);
+test('native supervision forwarding uses empty browser-scoped envelopes', async () => {
+  const calls = [];
+  const handler = createToolHandler({
+    session: {
+      command: async (route, envelope) => {
+        calls.push({ route, envelope });
+        return { ok: true, supervision: { state: 'safe' } };
+      },
+    },
+  });
+
+  for (const name of phase21SupervisionNames) {
+    const result = await handler.callTool({ name, arguments: {} });
+    assert.equal(result.isError, false, name);
+    assert.deepEqual(result.structuredContent, {
+      ok: true,
+      supervision: { state: 'safe' },
+    }, name);
   }
+  assert.deepEqual(
+    calls,
+    phase21SupervisionNames.map((name) => ({
+      route: name,
+      envelope: { target: {}, params: {}, visual: {} },
+    })),
+  );
+});
+
+test('native supervision forwarding sanitizes thrown native failures', async () => {
+  const sentinel = 'phase21-private-bearer-session-content';
+  const calls = [];
+  const diagnostics = [];
+  const handler = createToolHandler({
+    session: {
+      command: async (route, envelope) => {
+        calls.push({ route, envelope });
+        throw new Error(`${sentinel}:${route}`);
+      },
+    },
+    diagnostic: (message) => diagnostics.push(String(message)),
+  });
+
+  for (const name of phase21SupervisionNames) {
+    const result = await handler.callTool({ name, arguments: {} });
+    assert.equal(result.isError, true, name);
+    assert.deepEqual(result.structuredContent, {
+      ok: false,
+      error: {
+        code: 'NATIVE_UNAVAILABLE',
+        recovery: 'Confirm Prometheus is running and retry.',
+      },
+    }, name);
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(sentinel, 'u'), name);
+  }
+  assert.deepEqual(calls.map(({ route }) => route), phase21SupervisionNames);
+  assert.deepEqual(
+    new Set(diagnostics),
+    new Set(['native request unavailable']),
+  );
+  assert.doesNotMatch(JSON.stringify(diagnostics), new RegExp(sentinel, 'u'));
 });
 
 test('removed visual-session calls include stable migration metadata', () => {

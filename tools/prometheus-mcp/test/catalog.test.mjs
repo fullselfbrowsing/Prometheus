@@ -80,6 +80,34 @@ const phase20CompatibilityNames = [
   ...phase20Aliases.map(([name]) => name),
 ];
 
+const phase21SupervisionNames = [
+  'create_supervision_pairing',
+  'start_supervision_session',
+  'get_supervision_snapshot',
+  'get_supervision_diff',
+  'end_supervision_session',
+];
+
+const emptySupervisionSchema = {
+  type: 'object',
+  properties: {},
+  required: [],
+  additionalProperties: false,
+};
+
+const forbiddenSupervisionSchemaFields = new Set([
+  'bearer',
+  'code',
+  'content',
+  'document',
+  'epoch',
+  'lease',
+  'profile',
+  'sequence',
+  'session',
+  'tab',
+]);
+
 const assertSchemaIsRecursivelyClosed = (schema, path) => {
   if (schema.oneOf) {
     assert.ok(schema.oneOf.length > 0, `${path}.oneOf`);
@@ -183,7 +211,7 @@ test('all twelve aliases point only to the closed native route set', () => {
   assert.deepEqual(getToolDefinition('press_enter').presetArguments, { key: 'Enter' });
 });
 
-test('Phase 20 promotes exactly 27 native routes plus four exact aliases', () => {
+test('Phase 20 retains exactly 27 native routes plus four exact aliases', () => {
   assert.equal(phase20RuntimeCases.length, 27);
   assert.equal(phase20Aliases.length, 4);
   assert.equal(new Set(phase20CompatibilityNames).size, 31);
@@ -199,6 +227,9 @@ test('Phase 20 promotes exactly 27 native routes plus four exact aliases', () =>
     assert.equal(definition.nativeRoute, nativeRoute, name);
   }
 
+});
+
+test('catalog partition is exactly 54/12/22/0/2', () => {
   const counts = Object.fromEntries(
     ['native', 'alias', 'typed_stub', 'later_phase', 'removed']
       .map((disposition) => [
@@ -207,12 +238,65 @@ test('Phase 20 promotes exactly 27 native routes plus four exact aliases', () =>
       ]),
   );
   assert.deepEqual(counts, {
-    native: 49,
+    native: 54,
     alias: 12,
     typed_stub: 22,
-    later_phase: 5,
+    later_phase: 0,
     removed: 2,
   });
+  assert.equal(
+    new Set(COMPATIBILITY_CATALOG.map(({ name }) => name)).size,
+    COMPATIBILITY_CATALOG.length,
+  );
+});
+
+test('Phase 21 supervision promotes exactly five identities from later to native', () => {
+  const promoted = COMPATIBILITY_CATALOG
+    .filter(({ disposition, name }) =>
+      disposition === 'native' && phase21SupervisionNames.includes(name))
+    .map(({ name }) => name)
+    .sort();
+  const remainingLater = COMPATIBILITY_CATALOG
+    .filter(({ disposition }) => disposition === 'later_phase')
+    .map(({ name }) => name)
+    .sort();
+
+  assert.deepEqual(promoted, [...phase21SupervisionNames].sort());
+  assert.deepEqual(remainingLater, []);
+  for (const name of phase21SupervisionNames) {
+    const definition = getToolDefinition(name);
+    assert.equal(definition.disposition, 'native', name);
+    assert.equal(definition.nativeRoute, name, name);
+    assert.equal(Object.hasOwn(definition, 'ownerPhase'), false, name);
+  }
+});
+
+test('Phase 21 supervision schemas stay deeply empty and authority free', () => {
+  const visit = (value, path) => {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(item, `${path}[${index}]`));
+      return;
+    }
+    if (value === null || typeof value !== 'object') return;
+    for (const [key, item] of Object.entries(value)) {
+      assert.equal(forbiddenSupervisionSchemaFields.has(key), false, `${path}.${key}`);
+      visit(item, `${path}.${key}`);
+    }
+  };
+
+  for (const name of phase21SupervisionNames) {
+    const schema = getToolDefinition(name).inputSchema;
+    assert.deepEqual(schema, emptySupervisionSchema, name);
+    visit(schema, name);
+    assert.deepEqual(normalizeToolArguments(getToolDefinition(name), {}), {}, name);
+    for (const field of forbiddenSupervisionSchemaFields) {
+      assert.throws(
+        () => normalizeToolArguments(getToolDefinition(name), { [field]: 'forged' }),
+        ({ code }) => ['INVALID_ARGUMENT', 'SECRET_TRANSPORT_BLOCKED'].includes(code),
+        `${name}.${field}`,
+      );
+    }
+  }
 });
 
 test('all canonical runtime schemas accept exact fixtures and close recursively', () => {
@@ -375,14 +459,10 @@ test('native schemas enforce surface, field, and numeric boundaries', () => {
   );
 });
 
-test('later, removed, coordinate, mutation, and unsafe tools never claim native success', () => {
+test('removed, coordinate, mutation, and unsafe tools never claim native success', () => {
   const later21 = COMPATIBILITY_CATALOG.filter(({ ownerPhase }) => ownerPhase === 21);
-  assert.equal(later21.length, 5);
+  assert.equal(later21.length, 0);
   assert.equal(COMPATIBILITY_CATALOG.filter(({ ownerPhase }) => ownerPhase === 20).length, 0);
-  for (const entry of later21) {
-    assert.equal(entry.disposition, 'later_phase');
-    assert.ok(entry.recovery.length > 0);
-  }
   for (const name of ['start_visual_session', 'end_visual_session']) {
     const entry = getToolDefinition(name);
     assert.equal(entry.disposition, 'removed');
