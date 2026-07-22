@@ -69,6 +69,61 @@ require_file() {
   [[ -s "$1" ]] || fail "missing or empty file: $1"
 }
 
+require_literal() {
+  local literal="$1"
+  local file="$2"
+  rg -q --fixed-strings -- "${literal}" "${file}" \
+    || fail "missing composition contract '${literal}' in ${file}"
+}
+
+reject_pattern() {
+  local pattern="$1"
+  local description="$2"
+  shift 2
+  if rg -n -- "${pattern}" "$@" >"${LOG_DIR}/phase21-static-guard.log"; then
+    tail -n 80 "${LOG_DIR}/phase21-static-guard.log" >&2 || true
+    fail "${description}"
+  fi
+}
+
+verify_composition_contract() {
+  local agent_service="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_service.cc"
+  local agent_profile="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_profile_service.cc"
+  local supervision="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local supervision_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.h"
+  local factory="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc"
+  local factory_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h"
+
+  require_file "${agent_service}"
+  require_file "${agent_profile}"
+  require_file "${supervision}"
+  require_file "${supervision_header}"
+  require_file "${factory}"
+  require_file "${factory_header}"
+
+  require_literal 'agent_service_.ObserveOrCreateTabData(tab, observer)' "${agent_profile}"
+  require_literal 'ProfileSelections::BuildForRegularProfile()' "${factory}"
+  require_literal 'DependsOn(PrometheusAgentProfileServiceFactory::GetInstance())' "${factory}"
+  require_literal 'PrometheusAgentProfileServiceFactory::GetForProfile(profile)' "${factory}"
+  require_literal 'weak_factory_.GetWeakPtr()' "${factory}"
+
+  reject_pattern \
+    'GetOrCreateForTab|EnsureTabData|RegisterWillDetach|OnTabWillDetach|OwnedTabData|(^|[^[:alnum:]_])tab_data_|InvalidateTabObservations|PruneUnownedTabData' \
+    'supervision gained an independent Agent tab-data ownership path' \
+    "${agent_profile}" "${supervision}" "${supervision_header}" \
+    "${factory}" "${factory_header}"
+  reject_pattern 'PrometheusAgentProfileServiceFactory' \
+    'supervision service bypassed its composition factory' \
+    "${supervision}" "${supervision_header}"
+
+  require_literal 'PrometheusAgentTabData::GetOrCreateForTab(tab)' "${agent_service}"
+  require_literal 'std::make_unique<OwnedTabData>' "${agent_service}"
+  require_literal 'tab->RegisterWillDetach' "${agent_service}"
+  require_literal '&PrometheusAgentService::OnTabWillDetach' "${agent_service}"
+  require_literal 'tab_data_.erase' "${agent_service}"
+  note 'Agent ownership and keyed-service composition static guards passed'
+}
+
 sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
@@ -389,6 +444,7 @@ mkdir -p "${LOG_DIR}"
 require_file "${OUT_DIR}/build.ninja"
 capture_build_metadata
 trap verify_build_metadata_on_exit EXIT
+verify_composition_contract
 build_focused_binary
 list_selected_tests
 run_selected_tests
