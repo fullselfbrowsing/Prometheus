@@ -7,7 +7,7 @@ FOCUS_KIND=''
 EXPECT_FAILURE=false
 
 usage() {
-  printf 'Usage: %s (--focus FILTER | --focus-blink FILTER) [--expect-failure]\n' "$0" >&2
+  printf 'Usage: %s (--focus FILTER | --focus-browser FILTER | --focus-blink FILTER) [--expect-failure]\n' "$0" >&2
 }
 
 while [[ "$#" -gt 0 ]]; do
@@ -23,6 +23,19 @@ while [[ "$#" -gt 0 ]]; do
       }
       FOCUS_FILTER="$2"
       FOCUS_KIND='browser'
+      shift 2
+      ;;
+    --focus-browser)
+      [[ "$#" -ge 2 ]] || {
+        usage
+        exit 2
+      }
+      [[ -z "${FOCUS_FILTER}" ]] || {
+        usage
+        exit 2
+      }
+      FOCUS_FILTER="$2"
+      FOCUS_KIND='browser-integration'
       shift 2
       ;;
     --focus-blink)
@@ -213,6 +226,37 @@ verify_blink_contract() {
   note 'Blink document, Mojo privacy, and GN static guards passed'
 }
 
+verify_capture_hub_contract() {
+  local hub_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h"
+  local hub_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc"
+  local hub_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc"
+  local hub_browser_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc"
+  local browser_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
+  local views_build="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/BUILD.gn"
+
+  require_file "${hub_header}"
+  require_file "${hub_source}"
+  require_file "${hub_test}"
+  require_file "${hub_browser_test}"
+  require_literal 'class PrometheusSupervisionCaptureHub : public content::WebContentsObserver' "${hub_header}"
+  require_literal 'SupervisionCaptureConsumerKind::kDashboard' "${hub_test}"
+  require_literal 'SupervisionCaptureConsumerKind::kAgentCompatibility' "${hub_test}"
+  require_literal 'mojo::Remote<blink::mojom::PrometheusSupervisionDocument>' "${hub_source}"
+  require_literal 'mojo::Receiver<blink::mojom::PrometheusSupervisionDocumentHost>' "${hub_source}"
+  require_literal '"prometheus_supervision_capture_hub.cc"' "${browser_build}"
+  require_literal '"prometheus_supervision_capture_hub_unittest.cc"' "${browser_build}"
+  require_literal '"../../../prometheus/prometheus_supervision_capture_hub_browsertest.cc"' "${views_build}"
+  reject_pattern \
+    'mojo::|PrometheusSupervisionDocument' \
+    'capture-hub consumer API exposed a renderer or Mojo endpoint' \
+    "${hub_header}"
+  reject_pattern \
+    'ExecuteScript|MutationObserver|MutationRecord|innerHTML|outerHTML' \
+    'browser capture hub gained production script injection or raw mutation access' \
+    "${hub_source}"
+  note 'capture-hub ownership, consumer API, privacy, and GN static guards passed'
+}
+
 sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
@@ -380,10 +424,12 @@ generate_blink_mojo_bindings() {
   local blink_rsp='phase21-focused/prometheus-supervision-blink.rsp'
   local shared_rsp='phase21-focused/prometheus-supervision-shared.rsp'
   local message_ids_rsp='phase21-focused/prometheus-supervision-message-ids.rsp'
+  local browser_rsp='phase21-focused/prometheus-supervision-browser.rsp'
   printf '%s\n' "${mojom}" >"${OUT_DIR}/${parser_rsp}"
   printf '%s\n' "${mojom}" >"${OUT_DIR}/${blink_rsp}"
   printf '%s\n' "${mojom}" >"${OUT_DIR}/${shared_rsp}"
   printf '%s\n' "${mojom}" >"${OUT_DIR}/${message_ids_rsp}"
+  printf '%s\n' "${mojom}" >"${OUT_DIR}/${browser_rsp}"
 
   if ! (
     cd "${OUT_DIR}"
@@ -396,6 +442,12 @@ generate_blink_mojo_bindings() {
       --bytecode_path gen/mojo/public/tools/bindings \
       --filelist="${message_ids_rsp}" --generate_non_variant_code \
       --generate_message_ids -g c++
+    python3 ../../mojo/public/tools/bindings/mojom_bindings_generator.py \
+      --use_bundled_pylibs -o gen generate -d ../../ -I ../../ \
+      --bytecode_path gen/mojo/public/tools/bindings \
+      --export_attribute BLINK_COMMON_EXPORT \
+      --export_header third_party/blink/public/common/common_export.h \
+      --filelist="${browser_rsp}" -g c++
     python3 ../../mojo/public/tools/bindings/mojom_bindings_generator.py \
       --use_bundled_pylibs -o gen generate -d ../../ -I ../../ \
       --bytecode_path gen/mojo/public/tools/bindings \
@@ -416,6 +468,7 @@ generate_blink_mojo_bindings() {
   fi
 
   require_file "${OUT_DIR}/gen/third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom-blink.cc"
+  require_file "${OUT_DIR}/gen/third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom.cc"
   require_file "${OUT_DIR}/gen/third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom-shared.cc"
 }
 
@@ -505,6 +558,7 @@ build_focused_binary() {
   local agent_service_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_service_unittest.o'
   local agent_tab_data_object='obj/chrome/browser/prometheus/prometheus_agent_tab_data/prometheus_agent_tab_data.o'
   local agent_profile_object='obj/chrome/browser/prometheus/prometheus_agent_profile_service/prometheus_agent_profile_service.o'
+  local agent_profile_factory_object='obj/chrome/browser/prometheus/prometheus_agent_profile_service/prometheus_agent_profile_service_factory.o'
   local agent_profile_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_profile_service_unittest.o'
   local agent_profile_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_profile_service_unittest.cc"
   local runtime_object='obj/chrome/browser/prometheus/prometheus_runtime_types/prometheus_runtime_types.o'
@@ -536,6 +590,17 @@ build_focused_binary() {
   local supervision_profile_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
   local supervision_profile_factory_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc"
   local supervision_profile_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc"
+  local supervision_hub_object='obj/chrome/browser/prometheus/prometheus_supervision_capture_hub/prometheus_supervision_capture_hub.o'
+  local supervision_hub_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_capture_hub_unittest.o'
+  local supervision_hub_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_supervision_capture_hub_browsertest.o'
+  local supervision_hub_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc"
+  local supervision_hub_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc"
+  local supervision_hub_browser_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc"
+  local browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_page_adapter_browsertest.o'
+  local mojom_template='obj/third_party/blink/public/mojom/mojom_platform/frame_metadata_observer_registry.mojom.o'
+  local mojom_object='obj/third_party/blink/public/mojom/mojom_platform/prometheus_supervision_document.mojom.o'
+  local mojom_shared_template='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/frame_metadata_observer_registry.mojom-shared.o'
+  local mojom_shared_object='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/prometheus_supervision_document.mojom-shared.o'
   local extra_objects=()
 
   : >"${BUILD_LOG}"
@@ -547,6 +612,7 @@ build_focused_binary() {
     compile_exact_object "${agent_service_object}"
     compile_exact_object "${agent_service_test_object}"
     compile_exact_object "${agent_profile_object}"
+    compile_exact_object "${agent_profile_factory_object}"
   )
 
   if [[ -e "${agent_profile_test_source}" ]]; then
@@ -618,6 +684,28 @@ build_focused_binary() {
       prometheus_runtime_profile_service_factory prometheus_supervision_profile_service_factory
   fi
 
+  if [[ -e "${supervision_hub_source}" || -e "${supervision_hub_test_source}" ]]; then
+    [[ -s "${supervision_hub_source}" ]] \
+      || fail 'supervision capture hub implementation is missing or empty'
+    [[ -s "${supervision_hub_test_source}" ]] \
+      || fail 'supervision capture hub unit test is missing or empty'
+    generate_blink_mojo_bindings
+    compile_synthesized_object "${runtime_profile_object}" "${supervision_hub_object}" \
+      prometheus_runtime_profile_service prometheus_supervision_capture_hub
+    compile_synthesized_object "${runtime_profile_test_object}" "${supervision_hub_test_object}" \
+      prometheus_runtime_profile_service_unittest prometheus_supervision_capture_hub_unittest
+    compile_synthesized_object "${mojom_template}" "${mojom_object}" \
+      frame_metadata_observer_registry prometheus_supervision_document
+    compile_synthesized_object "${mojom_shared_template}" "${mojom_shared_object}" \
+      frame_metadata_observer_registry prometheus_supervision_document
+    if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+      [[ -s "${supervision_hub_browser_source}" ]] \
+        || fail 'supervision capture hub browser test is missing or empty'
+      compile_synthesized_object "${browser_test_template}" "${supervision_hub_browser_object}" \
+        prometheus_page_adapter_browsertest prometheus_supervision_capture_hub_browsertest
+    fi
+  fi
+
   require_file "${OUT_DIR}/browser_tests.rsp"
   local runtime_contract='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o'
   local runtime_dialogs='obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o'
@@ -647,6 +735,13 @@ build_focused_binary() {
   fi
   if [[ -s "${supervision_profile_factory_source}" ]]; then
     candidates+=("${supervision_profile_factory_object}")
+  fi
+  if [[ -s "${supervision_hub_source}" ]]; then
+    candidates+=("${supervision_hub_object}" "${mojom_object}" "${mojom_shared_object}")
+  fi
+  if [[ "${FOCUS_KIND}" == 'browser-integration' &&
+        -s "${supervision_hub_browser_source}" ]]; then
+    candidates+=("${supervision_hub_browser_object}")
   fi
   local candidate
   for candidate in "${candidates[@]}"; do
@@ -740,6 +835,9 @@ if [[ "${FOCUS_KIND}" == 'blink' ]]; then
   build_blink_focused_binary
 else
   verify_composition_contract
+  if [[ -e "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h" ]]; then
+    verify_capture_hub_contract
+  fi
   build_focused_binary
 fi
 list_selected_tests
