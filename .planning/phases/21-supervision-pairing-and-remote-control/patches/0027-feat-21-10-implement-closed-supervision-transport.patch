@@ -1,0 +1,1080 @@
+From e676c992418a9132d74260e2e67c1a1b83bf8017 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 04:37:30 -0500
+Subject: [PATCH 27/27] feat(21-10): implement closed supervision transport
+
+- map exactly five empty-argument supervision routes bijectively
+- serialize only bounded APC baseline, diff, no-change, local-UI, or ended shapes
+- reject malformed graphs, invented empty outcomes, mixed metadata, and sensitive sentinels
+---
+ .../prometheus/prometheus_agent_route.cc      |  10 +-
+ .../prometheus_agent_transport_codec.cc       | 609 ++++++++++++++++++
+ ...ometheus_agent_transport_codec_unittest.cc | 221 ++++---
+ 3 files changed, 747 insertions(+), 93 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_route.cc b/chrome/browser/prometheus/prometheus_agent_route.cc
+index c6d567a270..9f34da0069 100644
+--- a/chrome/browser/prometheus/prometheus_agent_route.cc
++++ b/chrome/browser/prometheus/prometheus_agent_route.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_agent_route.h"
+ 
++#include <iterator>
+ #include <utility>
+ 
+ namespace prometheus {
+@@ -48,9 +49,16 @@ constexpr RouteNameEntry kRouteNameEntries[] = {
+     {"clear", AgentRouteName::kClear},
+     {"drag", AgentRouteName::kDrag},
+     {"drop_file", AgentRouteName::kDropFile},
++    {"create_supervision_pairing", AgentRouteName::kCreateSupervisionPairing},
++    {"start_supervision_session", AgentRouteName::kStartSupervisionSession},
++    {"get_supervision_snapshot", AgentRouteName::kGetSupervisionSnapshot},
++    {"get_supervision_diff", AgentRouteName::kGetSupervisionDiff},
++    {"end_supervision_session", AgentRouteName::kEndSupervisionSession},
+     {"unsupported_page_action", AgentRouteName::kUnsupportedPageAction},
+ };
+ 
++static_assert(std::size(kRouteNameEntries) == kAgentRouteNameCount);
++
+ }  // namespace
+ 
+ AgentVisualContext::AgentVisualContext() = default;
+@@ -189,7 +197,7 @@ std::string_view AgentRouteNameToString(AgentRouteName route_name) {
+       return entry.name;
+     }
+   }
+-  return "unsupported_page_action";
++  return {};
+ }
+ 
+ std::string_view AgentErrorCodeToString(AgentErrorCode error_code) {
+diff --git a/chrome/browser/prometheus/prometheus_agent_transport_codec.cc b/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
+index b8c0c6ea77..e32132a5d6 100644
+--- a/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
++++ b/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
+@@ -11,9 +11,12 @@
+ #include <initializer_list>
+ #include <limits>
+ #include <optional>
++#include <set>
+ #include <string>
+ #include <string_view>
++#include <type_traits>
+ #include <utility>
++#include <variant>
+ 
+ #include "base/json/json_reader.h"
+ #include "base/json/json_writer.h"
+@@ -40,6 +43,8 @@ constexpr size_t kMaxVisualClientBytes = 80;
+ constexpr size_t kMaxTabTitleBytes = 512;
+ constexpr size_t kMaxElementReadBytes = 65536;
+ constexpr size_t kMaxDiagnosticTextBytes = 256;
++constexpr size_t kMaxSupervisionTagBytes = 128;
++constexpr size_t kMaxSupervisionTextBytes = 4096;
+ constexpr int kMaxNodes = 10000;
+ constexpr int kMaxChars = 200000;
+ 
+@@ -48,6 +53,27 @@ constexpr std::array<std::string_view, 10> kDiagnosticKeys = {
+     "internal_adapter", "webui_adapter", "vault",      "provider",
+     "supervision",      "extensions"};
+ 
++constexpr std::array<std::string_view, 12> kSensitiveResultMarkers = {
++    "pairing_code",
++    "dashboard_session",
++    "controller_lease",
++    "bearer",
++    "authorization",
++    "api_key",
++    "password",
++    "payment",
++    "otp",
++    "secret",
++    "token",
++    "credential"};
++
++constexpr std::array<std::string_view, 14> kSupervisionAuthorityMarkers = {
++    "browser_id",     "profile_path", "tab_id",
++    "window_id",      "owner_id",     "document_token",
++    "document_epoch", "sequence",     "cursor",
++    "selector",       "url",          "renderer",
++    "raw_content",    "page_content"};
++
+ AgentRouteResult Failure(AgentErrorCode code,
+                          std::string message,
+                          std::string recovery) {
+@@ -88,6 +114,55 @@ bool IsBoundedUtf8(const std::string& value,
+          base::IsStringUTF8(value);
+ }
+ 
++std::string NormalizeSensitiveMarker(std::string_view value) {
++  std::string normalized;
++  normalized.reserve(value.size());
++  for (char character : value) {
++    if (base::IsAsciiAlphaNumeric(character)) {
++      normalized.push_back(base::ToLowerASCII(character));
++    } else {
++      normalized.push_back('_');
++    }
++  }
++  return normalized;
++}
++
++bool ContainsBoundedMarker(std::string_view value, std::string_view marker) {
++  size_t position = value.find(marker);
++  while (position != std::string_view::npos) {
++    const size_t end = position + marker.size();
++    const bool starts_at_boundary =
++        position == 0 || !base::IsAsciiAlphaNumeric(value[position - 1]);
++    const bool ends_at_boundary =
++        end == value.size() || !base::IsAsciiAlphaNumeric(value[end]);
++    if (starts_at_boundary && ends_at_boundary) {
++      return true;
++    }
++    position = value.find(marker, position + 1);
++  }
++  return false;
++}
++
++template <size_t N>
++bool ContainsAnyMarker(
++    std::string_view value,
++    const std::array<std::string_view, N>& forbidden_markers) {
++  const std::string normalized = NormalizeSensitiveMarker(value);
++  return std::any_of(forbidden_markers.begin(), forbidden_markers.end(),
++                     [&normalized](std::string_view marker) {
++                       return ContainsBoundedMarker(normalized, marker);
++                     });
++}
++
++bool ContainsSensitiveResultData(std::string_view value) {
++  return ContainsAnyMarker(value, kSensitiveResultMarkers);
++}
++
++bool ContainsForbiddenSupervisionData(std::string_view value) {
++  return ContainsSensitiveResultData(value) ||
++         ContainsAnyMarker(value, kSupervisionAuthorityMarkers);
++}
++
+ std::optional<int32_t> ParseInt32(const base::Value* value) {
+   if (!value) {
+     return std::nullopt;
+@@ -283,6 +358,50 @@ bool UsesActionFrame(AgentRouteName route) {
+   return false;
+ }
+ 
++bool IsSupervisionRoute(AgentRouteName route) {
++  switch (route) {
++    case AgentRouteName::kCreateSupervisionPairing:
++    case AgentRouteName::kStartSupervisionSession:
++    case AgentRouteName::kGetSupervisionSnapshot:
++    case AgentRouteName::kGetSupervisionDiff:
++    case AgentRouteName::kEndSupervisionSession:
++      return true;
++    case AgentRouteName::kListTabs:
++    case AgentRouteName::kListWindows:
++    case AgentRouteName::kOpenTab:
++    case AgentRouteName::kActivateTab:
++    case AgentRouteName::kCloseTab:
++    case AgentRouteName::kNavigate:
++    case AgentRouteName::kReload:
++    case AgentRouteName::kGoBack:
++    case AgentRouteName::kGoForward:
++    case AgentRouteName::kDuplicateTab:
++    case AgentRouteName::kMoveTabToNewWindow:
++    case AgentRouteName::kOpenPrometheusNewTab:
++    case AgentRouteName::kOpenPrometheusSidePanel:
++    case AgentRouteName::kOpenPrometheusControlPanel:
++    case AgentRouteName::kReadPage:
++    case AgentRouteName::kGetDomSnapshot:
++    case AgentRouteName::kGetPageSnapshot:
++    case AgentRouteName::kGetText:
++    case AgentRouteName::kGetAttribute:
++    case AgentRouteName::kDiagnostics:
++    case AgentRouteName::kOpenInternalSurface:
++    case AgentRouteName::kExecuteJs:
++    case AgentRouteName::kClick:
++    case AgentRouteName::kTypeText:
++    case AgentRouteName::kPressKey:
++    case AgentRouteName::kScroll:
++    case AgentRouteName::kHover:
++    case AgentRouteName::kSelectOption:
++    case AgentRouteName::kClear:
++    case AgentRouteName::kDrag:
++    case AgentRouteName::kDropFile:
++    case AgentRouteName::kUnsupportedPageAction:
++      return false;
++  }
++}
++
+ base::expected<AgentTarget, AgentRouteResult> ParseTarget(
+     const base::DictValue& target) {
+   if (!HasOnlyKeys(target, {"browser_session_id", "window_session_id", "tab_id",
+@@ -551,6 +670,285 @@ bool IsDiagnosticKey(std::string_view key) {
+          kDiagnosticKeys.end();
+ }
+ 
++base::expected<void, AgentRouteResult> ValidateSupervisionString(
++    std::string_view value,
++    size_t max_bytes,
++    bool allow_empty = true) {
++  if (value.size() > max_bytes) {
++    return base::unexpected(
++        RequestTooLarge("Supervision result exceeds structural limits"));
++  }
++  if ((!allow_empty && value.empty()) || !base::IsStringUTF8(value)) {
++    return base::unexpected(
++        InvalidRequest("Supervision result has invalid text structure"));
++  }
++  if (ContainsForbiddenSupervisionData(value)) {
++    return base::unexpected(
++        InvalidRequest("Supervision result contains forbidden data"));
++  }
++  return base::ok();
++}
++
++base::expected<void, AgentRouteResult> ValidateSupervisionNode(
++    const AgentSupervisionNode& node) {
++  struct StringConstraint {
++    std::string_view value;
++    size_t max_bytes;
++    bool allow_empty;
++  };
++  const std::array<StringConstraint, 7> constraints = {{
++      {node.ref, kMaxAgentSupervisionNodeRefBytes, false},
++      {node.parent_ref, kMaxAgentSupervisionNodeRefBytes, true},
++      {node.tag, kMaxSupervisionTagBytes, true},
++      {node.role, kMaxSupervisionTagBytes, true},
++      {node.name, kMaxSupervisionTextBytes, true},
++      {node.text_snippet, kMaxSupervisionTextBytes, true},
++      {node.frame_restricted_reason, kMaxSupervisionTextBytes, true},
++  }};
++  for (const StringConstraint& constraint : constraints) {
++    auto valid = ValidateSupervisionString(
++        constraint.value, constraint.max_bytes, constraint.allow_empty);
++    if (!valid.has_value()) {
++      return valid;
++    }
++  }
++  if (node.input_value.has_value()) {
++    auto valid =
++        ValidateSupervisionString(*node.input_value, kMaxSupervisionTextBytes);
++    if (!valid.has_value()) {
++      return valid;
++    }
++  }
++  if (node.input_type.has_value()) {
++    auto valid =
++        ValidateSupervisionString(*node.input_type, kMaxSupervisionTagBytes);
++    if (!valid.has_value()) {
++      return valid;
++    }
++  }
++  if ((!node.frame_restricted && !node.frame_restricted_reason.empty()) ||
++      (node.frame_restricted && node.frame_restricted_reason.empty())) {
++    return base::unexpected(InvalidRequest(
++        "Supervision restricted-frame metadata must be internally consistent"));
++  }
++  if (node.child_refs.size() > kMaxAgentSupervisionChildrenPerNode) {
++    return base::unexpected(RequestTooLarge(
++        "Supervision node exceeds the bounded child-reference count"));
++  }
++  std::set<std::string_view> child_refs;
++  for (const std::string& child_ref : node.child_refs) {
++    auto valid = ValidateSupervisionString(
++        child_ref, kMaxAgentSupervisionNodeRefBytes, false);
++    if (!valid.has_value()) {
++      return valid;
++    }
++    if (!child_refs.insert(child_ref).second) {
++      return base::unexpected(
++          InvalidRequest("Supervision node child references must be unique"));
++    }
++  }
++  return base::ok();
++}
++
++base::expected<void, AgentRouteResult> ValidateSupervisionNodeCollection(
++    const std::vector<AgentSupervisionNode>& nodes,
++    std::string_view external_parent = std::string_view()) {
++  if (nodes.size() > kMaxAgentSupervisionNodes) {
++    return base::unexpected(
++        RequestTooLarge("Supervision node count exceeds the result cap"));
++  }
++  if (nodes.empty()) {
++    return base::ok();
++  }
++
++  std::set<std::string_view> refs;
++  for (const AgentSupervisionNode& node : nodes) {
++    auto valid = ValidateSupervisionNode(node);
++    if (!valid.has_value()) {
++      return valid;
++    }
++    if (!refs.insert(node.ref).second) {
++      return base::unexpected(
++          InvalidRequest("Supervision node references must be unique"));
++    }
++  }
++  if (!external_parent.empty() && refs.contains(external_parent)) {
++    return base::unexpected(InvalidRequest(
++        "Supervision subtree parent cannot also be an inserted node"));
++  }
++
++  auto find_node =
++      [&nodes](std::string_view ref) -> const AgentSupervisionNode* {
++    const auto match = std::find_if(
++        nodes.begin(), nodes.end(),
++        [ref](const AgentSupervisionNode& node) { return node.ref == ref; });
++    return match == nodes.end() ? nullptr : &*match;
++  };
++
++  size_t root_count = 0;
++  size_t external_root_count = 0;
++  for (const AgentSupervisionNode& node : nodes) {
++    if (node.parent_ref.empty()) {
++      ++root_count;
++    } else if (node.parent_ref == external_parent && !external_parent.empty()) {
++      ++external_root_count;
++    } else if (!find_node(node.parent_ref)) {
++      return base::unexpected(
++          InvalidRequest("Supervision node references an unknown parent"));
++    }
++
++    for (const std::string& child_ref : node.child_refs) {
++      const AgentSupervisionNode* child = find_node(child_ref);
++      if (!child || child->parent_ref != node.ref) {
++        return base::unexpected(
++            InvalidRequest("Supervision parent and child references disagree"));
++      }
++    }
++    if (!node.parent_ref.empty() && node.parent_ref != external_parent) {
++      const AgentSupervisionNode* parent = find_node(node.parent_ref);
++      if (!parent ||
++          std::find(parent->child_refs.begin(), parent->child_refs.end(),
++                    node.ref) == parent->child_refs.end()) {
++        return base::unexpected(InvalidRequest(
++            "Supervision child is absent from its declared parent"));
++      }
++    }
++
++    std::set<std::string_view> lineage;
++    const AgentSupervisionNode* ancestor = &node;
++    while (ancestor) {
++      if (!lineage.insert(ancestor->ref).second) {
++        return base::unexpected(
++            InvalidRequest("Supervision node graph contains a cycle"));
++      }
++      if (ancestor->parent_ref.empty() ||
++          ancestor->parent_ref == external_parent) {
++        break;
++      }
++      ancestor = find_node(ancestor->parent_ref);
++    }
++  }
++
++  if (external_parent.empty()) {
++    if (root_count != 1 || external_root_count != 0) {
++      return base::unexpected(
++          InvalidRequest("Supervision node graph must have one root"));
++    }
++  } else if (root_count != 0 || external_root_count != 1) {
++    return base::unexpected(InvalidRequest(
++        "Inserted supervision subtree must have one external root"));
++  }
++  return base::ok();
++}
++
++base::expected<void, AgentRouteResult> ValidateSupervisionDiffOperation(
++    const AgentSupervisionDiffOperation& operation) {
++  auto valid_ref = ValidateSupervisionString(
++      operation.ref, kMaxAgentSupervisionNodeRefBytes, false);
++  if (!valid_ref.has_value()) {
++    return valid_ref;
++  }
++  auto valid_parent = ValidateSupervisionString(
++      operation.parent_ref, kMaxAgentSupervisionNodeRefBytes);
++  if (!valid_parent.has_value()) {
++    return valid_parent;
++  }
++
++  switch (operation.type) {
++    case AgentSupervisionDiffOperationType::kInsertSubtree: {
++      if (operation.subtree.empty() || operation.replacement.has_value() ||
++          !operation.child_order.empty() ||
++          operation.index >
++              static_cast<size_t>(std::numeric_limits<int>::max()) ||
++          operation.subtree.front().ref != operation.ref ||
++          operation.subtree.front().parent_ref != operation.parent_ref) {
++        return base::unexpected(
++            InvalidRequest("Malformed supervision subtree insertion"));
++      }
++      return ValidateSupervisionNodeCollection(operation.subtree,
++                                               operation.parent_ref);
++    }
++    case AgentSupervisionDiffOperationType::kRemove:
++      if (!operation.parent_ref.empty() || operation.index != 0 ||
++          !operation.subtree.empty() || operation.replacement.has_value() ||
++          !operation.child_order.empty()) {
++        return base::unexpected(
++            InvalidRequest("Malformed supervision removal"));
++      }
++      return base::ok();
++    case AgentSupervisionDiffOperationType::kReplaceFields:
++      if (!operation.parent_ref.empty() || operation.index != 0 ||
++          !operation.subtree.empty() || !operation.replacement.has_value() ||
++          !operation.child_order.empty() ||
++          operation.replacement->ref != operation.ref) {
++        return base::unexpected(
++            InvalidRequest("Malformed supervision field replacement"));
++      }
++      return ValidateSupervisionNode(*operation.replacement);
++    case AgentSupervisionDiffOperationType::kReorderChildren: {
++      if (!operation.parent_ref.empty() || operation.index != 0 ||
++          !operation.subtree.empty() || operation.replacement.has_value() ||
++          operation.child_order.size() > kMaxAgentSupervisionChildrenPerNode) {
++        return base::unexpected(
++            InvalidRequest("Malformed supervision child reorder"));
++      }
++      std::set<std::string_view> child_order;
++      for (const std::string& child_ref : operation.child_order) {
++        auto valid = ValidateSupervisionString(
++            child_ref, kMaxAgentSupervisionNodeRefBytes, false);
++        if (!valid.has_value()) {
++          return valid;
++        }
++        if (!child_order.insert(child_ref).second) {
++          return base::unexpected(InvalidRequest(
++              "Supervision child reorder references must be unique"));
++        }
++      }
++      return base::ok();
++    }
++  }
++  return base::unexpected(InvalidRequest("Unknown supervision diff operation"));
++}
++
++bool IsEmptyAgentTarget(const AgentTarget& target) {
++  return !target.browser_session_id.has_value() &&
++         !target.window_session_id.has_value() &&
++         target.tab_handle.raw_value() == tabs::TabHandle::NullValue &&
++         !target.tab_index.has_value();
++}
++
++bool HasClosedSupervisionEnvelope(const AgentRouteResult& result) {
++  return result.ok && result.error_code == AgentErrorCode::kNone &&
++         result.message.empty() && result.recovery.empty() &&
++         result.changed_state.empty() && IsEmptyAgentTarget(result.target) &&
++         !result.page_result.has_value() && result.tabs.empty() &&
++         result.windows.empty() && !result.element_read_result.has_value() &&
++         result.diagnostics.empty();
++}
++
++bool SupervisionPayloadMatchesRoute(
++    const AgentSupervisionTransportResult& result) {
++  switch (result.route_name) {
++    case AgentRouteName::kCreateSupervisionPairing:
++      return std::holds_alternative<AgentSupervisionLocalUiResult>(
++          result.payload);
++    case AgentRouteName::kStartSupervisionSession:
++    case AgentRouteName::kGetSupervisionSnapshot:
++      return std::holds_alternative<AgentSupervisionBaselineResult>(
++          result.payload);
++    case AgentRouteName::kGetSupervisionDiff:
++      return std::holds_alternative<AgentSupervisionDiffResult>(
++                 result.payload) ||
++             std::holds_alternative<AgentSupervisionNoChangeResult>(
++                 result.payload);
++    case AgentRouteName::kEndSupervisionSession:
++      return std::holds_alternative<AgentSupervisionEndedResult>(
++          result.payload);
++    default:
++      return false;
++  }
++}
++
+ base::expected<void, AgentRouteResult> ValidateResultBounds(
+     const AgentRouteResult& result) {
+   if (!IsBoundedUtf8(result.message, 4096) ||
+@@ -636,6 +1034,173 @@ base::DictValue PageResultToValue(const AgentPageResult& page) {
+   return value;
+ }
+ 
++base::DictValue SupervisionNodeFieldsToValue(const AgentSupervisionNode& node) {
++  base::DictValue fields;
++  fields.Set("tag", node.tag);
++  fields.Set("role", node.role);
++  fields.Set("name", node.name);
++  fields.Set("text_snippet", node.text_snippet);
++  fields.Set("disabled", node.disabled);
++  fields.Set("focusable", node.focusable);
++  fields.Set("clickable", node.clickable);
++  if (node.input_value.has_value()) {
++    fields.Set("input_value", *node.input_value);
++  }
++  if (node.input_type.has_value()) {
++    fields.Set("input_type", *node.input_type);
++  }
++  if (node.checked.has_value()) {
++    fields.Set("checked", *node.checked);
++  }
++  fields.Set("required", node.required);
++  fields.Set("readonly", node.readonly);
++  fields.Set("frame_restricted", node.frame_restricted);
++  fields.Set("frame_restricted_reason", node.frame_restricted_reason);
++  return fields;
++}
++
++base::DictValue SupervisionNodeToValue(const AgentSupervisionNode& node) {
++  base::DictValue value;
++  value.Set("ref", node.ref);
++  if (!node.parent_ref.empty()) {
++    value.Set("parent_ref", node.parent_ref);
++  }
++  base::ListValue children;
++  children.reserve(node.child_refs.size());
++  for (const std::string& child_ref : node.child_refs) {
++    children.Append(child_ref);
++  }
++  value.Set("children", std::move(children));
++  value.Set("fields", SupervisionNodeFieldsToValue(node));
++  return value;
++}
++
++std::string_view SupervisionOperationName(
++    AgentSupervisionDiffOperationType type) {
++  switch (type) {
++    case AgentSupervisionDiffOperationType::kInsertSubtree:
++      return "insert_subtree";
++    case AgentSupervisionDiffOperationType::kRemove:
++      return "remove";
++    case AgentSupervisionDiffOperationType::kReplaceFields:
++      return "replace_fields";
++    case AgentSupervisionDiffOperationType::kReorderChildren:
++      return "reorder_children";
++  }
++}
++
++base::DictValue SupervisionOperationToValue(
++    const AgentSupervisionDiffOperation& operation) {
++  base::DictValue value;
++  value.Set("op", SupervisionOperationName(operation.type));
++  value.Set("ref", operation.ref);
++  switch (operation.type) {
++    case AgentSupervisionDiffOperationType::kInsertSubtree: {
++      if (!operation.parent_ref.empty()) {
++        value.Set("parent_ref", operation.parent_ref);
++      }
++      value.Set("index", static_cast<int>(operation.index));
++      base::ListValue subtree;
++      subtree.reserve(operation.subtree.size());
++      for (const AgentSupervisionNode& node : operation.subtree) {
++        subtree.Append(SupervisionNodeToValue(node));
++      }
++      value.Set("subtree", std::move(subtree));
++      break;
++    }
++    case AgentSupervisionDiffOperationType::kRemove:
++      break;
++    case AgentSupervisionDiffOperationType::kReplaceFields:
++      value.Set("fields", SupervisionNodeFieldsToValue(*operation.replacement));
++      break;
++    case AgentSupervisionDiffOperationType::kReorderChildren: {
++      base::ListValue children;
++      children.reserve(operation.child_order.size());
++      for (const std::string& child_ref : operation.child_order) {
++        children.Append(child_ref);
++      }
++      value.Set("children", std::move(children));
++      break;
++    }
++  }
++  return value;
++}
++
++base::expected<base::DictValue, AgentRouteResult> SupervisionPayloadToValue(
++    const AgentSupervisionTransportResult& result) {
++  if (!SupervisionPayloadMatchesRoute(result)) {
++    return base::unexpected(InvalidRequest(
++        "Supervision result payload does not match its native route"));
++  }
++
++  base::DictValue value;
++  if (std::holds_alternative<AgentSupervisionLocalUiResult>(result.payload)) {
++    value.Set("kind", "local_ui");
++    value.Set("surface", "control_panel");
++    return value;
++  }
++  if (const auto* baseline =
++          std::get_if<AgentSupervisionBaselineResult>(&result.payload)) {
++    if (baseline->nodes.empty()) {
++      return base::unexpected(
++          InvalidRequest("Supervision baseline must contain a real root"));
++    }
++    auto valid = ValidateSupervisionNodeCollection(baseline->nodes);
++    if (!valid.has_value()) {
++      return base::unexpected(std::move(valid.error()));
++    }
++    value.Set("kind", "baseline");
++    base::ListValue nodes;
++    nodes.reserve(baseline->nodes.size());
++    for (const AgentSupervisionNode& node : baseline->nodes) {
++      nodes.Append(SupervisionNodeToValue(node));
++    }
++    value.Set("nodes", std::move(nodes));
++    return value;
++  }
++  if (const auto* diff =
++          std::get_if<AgentSupervisionDiffResult>(&result.payload)) {
++    if (diff->operations.empty()) {
++      return base::unexpected(InvalidRequest(
++          "Empty supervision diff must use the no-change result"));
++    }
++    if (diff->operations.size() > kMaxAgentSupervisionDiffOperations) {
++      return base::unexpected(
++          RequestTooLarge("Supervision diff exceeds the operation-count cap"));
++    }
++    value.Set("kind", "diff");
++    base::ListValue operations;
++    operations.reserve(diff->operations.size());
++    for (const AgentSupervisionDiffOperation& operation : diff->operations) {
++      auto valid = ValidateSupervisionDiffOperation(operation);
++      if (!valid.has_value()) {
++        return base::unexpected(std::move(valid.error()));
++      }
++      operations.Append(SupervisionOperationToValue(operation));
++    }
++    value.Set("operations", std::move(operations));
++    std::optional<std::string> serialized_diff = base::WriteJson(value);
++    if (!serialized_diff.has_value()) {
++      return base::unexpected(
++          InvalidRequest("Supervision diff could not be serialized"));
++    }
++    if (serialized_diff->size() > kMaxAgentSupervisionDiffBytes) {
++      return base::unexpected(
++          RequestTooLarge("Supervision diff exceeds the byte cap"));
++    }
++    return value;
++  }
++  if (std::holds_alternative<AgentSupervisionNoChangeResult>(result.payload)) {
++    value.Set("kind", "no_change");
++    return value;
++  }
++  if (std::holds_alternative<AgentSupervisionEndedResult>(result.payload)) {
++    value.Set("kind", "ended");
++    return value;
++  }
++  return base::unexpected(InvalidRequest("Unknown supervision result payload"));
++}
++
+ }  // namespace
+ 
+ base::expected<AgentRouteRequest, AgentRouteResult> ParseAgentTransportRequest(
+@@ -671,6 +1236,17 @@ base::expected<AgentRouteRequest, AgentRouteResult> ParseAgentTransportRequest(
+   AgentRouteRequest request;
+   request.route_name = *route;
+   request.session_id = *session_id;
++  if (IsSupervisionRoute(request.route_name)) {
++    for (std::string_view key : {"target", "params", "visual"}) {
++      const base::Value* value = root->Find(key);
++      if (value && (!value->is_dict() || !value->GetDict().empty())) {
++        return base::unexpected(InvalidRequest(
++            "Supervision compatibility routes accept no arguments"));
++      }
++    }
++    return request;
++  }
++
+   if (const base::DictValue* target = root->FindDict("target")) {
+     auto parsed = ParseTarget(*target);
+     if (!parsed.has_value()) {
+@@ -713,6 +1289,39 @@ base::expected<std::string, AgentRouteResult> SerializeAgentTransportResult(
+   if (!bounds.has_value()) {
+     return base::unexpected(std::move(bounds.error()));
+   }
++  if (ContainsSensitiveResultData(result.message) ||
++      ContainsSensitiveResultData(result.recovery)) {
++    return base::unexpected(
++        InvalidRequest("Result contains forbidden sensitive data"));
++  }
++
++  if (result.supervision_result.has_value()) {
++    if (!HasClosedSupervisionEnvelope(result)) {
++      return base::unexpected(InvalidRequest(
++          "Supervision result cannot contain generic route metadata"));
++    }
++    auto supervision = SupervisionPayloadToValue(*result.supervision_result);
++    if (!supervision.has_value()) {
++      return base::unexpected(std::move(supervision.error()));
++    }
++
++    base::DictValue root;
++    root.Set("ok", true);
++    root.Set("error_code", AgentErrorCodeToString(AgentErrorCode::kNone));
++    root.Set("message", "");
++    root.Set("recovery", "");
++    root.Set("supervision", std::move(*supervision));
++    std::optional<std::string> json = base::WriteJson(root);
++    if (!json.has_value()) {
++      return base::unexpected(
++          InvalidRequest("Supervision result could not be serialized"));
++    }
++    if (json->size() > kMaxOutputBytes) {
++      return base::unexpected(
++          RequestTooLarge("Serialized supervision result exceeds 2 MiB"));
++    }
++    return std::move(*json);
++  }
+ 
+   base::DictValue root;
+   root.Set("ok", result.ok);
+diff --git a/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc b/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc
+index 5c15213511..e9acb9f413 100644
+--- a/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc
+@@ -27,24 +27,21 @@ struct SupervisionRouteCase {
+ };
+ 
+ constexpr std::array<SupervisionRouteCase, kAgentSupervisionRouteCount>
+-    kSupervisionRoutes = {{{"create_supervision_pairing",
+-                            AgentRouteName::kCreateSupervisionPairing},
+-                           {"start_supervision_session",
+-                            AgentRouteName::kStartSupervisionSession},
+-                           {"get_supervision_snapshot",
+-                            AgentRouteName::kGetSupervisionSnapshot},
+-                           {"get_supervision_diff",
+-                            AgentRouteName::kGetSupervisionDiff},
+-                           {"end_supervision_session",
+-                            AgentRouteName::kEndSupervisionSession}}};
++    kSupervisionRoutes = {
++        {{"create_supervision_pairing",
++          AgentRouteName::kCreateSupervisionPairing},
++         {"start_supervision_session",
++          AgentRouteName::kStartSupervisionSession},
++         {"get_supervision_snapshot", AgentRouteName::kGetSupervisionSnapshot},
++         {"get_supervision_diff", AgentRouteName::kGetSupervisionDiff},
++         {"end_supervision_session", AgentRouteName::kEndSupervisionSession}}};
+ 
+ std::string RequestJson(std::string_view route,
+                         std::string_view target = "{}",
+                         std::string_view params = "{}",
+                         std::string_view visual = "{}") {
+-  return "{\"route\":\"" + std::string(route) +
+-         "\",\"session_id\":\"" + std::string(kSession) +
+-         "\",\"target\":" + std::string(target) +
++  return "{\"route\":\"" + std::string(route) + "\",\"session_id\":\"" +
++         std::string(kSession) + "\",\"target\":" + std::string(target) +
+          ",\"params\":" + std::string(params) +
+          ",\"visual\":" + std::string(visual) + "}";
+ }
+@@ -52,9 +49,8 @@ std::string RequestJson(std::string_view route,
+ AgentRouteResult ParseError(std::string_view json) {
+   auto parsed = ParseAgentTransportRequest(json);
+   EXPECT_FALSE(parsed.has_value());
+-  return parsed.has_value()
+-             ? AgentRouteResult::Success({})
+-             : std::move(parsed.error());
++  return parsed.has_value() ? AgentRouteResult::Success({})
++                            : std::move(parsed.error());
+ }
+ 
+ base::expected<base::DictValue, AgentRouteResult> SerializeRoot(
+@@ -93,11 +89,32 @@ const base::DictValue* SupervisionValue(const base::DictValue& root) {
+ 
+ void ExpectNoAuthorityOrSecretFields(std::string_view serialized) {
+   for (std::string_view forbidden : {
+-           "pairing_code", "dashboard_session", "controller_lease",
+-           "browser_id", "profile_path", "tab_id", "document_token",
+-           "document_epoch", "sequence", "cursor", "bearer",
+-           "authorization", "api_key", "password", "payment", "otp",
+-           "secret", "url", "renderer",
++           "pairing_code",
++           "dashboard_session",
++           "controller_lease",
++           "browser_id",
++           "profile_path",
++           "tab_id",
++           "window_id",
++           "owner_id",
++           "document_token",
++           "document_epoch",
++           "sequence",
++           "cursor",
++           "bearer",
++           "authorization",
++           "api_key",
++           "password",
++           "payment",
++           "otp",
++           "secret",
++           "token",
++           "credential",
++           "selector",
++           "url",
++           "renderer",
++           "raw_content",
++           "page_content",
+        }) {
+     SCOPED_TRACE(forbidden);
+     EXPECT_EQ(std::string::npos, serialized.find(forbidden));
+@@ -126,25 +143,24 @@ TEST(PrometheusAgentTransportCodecTest,
+   EXPECT_FALSE(AgentRouteNameFromString("start_visual_session"));
+   EXPECT_FALSE(AgentRouteNameFromString("end_visual_session"));
+   EXPECT_FALSE(AgentRouteNameFromString("create_supervision_pairing_v2"));
+-  EXPECT_TRUE(
+-      AgentRouteNameToString(static_cast<AgentRouteName>(999)).empty());
++  EXPECT_TRUE(AgentRouteNameToString(static_cast<AgentRouteName>(999)).empty());
+ }
+ 
+ TEST(PrometheusAgentTransportCodecTest,
+      SupervisionRequestsAcceptOnlyEmptyCallerScopedObjects) {
+-  constexpr std::array<std::array<std::string_view, 3>, 12> kInvalidObjects =
+-      {{{R"({"tab_id":7})", "{}", "{}"},
+-        {R"({"tabIndex":0})", "{}", "{}"},
+-        {R"({"browser_session_id":1})", "{}", "{}"},
+-        {"{}", R"({"url":"https://example.test"})", "{}"},
+-        {"{}", R"({"text":"content"})", "{}"},
+-        {"{}", R"({"element":{"element_ref":"node-1"}})", "{}"},
+-        {"{}", R"({"document_token":"epoch"})", "{}"},
+-        {"{}", R"({"session_id":"chosen"})", "{}"},
+-        {"{}", R"({"pairing_code":"AAAA-BBBB"})", "{}"},
+-        {"{}", R"({"cursor":1})", "{}"},
+-        {"{}", "{}", R"({"client":"Codex"})"},
+-        {"{}", "{}", R"({"visual_reason":"content"})"}}};
++  constexpr std::array<std::array<std::string_view, 3>, 12> kInvalidObjects = {
++      {{R"({"tab_id":7})", "{}", "{}"},
++       {R"({"tabIndex":0})", "{}", "{}"},
++       {R"({"browser_session_id":1})", "{}", "{}"},
++       {"{}", R"({"url":"https://example.test"})", "{}"},
++       {"{}", R"({"text":"content"})", "{}"},
++       {"{}", R"({"element":{"element_ref":"node-1"}})", "{}"},
++       {"{}", R"({"document_token":"epoch"})", "{}"},
++       {"{}", R"({"session_id":"chosen"})", "{}"},
++       {"{}", R"({"pairing_code":"AAAA-BBBB"})", "{}"},
++       {"{}", R"({"cursor":1})", "{}"},
++       {"{}", "{}", R"({"client":"Codex"})"},
++       {"{}", "{}", R"({"visual_reason":"content"})"}}};
+ 
+   for (const auto& fixture : kSupervisionRoutes) {
+     SCOPED_TRACE(fixture.name);
+@@ -177,21 +193,21 @@ TEST(PrometheusAgentTransportCodecTest,
+ TEST(PrometheusAgentTransportCodecTest,
+      SupervisionResultUnionHasOnlyFiveSafeSuccessVariants) {
+   static_assert(std::variant_size_v<AgentSupervisionPayload> == 5u);
+-  static_assert(std::is_same_v<
+-                std::variant_alternative_t<0, AgentSupervisionPayload>,
+-                AgentSupervisionLocalUiResult>);
+-  static_assert(std::is_same_v<
+-                std::variant_alternative_t<1, AgentSupervisionPayload>,
+-                AgentSupervisionBaselineResult>);
+-  static_assert(std::is_same_v<
+-                std::variant_alternative_t<2, AgentSupervisionPayload>,
+-                AgentSupervisionDiffResult>);
+-  static_assert(std::is_same_v<
+-                std::variant_alternative_t<3, AgentSupervisionPayload>,
+-                AgentSupervisionNoChangeResult>);
+-  static_assert(std::is_same_v<
+-                std::variant_alternative_t<4, AgentSupervisionPayload>,
+-                AgentSupervisionEndedResult>);
++  static_assert(
++      std::is_same_v<std::variant_alternative_t<0, AgentSupervisionPayload>,
++                     AgentSupervisionLocalUiResult>);
++  static_assert(
++      std::is_same_v<std::variant_alternative_t<1, AgentSupervisionPayload>,
++                     AgentSupervisionBaselineResult>);
++  static_assert(
++      std::is_same_v<std::variant_alternative_t<2, AgentSupervisionPayload>,
++                     AgentSupervisionDiffResult>);
++  static_assert(
++      std::is_same_v<std::variant_alternative_t<3, AgentSupervisionPayload>,
++                     AgentSupervisionNoChangeResult>);
++  static_assert(
++      std::is_same_v<std::variant_alternative_t<4, AgentSupervisionPayload>,
++                     AgentSupervisionEndedResult>);
+ 
+   AgentRouteResult result = AgentRouteResult::SupervisionSuccess(
+       AgentRouteName::kCreateSupervisionPairing,
+@@ -218,8 +234,7 @@ TEST(PrometheusAgentTransportCodecTest,
+   EXPECT_EQ("control_panel", *local_payload->FindString("surface"));
+ 
+   auto ended = SerializeRoot(AgentRouteResult::SupervisionSuccess(
+-      AgentRouteName::kEndSupervisionSession,
+-      AgentSupervisionEndedResult()));
++      AgentRouteName::kEndSupervisionSession, AgentSupervisionEndedResult()));
+   ASSERT_TRUE(ended.has_value()) << ended.error().message;
+   EXPECT_EQ(5u, ended->size());
+   const base::DictValue* ended_payload = SupervisionValue(*ended);
+@@ -254,9 +269,9 @@ TEST(PrometheusAgentTransportCodecTest,
+   ASSERT_EQ(2u, nodes->size());
+   EXPECT_EQ("node-1", *(*nodes)[0].GetDict().FindString("ref"));
+   EXPECT_EQ("node-2", *(*nodes)[1].GetDict().FindString("ref"));
+-  EXPECT_EQ("public choice",
+-            *(*nodes)[1].GetDict().FindDict("fields")->FindString(
+-                "input_value"));
++  EXPECT_EQ(
++      "public choice",
++      *(*nodes)[1].GetDict().FindDict("fields")->FindString("input_value"));
+ 
+   auto repeated = SerializeAgentTransportResult(result);
+   ASSERT_TRUE(repeated.has_value());
+@@ -298,17 +313,13 @@ TEST(PrometheusAgentTransportCodecTest,
+   const base::ListValue* operations = diff_payload->FindList("operations");
+   ASSERT_TRUE(operations);
+   ASSERT_EQ(4u, operations->size());
+-  EXPECT_EQ("insert_subtree",
+-            *(*operations)[0].GetDict().FindString("op"));
+-  EXPECT_EQ("replace_fields",
+-            *(*operations)[1].GetDict().FindString("op"));
+-  EXPECT_EQ("reorder_children",
+-            *(*operations)[2].GetDict().FindString("op"));
++  EXPECT_EQ("insert_subtree", *(*operations)[0].GetDict().FindString("op"));
++  EXPECT_EQ("replace_fields", *(*operations)[1].GetDict().FindString("op"));
++  EXPECT_EQ("reorder_children", *(*operations)[2].GetDict().FindString("op"));
+   EXPECT_EQ("remove", *(*operations)[3].GetDict().FindString("op"));
+ 
+   auto no_change = SerializeRoot(AgentRouteResult::SupervisionSuccess(
+-      AgentRouteName::kGetSupervisionDiff,
+-      AgentSupervisionNoChangeResult()));
++      AgentRouteName::kGetSupervisionDiff, AgentSupervisionNoChangeResult()));
+   ASSERT_TRUE(no_change.has_value()) << no_change.error().message;
+   const base::DictValue* no_change_payload = SupervisionValue(*no_change);
+   ASSERT_TRUE(no_change_payload);
+@@ -318,13 +329,25 @@ TEST(PrometheusAgentTransportCodecTest,
+ 
+ TEST(PrometheusAgentTransportCodecTest,
+      SupervisionRejectsWrongVariantsMalformedStructureAndBounds) {
+-  auto wrong_route = SerializeAgentTransportResult(
+-      AgentRouteResult::SupervisionSuccess(
++  auto empty_baseline =
++      SerializeAgentTransportResult(AgentRouteResult::SupervisionSuccess(
++          AgentRouteName::kGetSupervisionSnapshot,
++          AgentSupervisionBaselineResult()));
++  ASSERT_FALSE(empty_baseline.has_value());
++  EXPECT_EQ(AgentErrorCode::kInvalidRequest, empty_baseline.error().error_code);
++
++  auto empty_diff =
++      SerializeAgentTransportResult(AgentRouteResult::SupervisionSuccess(
++          AgentRouteName::kGetSupervisionDiff, AgentSupervisionDiffResult()));
++  ASSERT_FALSE(empty_diff.has_value());
++  EXPECT_EQ(AgentErrorCode::kInvalidRequest, empty_diff.error().error_code);
++
++  auto wrong_route =
++      SerializeAgentTransportResult(AgentRouteResult::SupervisionSuccess(
+           AgentRouteName::kCreateSupervisionPairing,
+           AgentSupervisionBaselineResult{.nodes = {SafeNode("node-1")}}));
+   ASSERT_FALSE(wrong_route.has_value());
+-  EXPECT_EQ(AgentErrorCode::kInvalidRequest,
+-            wrong_route.error().error_code);
++  EXPECT_EQ(AgentErrorCode::kInvalidRequest, wrong_route.error().error_code);
+ 
+   AgentRouteResult mixed = AgentRouteResult::SupervisionSuccess(
+       AgentRouteName::kGetSupervisionSnapshot,
+@@ -333,24 +356,23 @@ TEST(PrometheusAgentTransportCodecTest,
+   mixed.changed_state = {"snapshot_returned"};
+   auto mixed_result = SerializeAgentTransportResult(mixed);
+   ASSERT_FALSE(mixed_result.has_value());
+-  EXPECT_EQ(AgentErrorCode::kInvalidRequest,
+-            mixed_result.error().error_code);
++  EXPECT_EQ(AgentErrorCode::kInvalidRequest, mixed_result.error().error_code);
+ 
+   AgentSupervisionBaselineResult oversized;
+   oversized.nodes.reserve(kMaxAgentSupervisionNodes + 1);
+   for (size_t index = 0; index <= kMaxAgentSupervisionNodes; ++index) {
+     oversized.nodes.push_back(SafeNode("node-" + std::to_string(index)));
+   }
+-  auto oversized_result = SerializeAgentTransportResult(
+-      AgentRouteResult::SupervisionSuccess(
++  auto oversized_result =
++      SerializeAgentTransportResult(AgentRouteResult::SupervisionSuccess(
+           AgentRouteName::kGetSupervisionSnapshot, std::move(oversized)));
+   ASSERT_FALSE(oversized_result.has_value());
+   EXPECT_EQ(AgentErrorCode::kRequestTooLarge,
+             oversized_result.error().error_code);
+ 
+   AgentSupervisionNode malformed = SafeNode("node-1", "missing-parent");
+-  auto malformed_result = SerializeAgentTransportResult(
+-      AgentRouteResult::SupervisionSuccess(
++  auto malformed_result =
++      SerializeAgentTransportResult(AgentRouteResult::SupervisionSuccess(
+           AgentRouteName::kGetSupervisionSnapshot,
+           AgentSupervisionBaselineResult{.nodes = {std::move(malformed)}}));
+   ASSERT_FALSE(malformed_result.has_value());
+@@ -361,41 +383,56 @@ TEST(PrometheusAgentTransportCodecTest,
+   invalid_remove.type = AgentSupervisionDiffOperationType::kRemove;
+   invalid_remove.ref = "node-1";
+   invalid_remove.parent_ref = "stale-parent";
+-  auto invalid_diff = SerializeAgentTransportResult(
+-      AgentRouteResult::SupervisionSuccess(
++  auto invalid_diff =
++      SerializeAgentTransportResult(AgentRouteResult::SupervisionSuccess(
+           AgentRouteName::kGetSupervisionDiff,
+           AgentSupervisionDiffResult{
+               .operations = {std::move(invalid_remove)}}));
+   ASSERT_FALSE(invalid_diff.has_value());
+-  EXPECT_EQ(AgentErrorCode::kInvalidRequest,
+-            invalid_diff.error().error_code);
++  EXPECT_EQ(AgentErrorCode::kInvalidRequest, invalid_diff.error().error_code);
+ }
+ 
+ TEST(PrometheusAgentTransportCodecTest,
+      SupervisionRejectsRecursiveAuthorityContentAndSecretSentinels) {
+   for (std::string_view sentinel : {
+-           "pairing-code-sentinel", "dashboard-session-sentinel",
+-           "controller-lease-sentinel", "browser-id-sentinel",
+-           "profile-path-sentinel", "tab-id-sentinel",
+-           "document-token-sentinel", "document-epoch-sentinel",
+-           "sequence-sentinel", "cursor-sentinel", "bearer-sentinel",
+-           "authorization-sentinel", "api-key-sentinel",
+-           "password-sentinel", "payment-sentinel", "otp-sentinel",
+-           "secret-sentinel", "renderer-sentinel",
++           "pairing-code-sentinel",
++           "dashboard-session-sentinel",
++           "controller-lease-sentinel",
++           "browser-id-sentinel",
++           "profile-path-sentinel",
++           "tab-id-sentinel",
++           "window-id-sentinel",
++           "owner-id-sentinel",
++           "document-token-sentinel",
++           "document-epoch-sentinel",
++           "sequence-sentinel",
++           "cursor-sentinel",
++           "bearer-sentinel",
++           "authorization-sentinel",
++           "api-key-sentinel",
++           "password-sentinel",
++           "payment-sentinel",
++           "otp-sentinel",
++           "secret-sentinel",
++           "token-sentinel",
++           "credential-sentinel",
++           "selector-sentinel",
++           "url-sentinel",
++           "renderer-sentinel",
++           "raw-content-sentinel",
++           "page-content-sentinel",
+        }) {
+     SCOPED_TRACE(sentinel);
+     AgentSupervisionNode node = SafeNode("node-1");
+     node.name = std::string(sentinel);
+-    auto serialized = SerializeAgentTransportResult(
+-        AgentRouteResult::SupervisionSuccess(
++    auto serialized =
++        SerializeAgentTransportResult(AgentRouteResult::SupervisionSuccess(
+             AgentRouteName::kGetSupervisionSnapshot,
+             AgentSupervisionBaselineResult{.nodes = {std::move(node)}}));
+     ASSERT_FALSE(serialized.has_value());
+     EXPECT_NE(AgentErrorCode::kNone, serialized.error().error_code);
+-    EXPECT_EQ(std::string::npos,
+-              serialized.error().message.find(sentinel));
+-    EXPECT_EQ(std::string::npos,
+-              serialized.error().recovery.find(sentinel));
++    EXPECT_EQ(std::string::npos, serialized.error().message.find(sentinel));
++    EXPECT_EQ(std::string::npos, serialized.error().recovery.find(sentinel));
+   }
+ 
+   AgentRouteResult unsafe_error = AgentRouteResult::Failure(
+-- 
+2.50.1 (Apple Git-155)
+
