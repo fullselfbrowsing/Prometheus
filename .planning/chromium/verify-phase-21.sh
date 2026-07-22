@@ -235,6 +235,7 @@ verify_capture_hub_contract() {
   local hub_browser_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc"
   local profile_service="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
   local profile_service_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.h"
+  local profile_service_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc"
   local browser_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
   local views_build="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/BUILD.gn"
 
@@ -242,10 +243,14 @@ verify_capture_hub_contract() {
   require_file "${hub_source}"
   require_file "${hub_test}"
   require_file "${hub_browser_test}"
+  require_file "${profile_service_test}"
   require_literal 'class PrometheusSupervisionCaptureHub : public content::WebContentsObserver' "${hub_header}"
   require_literal 'SupervisionCaptureConsumerKind::kDashboard' "${hub_test}"
   require_literal 'SupervisionCaptureConsumerKind::kAgentCompatibility' "${hub_test}"
   require_literal 'using CaptureConsumerToken = uint64_t;' "${hub_header}"
+  require_literal 'WaitForNextDiff' "${hub_header}"
+  require_literal 'CancelDiffWait' "${hub_header}"
+  require_literal 'DashboardLongPoll' "${hub_test}"
   require_literal 'mojo::Remote<blink::mojom::PrometheusSupervisionDocument>' "${hub_source}"
   require_literal 'mojo::Receiver<blink::mojom::PrometheusSupervisionDocumentHost>' "${hub_source}"
   require_literal 'content::WeakDocumentPtr requested_document' "${hub_source}"
@@ -271,7 +276,10 @@ verify_capture_hub_contract() {
   require_literal 'capture_consumer_token' "${profile_service}"
   require_literal 'ReadDashboardBaseline' "${profile_service_header}"
   require_literal 'ReadDashboardDiff' "${profile_service_header}"
+  require_literal 'BeginDashboardDiffWait' "${profile_service_header}"
+  require_literal 'CancelDashboardDiffWait' "${profile_service_header}"
   require_literal 'AckDashboard' "${profile_service_header}"
+  require_literal 'HubDashboardLongPoll' "${profile_service_test}"
   reject_pattern \
     'mojo::|PrometheusSupervisionDocument' \
     'capture-hub consumer API exposed a renderer or Mojo endpoint' \
