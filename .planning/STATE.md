@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 16
+current_plan: 17
 status: ready
-stopped_at: Completed 21-15-PLAN.md
-last_updated: "2026-07-22T16:04:03.000Z"
+stopped_at: Completed 21-16-PLAN.md
+last_updated: "2026-07-22T17:12:59.848Z"
 last_activity: 2026-07-22
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 81
-  percent: 88
+  completed_plans: 82
+  percent: 89
 ---
 
 # Project State
@@ -36,24 +36,30 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 16 of 26
+Plan: 17 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 16
+**Current Plan:** 17
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [█████████░] 88%
+**Progress:** [█████████░] 89%
 **Last Activity:** 2026-07-22
-**Last Activity Description:** Completed Plan 21-15 — browser-native safe-default
-control and consequential-action consent, post-approval exact authority
-revalidation, and preserved independent vault confirmation.
+**Last Activity Description:** Completed Plan 21-16 — authority-free browser
+tab-state projection through the exact Agent-owned observation lease, with
+coherent controller/action teardown before downstream observer delivery.
 
-Milestone work is 81 of 92 existing plans complete (88%); cumulative project
-work is 132 of 144 existing plans summarized (92%).
+Milestone work is 82 of 92 existing plans complete (89%); cumulative project
+work is 133 of 144 existing plans summarized (92%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 16: the intended 8-test RED gate, matching 8-test GREEN gate,
+  final 15-test tab-state regression, and 3-test real service-path regression
+  pass with a structurally authority-free DTO, exact observed-lease
+  publication before downstream observers, coherent lifecycle clears, stable
+  patch identity, and byte-identical reviewed build artifacts.
 
 - Phase 21 Plan 15: the intended 3-test browser RED gate, 3-test enable-service
   GREEN gate, 2-test enable-browser gate, final 4-test native-dialog browser
@@ -291,6 +297,7 @@ work is 132 of 144 existing plans summarized (92%).
 - [Phase 21]: Keep supervision dialog models sanitized and dependency-neutral while the profile service and action controller retain every authority check. — Views may return only approved or denied and cannot create a controller or dispatch an action itself.
 - [Phase 21]: Treat native approval as visible intent rather than authority and revalidate the exact session, target, immutable owner, controller lease, expiry, document, sequence, and generation afterward. — Safe focus, Escape, close, stale callbacks, and lifecycle loss all deny without mutation.
 - [Phase 21]: Bind consequential consent directly to one pending action ID and leave vault-shaped work on its separate native confirmation path. — A dashboard cannot pre-approve a later action or reuse supervision control to bypass vault policy.
+- [Phase 21]: Project browser chrome supervision only from the authoritative sanitized service snapshot through the exact Agent-owned tab-data lease, with authority fields structurally absent. — One display-only whole-value replacement keeps eligible unowned viewing visible, clears controller/action state coherently before observers render it, and prevents chrome surfaces from inventing a second target, owner, or credential authority.
 
 ## Performance Metrics
 
@@ -321,6 +328,7 @@ work is 132 of 144 existing plans summarized (92%).
 | Phase 21 P13 | 10min | 2 tasks | 9 files |
 | Phase 21 P14 | 80min | 3 tasks | 12 files |
 | Phase 21 P15 | 87min | 3 tasks | 15 files |
+| Phase 21 P16 | 1h7min | 3 tasks | 10 files |
 
 ## Blockers and Deferred Items
 
@@ -335,11 +343,11 @@ work is 132 of 144 existing plans summarized (92%).
 
 ## Session
 
-**Last Date:** 2026-07-22T16:04:03.000Z
-**Stopped At:** Completed 21-15-PLAN.md
+**Last Date:** 2026-07-22T17:12:59.844Z
+**Stopped At:** Completed 21-16-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-16-PLAN.md` to project sanitized supervision state into the
-browser-owned tab state without exposing session or controller authority.
+Execute `21-17-PLAN.md` to wire the existing native tab badge to the live,
+sanitized browser-owned supervision state.
