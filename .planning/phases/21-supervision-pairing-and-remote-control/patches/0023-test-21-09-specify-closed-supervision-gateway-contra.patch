@@ -1,0 +1,318 @@
+From 92a213d21bfeba815f63ebac8c8c6d13c17b2274 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 02:58:05 -0500
+Subject: [PATCH] test(21-09): specify closed supervision gateway contract
+
+- move gateway perimeter declarations into a dependency-neutral contract
+- define opaque dispatch, cancellation, result, and readiness DTOs
+- retain failing authenticated supervision path and perimeter fixtures
+---
+ chrome/browser/prometheus/BUILD.gn            |   5 +-
+ .../prometheus/prometheus_agent_gateway.h     |  39 +-----
+ .../prometheus_agent_gateway_contract.cc      |   2 +-
+ .../prometheus_agent_gateway_contract.h       | 111 ++++++++++++++++++
+ .../prometheus_agent_gateway_unittest.cc      |  61 ++++++++++
+ 5 files changed, 176 insertions(+), 42 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_gateway_contract.h
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 0a087b1b99..acee95b294 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -551,13 +551,12 @@ source_set("prometheus_runtime_transport_codec") {
+ 
+ source_set("prometheus_agent_gateway_contract") {
+   sources = [
+-    "prometheus_agent_gateway.h",
+     "prometheus_agent_gateway_contract.cc",
++    "prometheus_agent_gateway_contract.h",
+   ]
+ 
+   deps = [
+-    ":prometheus_agent_route",
+-    ":prometheus_runtime_transport_codec",
++    ":prometheus_supervision_transport_codec",
+     "//base",
+     "//crypto",
+     "//net",
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.h b/chrome/browser/prometheus/prometheus_agent_gateway.h
+index 5746562aaf..d2108e78e6 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.h
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.h
+@@ -19,6 +19,7 @@
+ #include "base/sequence_checker.h"
+ #include "base/threading/thread.h"
+ #include "base/time/time.h"
++#include "chrome/browser/prometheus/prometheus_agent_gateway_contract.h"
+ #include "chrome/browser/prometheus/prometheus_agent_route.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_transport_codec.h"
+ #include "net/base/ip_endpoint.h"
+@@ -26,34 +27,11 @@
+ class Profile;
+ class BrowserWindowInterface;
+ 
+-namespace net {
+-class HttpServerRequestInfo;
+-}
+-
+ namespace prometheus {
+ 
+ inline constexpr size_t kMaxGatewayRuntimeTaskOwners = 1024;
+ inline constexpr size_t kMaxGatewayDiscoveryOperations = 512;
+ 
+-enum class PrometheusAgentRequestRejection {
+-  kNone,
+-  kUnauthorized,
+-  kNonLoopbackPeer,
+-  kInvalidHost,
+-  kOriginForbidden,
+-  kNotFound,
+-  kMethodNotAllowed,
+-  kUnsupportedMediaType,
+-  kRequestTooLarge,
+-  kTooManyRequests,
+-};
+-
+-PrometheusAgentRequestRejection ValidatePrometheusAgentGatewayRequestForTesting(
+-    const net::HttpServerRequestInfo& request,
+-    int port,
+-    std::string_view bearer,
+-    size_t in_flight);
+-
+ struct RuntimeGatewayHealthState {
+   RuntimeComponentStatus provider_status = RuntimeComponentStatus::kNotReady;
+   RuntimeComponentStatus vault_status = RuntimeComponentStatus::kNotReady;
+@@ -82,21 +60,6 @@ AgentRouteResult BuildPrometheusGatewayHealthForTesting(
+     bool active_regular,
+     const RuntimeGatewayHealthState& runtime_health);
+ 
+-class PrometheusAgentOneShotCompletion {
+- public:
+-  explicit PrometheusAgentOneShotCompletion(base::OnceClosure completion);
+-  PrometheusAgentOneShotCompletion(const PrometheusAgentOneShotCompletion&) =
+-      delete;
+-  PrometheusAgentOneShotCompletion& operator=(
+-      const PrometheusAgentOneShotCompletion&) = delete;
+-  ~PrometheusAgentOneShotCompletion();
+-
+-  bool TryComplete();
+-
+- private:
+-  base::OnceClosure completion_;
+-};
+-
+ class PrometheusGatewayDiscoveryTracker {
+  public:
+   using StartCallback = base::RepeatingCallback<RuntimeTransportResult(
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc b/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
+index a128f284fa..5b4a4feaca 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
+@@ -8,7 +8,7 @@
+ 
+ #include "base/containers/span.h"
+ #include "base/strings/string_util.h"
+-#include "chrome/browser/prometheus/prometheus_agent_gateway.h"
++#include "chrome/browser/prometheus/prometheus_agent_gateway_contract.h"
+ #include "crypto/secure_util.h"
+ #include "net/base/ip_address.h"
+ #include "net/server/http_server_request_info.h"
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_contract.h b/chrome/browser/prometheus/prometheus_agent_gateway_contract.h
+new file mode 100644
+index 0000000000..ea8b507d3c
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_contract.h
+@@ -0,0 +1,111 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_GATEWAY_CONTRACT_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_GATEWAY_CONTRACT_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <string>
++#include <string_view>
++
++#include "base/functional/callback.h"
++#include "chrome/browser/prometheus/prometheus_supervision_transport_codec.h"
++
++namespace net {
++class HttpServerRequestInfo;
++}
++
++namespace prometheus {
++
++enum class PrometheusAgentRequestRejection {
++  kNone,
++  kUnauthorized,
++  kNonLoopbackPeer,
++  kInvalidHost,
++  kOriginForbidden,
++  kNotFound,
++  kMethodNotAllowed,
++  kUnsupportedMediaType,
++  kRequestTooLarge,
++  kTooManyRequests,
++};
++
++PrometheusAgentRequestRejection ValidatePrometheusAgentGatewayRequestForTesting(
++    const net::HttpServerRequestInfo& request,
++    int port,
++    std::string_view bearer,
++    size_t in_flight);
++
++class PrometheusAgentOneShotCompletion {
++ public:
++  explicit PrometheusAgentOneShotCompletion(base::OnceClosure completion);
++  PrometheusAgentOneShotCompletion(const PrometheusAgentOneShotCompletion&) =
++      delete;
++  PrometheusAgentOneShotCompletion& operator=(
++      const PrometheusAgentOneShotCompletion&) = delete;
++  ~PrometheusAgentOneShotCompletion();
++
++  bool TryComplete();
++
++ private:
++  base::OnceClosure completion_;
++};
++
++// A gateway-owned transport token. It identifies only the lifetime of one
++// authenticated HTTP request and carries no profile, target, viewer, or stream
++// authority.
++struct SupervisionGatewayCancellationToken {
++  uint64_t value = 0;
++
++  explicit operator bool() const { return value != 0; }
++  friend bool operator==(const SupervisionGatewayCancellationToken&,
++                         const SupervisionGatewayCancellationToken&) = default;
++};
++
++struct SupervisionGatewayRequest {
++  SupervisionTransportRequest transport;
++  SupervisionGatewayCancellationToken cancellation_token;
++};
++
++struct SupervisionGatewayResult {
++  SupervisionTransportResult transport;
++};
++
++enum class SupervisionGatewayReadinessStatus {
++  kReady,
++  kDegraded,
++  kNotReady,
++  kUnavailable,
++};
++
++// This is deliberately metadata-only. Callers must supply fixed, bounded
++// diagnostics and may not attach arbitrary dictionaries or authority values.
++struct SupervisionGatewayReadiness {
++  SupervisionGatewayReadinessStatus status =
++      SupervisionGatewayReadinessStatus::kNotReady;
++  std::string reason;
++  std::string next_action;
++};
++
++// Dependency-neutral gateway seam. The browser composition root installs the
++// concrete regular-profile adapter; the gateway itself never resolves a
++// profile service, Browser, tab, capture owner, renderer, or transport owner.
++class SupervisionGatewayDispatcher {
++ public:
++  using ResultCallback =
++      base::OnceCallback<void(SupervisionGatewayResult result)>;
++
++  virtual ~SupervisionGatewayDispatcher() = default;
++
++  virtual void Dispatch(SupervisionGatewayRequest request,
++                        ResultCallback callback) = 0;
++  virtual void Cancel(SupervisionGatewayCancellationToken token) = 0;
++  virtual SupervisionGatewayReadiness GetSanitizedReadiness() const = 0;
++  virtual void CancelAllAndShutdown() = 0;
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_GATEWAY_CONTRACT_H_
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+index 1e0b856a52..5c045d29a1 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+@@ -17,6 +17,7 @@
+ #include "base/json/json_reader.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/prometheus/prometheus_agent_transport_codec.h"
++#include "chrome/browser/prometheus/prometheus_agent_gateway_contract.h"
+ #include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_transport_codec.h"
+ #include "chrome/common/chrome_switches.h"
+@@ -222,6 +223,66 @@ TEST(PrometheusAgentGatewayTest, RejectsPeerHostOriginAndOpenRouting) {
+   ExpectRejected(websocket, PrometheusAgentRequestRejection::kMethodNotAllowed);
+ }
+ 
++TEST(PrometheusAgentGatewayTest,
++     SupervisionContractAcceptsOnlyTheAuthenticatedClosedPostPath) {
++  ExpectRejected(ValidRequest("/v1/supervision"),
++                 PrometheusAgentRequestRejection::kNone);
++
++  auto remote_peer = ValidRequest("/v1/supervision");
++  remote_peer.peer = net::IPEndPoint(net::IPAddress(192, 0, 2, 1), 52123);
++  ExpectRejected(remote_peer,
++                 PrometheusAgentRequestRejection::kNonLoopbackPeer);
++
++  auto bad_host = ValidRequest("/v1/supervision");
++  bad_host.headers["host"] = "localhost:43210";
++  ExpectRejected(bad_host, PrometheusAgentRequestRejection::kInvalidHost);
++
++  auto origin = ValidRequest("/v1/supervision");
++  origin.headers["origin"] = "https://dashboard.example";
++  ExpectRejected(origin, PrometheusAgentRequestRejection::kOriginForbidden);
++
++  auto missing_bearer = ValidRequest("/v1/supervision");
++  missing_bearer.headers.erase("authorization");
++  ExpectRejected(missing_bearer,
++                 PrometheusAgentRequestRejection::kUnauthorized);
++}
++
++TEST(PrometheusAgentGatewayTest,
++     SupervisionContractRejectsUpgradeMethodMediaSizeAndInflightBeforeDispatch) {
++  int dispatch_calls = 0;
++  auto expect_rejected_without_dispatch =
++      [&dispatch_calls](const net::HttpServerRequestInfo& request,
++                        PrometheusAgentRequestRejection rejection,
++                        size_t in_flight = 0) {
++        ExpectRejected(request, rejection, in_flight);
++        EXPECT_EQ(0, dispatch_calls);
++      };
++
++  auto websocket = ValidRequest("/v1/supervision");
++  websocket.headers["upgrade"] = "websocket";
++  expect_rejected_without_dispatch(
++      websocket, PrometheusAgentRequestRejection::kMethodNotAllowed);
++
++  auto wrong_method = ValidRequest("/v1/supervision");
++  wrong_method.method = "GET";
++  expect_rejected_without_dispatch(
++      wrong_method, PrometheusAgentRequestRejection::kMethodNotAllowed);
++
++  auto wrong_media = ValidRequest("/v1/supervision");
++  wrong_media.headers["content-type"] = "text/plain";
++  expect_rejected_without_dispatch(
++      wrong_media, PrometheusAgentRequestRejection::kUnsupportedMediaType);
++
++  auto oversized = ValidRequest("/v1/supervision");
++  oversized.data.assign(1'048'577, 'x');
++  expect_rejected_without_dispatch(
++      oversized, PrometheusAgentRequestRejection::kRequestTooLarge);
++
++  expect_rejected_without_dispatch(
++      ValidRequest("/v1/supervision"),
++      PrometheusAgentRequestRejection::kTooManyRequests, 16);
++}
++
+ TEST(PrometheusAgentGatewayTest,
+      RejectsMethodContentTypeBodyAndConcurrencyViolations) {
+   auto wrong_get = ValidRequest("/v1/session/create");
+-- 
+2.50.1 (Apple Git-155)
+

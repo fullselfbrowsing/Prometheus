@@ -301,6 +301,27 @@ verify_capture_hub_contract() {
   note 'capture-hub ownership, consumer API, privacy, and GN static guards passed'
 }
 
+verify_gateway_contract() {
+  local gateway_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway.h"
+  local contract_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway_contract.h"
+  local contract_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc"
+  local browser_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
+
+  require_file "${gateway_header}"
+  require_file "${contract_header}"
+  require_file "${contract_source}"
+  require_literal 'class SupervisionGatewayDispatcher' "${contract_header}"
+  require_literal 'SupervisionGatewayCancellationToken' "${contract_header}"
+  require_literal 'SupervisionGatewayReadiness' "${contract_header}"
+  require_literal 'CancelAllAndShutdown()' "${contract_header}"
+  require_literal '"prometheus_agent_gateway_contract.h"' "${browser_build}"
+  reject_pattern \
+    '#include .*prometheus_supervision_(profile_service|capture_hub)|#include .*(browser_window|web_contents|render_frame_host)|(^|[^[:alnum:]_])(raw_ptr|WeakPtr|unique_ptr)<(Profile|Browser|BrowserWindowInterface|WebContents|RenderFrameHost|PrometheusSupervisionProfileService|PrometheusSupervisionCaptureHub)>' \
+    'gateway contract gained concrete profile, target, capture, or renderer authority' \
+    "${contract_header}"
+  note 'gateway abstract-dispatch contract and GN static guards passed'
+}
+
 sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
@@ -729,6 +750,8 @@ build_focused_binary() {
   local supervision_hub_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc"
   local supervision_hub_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc"
   local supervision_hub_browser_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc"
+  local gateway_contract_object='obj/chrome/browser/prometheus/prometheus_agent_gateway_contract/prometheus_agent_gateway_contract.o'
+  local gateway_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_gateway_unittest.o'
   local browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_page_adapter_browsertest.o'
   local mojom_template='obj/third_party/blink/public/mojom/mojom_platform/frame_metadata_observer_registry.mojom.o'
   local mojom_object='obj/third_party/blink/public/mojom/mojom_platform/prometheus_supervision_document.mojom.o'
@@ -746,6 +769,8 @@ build_focused_binary() {
     compile_exact_object "${agent_service_test_object}"
     compile_exact_object "${agent_profile_object}"
     compile_exact_object "${agent_profile_factory_object}"
+    compile_exact_object "${gateway_contract_object}"
+    compile_exact_object "${gateway_test_object}"
   )
 
   if [[ -e "${agent_profile_test_source}" ]]; then
@@ -976,6 +1001,7 @@ if [[ "${FOCUS_KIND}" == 'blink' ]]; then
   build_blink_focused_binary
 else
   verify_composition_contract
+  verify_gateway_contract
   if [[ -e "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h" ]]; then
     verify_capture_hub_contract
   fi
