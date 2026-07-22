@@ -1,0 +1,185 @@
+From 5cc77dcfe31f89a5afba2729015bb77793685c2c Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 19:33:43 -0500
+Subject: [PATCH] feat(21-04): converge supervision lifecycle teardown
+
+---
+ .../prometheus_supervision_profile_service.cc |  14 ++-
+ ...us_supervision_profile_service_unittest.cc | 111 +++++++++++++++++-
+ 2 files changed, 117 insertions(+), 8 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+index 68d8274fe5..8f47374a39 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+@@ -550,16 +550,24 @@ void PrometheusSupervisionProfileService::HandleTargetLost(
+   if (shutdown_) {
+     return;
+   }
++  bool pending_pairing_lost = false;
+   auto pairing = pending_pairings_.find(stable_tab_id);
+   if (pairing != pending_pairings_.end() &&
+       pairing->second->state == SupervisionPairingState::kPending) {
+     last_pairing_states_[stable_tab_id] = SupervisionPairingState::kTargetLost;
+     pending_pairings_.erase(pairing);
++    pending_pairing_lost = true;
+   }
++  const bool had_viewers = viewer_count_for_testing(stable_tab_id) != 0;
+   TerminateViewersForTab(stable_tab_id, SupervisionViewerState::kTargetClosed,
+                          SupervisionTerminalReason::kTargetClosed,
+                          SupervisionAuditEvent::kTargetClosed,
+                          SupervisionErrorCode::kStaleTarget);
++  if (pending_pairing_lost && !had_viewers) {
++    AddAudit(stable_tab_id, SupervisionAuditEvent::kTargetClosed, std::nullopt,
++             SupervisionErrorCode::kStaleTarget);
++    NotifySnapshotChanged(stable_tab_id);
++  }
+   ScheduleObservedTabRelease(stable_tab_id);
+ }
+ 
+@@ -1036,9 +1044,9 @@ PrometheusSupervisionProfileService::BuildSanitizedSnapshot(
+       snapshot.sessions.push_back(recent.snapshot);
+     }
+   }
+-  for (const auto& [audit_tab_id, row] : audit_) {
+-    if (audit_tab_id == stable_tab_id) {
+-      snapshot.audit.push_back(row);
++  for (auto audit = audit_.rbegin(); audit != audit_.rend(); ++audit) {
++    if (audit->first == stable_tab_id) {
++      snapshot.audit.push_back(audit->second);
+     }
+   }
+   return snapshot;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+index d76dca93fd..c75f5bba25 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+@@ -373,6 +373,109 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+   EXPECT_FALSE(service_->EndSession(viewer.dashboard_session).ok);
+ }
+ 
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       LifecyclePendingTargetLossNotifiesOnceAndReleasesAgentObservation) {
++  SupervisionPairingCreationResult creation = CreatePairing();
++  ASSERT_TRUE(creation.ok);
++  ASSERT_EQ(1u, agent_service_->tab_observation_count_for_testing());
++  observer_.snapshots.clear();
++
++  service_->HandleTargetLost(creation.stable_tab_id);
++  service_->HandleTargetLost(creation.stable_tab_id);
++
++  ASSERT_EQ(1u, observer_.snapshots.size());
++  EXPECT_EQ(SupervisionPairingState::kTargetLost,
++            observer_.snapshots.back().pairing_state);
++  EXPECT_EQ(0u, service_->pending_pairing_count_for_testing());
++  task_environment_.RunUntilIdle();
++  EXPECT_EQ(0u, service_->observed_tab_count_for_testing());
++  EXPECT_EQ(0u, agent_service_->tab_observation_count_for_testing());
++  EXPECT_EQ(0u, agent_service_->owned_tab_data_count_for_testing());
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       LifecycleMultipleViewersShareLeaseUntilLastViewerEnds) {
++  SupervisionPairingCreationResult first = CreatePairing();
++  ASSERT_TRUE(first.ok);
++  SupervisionRedemptionResult viewer_a = Redeem(first, "Viewer A");
++  ASSERT_TRUE(viewer_a.ok);
++  SupervisionPairingCreationResult second = CreatePairing();
++  ASSERT_TRUE(second.ok);
++  SupervisionRedemptionResult viewer_b = Redeem(second, "Viewer B");
++  ASSERT_TRUE(viewer_b.ok);
++  EXPECT_EQ(1u, agent_service_->tab_observation_count_for_testing());
++
++  EXPECT_TRUE(service_->EndSession(viewer_a.dashboard_session).ok);
++  task_environment_.RunUntilIdle();
++  EXPECT_EQ(1u, service_->viewer_count_for_testing(first.stable_tab_id));
++  EXPECT_EQ(1u, agent_service_->tab_observation_count_for_testing());
++
++  EXPECT_TRUE(service_->RevokeSession(viewer_b.dashboard_session).ok);
++  task_environment_.RunUntilIdle();
++  EXPECT_EQ(0u, service_->observed_tab_count_for_testing());
++  EXPECT_EQ(0u, agent_service_->tab_observation_count_for_testing());
++  EXPECT_EQ(0u, agent_service_->owned_tab_data_count_for_testing());
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       LifecycleAgentShutdownFirstTerminalizesExactlyOnce) {
++  PrometheusAgentTabObservationLease owner_lease =
++      agent_service_->ObserveOrCreateTabData(&tab_, &observer_tab_data_);
++  ASSERT_NE(nullptr, owner_lease.data());
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-a", "Agent A").ok);
++  SupervisionPairingCreationResult creation = CreatePairing();
++  ASSERT_TRUE(creation.ok);
++  SupervisionRedemptionResult viewer = Redeem(creation);
++  ASSERT_TRUE(viewer.ok);
++  ASSERT_TRUE(service_->EnableControl(viewer.dashboard_session).ok);
++  const uint64_t generation =
++      service_->authority_generation_for_testing(viewer.dashboard_session);
++  observer_.snapshots.clear();
++
++  agent_service_.reset();
++  task_environment_.RunUntilIdle();
++
++  ASSERT_EQ(1u, observer_.snapshots.size());
++  EXPECT_EQ(0u, service_->viewer_count_for_testing(creation.stable_tab_id));
++  EXPECT_EQ(0u, service_->controller_count_for_testing());
++  EXPECT_EQ(0u, service_->observed_tab_count_for_testing());
++  EXPECT_NE(generation, service_->authority_generation_for_testing(
++                            viewer.dashboard_session));
++  service_->HandleTargetLost(creation.stable_tab_id);
++  EXPECT_FALSE(service_->EndSession(viewer.dashboard_session).ok);
++  EXPECT_EQ(1u, observer_.snapshots.size());
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       LifecycleAuditIsBoundedNewestFirstAndMetadataOnly) {
++  SupervisionLimits limits;
++  limits.audit_rows = 3;
++  ResetService(SupervisionProfileKind::kRegular, limits);
++  PrometheusAgentTabObservationLease owner_lease =
++      agent_service_->ObserveOrCreateTabData(&tab_, &observer_tab_data_);
++  ASSERT_NE(nullptr, owner_lease.data());
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-a", "Agent A").ok);
++  SupervisionPairingCreationResult creation = CreatePairing();
++  ASSERT_TRUE(creation.ok);
++  SupervisionRedemptionResult viewer = Redeem(creation, "Viewer A");
++  ASSERT_TRUE(viewer.ok);
++  ASSERT_TRUE(service_->EnableControl(viewer.dashboard_session).ok);
++  ASSERT_TRUE(service_->RevokeSession(viewer.dashboard_session).ok);
++
++  SanitizedSupervisionSnapshot snapshot =
++      service_->GetSanitizedSnapshot(creation.stable_tab_id);
++  ASSERT_EQ(3u, snapshot.audit.size());
++  EXPECT_EQ(SupervisionAuditEvent::kAccessRevoked,
++            snapshot.audit.front().event);
++  EXPECT_LE(service_->audit_count_for_testing(), 3u);
++  std::optional<base::DictValue> value =
++      SanitizedSupervisionSnapshotToValue(snapshot, limits);
++  ASSERT_TRUE(value.has_value());
++  const std::string json = base::WriteJson(*value).value_or("");
++  EXPECT_EQ(std::string::npos, json.find("owner-a"));
++  EXPECT_EQ(std::string::npos, json.find(viewer.dashboard_session.ToString()));
++}
++
+ TEST_F(PrometheusSupervisionProfileServiceTest,
+        PairingRejectsOtrCrossProfileWindowAndDeadExactTargets) {
+   ResetService(SupervisionProfileKind::kOffTheRecord, SupervisionLimits());
+@@ -406,12 +509,10 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+       SanitizedSupervisionSnapshotToValue(snapshot);
+   ASSERT_TRUE(value.has_value());
+   const std::string json = base::WriteJson(*value).value_or("");
+-  for (const std::string& forbidden :
+-       std::vector<std::string>{
++  for (const std::string& forbidden : std::vector<std::string>{
+            creation.pairing_code, viewer.dashboard_session.ToString(),
+-           "SESSION-AUTHORITY", "SECRET-NODE", "profile_path",
+-           "document_epoch", "controller_lease", "selector",
+-           "page_content"}) {
++           "SESSION-AUTHORITY", "SECRET-NODE", "profile_path", "document_epoch",
++           "controller_lease", "selector", "page_content"}) {
+     EXPECT_EQ(std::string::npos, json.find(forbidden)) << forbidden;
+   }
+   EXPECT_LE(service_->audit_count_for_testing(), kDefaultSupervisionAuditRows);
+-- 
+2.50.1 (Apple Git-155)
+
