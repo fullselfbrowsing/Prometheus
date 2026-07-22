@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 11
+current_plan: 12
 status: executing
-stopped_at: Completed 21-10-PLAN.md
-last_updated: "2026-07-22T09:40:05.265Z"
+stopped_at: Completed 21-11-PLAN.md
+last_updated: "2026-07-22T10:53:03.381Z"
 last_activity: 2026-07-22
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 76
-  percent: 83
+  completed_plans: 77
+  percent: 84
 ---
 
 # Project State
@@ -36,24 +36,30 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 11 of 26
+Plan: 12 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 11
+**Current Plan:** 12
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [████████░░] 83%
+**Progress:** [████████░░] 84%
 **Last Activity:** 2026-07-22
-**Last Activity Description:** Completed Plan 21-10 — exactly five empty-schema
-Agent supervision routes with bounded secret-free APC result shapes and no
-concrete dispatch edge.
+**Last Activity Description:** Completed Plan 21-11 — exact authenticated
+Browser/stable-tab dispatch, Agent-only callback ownership, sole concrete
+composition binding, and ordered dual-gateway teardown.
 
-Milestone work is 76 of 92 existing plans complete (83%); cumulative project
-work is 127 of 144 existing plans summarized (88%).
+Milestone work is 77 of 92 existing plans complete (84%); cumulative project
+work is 128 of 144 existing plans summarized (89%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 11: the intended one-test RED and three-test exact Agent
+  supervision GREEN gates pass with all five routes pinned to the authenticated
+  Browser/stable tab, one Agent-only abstract seam, sole top-level concrete
+  composition, ordered dual unbind, stable patch identity, and byte-identical
+  reviewed build artifacts.
 
 - Phase 21 Plan 10: the 8-test exact supervision codec gate and 48-test Agent
   route/transport/runtime regression pass with exactly five empty-schema
@@ -244,6 +250,10 @@ work is 127 of 144 existing plans summarized (88%).
 - [Phase 21]: Require an exact route-to-success-payload match and reject empty baseline or diff stand-ins. — The transport codec projects supplied semantics only and cannot invent a plausible stream outcome.
 - [Phase 21]: Serialize only bounded coherent safe-APC topology and fixed markers, with sensitive and authority sentinels rejected before JSON output. — Compatibility output stays deterministic, secret-free, identity-free, and structurally distinct from dashboard authority transport.
 - [Phase 21]: Keep concrete supervision dispatch out of Plan 21-10 and make existing switches fail explicitly for the five new enum values. — Plan 21-11 owns abstract dispatch composition; explicit fixed failures preserve compileability without crossing the service boundary early.
+- [Phase 21]: Canonicalize all five supervision routes from the authenticated SessionBinding. — The gateway rejects caller target scope and enters Agent service through the exact live Browser and stable tab.
+- [Phase 21]: Keep Agent and gateway code limited to neutral supervision callbacks. — The top-level browser composition is the only owner allowed to resolve concrete regular-profile supervision services.
+- [Phase 21]: Clear dashboard work before Agent dispatch and gateway shutdown. — Ordered cancellation and repeated harmless unbind prevent late work from crossing teardown.
+- [Phase 21]: Leave compatibility semantics typed not-ready until Plan 21-12. — Plan 21-11 proves exact dispatch and ownership without inventing pairing or stream success.
 
 ## Performance Metrics
 
@@ -269,6 +279,7 @@ work is 127 of 144 existing plans summarized (88%).
 | Phase 21 P08 | 1h18min | 3 tasks | 17 files |
 | Phase 21 P09 | 55min | 3 tasks | 14 files |
 | Phase 21 P10 | 50min | 2 tasks | 13 files |
+| Phase 21 P11 | 57min | 3 tasks | 18 files |
 
 ## Blockers and Deferred Items
 
@@ -283,11 +294,12 @@ work is 127 of 144 existing plans summarized (88%).
 
 ## Session
 
-**Last Date:** 2026-07-22T09:40:05.262Z
-**Stopped At:** Completed 21-10-PLAN.md
+**Last Date:** 2026-07-22T10:53:03.376Z
+**Stopped At:** Completed 21-11-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-11-PLAN.md` to bind the five supervision commands through the
-abstract Agent dispatcher at the legal browser composition root.
+Execute `21-12-PLAN.md` to bind authoritative exact-service pairing,
+session, snapshot, diff, and end semantics through both production supervision
+paths.
