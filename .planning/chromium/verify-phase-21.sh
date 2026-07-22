@@ -780,6 +780,9 @@ verify_supervision_tab_state_contract() {
 verify_supervision_tab_badge_contract() {
   local badge_header="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h"
   local badge_source="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc"
+  local tab_state_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_tab_state.h"
+  local tab_state_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_tab_state.cc"
+  local agent_tab_data="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_tab_data.cc"
   local tab_header="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/tab.h"
   local tab_source="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/tab.cc"
   local badge_test="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc"
@@ -787,6 +790,9 @@ verify_supervision_tab_badge_contract() {
 
   require_file "${badge_header}"
   require_file "${badge_source}"
+  require_file "${tab_state_header}"
+  require_file "${tab_state_source}"
+  require_file "${agent_tab_data}"
   require_file "${tab_header}"
   require_file "${tab_source}"
   require_file "${badge_test}"
@@ -797,6 +803,12 @@ verify_supervision_tab_badge_contract() {
   require_literal 'StateViewerControllerAndActionPriority' "${badge_test}"
   require_literal 'StateCompleteOrderedNameAndHealthSeverity' "${badge_test}"
   require_literal 'StateTextIsContentFreeAndEventTransparent' "${badge_test}"
+  require_literal 'RealTabLiveTransitionsAndTerminalClear' "${badge_test}"
+  require_literal 'RealTabExactTabIsolation' "${badge_test}"
+  require_literal 'PrometheusTabStateObservation' "${badge_header}"
+  require_literal 'PrometheusTabStatusBadge>(tab_handle_.Get())' "${tab_source}"
+  require_literal 'NotifySourceAvailable' "${tab_state_source}"
+  require_literal 'NotifySourceAvailable' "${agent_tab_data}"
   require_literal '8J7K-2MNP' "${badge_test}"
   require_literal 'https://private.example/path' "${badge_test}"
   require_literal 'prometheus_tab_supervision_badge_browsertest.cc' \
