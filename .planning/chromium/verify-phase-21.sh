@@ -140,7 +140,7 @@ verify_composition_contract() {
   require_literal 'ProfileSelections::BuildForRegularProfile()' "${factory}"
   require_literal 'DependsOn(PrometheusAgentProfileServiceFactory::GetInstance())' "${factory}"
   require_literal 'PrometheusAgentProfileServiceFactory::GetForProfile(profile)' "${factory}"
-  require_literal 'weak_factory_.GetWeakPtr()' "${factory}"
+  require_literal 'agent_profile_service->GetWeakPtr()' "${factory}"
 
   reject_pattern \
     'GetOrCreateForTab|EnsureTabData|RegisterWillDetach|OnTabWillDetach|OwnedTabData|(^|[^[:alnum:]_])tab_data_|InvalidateTabObservations|PruneUnownedTabData' \
@@ -338,6 +338,94 @@ verify_gateway_contract() {
     'Agent gateway gained a concrete supervision service, capture, or renderer edge' \
     "${gateway_header}" "${gateway_source}" "${gateway_build_block}"
   note 'gateway abstract-dispatch contract and GN static guards passed'
+}
+
+verify_live_supervision_dispatch_contract() {
+  local agent_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_service.h"
+  local agent_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_service.cc"
+  local profile_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_profile_service.h"
+  local profile_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_profile_service.cc"
+  local gateway_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway.h"
+  local gateway_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway.cc"
+  local main_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
+  local prometheus_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
+  local browser_build="${CHROMIUM_DIR}/chrome/browser/BUILD.gn"
+  local gateway_block="${LOG_DIR}/phase21-agent-gateway-target.gn"
+  local composition_block="${LOG_DIR}/phase21-browser-composition-target.gn"
+  local supervision_dispatch="${LOG_DIR}/phase21-agent-supervision-dispatch.cc"
+
+  require_literal 'using SupervisionRouteDispatcher =' "${agent_header}"
+  require_literal 'SetSupervisionRouteDispatcher' "${agent_header}"
+  require_literal 'SupervisionRouteDispatcherStorage()' "${agent_source}"
+  require_literal 'ExecuteSupervisionRoute(browser, request' "${agent_source}"
+  require_literal 'case AgentRouteName::kCreateSupervisionPairing:' "${agent_source}"
+  require_literal 'case AgentRouteName::kStartSupervisionSession:' "${agent_source}"
+  require_literal 'case AgentRouteName::kGetSupervisionSnapshot:' "${agent_source}"
+  require_literal 'case AgentRouteName::kGetSupervisionDiff:' "${agent_source}"
+  require_literal 'case AgentRouteName::kEndSupervisionSession:' "${agent_source}"
+  require_literal 'service->ExecuteBrowserLocalRoute(exact_browser' "${gateway_source}"
+  require_literal 'HasCallerSelectedSupervisionTarget' "${gateway_source}"
+  require_literal 'binding->second.browser.get()' "${gateway_source}"
+  require_literal 'binding->second.stable_tab_id' "${gateway_source}"
+
+  reject_pattern \
+    '#include .*prometheus_supervision_(profile_service|profile_service_factory|capture_hub)|#include .*prometheus_supervision_document|PrometheusSupervision(ProfileService|ProfileServiceFactory|CaptureHub)' \
+    'Agent service/profile/gateway gained a concrete supervision implementation edge' \
+    "${agent_header}" "${agent_source}" "${profile_header}" \
+    "${profile_source}" "${gateway_header}" "${gateway_source}"
+  sed -n '/void PrometheusAgentService::ExecuteSupervisionRoute(/,/void PrometheusAgentService::OnSupervisionRouteComplete(/p' \
+    "${agent_source}" >"${supervision_dispatch}"
+  require_file "${supervision_dispatch}"
+  reject_pattern \
+    'RenderFrameHost|WebContents|PrometheusSupervisionDocument|prometheus_supervision_(profile_service|capture_hub)' \
+    'Agent supervision dispatcher reached a renderer, capture hub, or concrete service' \
+    "${supervision_dispatch}"
+
+  sed -n '/source_set("prometheus_agent_gateway") {/,/^}/p' \
+    "${prometheus_build}" >"${gateway_block}"
+  sed -n '/source_set("prometheus_browser_composition") {/,/^}/p' \
+    "${prometheus_build}" >"${composition_block}"
+  require_file "${gateway_block}"
+  require_file "${composition_block}"
+  reject_pattern \
+    'prometheus_browser_main_extra_parts|prometheus_supervision_(profile_service|profile_service_factory|capture_hub)' \
+    'Agent gateway target owns the concrete supervision composition' \
+    "${gateway_block}"
+  require_literal '"prometheus_browser_main_extra_parts.cc"' \
+    "${composition_block}"
+  require_literal '":prometheus_agent_gateway"' "${composition_block}"
+  require_literal '":prometheus_supervision_profile_service"' \
+    "${composition_block}"
+  require_literal \
+    '"//chrome/browser/prometheus:prometheus_browser_composition"' \
+    "${browser_build}"
+  reject_pattern \
+    '"//chrome/browser/prometheus:prometheus_agent_gateway"' \
+    'top-level browser bypasses the supervision-aware composition target' \
+    "${browser_build}"
+
+  require_literal '#include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"' \
+    "${main_parts}"
+  require_literal 'CreateDashboardDispatcher' "${main_parts}"
+  require_literal 'DispatchAgentRoute' "${main_parts}"
+  require_literal 'MatchesPendingPairingForComposition' "${main_parts}"
+  require_literal 'OwnsDashboardSessionForComposition' "${main_parts}"
+  require_literal 'gateway_->SetSupervisionGatewayDispatcher({});' \
+    "${main_parts}"
+  require_literal 'PrometheusAgentService::SetSupervisionRouteDispatcher({});' \
+    "${main_parts}"
+  local dashboard_clear agent_clear gateway_shutdown
+  dashboard_clear="$(rg -n --fixed-strings \
+    'gateway_->SetSupervisionGatewayDispatcher({});' "${main_parts}" | tail -1 | cut -d: -f1)"
+  agent_clear="$(rg -n --fixed-strings \
+    'PrometheusAgentService::SetSupervisionRouteDispatcher({});' "${main_parts}" | tail -1 | cut -d: -f1)"
+  gateway_shutdown="$(rg -n --fixed-strings \
+    'gateway_->Shutdown(stopped.QuitClosure());' "${main_parts}" | tail -1 | cut -d: -f1)"
+  [[ -n "${dashboard_clear}" && -n "${agent_clear}" && \
+     -n "${gateway_shutdown}" && "${dashboard_clear}" -lt "${agent_clear}" && \
+     "${agent_clear}" -lt "${gateway_shutdown}" ]] \
+    || fail 'composition teardown order is not dashboard clear, Agent clear, gateway shutdown'
+  note 'exact Agent dispatch, sole composition bridge, and teardown guards passed'
 }
 
 verify_agent_supervision_transport_contract() {
@@ -815,6 +903,7 @@ build_focused_binary() {
   local supervision_hub_browser_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc"
   local gateway_contract_object='obj/chrome/browser/prometheus/prometheus_agent_gateway_contract/prometheus_agent_gateway_contract.o'
   local gateway_object='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_agent_gateway.o'
+  local browser_composition_object='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_browser_main_extra_parts.o'
   local gateway_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_gateway_unittest.o'
   local gateway_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_agent_gateway_browsertest.o'
   local browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_page_adapter_browsertest.o'
@@ -839,6 +928,7 @@ build_focused_binary() {
     compile_exact_object "${agent_profile_factory_object}"
     compile_exact_object "${gateway_contract_object}"
     compile_exact_object "${gateway_object}"
+    compile_exact_object "${browser_composition_object}"
     compile_exact_object "${gateway_test_object}"
     if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
       compile_exact_object "${gateway_browser_object}"
@@ -1083,6 +1173,7 @@ if [[ "${FOCUS_KIND}" == 'blink' ]]; then
 else
   verify_composition_contract
   verify_gateway_contract
+  verify_live_supervision_dispatch_contract
   verify_agent_supervision_transport_contract
   if [[ -e "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h" ]]; then
     verify_capture_hub_contract
