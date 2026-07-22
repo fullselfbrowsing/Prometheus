@@ -608,6 +608,8 @@ verify_supervision_action_controller_contract() {
   local header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller.h"
   local source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller.cc"
   local test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc"
+  local profile_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local factory_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc"
   require_file "${header}"
   require_file "${source}"
   require_file "${test_source}"
@@ -619,6 +621,16 @@ verify_supervision_action_controller_contract() {
     || fail 'supervision action classification is not closed and typed'
   rg -q 'PrometheusSupervisionActionControllerTest' "${test_source}" \
     || fail 'supervision action controller tests are missing'
+  rg -q 'ExecuteDashboardAction' "${profile_source}" \
+    || fail 'dashboard actions are not owned by the supervision profile service'
+  rg -q 'controller_lease' "${profile_source}" \
+    || fail 'supervision action dispatch is missing its controller lease fence'
+  rg -q 'last_acknowledged_stamp' "${profile_source}" \
+    || fail 'supervision action dispatch is missing its acknowledged stream fence'
+  rg -q 'action_controller->Cancel' "${profile_source}" \
+    || fail 'supervision lifecycle does not cancel action work before release'
+  rg -q 'BindPrometheusSupervisionAgentRouteDispatcher' "${factory_source}" \
+    || fail 'supervision composition does not inject the exact Agent dispatcher'
   if rg -n 'ClaimIfUnowned|(^|[^A-Za-z])ExecuteRoute\(|ExecuteScript|MutationObserver|execute_js|ExecuteConfirmedVaultInsertion|PrometheusVault' \
       "${header}" "${source}"; then
     fail 'supervision action controller contains a forbidden authority, DOM, script, or vault bypass'

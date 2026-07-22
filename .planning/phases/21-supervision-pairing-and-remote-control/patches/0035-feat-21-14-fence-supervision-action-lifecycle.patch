@@ -1,0 +1,784 @@
+From d298276329976a2d44ac565eb0618314a885c43b Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 09:25:37 -0500
+Subject: [PATCH] feat(21-14): fence supervision action lifecycle
+
+---
+ ..._supervision_action_controller_unittest.cc |  28 ++-
+ .../prometheus_supervision_profile_service.cc | 238 +++++++++++++++++-
+ .../prometheus_supervision_profile_service.h  |  33 ++-
+ ...eus_supervision_profile_service_factory.cc |   4 +-
+ ...us_supervision_profile_service_unittest.cc | 209 +++++++++++++++
+ 5 files changed, 499 insertions(+), 13 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc
+index 5c1a25e891..dc10b7e541 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_supervision_action_controller.h"
+ 
++#include <array>
++#include <iterator>
+ #include <optional>
+ #include <string>
+ #include <utility>
+@@ -431,7 +433,7 @@ TEST_F(PrometheusSupervisionActionControllerTest,
+ 
+ TEST_F(PrometheusSupervisionActionControllerTest,
+        OrdinaryCategoriesDispatchExactTypedRoutes) {
+-  constexpr SupervisionRemoteActionCategory categories[] = {
++  constexpr std::array categories = {
+       SupervisionRemoteActionCategory::kClick,
+       SupervisionRemoteActionCategory::kType,
+       SupervisionRemoteActionCategory::kKeyPress,
+@@ -440,19 +442,37 @@ TEST_F(PrometheusSupervisionActionControllerTest,
+       SupervisionRemoteActionCategory::kSelect,
+       SupervisionRemoteActionCategory::kClear,
+   };
+-  for (SupervisionRemoteActionCategory category : categories) {
++  constexpr std::array routes = {
++      AgentRouteName::kClick,        AgentRouteName::kTypeText,
++      AgentRouteName::kPressKey,     AgentRouteName::kScroll,
++      AgentRouteName::kHover,        AgentRouteName::kSelectOption,
++      AgentRouteName::kClear,
++  };
++  static_assert(std::size(categories) == std::size(routes));
++  for (size_t index = 0; index < std::size(categories); ++index) {
+     auto controller = MakeController();
+-    auto result = Execute(*controller, Action(category));
++    auto result = Execute(*controller, Action(categories.at(index)));
+     ASSERT_TRUE(result.has_value());
+     EXPECT_TRUE(result->ok);
+   }
+   ASSERT_EQ(std::size(categories), dispatched_requests_.size());
+   EXPECT_EQ(&browser_, dispatched_browser_);
+-  for (const AgentRouteRequest& request : dispatched_requests_) {
++  for (size_t index = 0; index < dispatched_requests_.size(); ++index) {
++    const AgentRouteRequest& request = dispatched_requests_[index];
++    EXPECT_EQ(routes.at(index), request.route_name);
+     EXPECT_EQ(owner_, request.session_id);
+     EXPECT_EQ(browser_id_.id(), request.target.browser_session_id);
+     EXPECT_EQ(browser_id_.id(), request.target.window_session_id);
+     EXPECT_EQ(tab_.GetHandle(), request.target.tab_handle);
++    ASSERT_TRUE(request.page_request.has_value());
++    EXPECT_EQ("document-1",
++              request.page_request->frame.document_token.value_or(""));
++    EXPECT_EQ(request.page_request->frame.document_token,
++              request.page_request->action.frame.document_token);
++    EXPECT_EQ(request.page_request->frame.render_process_id,
++              request.page_request->action.frame.render_process_id);
++    EXPECT_EQ(request.page_request->frame.render_frame_routing_id,
++              request.page_request->action.frame.render_frame_routing_id);
+   }
+ }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+index 0c141c468a..838f4b184b 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+@@ -294,6 +294,12 @@ struct PrometheusSupervisionProfileService::ViewerSession {
+       SupervisionStreamState::kPreparingBaseline;
+   SupervisionTerminalReason terminal_reason = SupervisionTerminalReason::kNone;
+   uint64_t authority_generation = 1;
++  std::optional<base::UnguessableToken> controller_lease;
++  std::optional<SupervisionStreamStamp> last_acknowledged_stamp;
++  SupervisionRemoteActionState action_state =
++      SupervisionRemoteActionState::kIdle;
++  std::optional<SupervisionRemoteActionCategory> action_category;
++  std::unique_ptr<PrometheusSupervisionActionController> action_controller;
+   std::optional<CaptureConsumerToken> capture_consumer_token;
+   std::optional<base::UnguessableToken> diff_wait_token;
+   DashboardDiffWaitCallback diff_wait_callback;
+@@ -333,13 +339,17 @@ struct PrometheusSupervisionProfileService::CaptureHubEntry {
+ PrometheusSupervisionProfileService::PrometheusSupervisionProfileService(
+     Profile* profile,
+     SupervisionProfileKind profile_kind,
+-    ObserveTabDataCallback observe_tab_data)
++    ObserveTabDataCallback observe_tab_data,
++    ActionRouteDispatcher action_dispatcher)
+     : PrometheusSupervisionProfileService(profile,
+                                           profile_kind,
+                                           std::move(observe_tab_data),
+                                           base::BindRepeating(&base::Time::Now),
+                                           PairingCodeGenerator(),
+-                                          SupervisionLimits()) {}
++                                          SupervisionLimits(),
++                                          CaptureHubFactory(),
++                                          LocalUiOpener(),
++                                          std::move(action_dispatcher)) {}
+ 
+ PrometheusSupervisionProfileService::PrometheusSupervisionProfileService(
+     Profile* profile,
+@@ -349,7 +359,8 @@ PrometheusSupervisionProfileService::PrometheusSupervisionProfileService(
+     PairingCodeGenerator pairing_code_generator,
+     SupervisionLimits limits,
+     CaptureHubFactory capture_hub_factory,
+-    LocalUiOpener local_ui_opener)
++    LocalUiOpener local_ui_opener,
++    ActionRouteDispatcher action_dispatcher)
+     : profile_(profile),
+       profile_kind_(profile_kind),
+       observe_tab_data_(std::move(observe_tab_data)),
+@@ -357,7 +368,8 @@ PrometheusSupervisionProfileService::PrometheusSupervisionProfileService(
+       pairing_code_generator_(std::move(pairing_code_generator)),
+       limits_(ClampSupervisionLimits(limits)),
+       capture_hub_factory_(std::move(capture_hub_factory)),
+-      local_ui_opener_(std::move(local_ui_opener)) {
++      local_ui_opener_(std::move(local_ui_opener)),
++      action_dispatcher_(std::move(action_dispatcher)) {
+   CHECK(profile_);
+   CHECK(now_callback_);
+   if (!capture_hub_factory_) {
+@@ -601,6 +613,21 @@ SupervisionRedemptionResult PrometheusSupervisionProfileService::RedeemPairing(
+   viewer->last_seen_at = now;
+   viewer->expires_at = viewer_expiry;
+   viewer->capture_consumer_token = capture_consumer_token;
++  viewer->action_controller =
++      std::make_unique<PrometheusSupervisionActionController>(
++          profile_, viewer->exact_browser, exact_tab->GetHandle(),
++          viewer->dashboard_session, viewer->immutable_owner_session_id,
++          base::BindRepeating(
++              [](base::WeakPtr<PrometheusSupervisionProfileService> service,
++                 base::UnguessableToken session)
++                  -> std::optional<SupervisionActionAuthoritySnapshot> {
++                if (!service) {
++                  return std::nullopt;
++                }
++                return service->ResolveActionAuthority(session);
++              },
++              weak_factory_.GetWeakPtr(), viewer->dashboard_session),
++          action_dispatcher_);
+ 
+   result.dashboard_session = viewer->dashboard_session;
+   result.stable_tab_id = stable_tab_id;
+@@ -914,6 +941,7 @@ SupervisionServiceResult PrometheusSupervisionProfileService::AckDashboard(
+   }
+   viewer->second->last_seen_at = Now();
+   viewer->second->stream_state = SupervisionStreamState::kLive;
++  viewer->second->last_acknowledged_stamp = stamp;
+   return SupervisionServiceResult::Success();
+ }
+ 
+@@ -955,6 +983,7 @@ SupervisionServiceResult PrometheusSupervisionProfileService::EnableControl(
+ 
+   controllers_[stable_tab_id] = dashboard_session;
+   viewer->second->viewer_state = SupervisionViewerState::kController;
++  viewer->second->controller_lease = base::UnguessableToken::Create();
+   ++viewer->second->authority_generation;
+   AddAudit(stable_tab_id, SupervisionAuditEvent::kControlEnabled,
+            std::optional<std::string>(viewer->second->client_label));
+@@ -980,13 +1009,124 @@ SupervisionServiceResult PrometheusSupervisionProfileService::StopControl(
+   const int32_t stable_tab_id = viewer->second->stable_tab_id;
+   controllers_.erase(stable_tab_id);
+   viewer->second->viewer_state = SupervisionViewerState::kViewOnly;
++  viewer->second->controller_lease.reset();
+   ++viewer->second->authority_generation;
++  if (viewer->second->action_controller) {
++    viewer->second->action_controller->Cancel(SupervisionErrorCode::kViewOnly);
++  }
+   AddAudit(stable_tab_id, SupervisionAuditEvent::kControlStopped,
+            std::optional<std::string>(viewer->second->client_label));
+   NotifySnapshotChanged(stable_tab_id);
+   return SupervisionServiceResult::Success();
+ }
+ 
++void PrometheusSupervisionProfileService::ExecuteDashboardAction(
++    const base::UnguessableToken& dashboard_session,
++    std::string_view document_epoch,
++    uint64_t sequence,
++    const SupervisionRemoteActionRequest& action,
++    DashboardActionCallback callback) {
++  if (!callback) {
++    return;
++  }
++  auto fail = [&callback](SupervisionErrorCode error_code) {
++    SupervisionActionResult result;
++    result.error_code = error_code;
++    std::move(callback).Run(std::move(result));
++  };
++  if (shutdown_) {
++    fail(SupervisionErrorCode::kShutdown);
++    return;
++  }
++  SweepExpired();
++  auto viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end()) {
++    fail(SupervisionErrorCode::kUnknownSession);
++    return;
++  }
++  if (!RevalidateViewerOwner(dashboard_session)) {
++    fail(SupervisionErrorCode::kViewOnly);
++    return;
++  }
++  viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end()) {
++    fail(SupervisionErrorCode::kUnknownSession);
++    return;
++  }
++  ViewerSession& session = *viewer->second;
++  if (!session.action_controller) {
++    fail(SupervisionErrorCode::kShutdown);
++    return;
++  }
++  if (session.action_controller->has_in_flight_action_for_testing()) {
++    fail(SupervisionErrorCode::kControllerConflict);
++    return;
++  }
++  const SupervisionActionClassification classification =
++      PrometheusSupervisionActionController::Classify(action);
++  if (classification == SupervisionActionClassification::kRejected) {
++    fail(SupervisionErrorCode::kRestrictedTarget);
++    return;
++  }
++
++  session.action_category = action.category;
++  session.action_state = SupervisionRemoteActionState::kValidating;
++  AddAudit(session.stable_tab_id,
++           SupervisionAuditEvent::kRemoteActionRequested,
++           std::optional<std::string>(session.client_label),
++           SupervisionErrorCode::kNone, action.category);
++  NotifySnapshotChanged(session.stable_tab_id);
++  session.action_controller->ExecuteAction(
++      dashboard_session, document_epoch, sequence, action,
++      base::BindOnce(
++          [](base::WeakPtr<PrometheusSupervisionProfileService> service,
++             base::UnguessableToken session,
++             SupervisionRemoteActionCategory category,
++             DashboardActionCallback external_callback,
++             SupervisionActionResult result) {
++            if (service) {
++              service->OnDashboardActionCompleted(session, category, result);
++            }
++            if (external_callback) {
++              std::move(external_callback).Run(std::move(result));
++            }
++          },
++          weak_factory_.GetWeakPtr(), dashboard_session, action.category,
++          std::move(callback)));
++
++  viewer = viewers_.find(dashboard_session);
++  if (viewer != viewers_.end() && viewer->second->action_controller &&
++      viewer->second->action_controller->has_in_flight_action_for_testing()) {
++    viewer->second->action_state =
++        viewer->second->action_controller->awaiting_confirmation_for_testing()
++            ? SupervisionRemoteActionState::kAwaitingConfirmation
++            : SupervisionRemoteActionState::kExecuting;
++    NotifySnapshotChanged(viewer->second->stable_tab_id);
++  }
++}
++
++SupervisionServiceResult
++PrometheusSupervisionProfileService::ResolveDashboardActionConfirmation(
++    const base::UnguessableToken& dashboard_session,
++    bool allow_once) {
++  if (shutdown_) {
++    return UnavailableResult();
++  }
++  SweepExpired();
++  auto viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end()) {
++    return UnknownSessionResult();
++  }
++  if (!viewer->second->action_controller ||
++      !viewer->second->action_controller->awaiting_confirmation_for_testing()) {
++    return ServiceFailure(SupervisionErrorCode::kControllerConflict,
++                          "No supervision action awaits confirmation",
++                          "Request one consequential action at a time");
++  }
++  viewer->second->action_controller->ResolvePendingConfirmation(allow_once);
++  return SupervisionServiceResult::Success();
++}
++
+ SupervisionServiceResult PrometheusSupervisionProfileService::RevokeSession(
+     const base::UnguessableToken& dashboard_session) {
+   if (shutdown_) {
+@@ -1306,6 +1446,12 @@ void PrometheusSupervisionProfileService::Shutdown() {
+     }
+   }
+   for (auto& [dashboard_session, viewer] : viewers_) {
++    viewer->controller_lease.reset();
++    ++viewer->authority_generation;
++    if (viewer->action_controller) {
++      viewer->action_state = SupervisionRemoteActionState::kBlocked;
++      viewer->action_controller->Cancel(SupervisionErrorCode::kShutdown);
++    }
+     DetachCaptureConsumer(*viewer);
+     if (viewer->diff_wait_callback) {
+       pending_waits.push_back(std::move(viewer->diff_wait_callback));
+@@ -1955,7 +2101,16 @@ void PrometheusSupervisionProfileService::TerminateViewer(
+   viewer->viewer_state = viewer_state;
+   viewer->stream_state = SupervisionStreamState::kEnded;
+   viewer->terminal_reason = reason;
++  viewer->controller_lease.reset();
+   ++viewer->authority_generation;
++  if (viewer->action_controller &&
++      viewer->action_controller->has_in_flight_action_for_testing()) {
++    viewer->action_state = SupervisionRemoteActionState::kBlocked;
++    viewer->action_controller->Cancel(
++        error_code == SupervisionErrorCode::kNone
++            ? SupervisionErrorCode::kUnknownSession
++            : error_code);
++  }
+   DetachCaptureConsumer(*viewer);
+   DashboardDiffWaitCallback pending_wait =
+       std::move(viewer->diff_wait_callback);
+@@ -1971,6 +2126,8 @@ void PrometheusSupervisionProfileService::TerminateViewer(
+       viewer->expires_at.InMillisecondsSinceUnixEpoch();
+   snapshot.viewer_state = viewer->viewer_state;
+   snapshot.stream_state = viewer->stream_state;
++  snapshot.action_state = viewer->action_state;
++  snapshot.action_category = viewer->action_category;
+   snapshot.terminal_reason = viewer->terminal_reason;
+ 
+   recent_terminal_sessions_.push_back(RecentTerminalSession{
+@@ -2037,11 +2194,78 @@ bool PrometheusSupervisionProfileService::RevalidateViewerOwner(
+   return true;
+ }
+ 
++std::optional<SupervisionActionAuthoritySnapshot>
++PrometheusSupervisionProfileService::ResolveActionAuthority(
++    const base::UnguessableToken& dashboard_session) {
++  if (shutdown_) {
++    return std::nullopt;
++  }
++  auto viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end() || !ResolveExactTarget(*viewer->second)) {
++    return std::nullopt;
++  }
++  auto observed = observed_tabs_.find(viewer->second->stable_tab_id);
++  CaptureHubEntry* capture_hub = FindCaptureHub(*viewer->second);
++  if (observed == observed_tabs_.end() || !observed->second->lease.data() ||
++      !capture_hub || !capture_hub->hub ||
++      !viewer->second->capture_consumer_token.has_value()) {
++    return std::nullopt;
++  }
++  std::optional<SupervisionCaptureBaselineDelivery> current =
++      capture_hub->hub->ReadCurrentBaseline(
++          *viewer->second->capture_consumer_token);
++  if (!current.has_value()) {
++    return std::nullopt;
++  }
++
++  SupervisionActionAuthoritySnapshot authority;
++  authority.profile = profile_;
++  authority.exact_browser = viewer->second->exact_browser.get();
++  authority.stable_tab = viewer->second->tab->GetHandle();
++  authority.live_owner_session_id =
++      std::string(observed->second->lease.data()->owner_session_id());
++  auto controller = controllers_.find(viewer->second->stable_tab_id);
++  if (controller != controllers_.end()) {
++    authority.active_controller_session = controller->second;
++  }
++  authority.controller_lease = viewer->second->controller_lease;
++  authority.document_epoch = current->stamp.document_epoch;
++  authority.sequence = current->stamp.sequence;
++  authority.authority_generation = viewer->second->authority_generation;
++  authority.stream_live =
++      viewer->second->stream_state == SupervisionStreamState::kLive &&
++      viewer->second->last_acknowledged_stamp.has_value() &&
++      *viewer->second->last_acknowledged_stamp == current->stamp &&
++      !capture_hub->hub->ConsumerNeedsBaseline(
++          *viewer->second->capture_consumer_token);
++  return authority;
++}
++
++void PrometheusSupervisionProfileService::OnDashboardActionCompleted(
++    const base::UnguessableToken& dashboard_session,
++    SupervisionRemoteActionCategory category,
++    const SupervisionActionResult& result) {
++  auto viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end()) {
++    return;
++  }
++  viewer->second->action_state = result.state;
++  viewer->second->action_category = category;
++  AddAudit(viewer->second->stable_tab_id,
++           result.ok ? SupervisionAuditEvent::kRemoteActionCompleted
++                     : SupervisionAuditEvent::kRemoteActionBlocked,
++           std::optional<std::string>(viewer->second->client_label),
++           result.error_code, category, result.duration);
++  NotifySnapshotChanged(viewer->second->stable_tab_id);
++}
++
+ void PrometheusSupervisionProfileService::AddAudit(
+     int32_t stable_tab_id,
+     SupervisionAuditEvent event,
+     std::optional<std::string> client_label,
+-    SupervisionErrorCode error_code) {
++    SupervisionErrorCode error_code,
++    std::optional<SupervisionRemoteActionCategory> action_category,
++    base::TimeDelta duration) {
+   tabs::TabInterface* tab = nullptr;
+   auto observed = observed_tabs_.find(stable_tab_id);
+   if (observed != observed_tabs_.end()) {
+@@ -2055,7 +2279,9 @@ void PrometheusSupervisionProfileService::AddAudit(
+   }
+   row.safe_target_title = SafeTitle(tab);
+   row.safe_origin = SafeOrigin(tab);
++  row.action_category = action_category;
+   row.error_code = error_code;
++  row.duration_ms = duration.InMilliseconds();
+   audit_.emplace_back(stable_tab_id, std::move(row));
+   while (audit_.size() > limits_.audit_rows) {
+     audit_.pop_front();
+@@ -2128,6 +2354,8 @@ PrometheusSupervisionProfileService::BuildSanitizedSnapshot(
+         viewer->expires_at.InMillisecondsSinceUnixEpoch();
+     session.viewer_state = viewer->viewer_state;
+     session.stream_state = viewer->stream_state;
++    session.action_state = viewer->action_state;
++    session.action_category = viewer->action_category;
+     session.terminal_reason = viewer->terminal_reason;
+     snapshot.sessions.push_back(std::move(session));
+   }
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.h b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+index a1f3705eaa..49e146569c 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+@@ -21,6 +21,7 @@
+ #include "base/time/time.h"
+ #include "base/unguessable_token.h"
+ #include "chrome/browser/prometheus/prometheus_agent_service.h"
++#include "chrome/browser/prometheus/prometheus_supervision_action_controller.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_capture_hub.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_types.h"
+ #include "components/keyed_service/core/keyed_service.h"
+@@ -109,10 +110,16 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+       base::RepeatingCallback<bool(BrowserWindowInterface*, const GURL&)>;
+   using DashboardDiffWaitCallback =
+       base::OnceCallback<void(SupervisionDashboardDiffResult)>;
++  using DashboardActionCallback =
++      PrometheusSupervisionActionController::CompletionCallback;
++  using ActionRouteDispatcher =
++      PrometheusSupervisionActionController::AgentRouteDispatcher;
+ 
+   PrometheusSupervisionProfileService(Profile* profile,
+                                       SupervisionProfileKind profile_kind,
+-                                      ObserveTabDataCallback observe_tab_data);
++                                      ObserveTabDataCallback observe_tab_data,
++                                      ActionRouteDispatcher action_dispatcher =
++                                          ActionRouteDispatcher());
+   PrometheusSupervisionProfileService(
+       Profile* profile,
+       SupervisionProfileKind profile_kind,
+@@ -121,7 +128,8 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+       PairingCodeGenerator pairing_code_generator,
+       SupervisionLimits limits = SupervisionLimits(),
+       CaptureHubFactory capture_hub_factory = CaptureHubFactory(),
+-      LocalUiOpener local_ui_opener = LocalUiOpener());
++      LocalUiOpener local_ui_opener = LocalUiOpener(),
++      ActionRouteDispatcher action_dispatcher = ActionRouteDispatcher());
+   PrometheusSupervisionProfileService(
+       const PrometheusSupervisionProfileService&) = delete;
+   PrometheusSupervisionProfileService& operator=(
+@@ -151,6 +159,15 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+       const base::UnguessableToken& dashboard_session);
+   SupervisionServiceResult StopControl(
+       const base::UnguessableToken& dashboard_session);
++  void ExecuteDashboardAction(
++      const base::UnguessableToken& dashboard_session,
++      std::string_view document_epoch,
++      uint64_t sequence,
++      const SupervisionRemoteActionRequest& action,
++      DashboardActionCallback callback);
++  SupervisionServiceResult ResolveDashboardActionConfirmation(
++      const base::UnguessableToken& dashboard_session,
++      bool allow_once);
+   SupervisionServiceResult RevokeSession(
+       const base::UnguessableToken& dashboard_session);
+   SupervisionServiceResult EndSession(
+@@ -254,10 +271,19 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+                               SupervisionAuditEvent audit_event,
+                               SupervisionErrorCode error_code);
+   bool RevalidateViewerOwner(const base::UnguessableToken& dashboard_session);
++  std::optional<SupervisionActionAuthoritySnapshot> ResolveActionAuthority(
++      const base::UnguessableToken& dashboard_session);
++  void OnDashboardActionCompleted(
++      const base::UnguessableToken& dashboard_session,
++      SupervisionRemoteActionCategory category,
++      const SupervisionActionResult& result);
+   void AddAudit(int32_t stable_tab_id,
+                 SupervisionAuditEvent event,
+                 std::optional<std::string> client_label,
+-                SupervisionErrorCode error_code = SupervisionErrorCode::kNone);
++                SupervisionErrorCode error_code = SupervisionErrorCode::kNone,
++                std::optional<SupervisionRemoteActionCategory> action_category =
++                    std::nullopt,
++                base::TimeDelta duration = base::TimeDelta());
+   void NotifySnapshotChanged(int32_t stable_tab_id);
+   SanitizedSupervisionSnapshot BuildSanitizedSnapshot(
+       int32_t stable_tab_id) const;
+@@ -272,6 +298,7 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+   const SupervisionLimits limits_;
+   CaptureHubFactory capture_hub_factory_;
+   LocalUiOpener local_ui_opener_;
++  ActionRouteDispatcher action_dispatcher_;
+   bool shutdown_ = false;
+   uint64_t next_pairing_serial_ = 0;
+   uint64_t next_compatibility_generation_ = 0;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc
+index e1ec8e9337..1fd24943c4 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc
+@@ -93,7 +93,9 @@ PrometheusSupervisionProfileServiceFactory::BuildForRegularProfile(
+   return std::make_unique<PrometheusSupervisionProfileService>(
+       profile, SupervisionProfileKind::kRegular,
+       base::BindRepeating(&ForwardAgentTabObservation,
+-                          agent_profile_service->GetWeakPtr()));
++                          agent_profile_service->GetWeakPtr()),
++      BindPrometheusSupervisionAgentRouteDispatcher(
++          agent_profile_service->GetWeakPtr()));
+ }
+ 
+ bool PrometheusSupervisionProfileServiceFactory::
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+index 2a6daff3b0..1e85b695af 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+@@ -12,6 +12,7 @@
+ #include <vector>
+ 
+ #include "base/functional/bind.h"
++#include "base/check.h"
+ #include "base/json/json_writer.h"
+ #include "base/test/bind.h"
+ #include "base/test/task_environment.h"
+@@ -66,6 +67,13 @@ SupervisionBaseline MakeServiceBaseline(std::string name) {
+   return baseline;
+ }
+ 
++SupervisionRemoteActionRequest MakeNavigationAction(std::string url) {
++  SupervisionRemoteActionRequest action;
++  action.category = SupervisionRemoteActionCategory::kNavigate;
++  action.navigation = std::move(url);
++  return action;
++}
++
+ class ServiceCaptureSource {
+  public:
+   void Capture(base::OnceCallback<void(SupervisionBaseline)> callback) {
+@@ -122,6 +130,11 @@ class PrometheusSupervisionProfileServiceTest : public testing::Test {
+   }
+ 
+  protected:
++  struct ReadyActionViewer {
++    SupervisionRedemptionResult redemption;
++    SupervisionStreamStamp stamp;
++  };
++
+   void ResetService(SupervisionProfileKind kind, SupervisionLimits limits) {
+     if (service_) {
+       service_->RemoveObserver(&observer_);
+@@ -192,6 +205,24 @@ class PrometheusSupervisionProfileServiceTest : public testing::Test {
+     return service_->RedeemPairing(creation.pairing_code, label);
+   }
+ 
++  ReadyActionViewer CreateReadyActionViewer() {
++    SupervisionPairingCreationResult creation = CreatePairing();
++    CHECK(creation.ok);
++    SupervisionRedemptionResult redemption = Redeem(creation, "Controller");
++    CHECK(redemption.ok);
++    CHECK_EQ(1u, capture_source_.pending_count());
++    capture_source_.CompleteNext(MakeServiceBaseline("action baseline"));
++    SupervisionDashboardBaselineResult baseline =
++        service_->ReadDashboardBaseline(redemption.dashboard_session);
++    CHECK(baseline.ok);
++    CHECK(baseline.delivery.has_value());
++    CHECK(service_->AckDashboard(redemption.dashboard_session,
++                                 baseline.delivery->stamp)
++              .ok);
++    CHECK(service_->EnableControl(redemption.dashboard_session).ok);
++    return ReadyActionViewer{std::move(redemption), baseline.delivery->stamp};
++  }
++
+   AgentRouteRequest CompatibilityRequest(AgentRouteName route_name,
+                                          std::string session_id) {
+     AgentRouteRequest request;
+@@ -1548,5 +1579,183 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+   EXPECT_EQ(1u, service_->released_capture_disable_count_for_testing());
+ }
+ 
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       ActionViewOnlyAndMissingAckDispatchNothing) {
++  PrometheusAgentTabObservationLease owner_lease =
++      agent_service_->ObserveOrCreateTabData(&tab_, &observer_tab_data_);
++  ASSERT_NE(nullptr, owner_lease.data());
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-a", "Agent A").ok);
++  SupervisionPairingCreationResult creation = CreatePairing();
++  ASSERT_TRUE(creation.ok);
++  SupervisionRedemptionResult viewer = Redeem(creation, "Viewer");
++  ASSERT_TRUE(viewer.ok);
++  capture_source_.CompleteNext(MakeServiceBaseline("unacknowledged"));
++  SupervisionDashboardBaselineResult baseline =
++      service_->ReadDashboardBaseline(viewer.dashboard_session);
++  ASSERT_TRUE(baseline.delivery.has_value());
++
++  std::optional<SupervisionActionResult> result;
++  service_->ExecuteDashboardAction(
++      viewer.dashboard_session, baseline.delivery->stamp.document_epoch.ToString(),
++      baseline.delivery->stamp.sequence,
++      MakeNavigationAction("https://example.test/private-value"),
++      base::BindLambdaForTesting([&](SupervisionActionResult action_result) {
++        result.emplace(std::move(action_result));
++      }));
++  ASSERT_TRUE(result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kViewOnly, result->error_code);
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       ActionSingleConfirmationSlotAndStopCancelBeforeRelease) {
++  PrometheusAgentTabObservationLease owner_lease =
++      agent_service_->ObserveOrCreateTabData(&tab_, &observer_tab_data_);
++  ASSERT_NE(nullptr, owner_lease.data());
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-a", "Agent A").ok);
++  ReadyActionViewer ready = CreateReadyActionViewer();
++  std::vector<SupervisionActionResult> first_results;
++  service_->ExecuteDashboardAction(
++      ready.redemption.dashboard_session, ready.stamp.document_epoch.ToString(),
++      ready.stamp.sequence,
++      MakeNavigationAction("https://example.test/private-one"),
++      base::BindLambdaForTesting([&](SupervisionActionResult result) {
++        first_results.push_back(std::move(result));
++      }));
++  EXPECT_TRUE(first_results.empty());
++
++  std::optional<SupervisionActionResult> second_result;
++  service_->ExecuteDashboardAction(
++      ready.redemption.dashboard_session, ready.stamp.document_epoch.ToString(),
++      ready.stamp.sequence,
++      MakeNavigationAction("https://example.test/private-two"),
++      base::BindLambdaForTesting([&](SupervisionActionResult result) {
++        second_result.emplace(std::move(result));
++      }));
++  ASSERT_TRUE(second_result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kControllerConflict,
++            second_result->error_code);
++
++  ASSERT_TRUE(service_->StopControl(ready.redemption.dashboard_session).ok);
++  ASSERT_EQ(1u, first_results.size());
++  EXPECT_EQ(SupervisionErrorCode::kViewOnly, first_results[0].error_code);
++  SanitizedSupervisionSnapshot snapshot =
++      service_->GetSanitizedSnapshot(ready.redemption.stable_tab_id);
++  ASSERT_FALSE(snapshot.sessions.empty());
++  EXPECT_EQ(SupervisionRemoteActionState::kBlocked,
++            snapshot.sessions[0].action_state);
++  ASSERT_TRUE(snapshot.sessions[0].action_category.has_value());
++  EXPECT_EQ(SupervisionRemoteActionCategory::kNavigate,
++            *snapshot.sessions[0].action_category);
++  std::optional<base::DictValue> value =
++      SanitizedSupervisionSnapshotToValue(snapshot);
++  ASSERT_TRUE(value.has_value());
++  const std::string json = base::WriteJson(*value).value_or("");
++  EXPECT_EQ(std::string::npos, json.find("private-one"));
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       ActionNavigationChangeFailsFreshConfirmationRevalidation) {
++  PrometheusAgentTabObservationLease owner_lease =
++      agent_service_->ObserveOrCreateTabData(&tab_, &observer_tab_data_);
++  ASSERT_NE(nullptr, owner_lease.data());
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-a", "Agent A").ok);
++  ReadyActionViewer ready = CreateReadyActionViewer();
++  std::optional<SupervisionActionResult> result;
++  service_->ExecuteDashboardAction(
++      ready.redemption.dashboard_session, ready.stamp.document_epoch.ToString(),
++      ready.stamp.sequence,
++      MakeNavigationAction("https://example.test/private-destination"),
++      base::BindLambdaForTesting([&](SupervisionActionResult action_result) {
++        result.emplace(std::move(action_result));
++      }));
++  ASSERT_FALSE(result.has_value());
++  PrometheusSupervisionCaptureHub* hub =
++      service_->capture_hub_for_testing(ready.redemption.stable_tab_id);
++  ASSERT_NE(nullptr, hub);
++  hub->ReplaceDocumentForTesting();
++  ASSERT_TRUE(service_
++                  ->ResolveDashboardActionConfirmation(
++                      ready.redemption.dashboard_session, true)
++                  .ok);
++  ASSERT_TRUE(result.has_value());
++  EXPECT_FALSE(result->ok);
++  EXPECT_EQ(SupervisionErrorCode::kStaleTarget, result->error_code);
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       ActionOwnerLossTerminalizesAndCancelsPending) {
++  PrometheusAgentTabObservationLease owner_lease =
++      agent_service_->ObserveOrCreateTabData(&tab_, &observer_tab_data_);
++  ASSERT_NE(nullptr, owner_lease.data());
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-a", "Agent A").ok);
++  ReadyActionViewer ready = CreateReadyActionViewer();
++  std::optional<SupervisionActionResult> result;
++  service_->ExecuteDashboardAction(
++      ready.redemption.dashboard_session, ready.stamp.document_epoch.ToString(),
++      ready.stamp.sequence,
++      MakeNavigationAction("https://example.test/private-destination"),
++      base::BindLambdaForTesting([&](SupervisionActionResult action_result) {
++        result.emplace(std::move(action_result));
++      }));
++  ASSERT_FALSE(result.has_value());
++  ASSERT_TRUE(owner_lease.data()->ReleaseIfOwned("owner-a").ok);
++  ASSERT_TRUE(result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kViewOnly, result->error_code);
++  EXPECT_FALSE(service_->OwnsDashboardSessionForComposition(
++      ready.redemption.dashboard_session));
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       ActionRevokeExpiryAndShutdownCancelPendingExactlyOnce) {
++  SupervisionLimits limits;
++  limits.viewer_ttl_ms = base::Minutes(2).InMilliseconds();
++  ResetService(SupervisionProfileKind::kRegular, limits);
++  PrometheusAgentTabObservationLease owner_lease =
++      agent_service_->ObserveOrCreateTabData(&tab_, &observer_tab_data_);
++  ASSERT_NE(nullptr, owner_lease.data());
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-a", "Agent A").ok);
++
++  ReadyActionViewer revoked = CreateReadyActionViewer();
++  std::vector<SupervisionActionResult> revoked_results;
++  service_->ExecuteDashboardAction(
++      revoked.redemption.dashboard_session,
++      revoked.stamp.document_epoch.ToString(), revoked.stamp.sequence,
++      MakeNavigationAction("https://example.test/revoke"),
++      base::BindLambdaForTesting([&](SupervisionActionResult result) {
++        revoked_results.push_back(std::move(result));
++      }));
++  ASSERT_TRUE(service_->RevokeSession(revoked.redemption.dashboard_session).ok);
++  ASSERT_EQ(1u, revoked_results.size());
++
++  ReadyActionViewer expired = CreateReadyActionViewer();
++  std::vector<SupervisionActionResult> expired_results;
++  service_->ExecuteDashboardAction(
++      expired.redemption.dashboard_session,
++      expired.stamp.document_epoch.ToString(), expired.stamp.sequence,
++      MakeNavigationAction("https://example.test/expire"),
++      base::BindLambdaForTesting([&](SupervisionActionResult result) {
++        expired_results.push_back(std::move(result));
++      }));
++  now_ += base::Minutes(3);
++  service_->GetSanitizedSnapshot(expired.redemption.stable_tab_id);
++  ASSERT_EQ(1u, expired_results.size());
++
++  now_ = base::Time::FromMillisecondsSinceUnixEpoch(500'000);
++  ReadyActionViewer shutdown = CreateReadyActionViewer();
++  std::vector<SupervisionActionResult> shutdown_results;
++  service_->ExecuteDashboardAction(
++      shutdown.redemption.dashboard_session,
++      shutdown.stamp.document_epoch.ToString(), shutdown.stamp.sequence,
++      MakeNavigationAction("https://example.test/shutdown"),
++      base::BindLambdaForTesting([&](SupervisionActionResult result) {
++        shutdown_results.push_back(std::move(result));
++      }));
++  service_->Shutdown();
++  service_->Shutdown();
++  ASSERT_EQ(1u, shutdown_results.size());
++  EXPECT_EQ(SupervisionErrorCode::kShutdown,
++            shutdown_results[0].error_code);
++}
++
+ }  // namespace
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+
