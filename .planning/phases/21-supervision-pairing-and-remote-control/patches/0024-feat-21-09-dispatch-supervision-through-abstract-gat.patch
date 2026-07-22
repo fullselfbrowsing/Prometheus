@@ -1,0 +1,716 @@
+From 9789dc9256a2095170500fe78d999052db5fb822 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 03:20:12 -0500
+Subject: [PATCH 24/24] feat(21-09): dispatch supervision through abstract
+ gateway seam
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   1 +
+ .../prometheus/prometheus_agent_gateway.cc    | 147 +++++++++++++++-
+ .../prometheus/prometheus_agent_gateway.h     |  22 +++
+ .../prometheus_agent_gateway_browsertest.cc   | 115 +++++++++++-
+ .../prometheus_agent_gateway_contract.cc      |   5 +-
+ .../prometheus_agent_gateway_contract.h       |  29 ++--
+ .../prometheus_agent_gateway_unittest.cc      | 163 ++++++++++++++++++
+ 7 files changed, 463 insertions(+), 19 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index acee95b294..b4a221c91c 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -580,6 +580,7 @@ source_set("prometheus_agent_gateway") {
+     ":prometheus_provider_registry",
+     ":prometheus_runtime_profile_service",
+     ":prometheus_runtime_transport_codec",
++    ":prometheus_supervision_transport_codec",
+     "//base",
+     "//chrome/browser:main_extra_parts",
+     "//chrome/browser/profiles",
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.cc b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+index 35f4703d18..d971ffb236 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+@@ -38,6 +38,7 @@
+ #include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
++#include "chrome/browser/prometheus/prometheus_supervision_transport_codec.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+ #include "components/tabs/public/tab_interface.h"
+@@ -149,6 +150,39 @@ std::string WriteJsonOrFallback(base::DictValue value) {
+       R"({"ok":false,"error_code":"INVALID_REQUEST"})");
+ }
+ 
++std::string SerializeSupervisionResponse(
++    const SupervisionTransportResult& result) {
++  auto serialized = SerializeSupervisionDashboardResult(result);
++  if (serialized.has_value()) {
++    return std::move(serialized.value());
++  }
++
++  const SupervisionTransportErrorCode error_code =
++      serialized.error().transport_error ==
++              SupervisionTransportErrorCode::kRequestTooLarge
++          ? SupervisionTransportErrorCode::kRequestTooLarge
++          : SupervisionTransportErrorCode::kOutputNotSanitized;
++  SupervisionTransportResult failure =
++      SupervisionTransportResult::TransportFailure(
++          result.operation, error_code,
++          error_code == SupervisionTransportErrorCode::kRequestTooLarge
++              ? "The supervision result exceeded transport bounds"
++              : "The supervision result was not safe to transport",
++          "Refresh supervision state and retry");
++  serialized = SerializeSupervisionDashboardResult(failure);
++  return serialized.has_value()
++             ? std::move(serialized.value())
++             : R"({"ok":false,"error_code":"OUTPUT_NOT_SANITIZED","message":"The supervision result was not safe to transport","recovery":"Refresh supervision state and retry","operation":"redeem","result":{}})";
++}
++
++SupervisionTransportResult SupervisionUnavailable(
++    SupervisionTransportOperation operation) {
++  return SupervisionTransportResult::TransportFailure(
++      operation, SupervisionTransportErrorCode::kUnavailable,
++      "Supervision is unavailable",
++      "Open a regular Prometheus browser window and retry");
++}
++
+ AgentDiagnosticStatus ToAgentDiagnosticStatus(RuntimeComponentStatus status) {
+   switch (status) {
+     case RuntimeComponentStatus::kReady:
+@@ -1037,11 +1071,22 @@ void PrometheusAgentGateway::SetStableTabSelectorForTesting(
+   stable_tab_selector_for_testing_ = std::move(selector);
+ }
+ 
++void PrometheusAgentGateway::SetSupervisionGatewayDispatcher(
++    SupervisionGatewayDispatcher dispatcher) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  ShutdownSupervisionDispatcher(/*complete_unavailable=*/true);
++  if (dispatcher.IsComplete()) {
++    supervision_dispatcher_ = std::move(dispatcher);
++  }
++}
++
+ void PrometheusAgentGateway::HandleNativeRequestForTesting(
+     std::string_view path,
+     std::string_view body,
+     ResponseCallback callback) {
+-  HandleNativeRequest(path, body, std::move(callback));
++  const SupervisionGatewayCancellationToken cancellation{
++      next_direct_supervision_token_++};
++  HandleNativeRequest(path, body, cancellation, std::move(callback));
+ }
+ 
+ void PrometheusAgentGateway::HandleRequest(uint64_t request_id,
+@@ -1055,7 +1100,58 @@ void PrometheusAgentGateway::HandleRequest(uint64_t request_id,
+     request_handler_for_testing_.Run(path, body, std::move(callback));
+     return;
+   }
+-  HandleNativeRequest(path, body, std::move(callback));
++  HandleNativeRequest(path, body, SupervisionGatewayCancellationToken{request_id},
++                      std::move(callback));
++}
++
++void PrometheusAgentGateway::OnSupervisionRequestCompleted(
++    SupervisionGatewayCancellationToken cancellation,
++    SupervisionGatewayResult result) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  auto pending = pending_supervision_requests_.find(cancellation.value);
++  if (pending == pending_supervision_requests_.end()) {
++    return;
++  }
++  PendingSupervisionRequest request = std::move(pending->second);
++  pending_supervision_requests_.erase(pending);
++  if (result.transport.operation != request.operation) {
++    result.transport = SupervisionTransportResult::TransportFailure(
++        request.operation, SupervisionTransportErrorCode::kInternal,
++        "The supervision dispatcher returned a mismatched operation",
++        "Refresh supervision state and retry");
++  }
++  std::move(request.callback)
++      .Run(net::HTTP_OK, SerializeSupervisionResponse(result.transport));
++}
++
++void PrometheusAgentGateway::CancelOutstandingSupervisionRequests(
++    bool complete_unavailable) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  std::map<uint64_t, PendingSupervisionRequest> pending =
++      std::move(pending_supervision_requests_);
++  pending_supervision_requests_.clear();
++  for (auto& [token, request] : pending) {
++    if (supervision_dispatcher_) {
++      supervision_dispatcher_->cancel.Run(
++          SupervisionGatewayCancellationToken{token});
++    }
++    if (complete_unavailable) {
++      std::move(request.callback)
++          .Run(net::HTTP_OK,
++               SerializeSupervisionResponse(
++                   SupervisionUnavailable(request.operation)));
++    }
++  }
++}
++
++void PrometheusAgentGateway::ShutdownSupervisionDispatcher(
++    bool complete_unavailable) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  CancelOutstandingSupervisionRequests(complete_unavailable);
++  if (supervision_dispatcher_) {
++    supervision_dispatcher_->shutdown.Run();
++    supervision_dispatcher_.reset();
++  }
+ }
+ 
+ void PrometheusAgentGateway::OnRequestHandled(uint64_t request_id,
+@@ -1609,12 +1705,53 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+   }
+ }
+ 
+-void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+-                                                 std::string_view body,
+-                                                 ResponseCallback callback) {
++void PrometheusAgentGateway::HandleNativeRequest(
++    std::string_view path,
++    std::string_view body,
++    SupervisionGatewayCancellationToken cancellation,
++    ResponseCallback callback) {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+   PruneSessionBindings();
+ 
++  if (path == "/v1/supervision") {
++    auto request = ParseSupervisionTransportRequest(body);
++    if (!request.has_value()) {
++      std::move(callback).Run(net::HTTP_BAD_REQUEST,
++                              SerializeSupervisionResponse(request.error()));
++      return;
++    }
++    if (!supervision_dispatcher_) {
++      std::move(callback).Run(
++          net::HTTP_OK,
++          SerializeSupervisionResponse(
++              SupervisionUnavailable(request->operation)));
++      return;
++    }
++
++    const SupervisionTransportOperation operation = request->operation;
++    if (!cancellation ||
++        pending_supervision_requests_.contains(cancellation.value)) {
++      std::move(callback).Run(
++          net::HTTP_OK,
++          SerializeSupervisionResponse(
++              SupervisionTransportResult::TransportFailure(
++                  operation, SupervisionTransportErrorCode::kInternal,
++                  "The supervision request token was already active",
++                  "Retry the supervision request")));
++      return;
++    }
++    pending_supervision_requests_.emplace(
++        cancellation.value,
++        PendingSupervisionRequest{operation, std::move(callback)});
++    supervision_dispatcher_->dispatch.Run(
++        SupervisionGatewayRequest{.transport = std::move(request.value()),
++                                  .cancellation_token = cancellation},
++        base::BindOnce(
++            &PrometheusAgentGateway::OnSupervisionRequestCompleted,
++            weak_ptr_factory_.GetWeakPtr(), cancellation));
++    return;
++  }
++
+   if (path == "/v1/health") {
+     GlobalBrowserCollection* const browsers =
+         GetGlobalBrowserCollectionIfAvailable();
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.h b/chrome/browser/prometheus/prometheus_agent_gateway.h
+index d2108e78e6..0f25f82bb5 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.h
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.h
+@@ -9,6 +9,7 @@
+ #include <cstdint>
+ #include <map>
+ #include <memory>
++#include <optional>
+ #include <string>
+ #include <string_view>
+ #include <utility>
+@@ -140,6 +141,8 @@ class PrometheusAgentGateway {
+   void SetProfileSelectorForTesting(ProfileSelector selector);
+   void SetBrowserSelectorForTesting(BrowserSelector selector);
+   void SetStableTabSelectorForTesting(StableTabSelector selector);
++  void SetSupervisionGatewayDispatcher(
++      SupervisionGatewayDispatcher dispatcher);
+   void HandleNativeRequestForTesting(std::string_view path,
+                                      std::string_view body,
+                                      ResponseCallback callback);
+@@ -159,6 +162,9 @@ class PrometheusAgentGateway {
+   size_t session_binding_count_for_testing() const {
+     return session_bindings_.size();
+   }
++  size_t pending_supervision_request_count_for_testing() const {
++    return pending_supervision_requests_.size();
++  }
+ 
+  private:
+   class IOThreadData;
+@@ -170,6 +176,12 @@ class PrometheusAgentGateway {
+     std::string caller_id;
+   };
+ 
++  struct PendingSupervisionRequest {
++    SupervisionTransportOperation operation =
++        SupervisionTransportOperation::kRedeem;
++    ResponseCallback callback;
++  };
++
+   void OnIoStarted(base::OnceCallback<void(bool)> callback,
+                    bool success,
+                    net::IPEndPoint endpoint);
+@@ -179,7 +191,14 @@ class PrometheusAgentGateway {
+   void HandleRequest(uint64_t request_id, std::string path, std::string body);
+   void HandleNativeRequest(std::string_view path,
+                            std::string_view body,
++                           SupervisionGatewayCancellationToken cancellation,
+                            ResponseCallback callback);
++  void OnTransportRequestTerminated(uint64_t request_id);
++  void OnSupervisionRequestCompleted(
++      SupervisionGatewayCancellationToken cancellation,
++      SupervisionGatewayResult result);
++  void CancelOutstandingSupervisionRequests(bool complete_unavailable);
++  void ShutdownSupervisionDispatcher(bool complete_unavailable);
+   void OnRequestHandled(uint64_t request_id, int status, std::string body);
+   void OnIoStopped(base::OnceClosure callback);
+   void OnDescriptorDeleted(base::OnceClosure callback, bool deleted);
+@@ -207,13 +226,16 @@ class PrometheusAgentGateway {
+   ProfileSelector profile_selector_for_testing_;
+   BrowserSelector browser_selector_for_testing_;
+   StableTabSelector stable_tab_selector_for_testing_;
++  std::optional<SupervisionGatewayDispatcher> supervision_dispatcher_;
+   std::map<std::string, SessionBinding, std::less<>> session_bindings_;
++  std::map<uint64_t, PendingSupervisionRequest> pending_supervision_requests_;
+   PrometheusGatewayRuntimeTaskTracker runtime_task_tracker_;
+   PrometheusGatewayDiscoveryTracker runtime_discovery_tracker_;
+   std::atomic_size_t pending_request_count_{0};
+   std::atomic_size_t terminal_request_count_{0};
+   bool started_ = false;
+   bool shutting_down_ = false;
++  uint64_t next_direct_supervision_token_ = uint64_t{1} << 63;
+ 
+   SEQUENCE_CHECKER(sequence_checker_);
+   base::WeakPtrFactory<PrometheusAgentGateway> weak_ptr_factory_{this};
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+index 101366226a..2b79c26e28 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+@@ -59,6 +59,16 @@
+ namespace prometheus {
+ namespace {
+ 
++constexpr std::array<std::string_view, 7> kSupervisionRequests = {
++    R"({"operation":"redeem","params":{"pairing_code":"ABCDEFGH","client_label":"Dashboard one"}})",
++    R"({"operation":"baseline","params":{"dashboard_session":"DASHBOARD-SESSION-7"}})",
++    R"({"operation":"diff","params":{"dashboard_session":"DASHBOARD-SESSION-7","document_epoch":"DOCUMENT-EPOCH-9","after_sequence":7}})",
++    R"({"operation":"ack","params":{"dashboard_session":"DASHBOARD-SESSION-7","document_epoch":"DOCUMENT-EPOCH-9","sequence":7}})",
++    R"({"operation":"action","params":{"dashboard_session":"DASHBOARD-SESSION-7","document_epoch":"DOCUMENT-EPOCH-9","sequence":7,"action":{"category":"click","ref":"document:7/node:11"}}})",
++    R"({"operation":"heartbeat","params":{"dashboard_session":"DASHBOARD-SESSION-7"}})",
++    R"({"operation":"end","params":{"dashboard_session":"DASHBOARD-SESSION-7"}})",
++};
++
+ struct HttpResult {
+   int status = 0;
+   std::string raw;
+@@ -276,6 +286,7 @@ class PrometheusAgentGatewayBrowserTest : public InProcessBrowserTest {
+     PrometheusAgentGateway::Options options;
+     options.descriptor_path = descriptor_path_;
+     gateway_ = std::make_unique<PrometheusAgentGateway>(std::move(options));
++    InstallSupervisionDispatcher();
+     base::test::TestFuture<bool> started;
+     gateway_->Start(started.GetCallback());
+     ASSERT_TRUE(started.Get());
+@@ -306,6 +317,42 @@ class PrometheusAgentGatewayBrowserTest : public InProcessBrowserTest {
+                                 gateway_->bearer_for_testing(), body));
+   }
+ 
++  void InstallSupervisionDispatcher() {
++    gateway_->SetSupervisionGatewayDispatcher(SupervisionGatewayDispatcher{
++        .dispatch = base::BindRepeating(
++            &PrometheusAgentGatewayBrowserTest::DispatchSupervision,
++            base::Unretained(this)),
++        .cancel = base::BindRepeating(
++            &PrometheusAgentGatewayBrowserTest::CancelSupervision,
++            base::Unretained(this)),
++        .readiness = base::BindRepeating(
++            &PrometheusAgentGatewayBrowserTest::SupervisionReadiness,
++            base::Unretained(this)),
++        .shutdown = base::BindRepeating(
++            &PrometheusAgentGatewayBrowserTest::ShutdownSupervision,
++            base::Unretained(this)),
++    });
++  }
++
++  void DispatchSupervision(
++      SupervisionGatewayRequest request,
++      SupervisionGatewayDispatcher::ResultCallback callback) {
++    const SupervisionTransportOperation operation = request.transport.operation;
++    supervision_requests_.push_back(std::move(request));
++    std::move(callback).Run(SupervisionGatewayResult{
++        .transport = SupervisionTransportResult::Success(operation)});
++  }
++
++  void CancelSupervision(SupervisionGatewayCancellationToken token) {
++    supervision_cancellations_.push_back(token);
++  }
++
++  SupervisionGatewayReadiness SupervisionReadiness() const {
++    return supervision_readiness_;
++  }
++
++  void ShutdownSupervision() { ++supervision_shutdowns_; }
++
+   std::string ExtractSessionId(const HttpResult& result) {
+     auto json = base::JSONReader::ReadDict(result.body, base::JSON_PARSE_RFC);
+     EXPECT_TRUE(json.has_value());
+@@ -327,6 +374,10 @@ class PrometheusAgentGatewayBrowserTest : public InProcessBrowserTest {
+   base::ScopedTempDir temp_dir_;
+   base::FilePath descriptor_path_;
+   std::unique_ptr<PrometheusAgentGateway> gateway_;
++  std::vector<SupervisionGatewayRequest> supervision_requests_;
++  std::vector<SupervisionGatewayCancellationToken> supervision_cancellations_;
++  SupervisionGatewayReadiness supervision_readiness_;
++  size_t supervision_shutdowns_ = 0;
+ };
+ 
+ class PrometheusAgentGatewayLifecycleBrowserTest : public InProcessBrowserTest {
+@@ -369,12 +420,13 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+                        RejectsMissingAndWrongBearerOnAllEndpoints) {
+-  constexpr std::array<std::pair<std::string_view, std::string_view>, 6>
++  constexpr std::array<std::pair<std::string_view, std::string_view>, 7>
+       kEndpoints = {{{"POST", "/v1/session/create"},
+                      {"POST", "/v1/session/resume"},
+                      {"POST", "/v1/session/touch"},
+                      {"POST", "/v1/session/close"},
+                      {"POST", "/v1/agent/command"},
++                     {"POST", "/v1/supervision"},
+                      {"GET", "/v1/health"}}};
+   for (const auto& [method, path] : kEndpoints) {
+     HttpResult missing = Exchange(
+@@ -388,6 +440,67 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+   }
+ }
+ 
++IN_PROC_BROWSER_TEST_F(
++    PrometheusAgentGatewayBrowserTest,
++    SupervisionDispatchesAllSevenOperationsThroughInstalledFake) {
++  for (size_t index = 0; index < kSupervisionRequests.size(); ++index) {
++    SCOPED_TRACE(index);
++    auto expected =
++        ParseSupervisionTransportRequest(kSupervisionRequests[index]);
++    ASSERT_TRUE(expected.has_value()) << expected.error().message;
++    HttpResult response = Authorized("POST", "/v1/supervision",
++                                     kSupervisionRequests[index]);
++    EXPECT_EQ(200, response.status);
++    ExpectSecureResponseHeaders(response);
++    auto body = base::JSONReader::ReadDict(response.body, base::JSON_PARSE_RFC);
++    ASSERT_TRUE(body.has_value()) << response.body;
++    EXPECT_EQ(true, body->FindBool("ok"));
++    ASSERT_EQ(index + 1, supervision_requests_.size());
++    EXPECT_EQ(expected->operation,
++              supervision_requests_.back().transport.operation);
++    EXPECT_EQ(expected->params.index(),
++              supervision_requests_.back().transport.params.index());
++    EXPECT_TRUE(supervision_requests_.back().cancellation_token);
++  }
++  EXPECT_EQ(kSupervisionTransportOperationCount,
++            supervision_requests_.size());
++  EXPECT_TRUE(supervision_cancellations_.empty());
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusAgentGatewayBrowserTest,
++    SupervisionPerimeterAndAbsentDispatcherFailClosed) {
++  const int port = gateway_->port_for_testing();
++  const std::string bearer = gateway_->bearer_for_testing();
++  EXPECT_EQ(401, Exchange(MakeRequest("POST", "/v1/supervision", port, "",
++                                      kSupervisionRequests[0]))
++                     .status);
++  EXPECT_EQ(403, Exchange(MakeRequest(
++                     "POST", "/v1/supervision", port, bearer,
++                     kSupervisionRequests[0],
++                     "Origin: https://dashboard.example\r\n"))
++                     .status);
++  EXPECT_EQ(405, Exchange(MakeRequest("GET", "/v1/supervision", port,
++                                      bearer, kSupervisionRequests[0]))
++                     .status);
++  EXPECT_EQ(415,
++            Exchange("POST /v1/supervision HTTP/1.1\r\nHost: 127.0.0.1:" +
++                     std::to_string(port) + "\r\nAuthorization: Bearer " +
++                     bearer +
++                     "\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n"
++                     "Connection: close\r\n\r\n{}")
++                .status);
++  EXPECT_TRUE(supervision_requests_.empty());
++
++  gateway_->SetSupervisionGatewayDispatcher({});
++  EXPECT_EQ(1u, supervision_shutdowns_);
++  HttpResult unavailable = Authorized("POST", "/v1/supervision",
++                                      kSupervisionRequests[0]);
++  EXPECT_EQ(200, unavailable.status);
++  EXPECT_NE(std::string::npos, unavailable.body.find("UNAVAILABLE"));
++  EXPECT_TRUE(supervision_requests_.empty());
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+                        RejectsHostOriginMethodPathContentBodyAndMalformedJson) {
+   const int port = gateway_->port_for_testing();
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc b/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
+index 5b4a4feaca..7bc7260e4b 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
+@@ -18,9 +18,10 @@ namespace {
+ 
+ constexpr size_t kMaxRequestBytes = 1'048'576;
+ constexpr size_t kMaxInflightRequests = 16;
+-constexpr std::array<std::string_view, 6> kClosedPaths = {
++constexpr std::array<std::string_view, 7> kClosedPaths = {
+     "/v1/session/create", "/v1/session/resume", "/v1/session/touch",
+-    "/v1/session/close",  "/v1/agent/command",  "/v1/health"};
++    "/v1/session/close",  "/v1/agent/command",  "/v1/health",
++    "/v1/supervision"};
+ 
+ bool IsJsonContentType(std::string_view content_type) {
+   const size_t separator = content_type.find(';');
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_contract.h b/chrome/browser/prometheus/prometheus_agent_gateway_contract.h
+index ea8b507d3c..276e66c541 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_contract.h
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_contract.h
+@@ -90,20 +90,27 @@ struct SupervisionGatewayReadiness {
+ };
+ 
+ // Dependency-neutral gateway seam. The browser composition root installs the
+-// concrete regular-profile adapter; the gateway itself never resolves a
++// concrete regular-profile callbacks; the gateway itself never resolves a
+ // profile service, Browser, tab, capture owner, renderer, or transport owner.
+-class SupervisionGatewayDispatcher {
+- public:
++struct SupervisionGatewayDispatcher {
+   using ResultCallback =
+       base::OnceCallback<void(SupervisionGatewayResult result)>;
+-
+-  virtual ~SupervisionGatewayDispatcher() = default;
+-
+-  virtual void Dispatch(SupervisionGatewayRequest request,
+-                        ResultCallback callback) = 0;
+-  virtual void Cancel(SupervisionGatewayCancellationToken token) = 0;
+-  virtual SupervisionGatewayReadiness GetSanitizedReadiness() const = 0;
+-  virtual void CancelAllAndShutdown() = 0;
++  using DispatchCallback = base::RepeatingCallback<void(
++      SupervisionGatewayRequest request,
++      ResultCallback callback)>;
++  using CancelCallback =
++      base::RepeatingCallback<void(SupervisionGatewayCancellationToken token)>;
++  using ReadinessCallback =
++      base::RepeatingCallback<SupervisionGatewayReadiness()>;
++
++  bool IsComplete() const {
++    return dispatch && cancel && readiness && shutdown;
++  }
++
++  DispatchCallback dispatch;
++  CancelCallback cancel;
++  ReadinessCallback readiness;
++  base::RepeatingClosure shutdown;
+ };
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+index 5c045d29a1..8002cf3c49 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+@@ -6,8 +6,11 @@
+ 
+ #include <array>
+ #include <map>
++#include <optional>
+ #include <string>
+ #include <string_view>
++#include <utility>
++#include <vector>
+ 
+ #include "base/command_line.h"
+ #include "base/files/file_path.h"
+@@ -34,6 +37,86 @@ constexpr int kTestPort = 43210;
+ constexpr std::string_view kBearer =
+     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+ 
++constexpr std::array<std::string_view, 7> kSupervisionRequests = {
++    R"({"operation":"redeem","params":{"pairing_code":"ABCDEFGH","client_label":"Dashboard one"}})",
++    R"({"operation":"baseline","params":{"dashboard_session":"DASHBOARD-SESSION-7"}})",
++    R"({"operation":"diff","params":{"dashboard_session":"DASHBOARD-SESSION-7","document_epoch":"DOCUMENT-EPOCH-9","after_sequence":7}})",
++    R"({"operation":"ack","params":{"dashboard_session":"DASHBOARD-SESSION-7","document_epoch":"DOCUMENT-EPOCH-9","sequence":7}})",
++    R"({"operation":"action","params":{"dashboard_session":"DASHBOARD-SESSION-7","document_epoch":"DOCUMENT-EPOCH-9","sequence":7,"action":{"category":"click","ref":"document:7/node:11"}}})",
++    R"({"operation":"heartbeat","params":{"dashboard_session":"DASHBOARD-SESSION-7"}})",
++    R"({"operation":"end","params":{"dashboard_session":"DASHBOARD-SESSION-7"}})",
++};
++
++struct NativeResponse {
++  int status = 0;
++  std::string body;
++  size_t callbacks = 0;
++};
++
++NativeResponse HandleSupervisionRequest(PrometheusAgentGateway& gateway,
++                                        std::string_view body) {
++  NativeResponse response;
++  gateway.HandleNativeRequestForTesting(
++      "/v1/supervision", body,
++      base::BindOnce(
++          [](NativeResponse* output, int status, std::string body) {
++            ++output->callbacks;
++            output->status = status;
++            output->body = std::move(body);
++          },
++          &response));
++  return response;
++}
++
++class FakeSupervisionGatewayDispatcher {
++ public:
++  SupervisionGatewayDispatcher Bind() {
++    return SupervisionGatewayDispatcher{
++        .dispatch = base::BindRepeating(
++            &FakeSupervisionGatewayDispatcher::Dispatch,
++            base::Unretained(this)),
++        .cancel = base::BindRepeating(
++            &FakeSupervisionGatewayDispatcher::Cancel,
++            base::Unretained(this)),
++        .readiness = base::BindRepeating(
++            &FakeSupervisionGatewayDispatcher::Readiness,
++            base::Unretained(this)),
++        .shutdown = base::BindRepeating(
++            &FakeSupervisionGatewayDispatcher::Shutdown,
++            base::Unretained(this)),
++    };
++  }
++
++  void Dispatch(SupervisionGatewayRequest request,
++                SupervisionGatewayDispatcher::ResultCallback callback) {
++    const SupervisionTransportOperation operation = request.transport.operation;
++    requests.push_back(std::move(request));
++    SupervisionTransportResult result =
++        return_wrong_operation
++            ? SupervisionTransportResult::Success(
++                  operation == SupervisionTransportOperation::kRedeem
++                      ? SupervisionTransportOperation::kEnd
++                      : SupervisionTransportOperation::kRedeem)
++            : SupervisionTransportResult::Success(operation);
++    std::move(callback).Run(
++        SupervisionGatewayResult{.transport = std::move(result)});
++  }
++
++  void Cancel(SupervisionGatewayCancellationToken token) {
++    cancellations.push_back(token);
++  }
++
++  SupervisionGatewayReadiness Readiness() const { return readiness; }
++
++  void Shutdown() { ++shutdowns; }
++
++  std::vector<SupervisionGatewayRequest> requests;
++  std::vector<SupervisionGatewayCancellationToken> cancellations;
++  SupervisionGatewayReadiness readiness;
++  bool return_wrong_operation = false;
++  size_t shutdowns = 0;
++};
++
+ net::HttpServerRequestInfo ValidRequest(std::string_view path) {
+   net::HttpServerRequestInfo request;
+   request.peer =
+@@ -283,6 +366,86 @@ TEST(PrometheusAgentGatewayTest,
+       PrometheusAgentRequestRejection::kTooManyRequests, 16);
+ }
+ 
++TEST(PrometheusAgentGatewayTest,
++     SupervisionDispatchesEveryClosedOperationThroughFake) {
++  FakeSupervisionGatewayDispatcher fake;
++  PrometheusAgentGateway gateway({});
++  gateway.SetSupervisionGatewayDispatcher(fake.Bind());
++
++  for (size_t index = 0; index < kSupervisionRequests.size(); ++index) {
++    SCOPED_TRACE(index);
++    auto expected =
++        ParseSupervisionTransportRequest(kSupervisionRequests[index]);
++    ASSERT_TRUE(expected.has_value()) << expected.error().message;
++    NativeResponse response =
++        HandleSupervisionRequest(gateway, kSupervisionRequests[index]);
++    EXPECT_EQ(1u, response.callbacks);
++    EXPECT_EQ(net::HTTP_OK, response.status);
++    auto body = base::JSONReader::ReadDict(response.body, base::JSON_PARSE_RFC);
++    ASSERT_TRUE(body.has_value());
++    EXPECT_EQ(true, body->FindBool("ok"));
++    ASSERT_EQ(index + 1, fake.requests.size());
++    EXPECT_EQ(expected->operation, fake.requests.back().transport.operation);
++    EXPECT_EQ(expected->params.index(),
++              fake.requests.back().transport.params.index());
++    EXPECT_TRUE(fake.requests.back().cancellation_token);
++  }
++  EXPECT_EQ(kSupervisionTransportOperationCount, fake.requests.size());
++  EXPECT_TRUE(fake.cancellations.empty());
++}
++
++TEST(PrometheusAgentGatewayTest,
++     SupervisionMalformedAbsentAndClearedDispatcherFailClosed) {
++  FakeSupervisionGatewayDispatcher fake;
++  PrometheusAgentGateway gateway({});
++
++  NativeResponse malformed = HandleSupervisionRequest(
++      gateway,
++      R"({"operation":"heartbeat","params":{"session":"legacy"}})");
++  EXPECT_EQ(1u, malformed.callbacks);
++  EXPECT_EQ(net::HTTP_BAD_REQUEST, malformed.status);
++  auto malformed_body =
++      base::JSONReader::ReadDict(malformed.body, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(malformed_body.has_value()) << malformed.body;
++  EXPECT_EQ(false, malformed_body->FindBool("ok"));
++  const std::string* malformed_code =
++      malformed_body->FindString("error_code");
++  ASSERT_TRUE(malformed_code);
++  EXPECT_NE("NONE", *malformed_code);
++
++  NativeResponse absent =
++      HandleSupervisionRequest(gateway, kSupervisionRequests[0]);
++  EXPECT_EQ(1u, absent.callbacks);
++  EXPECT_EQ(net::HTTP_OK, absent.status);
++  EXPECT_NE(std::string::npos, absent.body.find("UNAVAILABLE"));
++
++  gateway.SetSupervisionGatewayDispatcher(fake.Bind());
++  gateway.SetSupervisionGatewayDispatcher({});
++  EXPECT_EQ(1u, fake.shutdowns);
++  NativeResponse cleared =
++      HandleSupervisionRequest(gateway, kSupervisionRequests[1]);
++  EXPECT_EQ(1u, cleared.callbacks);
++  EXPECT_EQ(net::HTTP_OK, cleared.status);
++  EXPECT_NE(std::string::npos, cleared.body.find("UNAVAILABLE"));
++  EXPECT_TRUE(fake.requests.empty());
++}
++
++TEST(PrometheusAgentGatewayTest,
++     SupervisionRejectsMismatchedDispatcherResultExactlyOnce) {
++  FakeSupervisionGatewayDispatcher fake;
++  fake.return_wrong_operation = true;
++  PrometheusAgentGateway gateway({});
++  gateway.SetSupervisionGatewayDispatcher(fake.Bind());
++
++  NativeResponse response =
++      HandleSupervisionRequest(gateway, kSupervisionRequests[0]);
++  EXPECT_EQ(1u, response.callbacks);
++  EXPECT_EQ(net::HTTP_OK, response.status);
++  EXPECT_NE(std::string::npos, response.body.find("INTERNAL"));
++  EXPECT_EQ(1u, fake.requests.size());
++  EXPECT_EQ(0u, gateway.pending_supervision_request_count_for_testing());
++}
++
+ TEST(PrometheusAgentGatewayTest,
+      RejectsMethodContentTypeBodyAndConcurrencyViolations) {
+   auto wrong_get = ValidRequest("/v1/session/create");
+-- 
+2.50.1 (Apple Git-155)
+
