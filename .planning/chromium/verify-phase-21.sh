@@ -245,6 +245,7 @@ verify_capture_hub_contract() {
   require_literal 'class PrometheusSupervisionCaptureHub : public content::WebContentsObserver' "${hub_header}"
   require_literal 'SupervisionCaptureConsumerKind::kDashboard' "${hub_test}"
   require_literal 'SupervisionCaptureConsumerKind::kAgentCompatibility' "${hub_test}"
+  require_literal 'using CaptureConsumerToken = uint64_t;' "${hub_header}"
   require_literal 'mojo::Remote<blink::mojom::PrometheusSupervisionDocument>' "${hub_source}"
   require_literal 'mojo::Receiver<blink::mojom::PrometheusSupervisionDocumentHost>' "${hub_source}"
   require_literal 'content::WeakDocumentPtr requested_document' "${hub_source}"
@@ -257,10 +258,20 @@ verify_capture_hub_contract() {
   require_literal 'RemoveRawFormValuesForSupervision' "${hub_source}"
   require_literal 'net::test_server::ControllableHttpResponse' "${hub_browser_test}"
   require_literal 'TwoConsumersUseOneRendererEnableAndApcCapture' "${hub_browser_test}"
+  require_literal 'TwoDashboardConsumersShareRealMutationsAndDetachIndependently' "${hub_browser_test}"
+  require_literal 'TwoDashboardConsumersNavigationRequiresIndependentBaselines' "${hub_browser_test}"
+  require_literal 'kSecondReleasePath' "${hub_browser_test}"
   require_literal 'kMutationMarker' "${hub_browser_test}"
   require_literal '"prometheus_supervision_capture_hub.cc"' "${browser_build}"
   require_literal '"prometheus_supervision_capture_hub_unittest.cc"' "${browser_build}"
   require_literal '"../../../prometheus/prometheus_supervision_capture_hub_browsertest.cc"' "${views_build}"
+  require_literal '"//chrome/browser/prometheus:prometheus_supervision_profile_service"' "${views_build}"
+  require_literal 'GetOrCreateCaptureHub(' "${profile_service}"
+  require_literal 'SupervisionCaptureConsumerKind::kDashboard' "${profile_service}"
+  require_literal 'capture_consumer_token' "${profile_service}"
+  require_literal 'ReadDashboardBaseline' "${profile_service_header}"
+  require_literal 'ReadDashboardDiff' "${profile_service_header}"
+  require_literal 'AckDashboard' "${profile_service_header}"
   reject_pattern \
     'mojo::|PrometheusSupervisionDocument' \
     'capture-hub consumer API exposed a renderer or Mojo endpoint' \
