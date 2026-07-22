@@ -1,0 +1,285 @@
+From 0f5712f190670af65bbdeb0fb32bd5f48ca9f9df Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 12:09:09 -0500
+Subject: [PATCH 41/41] test(21-16): close tab state lifecycle regressions
+
+---
+ .../prometheus_agent_tab_data_unittest.cc     | 91 +++++++++++++++++++
+ ...us_supervision_profile_service_unittest.cc | 69 ++++++++++++++
+ .../prometheus_tab_state_unittest.cc          | 25 -----
+ 3 files changed, 160 insertions(+), 25 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc b/chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc
+index 1b1e3d718f..adc17d0452 100644
+--- a/chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc
+@@ -7,6 +7,7 @@
+ #include <memory>
+ #include <vector>
+ 
++#include "base/memory/raw_ptr.h"
+ #include "components/tabs/public/mock_tab_interface.h"
+ #include "testing/gmock/include/gmock/gmock.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+@@ -30,6 +31,27 @@ class RecordingTabStateObserver final : public PrometheusTabStateObserver {
+   size_t invalidations = 0;
+ };
+ 
++class ClearSupervisionOnOwnerLoss final
++    : public PrometheusAgentTabData::Observer {
++ public:
++  void set_data(PrometheusAgentTabData* data) { data_ = data; }
++
++  void OnPrometheusAgentTabOwnerChanged(
++      std::string_view old_owner_session_id,
++      std::string_view new_owner_session_id) override {
++    if (!old_owner_session_id.empty() && new_owner_session_id.empty()) {
++      if (data_) {
++        data_->ClearSupervisionState();
++      }
++    }
++  }
++
++  void OnPrometheusAgentTabDataDestroying() override { data_ = nullptr; }
++
++ private:
++  raw_ptr<PrometheusAgentTabData> data_ = nullptr;
++};
++
+ class PrometheusAgentTabDataTest : public testing::Test {
+  protected:
+   void SetUp() override {
+@@ -144,6 +166,7 @@ TEST_F(PrometheusAgentTabDataTest,
+ 
+   data->UpdateSupervisionState(supervision);
+   data->ClearSupervisionState();
++  data->ClearSupervisionState();
+ 
+   ASSERT_EQ(2u, observer.states.size());
+   EXPECT_EQ(supervision, observer.states[0].supervision);
+@@ -185,6 +208,74 @@ TEST_F(PrometheusAgentTabDataTest,
+   data.reset();
+ 
+   EXPECT_EQ(1u, observer.invalidations);
++  data = PrometheusAgentTabData::ForTabForTesting(&tab_);
++  ASSERT_NE(nullptr, data);
++  EXPECT_EQ(PrometheusTabState::Supervision(), data->ToTabState().supervision);
++}
++
++TEST_F(PrometheusAgentTabDataTest,
++       SupervisionOwnerLossPublishesOnlyClearedCoherentState) {
++  RecordingTabStateObserver state_observer;
++  ClearSupervisionOnOwnerLoss owner_observer;
++  std::unique_ptr<PrometheusAgentTabData> data =
++      PrometheusAgentTabData::ForTabForTesting(&tab_);
++  ASSERT_NE(nullptr, data);
++  ASSERT_TRUE(data->ClaimIfUnowned("owner-a", "Agent A").ok);
++  owner_observer.set_data(data.get());
++  data->AddObserver(&owner_observer);
++  data->AddTabStateObserver(&state_observer);
++  PrometheusTabState::Supervision supervision;
++  supervision.available = true;
++  supervision.viewer_count = 1;
++  supervision.viewer_labels = {"Controller"};
++  supervision.controller_label = "Controller";
++  supervision.view_state = PrometheusTabState::Supervision::ViewState::kViewing;
++  supervision.control_state =
++      PrometheusTabState::Supervision::ControlState::kControllerReady;
++  supervision.activity_state =
++      PrometheusTabState::Supervision::ActivityState::kExecuting;
++  supervision.action_category =
++      PrometheusTabState::Supervision::ActionCategory::kClick;
++  data->UpdateSupervisionState(supervision);
++  state_observer.states.clear();
++
++  AgentRouteResult release = data->ReleaseIfOwned("owner-a");
++  data->RemoveTabStateObserver(&state_observer);
++  data->RemoveObserver(&owner_observer);
++
++  EXPECT_TRUE(release.ok);
++  ASSERT_EQ(1u, state_observer.states.size());
++  const PrometheusTabState& terminal = state_observer.states.front();
++  EXPECT_TRUE(terminal.owner_label.empty());
++  EXPECT_FALSE(terminal.supervision_active);
++  EXPECT_EQ(PrometheusTabState::Supervision(), terminal.supervision);
++}
++
++TEST_F(PrometheusAgentTabDataTest,
++       SupervisionExactTabUpdateDoesNotAttachToAnotherTab) {
++  ui::UnownedUserDataHost other_host;
++  tabs::MockTabInterface other_tab;
++  ON_CALL(other_tab, GetUnownedUserDataHost())
++      .WillByDefault(ReturnRef(other_host));
++  std::unique_ptr<PrometheusAgentTabData> data =
++      PrometheusAgentTabData::ForTabForTesting(&tab_);
++  std::unique_ptr<PrometheusAgentTabData> other_data =
++      PrometheusAgentTabData::ForTabForTesting(&other_tab);
++  ASSERT_NE(nullptr, data);
++  ASSERT_NE(nullptr, other_data);
++  PrometheusTabState::Supervision supervision;
++  supervision.available = true;
++  supervision.viewer_count = 1;
++  supervision.viewer_labels = {"Reviewer"};
++  supervision.view_state = PrometheusTabState::Supervision::ViewState::kViewing;
++  supervision.control_state =
++      PrometheusTabState::Supervision::ControlState::kViewOnly;
++
++  data->UpdateSupervisionState(supervision);
++
++  EXPECT_EQ(supervision, data->ToTabState().supervision);
++  EXPECT_EQ(PrometheusTabState::Supervision(),
++            other_data->ToTabState().supervision);
+ }
+ 
+ }  // namespace
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+index ebd38b92bf..95c7ab9b09 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+@@ -47,6 +47,29 @@ class RecordingSupervisionObserver final
+   std::vector<SanitizedSupervisionSnapshot> snapshots;
+ };
+ 
++class VerifyingTabStateProjectionObserver final
++    : public PrometheusSupervisionProfileService::Observer {
++ public:
++  explicit VerifyingTabStateProjectionObserver(tabs::TabInterface* tab)
++      : tab_(tab) {}
++
++  void OnPrometheusSupervisionSnapshotChanged(
++      int32_t stable_tab_id,
++      const SanitizedSupervisionSnapshot& snapshot) override {
++    PrometheusAgentTabData* data = PrometheusAgentTabData::From(tab_);
++    projection_was_current = projection_was_current && data &&
++                             data->ToTabState().supervision ==
++                                 ProjectPrometheusTabSupervisionState(snapshot);
++    observed_tab_ids.push_back(stable_tab_id);
++  }
++
++  bool projection_was_current = true;
++  std::vector<int32_t> observed_tab_ids;
++
++ private:
++  raw_ptr<tabs::TabInterface> tab_;
++};
++
+ class NoopTabDataObserver final : public PrometheusAgentTabData::Observer {
+  public:
+   void OnPrometheusAgentTabOwnerChanged(std::string_view,
+@@ -659,6 +682,43 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+                             viewer.dashboard_session));
+ }
+ 
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       TabStateProjectionPrecedesObserversAndClearsOnOwnerLoss) {
++  PrometheusAgentTabObservationLease owner_lease =
++      agent_service_->ObserveOrCreateTabData(&tab_, &observer_tab_data_);
++  ASSERT_NE(nullptr, owner_lease.data());
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-a", "Agent A").ok);
++  SupervisionPairingCreationResult creation = CreatePairing();
++  ASSERT_TRUE(creation.ok);
++  VerifyingTabStateProjectionObserver projection_observer(&tab_);
++  service_->AddObserver(&projection_observer);
++
++  SupervisionRedemptionResult viewer = Redeem(creation, "Controller");
++  EXPECT_TRUE(viewer.ok);
++  if (viewer.ok) {
++    EXPECT_TRUE(service_->EnableControl(viewer.dashboard_session).ok);
++    const PrometheusTabState::Supervision controlling =
++        owner_lease.data()->ToTabState().supervision;
++    EXPECT_EQ(PrometheusTabState::Supervision::ControlState::kControllerReady,
++              controlling.control_state);
++    EXPECT_EQ(std::optional<std::string>("Controller"),
++              controlling.controller_label);
++    EXPECT_TRUE(owner_lease.data()->ReleaseIfOwned("owner-a").ok);
++  }
++
++  const PrometheusTabState::Supervision terminal =
++      owner_lease.data()->ToTabState().supervision;
++  service_->RemoveObserver(&projection_observer);
++  EXPECT_TRUE(projection_observer.projection_was_current);
++  EXPECT_GE(projection_observer.observed_tab_ids.size(), 2u);
++  EXPECT_EQ(PrometheusTabState::Supervision::ControlState::kNone,
++            terminal.control_state);
++  EXPECT_EQ(PrometheusTabState::Supervision::ActivityState::kNone,
++            terminal.activity_state);
++  EXPECT_FALSE(terminal.controller_label.has_value());
++  EXPECT_FALSE(terminal.action_category.has_value());
++}
++
+ TEST_F(PrometheusSupervisionProfileServiceTest,
+        ViewerNeverAdoptsOwnerBFollowingOwnerARelease) {
+   PrometheusAgentTabObservationLease owner_lease =
+@@ -842,6 +902,7 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+        PairingRejectsOtrCrossProfileWindowAndDeadExactTargets) {
+   ResetService(SupervisionProfileKind::kOffTheRecord, SupervisionLimits());
+   EXPECT_FALSE(CreatePairing().ok);
++  EXPECT_EQ(nullptr, PrometheusAgentTabData::From(&tab_));
+ 
+   ResetService(SupervisionProfileKind::kRegular, SupervisionLimits());
+   int other_profile_storage = 0;
+@@ -849,13 +910,16 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+       .WillByDefault(
+           Return(reinterpret_cast<Profile*>(&other_profile_storage)));
+   EXPECT_FALSE(CreatePairing().ok);
++  EXPECT_EQ(nullptr, PrometheusAgentTabData::From(&tab_));
+   ON_CALL(tab_, GetProfile()).WillByDefault(Return(profile_.get()));
+   ON_CALL(tab_, GetBrowserWindowInterface()).WillByDefault(Return(nullptr));
+   EXPECT_FALSE(CreatePairing().ok);
++  EXPECT_EQ(nullptr, PrometheusAgentTabData::From(&tab_));
+   ON_CALL(tab_, GetBrowserWindowInterface()).WillByDefault(Return(&browser_));
+   ON_CALL(browser_, GetWeakPtr())
+       .WillByDefault(Return(base::WeakPtr<BrowserWindowInterface>()));
+   EXPECT_FALSE(CreatePairing().ok);
++  EXPECT_EQ(nullptr, PrometheusAgentTabData::From(&tab_));
+ }
+ 
+ TEST_F(PrometheusSupervisionProfileServiceTest,
+@@ -877,6 +941,11 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+            "controller_lease", "selector", "page_content"}) {
+     EXPECT_EQ(std::string::npos, json.find(forbidden)) << forbidden;
+   }
++  PrometheusAgentTabData* const data = PrometheusAgentTabData::From(&tab_);
++  ASSERT_NE(nullptr, data);
++  ASSERT_EQ(1u, data->ToTabState().supervision.viewer_labels.size());
++  EXPECT_EQ(kSupervisionClientLabelFallback,
++            data->ToTabState().supervision.viewer_labels.front());
+   EXPECT_LE(service_->audit_count_for_testing(), kDefaultSupervisionAuditRows);
+ }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_tab_state_unittest.cc b/chrome/browser/prometheus/prometheus_tab_state_unittest.cc
+index b744f4924e..1cc15e8778 100644
+--- a/chrome/browser/prometheus/prometheus_tab_state_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_tab_state_unittest.cc
+@@ -271,28 +271,3 @@ TEST_F(PrometheusTabStateWebContentsTest, ReadsBrowserOwnedTabData) {
+   EXPECT_TRUE(state.supervision_active);
+   EXPECT_EQ(PrometheusTabState::Health::kNeedsAttention, state.health);
+ }
+-
+-TEST_F(PrometheusTabStateWebContentsTest,
+-       SupervisionReadsUnownedBrowserOwnedTabData) {
+-  ui::UnownedUserDataHost host;
+-  tabs::MockTabInterface tab;
+-  ON_CALL(tab, GetUnownedUserDataHost()).WillByDefault(ReturnRef(host));
+-  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(), &tab);
+-  std::unique_ptr<prometheus::PrometheusAgentTabData> tab_data =
+-      prometheus::PrometheusAgentTabData::ForTabForTesting(&tab);
+-  ASSERT_NE(nullptr, tab_data);
+-  TabSupervision supervision;
+-  supervision.available = true;
+-  supervision.viewer_count = 1;
+-  supervision.viewer_labels = {"Reviewer"};
+-  supervision.view_state = TabSupervision::ViewState::kViewing;
+-  supervision.control_state = TabSupervision::ControlState::kViewOnly;
+-  tab_data->UpdateSupervisionState(supervision);
+-
+-  const PrometheusTabState state =
+-      GetPrometheusTabStateForWebContents(web_contents());
+-
+-  EXPECT_TRUE(state.owner_label.empty());
+-  EXPECT_TRUE(state.supervision_active);
+-  EXPECT_EQ(supervision, state.supervision);
+-}
+-- 
+2.50.1 (Apple Git-155)
+

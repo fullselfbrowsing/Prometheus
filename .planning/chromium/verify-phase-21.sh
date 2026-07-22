@@ -703,6 +703,80 @@ verify_supervision_dialog_contract() {
   note 'sanitized supervision dialog API and acyclic GN source guards passed'
 }
 
+verify_supervision_tab_state_contract() {
+  local state_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_tab_state.h"
+  local state_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_tab_state.cc"
+  local state_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_tab_state_unittest.cc"
+  local tab_data_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_tab_data.h"
+  local tab_data_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_tab_data.cc"
+  local tab_data_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc"
+  local profile_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local profile_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc"
+  local browser_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
+  local dto_block="${LOG_DIR}/phase21-supervision-tab-state-dto.txt"
+  local notification_block="${LOG_DIR}/phase21-supervision-tab-state-notify.txt"
+
+  require_file "${state_header}"
+  require_file "${state_source}"
+  require_file "${state_test}"
+  require_file "${tab_data_header}"
+  require_file "${tab_data_source}"
+  require_file "${tab_data_test}"
+  require_file "${profile_source}"
+  require_file "${profile_test}"
+  require_literal 'struct Supervision {' "${state_header}"
+  require_literal 'viewer_count' "${state_header}"
+  require_literal 'viewer_labels' "${state_header}"
+  require_literal 'controller_label' "${state_header}"
+  require_literal 'ActionCategory' "${state_header}"
+  require_literal 'ProjectPrometheusTabSupervisionState' "${state_source}"
+  require_literal 'UpdateSupervisionState' "${tab_data_source}"
+  require_literal 'ClearSupervisionState' "${tab_data_source}"
+  require_literal 'OnPrometheusTabStateChanged' "${tab_data_source}"
+  require_literal 'SupervisionOwnerLossPublishesOnlyClearedCoherentState' \
+    "${tab_data_test}"
+  require_literal 'SupervisionExactTabUpdateDoesNotAttachToAnotherTab' \
+    "${tab_data_test}"
+  require_literal 'SupervisionBoundsHostileLabelsAndOmitsTerminalSessions' \
+    "${state_test}"
+  require_literal 'TabStateProjectionPrecedesObserversAndClearsOnOwnerLoss' \
+    "${profile_test}"
+  require_literal '":prometheus_tab_state"' "${browser_build}"
+
+  sed -n '/  struct Supervision {/,/^  };/p' \
+    "${state_header}" >"${dto_block}"
+  require_file "${dto_block}"
+  reject_pattern \
+    '(?i)session|pairing(_|[[:space:]])?code|lease|owner|profile|browser|stable_?tab|document|epoch|sequence|url|origin|selector|content|raw_?value|token|argument' \
+    'supervision tab-state DTO gained authority, target, content, or secret fields' \
+    "${dto_block}"
+  reject_pattern \
+    'owner_session_id|controller_lease|document_epoch|stable_tab_id|target_generation|authority_generation|raw_value|GetURL|GetContents' \
+    'tab-state projection began reading authority, exact-target, URL, or content state' \
+    "${state_source}"
+  reject_pattern \
+    'PrometheusSupervisionProfileService' \
+    'Agent tab state gained a callback dependency on the supervision service' \
+    "${tab_data_header}" "${tab_data_source}"
+
+  sed -n '/void PrometheusSupervisionProfileService::NotifySnapshotChanged(/,/^}/p' \
+    "${profile_source}" >"${notification_block}"
+  require_file "${notification_block}"
+  require_literal 'UpdateSupervisionState(' "${notification_block}"
+  require_literal 'OnPrometheusSupervisionSnapshotChanged' \
+    "${notification_block}"
+  local tab_update_line service_observer_line
+  tab_update_line="$(rg -n --fixed-strings 'UpdateSupervisionState(' \
+    "${notification_block}" | head -1 | cut -d: -f1)"
+  service_observer_line="$(rg -n --fixed-strings \
+    'OnPrometheusSupervisionSnapshotChanged' "${notification_block}" | \
+    head -1 | cut -d: -f1)"
+  [[ -n "${tab_update_line}" && -n "${service_observer_line}" && \
+     "${tab_update_line}" -lt "${service_observer_line}" ]] \
+    || fail 'tab-state replacement does not precede service observer delivery'
+  note 'sanitized supervision tab-state, ordering, and privacy guards passed'
+}
+
 sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
@@ -1451,6 +1525,7 @@ else
   verify_agent_supervision_transport_contract
   verify_supervision_action_controller_contract
   verify_supervision_dialog_contract
+  verify_supervision_tab_state_contract
   if [[ -e "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h" ]]; then
     verify_capture_hub_contract
   fi
