@@ -1,0 +1,659 @@
+From f0be3c5dc3a4c8d7d8f3d0397262e481620d5f60 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 11:35:05 -0500
+Subject: [PATCH 39/39] test(21-16): specify sanitized supervision tab state
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   2 +
+ .../prometheus/prometheus_agent_tab_data.cc   |  31 ++-
+ .../prometheus/prometheus_agent_tab_data.h    |   9 +
+ .../prometheus_agent_tab_data_unittest.cc     | 100 +++++++++
+ .../prometheus/prometheus_tab_state.cc        |  21 ++
+ .../browser/prometheus/prometheus_tab_state.h |  89 ++++++++
+ .../prometheus_tab_state_unittest.cc          | 198 ++++++++++++++++++
+ 7 files changed, 449 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 9a6616f3eb..ec8345013e 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -72,6 +72,8 @@ source_set("prometheus_tab_state") {
+ 
+   deps = [
+     ":prometheus_agent_tab_data",
++    ":prometheus_supervision_types",
++    "//base",
+     "//components/tabs:public",
+     "//content/public/browser",
+   ]
+diff --git a/chrome/browser/prometheus/prometheus_agent_tab_data.cc b/chrome/browser/prometheus/prometheus_agent_tab_data.cc
+index fa77e058e0..500b7a2bd6 100644
+--- a/chrome/browser/prometheus/prometheus_agent_tab_data.cc
++++ b/chrome/browser/prometheus/prometheus_agent_tab_data.cc
+@@ -26,12 +26,30 @@ PrometheusAgentTabData::PrometheusAgentTabData(tabs::TabInterface* tab)
+     : scoped_unowned_user_data_(GetHostForTab(tab), *this) {}
+ 
+ PrometheusAgentTabData::~PrometheusAgentTabData() {
++  for (PrometheusTabStateObserver& observer : tab_state_observers_) {
++    observer.OnPrometheusTabStateInvalidated();
++  }
++  tab_state_observers_.Clear();
+   for (Observer& observer : observers_) {
+     observer.OnPrometheusAgentTabDataDestroying();
+   }
+   observers_.Clear();
+ }
+ 
++void PrometheusAgentTabData::AddTabStateObserver(
++    PrometheusTabStateObserver* observer) {
++  if (observer && !tab_state_observers_.HasObserver(observer)) {
++    tab_state_observers_.AddObserver(observer);
++  }
++}
++
++void PrometheusAgentTabData::RemoveTabStateObserver(
++    PrometheusTabStateObserver* observer) {
++  if (observer && tab_state_observers_.HasObserver(observer)) {
++    tab_state_observers_.RemoveObserver(observer);
++  }
++}
++
+ void PrometheusAgentTabData::AddObserver(Observer* observer) {
+   observers_.AddObserver(observer);
+ }
+@@ -124,6 +142,13 @@ bool PrometheusAgentTabData::ReleaseIfOwnedBy(std::string_view session_id) {
+   return true;
+ }
+ 
++void PrometheusAgentTabData::UpdateSupervisionState(
++    PrometheusTabState::Supervision supervision) {
++  static_cast<void>(supervision);
++}
++
++void PrometheusAgentTabData::ClearSupervisionState() {}
++
+ void PrometheusAgentTabData::ClearOwnership() {
+   owner_session_id_.clear();
+   owner_label_.clear();
+@@ -134,17 +159,21 @@ void PrometheusAgentTabData::ClearOwnership() {
+ 
+ PrometheusTabState PrometheusAgentTabData::ToTabState() const {
+   PrometheusTabState state;
++  state.supervision = supervision_;
++  state.supervision_active = supervision_.viewer_count != 0;
+   if (!HasOwner()) {
+     return state;
+   }
+ 
+   state.owner_label = owner_label_;
+   state.automation_active = automation_active_;
+-  state.supervision_active = supervision_active_;
++  state.supervision_active = state.supervision_active || supervision_active_;
+   state.health = health_;
+   return state;
+ }
+ 
++void PrometheusAgentTabData::NotifyTabStateIfChanged() {}
++
+ bool PrometheusAgentTabData::HasOwner() const {
+   return !owner_session_id_.empty();
+ }
+diff --git a/chrome/browser/prometheus/prometheus_agent_tab_data.h b/chrome/browser/prometheus/prometheus_agent_tab_data.h
+index 0c8750436e..81af2197d1 100644
+--- a/chrome/browser/prometheus/prometheus_agent_tab_data.h
++++ b/chrome/browser/prometheus/prometheus_agent_tab_data.h
+@@ -6,6 +6,7 @@
+ #define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_TAB_DATA_H_
+ 
+ #include <memory>
++#include <optional>
+ #include <string>
+ #include <string_view>
+ 
+@@ -43,12 +44,16 @@ class PrometheusAgentTabData {
+ 
+   void AddObserver(Observer* observer);
+   void RemoveObserver(Observer* observer);
++  void AddTabStateObserver(PrometheusTabStateObserver* observer);
++  void RemoveTabStateObserver(PrometheusTabStateObserver* observer);
+ 
+   AgentRouteResult CanControl(std::string_view session_id) const;
+   AgentRouteResult ClaimIfUnowned(std::string_view session_id,
+                                   std::string owner_label);
+   AgentRouteResult ReleaseIfOwned(std::string_view session_id);
+   bool ReleaseIfOwnedBy(std::string_view session_id);
++  void UpdateSupervisionState(PrometheusTabState::Supervision supervision);
++  void ClearSupervisionState();
+   PrometheusTabState ToTabState() const;
+ 
+   const std::string& owner_session_id() const { return owner_session_id_; }
+@@ -68,6 +73,7 @@ class PrometheusAgentTabData {
+       tabs::TabInterface* tab);
+   bool HasOwner() const;
+   void ClearOwnership();
++  void NotifyTabStateIfChanged();
+   AgentRouteResult TabNotOwnedFailure() const;
+ 
+   std::string owner_session_id_;
+@@ -76,6 +82,9 @@ class PrometheusAgentTabData {
+   bool supervision_active_ = false;
+   PrometheusTabState::Health health_ = PrometheusTabState::Health::kOk;
+   base::ObserverList<Observer> observers_;
++  base::ObserverList<PrometheusTabStateObserver> tab_state_observers_;
++  std::optional<PrometheusTabState> last_notified_tab_state_;
++  PrometheusTabState::Supervision supervision_;
+ 
+   ui::ScopedUnownedUserData<PrometheusAgentTabData> scoped_unowned_user_data_;
+ };
+diff --git a/chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc b/chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc
+index 3c3e0297a6..1b1e3d718f 100644
+--- a/chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc
+@@ -5,6 +5,7 @@
+ #include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
+ 
+ #include <memory>
++#include <vector>
+ 
+ #include "components/tabs/public/mock_tab_interface.h"
+ #include "testing/gmock/include/gmock/gmock.h"
+@@ -17,6 +18,18 @@ namespace {
+ 
+ using testing::ReturnRef;
+ 
++class RecordingTabStateObserver final : public PrometheusTabStateObserver {
++ public:
++  void OnPrometheusTabStateChanged(const PrometheusTabState& state) override {
++    states.push_back(state);
++  }
++
++  void OnPrometheusTabStateInvalidated() override { ++invalidations; }
++
++  std::vector<PrometheusTabState> states;
++  size_t invalidations = 0;
++};
++
+ class PrometheusAgentTabDataTest : public testing::Test {
+  protected:
+   void SetUp() override {
+@@ -87,6 +100,93 @@ TEST_F(PrometheusAgentTabDataTest, ConvertsFieldsToPrometheusTabState) {
+   EXPECT_EQ(PrometheusTabState::Health::kNeedsAttention, state.health);
+ }
+ 
++TEST_F(PrometheusAgentTabDataTest,
++       SupervisionUnownedViewOnlyRemainsVisibleWithoutControl) {
++  std::unique_ptr<PrometheusAgentTabData> data =
++      PrometheusAgentTabData::ForTabForTesting(&tab_);
++  ASSERT_NE(nullptr, data);
++  PrometheusTabState::Supervision supervision;
++  supervision.available = true;
++  supervision.viewer_count = 2;
++  supervision.viewer_labels = {"Local dashboard", "Reviewer"};
++  supervision.view_state = PrometheusTabState::Supervision::ViewState::kViewing;
++  supervision.control_state =
++      PrometheusTabState::Supervision::ControlState::kViewOnly;
++
++  data->UpdateSupervisionState(supervision);
++  const PrometheusTabState state = data->ToTabState();
++
++  EXPECT_TRUE(state.owner_label.empty());
++  EXPECT_TRUE(state.supervision_active);
++  EXPECT_EQ(supervision, state.supervision);
++  EXPECT_FALSE(state.supervision.controller_label.has_value());
++}
++
++TEST_F(PrometheusAgentTabDataTest,
++       SupervisionObserverReceivesWholeReplacementAndTerminalClear) {
++  RecordingTabStateObserver observer;
++  std::unique_ptr<PrometheusAgentTabData> data =
++      PrometheusAgentTabData::ForTabForTesting(&tab_);
++  ASSERT_NE(nullptr, data);
++  data->AddTabStateObserver(&observer);
++  PrometheusTabState::Supervision supervision;
++  supervision.available = true;
++  supervision.viewer_count = 1;
++  supervision.viewer_labels = {"Controller"};
++  supervision.controller_label = "Controller";
++  supervision.view_state = PrometheusTabState::Supervision::ViewState::kViewing;
++  supervision.control_state =
++      PrometheusTabState::Supervision::ControlState::kControllerReady;
++  supervision.activity_state =
++      PrometheusTabState::Supervision::ActivityState::kExecuting;
++  supervision.action_category =
++      PrometheusTabState::Supervision::ActionCategory::kClick;
++
++  data->UpdateSupervisionState(supervision);
++  data->ClearSupervisionState();
++
++  ASSERT_EQ(2u, observer.states.size());
++  EXPECT_EQ(supervision, observer.states[0].supervision);
++  EXPECT_EQ(PrometheusTabState::Supervision(), observer.states[1].supervision);
++  EXPECT_FALSE(observer.states[1].supervision_active);
++  data->RemoveTabStateObserver(&observer);
++}
++
++TEST_F(PrometheusAgentTabDataTest,
++       SupervisionRepeatedDisplayUpdateConvergesIdempotently) {
++  RecordingTabStateObserver observer;
++  std::unique_ptr<PrometheusAgentTabData> data =
++      PrometheusAgentTabData::ForTabForTesting(&tab_);
++  ASSERT_NE(nullptr, data);
++  data->AddTabStateObserver(&observer);
++  PrometheusTabState::Supervision supervision;
++  supervision.available = true;
++  supervision.viewer_count = 1;
++  supervision.viewer_labels = {"Reviewer"};
++  supervision.view_state = PrometheusTabState::Supervision::ViewState::kViewing;
++  supervision.control_state =
++      PrometheusTabState::Supervision::ControlState::kViewOnly;
++
++  data->UpdateSupervisionState(supervision);
++  data->UpdateSupervisionState(supervision);
++
++  EXPECT_EQ(1u, observer.states.size());
++  data->RemoveTabStateObserver(&observer);
++}
++
++TEST_F(PrometheusAgentTabDataTest,
++       SupervisionTabReplacementInvalidatesOldObserverState) {
++  RecordingTabStateObserver observer;
++  std::unique_ptr<PrometheusAgentTabData> data =
++      PrometheusAgentTabData::ForTabForTesting(&tab_);
++  ASSERT_NE(nullptr, data);
++  data->AddTabStateObserver(&observer);
++
++  data.reset();
++
++  EXPECT_EQ(1u, observer.invalidations);
++}
++
+ }  // namespace
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_tab_state.cc b/chrome/browser/prometheus/prometheus_tab_state.cc
+index 5a1f49ff21..19ae24e3ab 100644
+--- a/chrome/browser/prometheus/prometheus_tab_state.cc
++++ b/chrome/browser/prometheus/prometheus_tab_state.cc
+@@ -5,12 +5,33 @@
+ #include "chrome/browser/prometheus/prometheus_tab_state.h"
+ 
+ #include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
++#include "chrome/browser/prometheus/prometheus_supervision_types.h"
+ #include "components/tabs/public/tab_interface.h"
+ 
++bool PrometheusTabState::Supervision::HasActiveAction() const {
++  switch (activity_state) {
++    case ActivityState::kValidating:
++    case ActivityState::kExecuting:
++    case ActivityState::kAwaitingConfirmation:
++    case ActivityState::kVerifying:
++      return true;
++    case ActivityState::kNone:
++    case ActivityState::kCompleted:
++    case ActivityState::kBlocked:
++    case ActivityState::kFailed:
++      return false;
++  }
++}
++
+ PrometheusTabState PrometheusTabState::SafeDefault() {
+   return PrometheusTabState();
+ }
+ 
++PrometheusTabState::Supervision ProjectPrometheusTabSupervisionState(
++    const prometheus::SanitizedSupervisionSnapshot& snapshot) {
++  return PrometheusTabState::Supervision();
++}
++
+ PrometheusTabState GetPrometheusTabStateForWebContents(
+     content::WebContents* web_contents) {
+   tabs::TabInterface* tab =
+diff --git a/chrome/browser/prometheus/prometheus_tab_state.h b/chrome/browser/prometheus/prometheus_tab_state.h
+index 45073b9e56..f377de830b 100644
+--- a/chrome/browser/prometheus/prometheus_tab_state.h
++++ b/chrome/browser/prometheus/prometheus_tab_state.h
+@@ -5,7 +5,17 @@
+ #ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_TAB_STATE_H_
+ #define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_TAB_STATE_H_
+ 
++#include <cstddef>
++#include <cstdint>
++#include <optional>
+ #include <string>
++#include <vector>
++
++#include "base/observer_list_types.h"
++
++namespace prometheus {
++struct SanitizedSupervisionSnapshot;
++}  // namespace prometheus
+ 
+ namespace content {
+ class WebContents;
+@@ -17,14 +27,93 @@ struct PrometheusTabState {
+     kNeedsAttention,
+   };
+ 
++  struct Supervision {
++    enum class ViewState {
++      kNone,
++      kViewing,
++    };
++
++    enum class ControlState {
++      kNone,
++      kViewOnly,
++      kControllerReady,
++      kStopping,
++    };
++
++    enum class ActivityState {
++      kNone,
++      kValidating,
++      kExecuting,
++      kAwaitingConfirmation,
++      kVerifying,
++      kCompleted,
++      kBlocked,
++      kFailed,
++    };
++
++    enum class ResyncState {
++      kNone,
++      kPreparing,
++      kResyncing,
++      kPaused,
++    };
++
++    enum class Severity {
++      kNormal,
++      kNeedsAttention,
++      kBlocked,
++    };
++
++    enum class ActionCategory {
++      kClick,
++      kType,
++      kKeyPress,
++      kScroll,
++      kHover,
++      kSelect,
++      kClear,
++      kDrag,
++      kDrop,
++      kNavigate,
++    };
++
++    bool HasActiveAction() const;
++
++    bool available = false;
++    size_t viewer_count = 0;
++    std::vector<std::string> viewer_labels;
++    std::optional<std::string> controller_label;
++    std::optional<int64_t> controller_expires_at_ms;
++    ViewState view_state = ViewState::kNone;
++    ControlState control_state = ControlState::kNone;
++    ActivityState activity_state = ActivityState::kNone;
++    ResyncState resync_state = ResyncState::kNone;
++    Severity severity = Severity::kNormal;
++    std::optional<ActionCategory> action_category;
++
++    bool operator==(const Supervision&) const = default;
++  };
++
+   static PrometheusTabState SafeDefault();
+ 
+   std::string owner_label;
+   bool automation_active = false;
+   bool supervision_active = false;
+   Health health = Health::kOk;
++  Supervision supervision;
++
++  bool operator==(const PrometheusTabState&) const = default;
++};
++
++class PrometheusTabStateObserver : public base::CheckedObserver {
++ public:
++  virtual void OnPrometheusTabStateChanged(const PrometheusTabState& state) = 0;
++  virtual void OnPrometheusTabStateInvalidated() = 0;
+ };
+ 
++PrometheusTabState::Supervision ProjectPrometheusTabSupervisionState(
++    const prometheus::SanitizedSupervisionSnapshot& snapshot);
++
+ PrometheusTabState GetPrometheusTabStateForWebContents(
+     content::WebContents* web_contents);
+ 
+diff --git a/chrome/browser/prometheus/prometheus_tab_state_unittest.cc b/chrome/browser/prometheus/prometheus_tab_state_unittest.cc
+index 2c41776cb2..b744f4924e 100644
+--- a/chrome/browser/prometheus/prometheus_tab_state_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_tab_state_unittest.cc
+@@ -7,9 +7,11 @@
+ #include <memory>
+ #include <string>
+ #include <utility>
++#include <vector>
+ 
+ #include "base/supports_user_data.h"
+ #include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
++#include "chrome/browser/prometheus/prometheus_supervision_types.h"
+ #include "components/tabs/public/mock_tab_interface.h"
+ #include "components/tabs/public/tab_interface.h"
+ #include "content/public/browser/web_contents.h"
+@@ -22,6 +24,65 @@ namespace {
+ 
+ using testing::ReturnRef;
+ 
++template <typename T>
++concept HasSessionField = requires(T value) { value.session; };
++template <typename T>
++concept HasPairingCodeField = requires(T value) { value.pairing_code; };
++template <typename T>
++concept HasControllerLeaseField = requires(T value) { value.controller_lease; };
++template <typename T>
++concept HasOwnerField = requires(T value) { value.owner_session_id; };
++template <typename T>
++concept HasProfileField = requires(T value) { value.profile; };
++template <typename T>
++concept HasBrowserField = requires(T value) { value.browser; };
++template <typename T>
++concept HasTabField = requires(T value) { value.stable_tab_id; };
++template <typename T>
++concept HasDocumentField = requires(T value) { value.document_epoch; };
++template <typename T>
++concept HasSequenceField = requires(T value) { value.sequence; };
++template <typename T>
++concept HasUrlField = requires(T value) { value.url; };
++template <typename T>
++concept HasContentField = requires(T value) { value.content; };
++template <typename T>
++concept HasRawValueField = requires(T value) { value.raw_value; };
++
++using TabSupervision = PrometheusTabState::Supervision;
++static_assert(!HasSessionField<TabSupervision>);
++static_assert(!HasPairingCodeField<TabSupervision>);
++static_assert(!HasControllerLeaseField<TabSupervision>);
++static_assert(!HasOwnerField<TabSupervision>);
++static_assert(!HasProfileField<TabSupervision>);
++static_assert(!HasBrowserField<TabSupervision>);
++static_assert(!HasTabField<TabSupervision>);
++static_assert(!HasDocumentField<TabSupervision>);
++static_assert(!HasSequenceField<TabSupervision>);
++static_assert(!HasUrlField<TabSupervision>);
++static_assert(!HasContentField<TabSupervision>);
++static_assert(!HasRawValueField<TabSupervision>);
++
++prometheus::SupervisionSessionSnapshot MakeSession(
++    std::string label,
++    prometheus::SupervisionViewerState viewer_state,
++    prometheus::SupervisionStreamState stream_state =
++        prometheus::SupervisionStreamState::kLive,
++    prometheus::SupervisionRemoteActionState action_state =
++        prometheus::SupervisionRemoteActionState::kIdle,
++    std::optional<prometheus::SupervisionRemoteActionCategory> action_category =
++        std::nullopt,
++    int64_t expires_at_ms = 1000) {
++  prometheus::SupervisionSessionSnapshot session;
++  session.client.display_label = std::move(label);
++  session.client.expires_at_ms = expires_at_ms;
++  session.viewer_state = viewer_state;
++  session.stream_state = stream_state;
++  session.action_state = action_state;
++  session.action_category = action_category;
++  return session;
++}
++
+ class CallerProvidedLabelUserData : public base::SupportsUserData::Data {
+  public:
+   explicit CallerProvidedLabelUserData(std::string label)
+@@ -42,6 +103,118 @@ TEST(PrometheusTabStateTest, SafeDefaultHasNoOwner) {
+   EXPECT_FALSE(state.automation_active);
+   EXPECT_FALSE(state.supervision_active);
+   EXPECT_EQ(PrometheusTabState::Health::kOk, state.health);
++  EXPECT_EQ(TabSupervision(), state.supervision);
++}
++
++TEST(PrometheusTabStateTest,
++     SupervisionProjectsControllerFirstAndActiveActionPriority) {
++  prometheus::SanitizedSupervisionSnapshot snapshot;
++  snapshot.target.eligible = true;
++  snapshot.target.agent_active = true;
++  snapshot.target.viewer_count = 2;
++  snapshot.target.controller_label = "Local dashboard";
++  snapshot.sessions.push_back(MakeSession(
++      "Local dashboard", prometheus::SupervisionViewerState::kViewOnly));
++  snapshot.sessions.push_back(MakeSession(
++      "Local dashboard", prometheus::SupervisionViewerState::kController,
++      prometheus::SupervisionStreamState::kLive,
++      prometheus::SupervisionRemoteActionState::kExecuting,
++      prometheus::SupervisionRemoteActionCategory::kClick, 4242));
++
++  const TabSupervision state = ProjectPrometheusTabSupervisionState(snapshot);
++
++  EXPECT_TRUE(state.available);
++  EXPECT_EQ(2u, state.viewer_count);
++  EXPECT_EQ((std::vector<std::string>{"Local dashboard", "Local dashboard 2"}),
++            state.viewer_labels);
++  ASSERT_TRUE(state.controller_label.has_value());
++  EXPECT_EQ("Local dashboard", *state.controller_label);
++  ASSERT_TRUE(state.controller_expires_at_ms.has_value());
++  EXPECT_EQ(4242, *state.controller_expires_at_ms);
++  EXPECT_EQ(TabSupervision::ViewState::kViewing, state.view_state);
++  EXPECT_EQ(TabSupervision::ControlState::kControllerReady,
++            state.control_state);
++  EXPECT_EQ(TabSupervision::ActivityState::kExecuting, state.activity_state);
++  EXPECT_EQ(TabSupervision::ActionCategory::kClick, state.action_category);
++  EXPECT_TRUE(state.HasActiveAction());
++}
++
++TEST(PrometheusTabStateTest,
++     SupervisionUnownedTargetStaysViewOnlyEvenWithForgedControllerShape) {
++  prometheus::SanitizedSupervisionSnapshot snapshot;
++  snapshot.target.eligible = true;
++  snapshot.target.agent_active = false;
++  snapshot.target.viewer_count = 1;
++  snapshot.target.controller_label = "Controller";
++  snapshot.sessions.push_back(
++      MakeSession("Controller", prometheus::SupervisionViewerState::kController,
++                  prometheus::SupervisionStreamState::kLive,
++                  prometheus::SupervisionRemoteActionState::kExecuting,
++                  prometheus::SupervisionRemoteActionCategory::kType));
++
++  const TabSupervision state = ProjectPrometheusTabSupervisionState(snapshot);
++
++  EXPECT_TRUE(state.available);
++  EXPECT_EQ(1u, state.viewer_count);
++  EXPECT_EQ(TabSupervision::ViewState::kViewing, state.view_state);
++  EXPECT_EQ(TabSupervision::ControlState::kViewOnly, state.control_state);
++  EXPECT_FALSE(state.controller_label.has_value());
++  EXPECT_EQ(TabSupervision::ActivityState::kNone, state.activity_state);
++  EXPECT_FALSE(state.action_category.has_value());
++}
++
++TEST(PrometheusTabStateTest,
++     SupervisionMapsConfirmationResyncBlockedAndStoppingStates) {
++  prometheus::SanitizedSupervisionSnapshot snapshot;
++  snapshot.target.eligible = true;
++  snapshot.target.agent_active = true;
++  snapshot.target.viewer_count = 1;
++  snapshot.target.controller_label = "Reviewer";
++  snapshot.sessions.push_back(MakeSession(
++      "Reviewer", prometheus::SupervisionViewerState::kController,
++      prometheus::SupervisionStreamState::kResyncing,
++      prometheus::SupervisionRemoteActionState::kAwaitingConfirmation,
++      prometheus::SupervisionRemoteActionCategory::kNavigate));
++
++  TabSupervision state = ProjectPrometheusTabSupervisionState(snapshot);
++  EXPECT_EQ(TabSupervision::ResyncState::kResyncing, state.resync_state);
++  EXPECT_EQ(TabSupervision::ActivityState::kAwaitingConfirmation,
++            state.activity_state);
++  EXPECT_EQ(TabSupervision::Severity::kNeedsAttention, state.severity);
++
++  snapshot.sessions[0].stream_state =
++      prometheus::SupervisionStreamState::kPaused;
++  snapshot.sessions[0].action_state =
++      prometheus::SupervisionRemoteActionState::kBlocked;
++  state = ProjectPrometheusTabSupervisionState(snapshot);
++  EXPECT_EQ(TabSupervision::ResyncState::kPaused, state.resync_state);
++  EXPECT_EQ(TabSupervision::ActivityState::kBlocked, state.activity_state);
++  EXPECT_EQ(TabSupervision::Severity::kBlocked, state.severity);
++  EXPECT_FALSE(state.HasActiveAction());
++
++  state.control_state = TabSupervision::ControlState::kStopping;
++  EXPECT_EQ(TabSupervision::ControlState::kStopping, state.control_state);
++}
++
++TEST(PrometheusTabStateTest,
++     SupervisionBoundsHostileLabelsAndOmitsTerminalSessions) {
++  prometheus::SanitizedSupervisionSnapshot snapshot;
++  snapshot.target.eligible = true;
++  snapshot.target.viewer_count = 2;
++  snapshot.sessions.push_back(
++      MakeSession("Bearer secret session token",
++                  prometheus::SupervisionViewerState::kViewOnly));
++  snapshot.sessions.push_back(MakeSession(
++      "Old dashboard", prometheus::SupervisionViewerState::kRevoked));
++
++  const TabSupervision state = ProjectPrometheusTabSupervisionState(snapshot);
++
++  EXPECT_EQ(2u, state.viewer_count);
++  ASSERT_EQ(1u, state.viewer_labels.size());
++  EXPECT_EQ(prometheus::kSupervisionClientLabelFallback,
++            state.viewer_labels[0]);
++  EXPECT_LE(state.viewer_labels[0].size(),
++            prometheus::kMaxSupervisionSafeLabelBytes);
+ }
+ 
+ class PrometheusTabStateWebContentsTest
+@@ -98,3 +271,28 @@ TEST_F(PrometheusTabStateWebContentsTest, ReadsBrowserOwnedTabData) {
+   EXPECT_TRUE(state.supervision_active);
+   EXPECT_EQ(PrometheusTabState::Health::kNeedsAttention, state.health);
+ }
++
++TEST_F(PrometheusTabStateWebContentsTest,
++       SupervisionReadsUnownedBrowserOwnedTabData) {
++  ui::UnownedUserDataHost host;
++  tabs::MockTabInterface tab;
++  ON_CALL(tab, GetUnownedUserDataHost()).WillByDefault(ReturnRef(host));
++  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(), &tab);
++  std::unique_ptr<prometheus::PrometheusAgentTabData> tab_data =
++      prometheus::PrometheusAgentTabData::ForTabForTesting(&tab);
++  ASSERT_NE(nullptr, tab_data);
++  TabSupervision supervision;
++  supervision.available = true;
++  supervision.viewer_count = 1;
++  supervision.viewer_labels = {"Reviewer"};
++  supervision.view_state = TabSupervision::ViewState::kViewing;
++  supervision.control_state = TabSupervision::ControlState::kViewOnly;
++  tab_data->UpdateSupervisionState(supervision);
++
++  const PrometheusTabState state =
++      GetPrometheusTabStateForWebContents(web_contents());
++
++  EXPECT_TRUE(state.owner_label.empty());
++  EXPECT_TRUE(state.supervision_active);
++  EXPECT_EQ(supervision, state.supervision);
++}
+-- 
+2.50.1 (Apple Git-155)
+

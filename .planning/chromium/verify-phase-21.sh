@@ -1097,6 +1097,9 @@ build_focused_binary() {
   local agent_service_object='obj/chrome/browser/prometheus/prometheus_agent_service/prometheus_agent_service.o'
   local agent_service_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_service_unittest.o'
   local agent_tab_data_object='obj/chrome/browser/prometheus/prometheus_agent_tab_data/prometheus_agent_tab_data.o'
+  local agent_tab_data_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_tab_data_unittest.o'
+  local tab_state_object='obj/chrome/browser/prometheus/prometheus_tab_state/prometheus_tab_state.o'
+  local tab_state_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_tab_state_unittest.o'
   local agent_profile_object='obj/chrome/browser/prometheus/prometheus_agent_profile_service/prometheus_agent_profile_service.o'
   local agent_profile_factory_object='obj/chrome/browser/prometheus/prometheus_agent_profile_service/prometheus_agent_profile_service_factory.o'
   local agent_profile_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_profile_service_unittest.o'
@@ -1164,6 +1167,9 @@ build_focused_binary() {
     compile_exact_object "${agent_transport_test_object}"
     compile_exact_object "${agent_session_object}"
     compile_exact_object "${agent_tab_data_object}"
+    compile_exact_object "${agent_tab_data_test_object}"
+    compile_exact_object "${tab_state_object}"
+    compile_exact_object "${tab_state_test_object}"
     compile_exact_object "${agent_service_object}"
     compile_exact_object "${agent_service_test_object}"
     compile_exact_object "${agent_profile_object}"
@@ -1296,6 +1302,7 @@ build_focused_binary() {
     "${runtime_contract}"
     "${runtime_dialogs}"
     "${gateway_object}"
+    "${tab_state_object}"
   )
   local unit_object_path
   for unit_object_path in \
