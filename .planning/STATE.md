@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 9
+current_plan: 10
 status: executing
-stopped_at: Completed 21-08-PLAN.md
-last_updated: "2026-07-22T07:43:47.723Z"
+stopped_at: Completed 21-09-PLAN.md
+last_updated: "2026-07-22T08:43:55.391Z"
 last_activity: 2026-07-22
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 74
-  percent: 80
+  completed_plans: 75
+  percent: 82
 ---
 
 # Project State
@@ -36,24 +36,30 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 9 of 26
+Plan: 10 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 9
+**Current Plan:** 10
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [████████░░] 80%
+**Progress:** [████████░░] 82%
 **Last Activity:** 2026-07-22
-**Last Activity Description:** Completed Plan 21-08 — exact-target dashboard
-hub attachment, opaque consumer and wait tokens, independent delivery/lifecycle,
-and real two-viewer renderer fanout.
+**Last Activity Description:** Completed Plan 21-09 — one authenticated
+supervision gateway path, dependency-neutral seven-operation dispatch,
+transport cancellation, and sanitized readiness.
 
-Milestone work is 74 of 92 existing plans complete (80%); cumulative project
-work is 125 of 144 existing plans summarized (87%).
+Milestone work is 75 of 92 existing plans complete (82%); cumulative project
+work is 126 of 144 existing plans summarized (88%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 9: the exact 8-test supervision gateway unit and 5-test live
+  browser gates plus broader 24-test unit and 14-test browser regressions pass
+  with one authenticated loopback path, dependency-neutral dispatch,
+  cancel-on-terminal lifecycle, sanitized readiness, stable patch identity,
+  and byte-identical reviewed build artifacts.
 
 - Phase 21 Plan 8: the exact 5-test long-poll, 45-test combined native, and
   2-test real-browser gates pass with one exact-target hub, independent opaque
@@ -224,6 +230,10 @@ work is 125 of 144 existing plans summarized (87%).
 - [Phase 21]: Attach a redeemed dashboard to the one exact-target capture hub before consuming its pairing, then retain only the opaque consumer token beside service-owned authority. — Partial setup cannot burn a one-time code, and no dashboard record can acquire renderer or capture ownership.
 - [Phase 21]: Split long-poll ownership between one content-free hub readiness callback and one service-owned dashboard completion guarded by an opaque wait token. — Cancellation, shutdown, and teardown remain bounded and win even after readiness has been queued.
 - [Phase 21]: Terminalize every same-target viewer coherently on exact target or immutable owner loss while keeping ack, wait, cancel, lag, resync, expiry, revoke, and end consumer-local. — Authority loss cannot leave a sibling viewer live, and ordinary viewer progress cannot affect another cursor.
+- [Phase 21]: Own the abstract supervision gateway seam as a complete value callback bundle. — Plan 11 can install and clear it without a raw implementation lifetime or a concrete service edge in the gateway.
+- [Phase 21]: Reuse each live gateway request ID as its opaque supervision cancellation token. — The token identifies transport lifetime only and carries no profile, target, viewer, session, or renderer authority.
+- [Phase 21]: Erase pending supervision state before delivery or external cancellation. — Synchronous cancellation and late dispatcher results then become harmless no-ops and cannot double-complete or reach stopped I/O.
+- [Phase 21]: Project supervision health only from bounded content-screened readiness metadata. — Invalid, missing, credential-bearing, authority-bearing, selector-bearing, or content-bearing diagnostics collapse to fixed not-ready text.
 
 ## Performance Metrics
 
@@ -247,6 +257,7 @@ work is 125 of 144 existing plans summarized (87%).
 | Phase 21 P06 | 56min | 3 tasks | 15 files |
 | Phase 21 P07 | 2h52min | 3 tasks | 13 files |
 | Phase 21 P08 | 1h18min | 3 tasks | 17 files |
+| Phase 21 P09 | 55min | 3 tasks | 14 files |
 
 ## Blockers and Deferred Items
 
@@ -261,11 +272,11 @@ work is 125 of 144 existing plans summarized (87%).
 
 ## Session
 
-**Last Date:** 2026-07-22T07:43:47.719Z
-**Stopped At:** Completed 21-08-PLAN.md
+**Last Date:** 2026-07-22T08:43:55.387Z
+**Stopped At:** Completed 21-09-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-09-PLAN.md` to add the abstract supervision dispatcher to the
-authenticated loopback gateway while retaining opaque service authority.
+Execute `21-10-PLAN.md` to promote the five empty-schema supervision commands
+into the native Agent route and transport contract.
