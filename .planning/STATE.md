@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 8
+current_plan: 9
 status: executing
-stopped_at: Completed 21-07-PLAN.md
-last_updated: "2026-07-22T06:13:13.000Z"
+stopped_at: Completed 21-08-PLAN.md
+last_updated: "2026-07-22T07:43:47.723Z"
 last_activity: 2026-07-22
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 73
-  percent: 79
+  completed_plans: 74
+  percent: 80
 ---
 
 # Project State
@@ -36,24 +36,29 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 8 of 26
+Plan: 9 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 8
+**Current Plan:** 9
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [████████░░] 79%
+**Progress:** [████████░░] 80%
 **Last Activity:** 2026-07-22
-**Last Activity Description:** Completed Plan 21-07 — sole browser-owned
-exact-document Mojo/APC capture, shared bounded baseline/diff fanout,
-independent consumer delivery state, and real renderer lifecycle/privacy proof.
+**Last Activity Description:** Completed Plan 21-08 — exact-target dashboard
+hub attachment, opaque consumer and wait tokens, independent delivery/lifecycle,
+and real two-viewer renderer fanout.
 
-Milestone work is 73 of 92 existing plans complete (79%); cumulative project
-work is 124 of 144 existing plans summarized (86%).
+Milestone work is 74 of 92 existing plans complete (80%); cumulative project
+work is 125 of 144 existing plans summarized (87%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 8: the exact 5-test long-poll, 45-test combined native, and
+  2-test real-browser gates pass with one exact-target hub, independent opaque
+  consumers/waits, coherent lifecycle teardown, privacy/ownership audits,
+  stable patch identity, and byte-identical reviewed build artifacts.
 
 - Phase 21 Plan 7: the exact 6-test real-browser, 27-test combined native, and
   12-test Blink gates pass with one renderer binding/APC capture per dirty
@@ -216,6 +221,9 @@ work is 124 of 144 existing plans summarized (86%).
 - [Phase 21]: Retain one bounded baseline/diff history per document while keeping cursor, ack, expiry, revoke, lag, and resync state consumer-local. — Consumers can progress independently without duplicating trees or allowing one slow or invalid consumer to advance another.
 - [Phase 21]: Scrub bounded raw form values from canonical and accessibility-derived APC fields before projection. — Password, payment, and OTP values stay absent even when optional APC redaction features are disabled or duplicate content into structural labels.
 - [Phase 21]: Ignore speculative frame creation and generation-fence deferred subframe recovery. — Committed navigation and disconnect ordering converge on one fail-closed epoch transition without duplicate enable or capture work.
+- [Phase 21]: Attach a redeemed dashboard to the one exact-target capture hub before consuming its pairing, then retain only the opaque consumer token beside service-owned authority. — Partial setup cannot burn a one-time code, and no dashboard record can acquire renderer or capture ownership.
+- [Phase 21]: Split long-poll ownership between one content-free hub readiness callback and one service-owned dashboard completion guarded by an opaque wait token. — Cancellation, shutdown, and teardown remain bounded and win even after readiness has been queued.
+- [Phase 21]: Terminalize every same-target viewer coherently on exact target or immutable owner loss while keeping ack, wait, cancel, lag, resync, expiry, revoke, and end consumer-local. — Authority loss cannot leave a sibling viewer live, and ordinary viewer progress cannot affect another cursor.
 
 ## Performance Metrics
 
@@ -238,6 +246,7 @@ work is 124 of 144 existing plans summarized (86%).
 | Phase 21 P05 | 1h28min | 2 tasks | 13 files |
 | Phase 21 P06 | 56min | 3 tasks | 15 files |
 | Phase 21 P07 | 2h52min | 3 tasks | 13 files |
+| Phase 21 P08 | 1h18min | 3 tasks | 17 files |
 
 ## Blockers and Deferred Items
 
@@ -252,11 +261,11 @@ work is 124 of 144 existing plans summarized (86%).
 
 ## Session
 
-**Last Date:** 2026-07-22T06:13:13.000Z
-**Stopped At:** Completed 21-07-PLAN.md
+**Last Date:** 2026-07-22T07:43:47.719Z
+**Stopped At:** Completed 21-08-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-08-PLAN.md` to attach independent dashboard viewers to exact-target
-capture-hub streams without adding renderer ownership or duplicate capture.
+Execute `21-09-PLAN.md` to add the abstract supervision dispatcher to the
+authenticated loopback gateway while retaining opaque service authority.

@@ -355,7 +355,7 @@ Plans:
 
 **Requirements:** SUP-01, SUP-02, SUP-03, SUP-04, SUP-05
 
-**Plans:** 7/26 plans executed
+**Plans:** 8/26 plans executed
 
 Plans:
 **Wave 1**
@@ -388,7 +388,7 @@ Plans:
 
 **Wave 8** *(blocked on Wave 7 completion)*
 
-- [ ] 21-08-PLAN.md — Attach independent dashboard viewers to exact-target capture-hub streams.
+- [x] 21-08-PLAN.md — Attach independent dashboard viewers to exact-target capture-hub streams.
 
 **Wave 9** *(blocked on Wave 8 completion)*
 
@@ -564,13 +564,13 @@ Plans:
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 8/8 | Complete    | 2026-07-12 |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 7/7 | Complete    | 2026-07-13 |
 | 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 14/14 | Complete    | 2026-07-20 |
-| 21. Supervision, Pairing, and Remote Control | v2.0 | 7/26 | In Progress|  |
+| 21. Supervision, Pairing, and Remote Control | v2.0 | 8/26 | In Progress|  |
 | 22. Chrome Extension Ecosystem and Policy | v2.0 | 0 | Planned | — |
 | 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
 | 24. Packaging, Release Validation, and Handoff | v2.0 | 0 | Planned | — |
 
-**Totals:** 14 phases, 10 complete; 73 of 92 existing v2.0 plans summarized.
-Phase 20 is complete; Phase 21 is current and in progress, with Plan 21-08 ready
+**Totals:** 14 phases, 10 complete; 74 of 92 existing v2.0 plans summarized.
+Phase 20 is complete; Phase 21 is current and in progress, with Plan 21-09 ready
 to execute.
 
 ## Future Work Beyond Current Milestone
