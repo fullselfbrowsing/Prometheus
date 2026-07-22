@@ -1,0 +1,1306 @@
+From 73ac1e53ccc2b9db4e092632351e2d68c102c325 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 19:25:40 -0500
+Subject: [PATCH] feat(21-04): implement supervision pairing and control
+
+---
+ .../prometheus/prometheus_agent_service.cc    | 143 ++-
+ .../prometheus/prometheus_agent_tab_data.cc   |  26 +-
+ .../prometheus_supervision_profile_service.cc | 890 +++++++++++++++++-
+ 3 files changed, 1016 insertions(+), 43 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.cc b/chrome/browser/prometheus/prometheus_agent_service.cc
+index 859a4a4953..9ae8be0975 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service.cc
+@@ -17,6 +17,7 @@
+ #include "base/functional/bind.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
++#include "base/task/sequenced_task_runner.h"
+ #include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
+ #include "chrome/browser/prometheus/prometheus_page_adapter.h"
+ #include "chrome/browser/prometheus/prometheus_tab_commands.h"
+@@ -53,7 +54,9 @@ PrometheusAgentTabObservationLease::PrometheusAgentTabObservationLease(
+     : service_(std::move(service)), token_(token) {}
+ 
+ PrometheusAgentTabObservationLease::PrometheusAgentTabObservationLease(
+-    PrometheusAgentTabObservationLease&& other) noexcept = default;
++    PrometheusAgentTabObservationLease&& other) noexcept
++    : service_(std::move(other.service_)),
++      token_(std::exchange(other.token_, 0)) {}
+ 
+ PrometheusAgentTabObservationLease&
+ PrometheusAgentTabObservationLease::operator=(
+@@ -475,6 +478,10 @@ PrometheusAgentService::~PrometheusAgentService() {
+     FinishConfirmedVaultInsertion(confirmed_vault_operations_.begin()->first,
+                                   ConfirmedVaultInsertionStatus::kCancelled);
+   }
++  weak_factory_.InvalidateWeakPtrs();
++  tab_observation_tokens_.clear();
++  tab_observation_keys_.clear();
++  tab_data_.clear();
+ }
+ 
+ AgentSessionResult PrometheusAgentService::CreateSession(
+@@ -505,7 +512,9 @@ void PrometheusAgentService::ReleaseSessionOwnership(
+                                   ConfirmedVaultInsertionStatus::kUnauthorized);
+   }
+   for (auto& entry : tab_data_) {
+-    entry.second->data->ReleaseIfOwnedBy(session_id);
++    if (entry.second->data->ReleaseIfOwnedBy(session_id)) {
++      SchedulePruneUnownedTabData(entry.first);
++    }
+   }
+ }
+ 
+@@ -513,30 +522,122 @@ PrometheusAgentTabObservationLease
+ PrometheusAgentService::ObserveOrCreateTabData(
+     tabs::TabInterface* tab,
+     PrometheusAgentTabData::Observer* observer) {
+-  next_tab_observation_token_ = 0;
+-  return {};
++  if (!tab || !observer) {
++    return {};
++  }
++  PrometheusAgentTabData* data = EnsureTabData(tab);
++  if (!data) {
++    return {};
++  }
++  const int32_t tab_handle = tab->GetHandle().raw_value();
++  const auto key = std::make_pair(tab_handle, observer);
++  if (auto key_it = tab_observation_keys_.find(key);
++      key_it != tab_observation_keys_.end()) {
++    auto token_it = tab_observation_tokens_.find(key_it->second);
++    if (token_it != tab_observation_tokens_.end()) {
++      ++token_it->second.lease_count;
++      return PrometheusAgentTabObservationLease(weak_factory_.GetWeakPtr(),
++                                                token_it->first);
++    }
++    tab_observation_keys_.erase(key_it);
++  }
++
++  do {
++    ++next_tab_observation_token_;
++  } while (next_tab_observation_token_ == 0 ||
++           tab_observation_tokens_.contains(next_tab_observation_token_));
++
++  data->AddObserver(observer);
++  tab_observation_tokens_.emplace(
++      next_tab_observation_token_,
++      TabObservationToken{tab_handle, observer, /*lease_count=*/1});
++  tab_observation_keys_.emplace(key, next_tab_observation_token_);
++  return PrometheusAgentTabObservationLease(weak_factory_.GetWeakPtr(),
++                                            next_tab_observation_token_);
+ }
+ 
+ size_t PrometheusAgentService::tab_observation_count_for_testing() const {
+-  return 0;
++  return tab_observation_tokens_.size();
+ }
+ 
+ PrometheusAgentTabData* PrometheusAgentService::GetObservedTabData(
+     uint64_t token) const {
+-  return nullptr;
++  auto token_it = tab_observation_tokens_.find(token);
++  if (token_it == tab_observation_tokens_.end()) {
++    return nullptr;
++  }
++  auto data_it = tab_data_.find(token_it->second.tab_handle);
++  return data_it == tab_data_.end() ? nullptr : data_it->second->data.get();
+ }
+ 
+-void PrometheusAgentService::ReleaseTabObservation(uint64_t token) {}
++void PrometheusAgentService::ReleaseTabObservation(uint64_t token) {
++  auto token_it = tab_observation_tokens_.find(token);
++  if (token_it == tab_observation_tokens_.end()) {
++    return;
++  }
++  if (token_it->second.lease_count > 1) {
++    --token_it->second.lease_count;
++    return;
++  }
+ 
+-void PrometheusAgentService::InvalidateTabObservations(int32_t tab_handle) {}
++  const TabObservationToken observation = token_it->second;
++  tab_observation_keys_.erase(
++      std::make_pair(observation.tab_handle, observation.observer.get()));
++  tab_observation_tokens_.erase(token_it);
++  auto data_it = tab_data_.find(observation.tab_handle);
++  if (data_it == tab_data_.end()) {
++    return;
++  }
++  data_it->second->data->RemoveObserver(observation.observer);
++  SchedulePruneUnownedTabData(observation.tab_handle);
++}
+ 
+-void PrometheusAgentService::SchedulePruneUnownedTabData(int32_t tab_handle) {}
++void PrometheusAgentService::InvalidateTabObservations(int32_t tab_handle) {
++  for (auto token_it = tab_observation_tokens_.begin();
++       token_it != tab_observation_tokens_.end();) {
++    if (token_it->second.tab_handle != tab_handle) {
++      ++token_it;
++      continue;
++    }
++    tab_observation_keys_.erase(
++        std::make_pair(tab_handle, token_it->second.observer.get()));
++    token_it = tab_observation_tokens_.erase(token_it);
++  }
++}
++
++void PrometheusAgentService::SchedulePruneUnownedTabData(int32_t tab_handle) {
++  auto data_it = tab_data_.find(tab_handle);
++  if (data_it == tab_data_.end() || HasTabObservations(tab_handle) ||
++      !data_it->second->data->owner_session_id().empty()) {
++    return;
++  }
++  PrometheusAgentTabData* expected_data = data_it->second->data.get();
++  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE,
++      base::BindOnce(&PrometheusAgentService::PruneUnownedTabData,
++                     weak_factory_.GetWeakPtr(), tab_handle, expected_data));
++}
+ 
+ void PrometheusAgentService::PruneUnownedTabData(
+     int32_t tab_handle,
+-    PrometheusAgentTabData* expected_data) {}
++    PrometheusAgentTabData* expected_data) {
++  auto data_it = tab_data_.find(tab_handle);
++  if (data_it == tab_data_.end() ||
++      data_it->second->data.get() != expected_data ||
++      HasTabObservations(tab_handle) ||
++      !data_it->second->data->owner_session_id().empty()) {
++    return;
++  }
++  InvalidateTabObservations(tab_handle);
++  tab_data_.erase(data_it);
++}
+ 
+ bool PrometheusAgentService::HasTabObservations(int32_t tab_handle) const {
++  for (const auto& [token, observation] : tab_observation_tokens_) {
++    if (observation.tab_handle == tab_handle) {
++      return true;
++    }
++  }
+   return false;
+ }
+ 
+@@ -907,6 +1008,7 @@ AgentRouteResult PrometheusAgentService::ExecuteRouteSynchronously(
+         return FinishRoute(request, timestamp, started_at, control);
+       }
+       const int32_t handle = resolved.tab->GetHandle().raw_value();
++      InvalidateTabObservations(handle);
+       tab_data_.erase(handle);
+       resolved.tab_list->CloseTab(resolved.tab->GetHandle());
+       return FinishRoute(
+@@ -1264,17 +1366,27 @@ PrometheusAgentTabData* PrometheusAgentService::EnsureTabData(
+   if (!tab) {
+     return nullptr;
+   }
+-  if (PrometheusAgentTabData* existing = PrometheusAgentTabData::From(tab)) {
+-    return existing;
++  const int32_t tab_handle = tab->GetHandle().raw_value();
++  auto owned_it = tab_data_.find(tab_handle);
++  if (owned_it != tab_data_.end()) {
++    return PrometheusAgentTabData::From(tab) == owned_it->second->data.get()
++               ? owned_it->second->data.get()
++               : nullptr;
++  }
++  if (PrometheusAgentTabData::From(tab)) {
++    return nullptr;
+   }
+   std::unique_ptr<PrometheusAgentTabData> owned_data =
+       PrometheusAgentTabData::GetOrCreateForTab(tab);
++  if (!owned_data) {
++    return nullptr;
++  }
+   PrometheusAgentTabData* data = owned_data.get();
+-  tabs::TabHandle tab_handle = tab->GetHandle();
+-  tab_data_[tab_handle.raw_value()] = std::make_unique<OwnedTabData>(
++  tabs::TabHandle handle = tab->GetHandle();
++  tab_data_[handle.raw_value()] = std::make_unique<OwnedTabData>(
+       std::move(owned_data), tab->RegisterWillDetach(base::BindRepeating(
+                                  &PrometheusAgentService::OnTabWillDetach,
+-                                 weak_factory_.GetWeakPtr(), tab_handle)));
++                                 weak_factory_.GetWeakPtr(), handle)));
+   return data;
+ }
+ 
+@@ -1293,6 +1405,7 @@ void PrometheusAgentService::OnTabWillDetach(
+     tabs::TabInterface* tab,
+     tabs::TabInterface::DetachReason reason) {
+   if (reason == tabs::TabInterface::DetachReason::kDelete) {
++    InvalidateTabObservations(tab_handle.raw_value());
+     tab_data_.erase(tab_handle.raw_value());
+   }
+ }
+diff --git a/chrome/browser/prometheus/prometheus_agent_tab_data.cc b/chrome/browser/prometheus/prometheus_agent_tab_data.cc
+index a926ec5b25..fa77e058e0 100644
+--- a/chrome/browser/prometheus/prometheus_agent_tab_data.cc
++++ b/chrome/browser/prometheus/prometheus_agent_tab_data.cc
+@@ -25,14 +25,21 @@ DEFINE_USER_DATA(PrometheusAgentTabData);
+ PrometheusAgentTabData::PrometheusAgentTabData(tabs::TabInterface* tab)
+     : scoped_unowned_user_data_(GetHostForTab(tab), *this) {}
+ 
+-PrometheusAgentTabData::~PrometheusAgentTabData() = default;
++PrometheusAgentTabData::~PrometheusAgentTabData() {
++  for (Observer& observer : observers_) {
++    observer.OnPrometheusAgentTabDataDestroying();
++  }
++  observers_.Clear();
++}
+ 
+ void PrometheusAgentTabData::AddObserver(Observer* observer) {
+   observers_.AddObserver(observer);
+ }
+ 
+ void PrometheusAgentTabData::RemoveObserver(Observer* observer) {
+-  observers_.RemoveObserver(observer);
++  if (observers_.HasObserver(observer)) {
++    observers_.RemoveObserver(observer);
++  }
+ }
+ 
+ // static
+@@ -75,8 +82,15 @@ AgentRouteResult PrometheusAgentTabData::ClaimIfUnowned(
+     return TabNotOwnedFailure();
+   }
+ 
++  const std::string old_owner_session_id = owner_session_id_;
+   owner_session_id_ = std::string(session_id);
+   owner_label_ = std::move(owner_label);
++  if (old_owner_session_id != owner_session_id_) {
++    for (Observer& observer : observers_) {
++      observer.OnPrometheusAgentTabOwnerChanged(old_owner_session_id,
++                                                owner_session_id_);
++    }
++  }
+   return AgentRouteResult::Success({"tab_claimed"});
+ }
+ 
+@@ -89,7 +103,11 @@ AgentRouteResult PrometheusAgentTabData::ReleaseIfOwned(
+     return TabNotOwnedFailure();
+   }
+ 
++  const std::string old_owner_session_id = owner_session_id_;
+   ClearOwnership();
++  for (Observer& observer : observers_) {
++    observer.OnPrometheusAgentTabOwnerChanged(old_owner_session_id, "");
++  }
+   return AgentRouteResult::Success({"tab_released"});
+ }
+ 
+@@ -98,7 +116,11 @@ bool PrometheusAgentTabData::ReleaseIfOwnedBy(std::string_view session_id) {
+     return false;
+   }
+ 
++  const std::string old_owner_session_id = owner_session_id_;
+   ClearOwnership();
++  for (Observer& observer : observers_) {
++    observer.OnPrometheusAgentTabOwnerChanged(old_owner_session_id, "");
++  }
+   return true;
+ }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+index 43999b2a67..68d8274fe5 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+@@ -4,13 +4,99 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"
+ 
++#include <algorithm>
++#include <array>
+ #include <utility>
++#include <vector>
+ 
+ #include "base/check.h"
++#include "base/containers/span.h"
+ #include "base/functional/bind.h"
++#include "base/rand_util.h"
++#include "base/strings/string_util.h"
++#include "base/strings/utf_string_conversions.h"
++#include "base/task/sequenced_task_runner.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "components/tabs/public/tab_interface.h"
++#include "crypto/secure_util.h"
++#include "crypto/sha2.h"
++#include "url/gurl.h"
+ 
+ namespace prometheus {
+ 
++namespace {
++
++constexpr std::string_view kPairingAlphabet =
++    "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
++constexpr size_t kPairingSaltBytes = 32;
++constexpr std::string_view kUnavailableOrigin = "https://unavailable.invalid";
++
++std::string NormalizePairingCode(std::string_view input) {
++  std::string normalized;
++  normalized.reserve(input.size());
++  for (char character : input) {
++    if (character == '-' || base::IsAsciiWhitespace(character)) {
++      continue;
++    }
++    normalized.push_back(base::ToUpperASCII(character));
++  }
++  return normalized;
++}
++
++std::string PairingDigest(std::string_view salt, std::string_view code) {
++  std::string material;
++  material.reserve(salt.size() + code.size());
++  material.append(salt);
++  material.append(code);
++  return crypto::SHA256HashString(material);
++}
++
++bool DigestsEqual(std::string_view left, std::string_view right) {
++  return crypto::SecureMemEqual(base::as_byte_span(left),
++                                base::as_byte_span(right));
++}
++
++base::TimeDelta PairingTtl(const SupervisionLimits& limits) {
++  return base::Milliseconds(limits.pairing_code_ttl_ms);
++}
++
++base::TimeDelta ViewerTtl(const SupervisionLimits& limits) {
++  return base::Milliseconds(limits.viewer_ttl_ms);
++}
++
++bool IsEligibleTarget(Profile* profile,
++                      BrowserWindowInterface* browser,
++                      tabs::TabInterface* tab) {
++  return profile && browser && tab && !browser->IsDeleteScheduled() &&
++         browser->GetProfile() == profile && tab->GetProfile() == profile &&
++         tab->GetBrowserWindowInterface() == browser &&
++         tab->GetHandle().raw_value() != tabs::TabHandle::NullValue &&
++         tab->GetURL().is_valid() && tab->GetURL().SchemeIsHTTPOrHTTPS();
++}
++
++std::string SafeTitle(tabs::TabInterface* tab) {
++  return tab ? DeriveSupervisionSafeTargetTitle(
++                   base::UTF16ToUTF8(tab->GetTitle()))
++             : std::string(kSupervisionTargetTitleFallback);
++}
++
++std::string SafeOrigin(tabs::TabInterface* tab) {
++  if (!tab) {
++    return std::string(kUnavailableOrigin);
++  }
++  return CanonicalizeSupervisionSafeOrigin(tab->GetURL().spec())
++      .value_or(std::string(kUnavailableOrigin));
++}
++
++SupervisionServiceResult ServiceFailure(SupervisionErrorCode error_code,
++                                        std::string message,
++                                        std::string recovery) {
++  return SupervisionServiceResult::Failure(error_code, std::move(message),
++                                           std::move(recovery));
++}
++
++}  // namespace
++
+ SupervisionServiceResult SupervisionServiceResult::Success() {
+   SupervisionServiceResult result;
+   result.ok = true;
+@@ -56,10 +142,49 @@ class PrometheusSupervisionProfileService::TabOwnerObserver final
+   const int32_t stable_tab_id_;
+ };
+ 
+-struct PrometheusSupervisionProfileService::PendingPairing {};
+-struct PrometheusSupervisionProfileService::ViewerSession {};
+-struct PrometheusSupervisionProfileService::ObservedTab {};
+-struct PrometheusSupervisionProfileService::RecentTerminalSession {};
++struct PrometheusSupervisionProfileService::PendingPairing {
++  int32_t stable_tab_id = 0;
++  raw_ptr<tabs::TabInterface> tab = nullptr;
++  base::WeakPtr<BrowserWindowInterface> exact_browser;
++  std::string salt;
++  std::string digest;
++  base::Time created_at;
++  base::Time expires_at;
++  SupervisionPairingState state = SupervisionPairingState::kPending;
++  uint64_t serial = 0;
++};
++
++struct PrometheusSupervisionProfileService::ViewerSession {
++  base::UnguessableToken dashboard_session;
++  int32_t stable_tab_id = 0;
++  raw_ptr<tabs::TabInterface> tab = nullptr;
++  base::WeakPtr<BrowserWindowInterface> exact_browser;
++  std::string immutable_owner_session_id;
++  std::string client_label;
++  base::Time connected_at;
++  base::Time last_seen_at;
++  base::Time expires_at;
++  SupervisionViewerState viewer_state = SupervisionViewerState::kViewOnly;
++  SupervisionStreamState stream_state =
++      SupervisionStreamState::kPreparingBaseline;
++  SupervisionTerminalReason terminal_reason = SupervisionTerminalReason::kNone;
++  uint64_t authority_generation = 1;
++};
++
++struct PrometheusSupervisionProfileService::ObservedTab {
++  int32_t stable_tab_id = 0;
++  raw_ptr<tabs::TabInterface> tab = nullptr;
++  std::unique_ptr<TabOwnerObserver> observer;
++  PrometheusAgentTabObservationLease lease;
++};
++
++struct PrometheusSupervisionProfileService::RecentTerminalSession {
++  base::UnguessableToken dashboard_session;
++  int32_t stable_tab_id = 0;
++  SupervisionSessionSnapshot snapshot;
++  uint64_t authority_generation = 0;
++  base::Time retained_until;
++};
+ 
+ PrometheusSupervisionProfileService::PrometheusSupervisionProfileService(
+     Profile* profile,
+@@ -98,58 +223,365 @@ PrometheusSupervisionProfileService::CreatePairing(
+     BrowserWindowInterface* exact_browser,
+     tabs::TabInterface* exact_tab) {
+   SupervisionPairingCreationResult result;
+-  static_cast<SupervisionServiceResult&>(result) = UnavailableResult();
++  if (shutdown_ || profile_kind_ != SupervisionProfileKind::kRegular ||
++      !observe_tab_data_) {
++    static_cast<SupervisionServiceResult&>(result) = UnavailableResult();
++    return result;
++  }
++  if (!IsEligibleTarget(profile_, exact_browser, exact_tab)) {
++    static_cast<SupervisionServiceResult&>(result) = ServiceFailure(
++        SupervisionErrorCode::kRestrictedTarget,
++        "The selected tab is not eligible for supervision",
++        "Choose a live HTTP or HTTPS tab in this regular profile");
++    return result;
++  }
++  base::WeakPtr<BrowserWindowInterface> exact_browser_weak =
++      exact_browser->GetWeakPtr();
++  if (!exact_browser_weak) {
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kStaleTarget,
++                       "The selected browser is no longer available",
++                       "Choose the tab again from a live browser window");
++    return result;
++  }
++
++  SweepExpired();
++  const int32_t stable_tab_id = exact_tab->GetHandle().raw_value();
++  if (!AcquireObservedTab(exact_tab)) {
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kStaleTarget,
++                       "The selected tab could not be observed",
++                       "Choose the tab again and retry");
++    return result;
++  }
++
++  auto previous = pending_pairings_.find(stable_tab_id);
++  if (previous != pending_pairings_.end()) {
++    if (previous->second->state == SupervisionPairingState::kPending) {
++      last_pairing_states_[stable_tab_id] = SupervisionPairingState::kCancelled;
++      AddAudit(stable_tab_id, SupervisionAuditEvent::kPairingCodeCancelled,
++               std::nullopt);
++    }
++    pending_pairings_.erase(previous);
++  }
++
++  while (pending_pairings_.size() >= limits_.sessions_per_profile) {
++    auto terminal = std::find_if(
++        pending_pairings_.begin(), pending_pairings_.end(),
++        [](const auto& entry) {
++          return entry.second->state != SupervisionPairingState::kPending;
++        });
++    if (terminal == pending_pairings_.end()) {
++      static_cast<SupervisionServiceResult&>(result) =
++          ServiceFailure(SupervisionErrorCode::kTooLarge,
++                         "The profile pairing limit has been reached",
++                         "Cancel an existing pairing and retry");
++      ReleaseObservedTabIfUnused(stable_tab_id);
++      return result;
++    }
++    pending_pairings_.erase(terminal);
++  }
++
++  const std::string pairing_code = GeneratePairingCode();
++  if (!IsValidSupervisionPairingCode(pairing_code)) {
++    static_cast<SupervisionServiceResult&>(result) = ServiceFailure(
++        SupervisionErrorCode::kShutdown,
++        "A pairing code could not be generated", "Retry pairing");
++    ReleaseObservedTabIfUnused(stable_tab_id);
++    return result;
++  }
++
++  const base::Time now = Now();
++  auto pairing = std::make_unique<PendingPairing>();
++  pairing->stable_tab_id = stable_tab_id;
++  pairing->tab = exact_tab;
++  pairing->exact_browser = std::move(exact_browser_weak);
++  pairing->salt = base::RandBytesAsString(kPairingSaltBytes);
++  pairing->digest = PairingDigest(pairing->salt, pairing_code);
++  pairing->created_at = now;
++  pairing->expires_at = now + PairingTtl(limits_);
++  pairing->serial = ++next_pairing_serial_;
++  result.stable_tab_id = stable_tab_id;
++  result.expires_at = pairing->expires_at;
++  pending_pairings_[stable_tab_id] = std::move(pairing);
++  last_pairing_states_[stable_tab_id] = SupervisionPairingState::kPending;
++  AddAudit(stable_tab_id, SupervisionAuditEvent::kPairingCodeCreated,
++           std::nullopt);
++  NotifySnapshotChanged(stable_tab_id);
++
++  static_cast<SupervisionServiceResult&>(result) =
++      SupervisionServiceResult::Success();
++  result.pairing_code = pairing_code;
+   return result;
+ }
+ 
+ SupervisionServiceResult PrometheusSupervisionProfileService::CancelPairing(
+     int32_t stable_tab_id) {
+-  return UnavailableResult();
++  if (shutdown_) {
++    return UnavailableResult();
++  }
++  SweepExpired();
++  auto pairing = pending_pairings_.find(stable_tab_id);
++  if (pairing == pending_pairings_.end() ||
++      pairing->second->state != SupervisionPairingState::kPending) {
++    return ServiceFailure(SupervisionErrorCode::kInvalidCode,
++                          "No pending pairing exists for this tab",
++                          "Create a new pairing");
++  }
++  last_pairing_states_[stable_tab_id] = SupervisionPairingState::kCancelled;
++  pending_pairings_.erase(pairing);
++  AddAudit(stable_tab_id, SupervisionAuditEvent::kPairingCodeCancelled,
++           std::nullopt);
++  NotifySnapshotChanged(stable_tab_id);
++  ScheduleObservedTabRelease(stable_tab_id);
++  return SupervisionServiceResult::Success();
+ }
+ 
+ SupervisionRedemptionResult PrometheusSupervisionProfileService::RedeemPairing(
+     std::string_view pairing_code,
+     std::string_view client_label) {
+   SupervisionRedemptionResult result;
+-  static_cast<SupervisionServiceResult&>(result) = UnavailableResult();
++  if (shutdown_ || profile_kind_ != SupervisionProfileKind::kRegular) {
++    static_cast<SupervisionServiceResult&>(result) = UnavailableResult();
++    return result;
++  }
++
++  SweepExpired();
++  const base::Time now = Now();
++  if (failed_attempts_.size() >= limits_.attempts_per_code) {
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kAttemptCapReached,
++                       "The pairing attempt limit has been reached",
++                       "Wait for the attempt window to expire before retrying");
++    return result;
++  }
++
++  const std::string normalized = NormalizePairingCode(pairing_code);
++  PendingPairing* pairing = FindPendingPairing(normalized);
++  if (!pairing) {
++    failed_attempts_.push_back(now);
++    static_cast<SupervisionServiceResult&>(result) = ServiceFailure(
++        SupervisionErrorCode::kInvalidCode, "The pairing code is invalid",
++        "Check the one-time code and retry");
++    return result;
++  }
++
++  const int32_t stable_tab_id = pairing->stable_tab_id;
++  if (pairing->state == SupervisionPairingState::kExpired ||
++      pairing->expires_at <= now) {
++    last_pairing_states_[stable_tab_id] = SupervisionPairingState::kExpired;
++    pending_pairings_.erase(stable_tab_id);
++    ScheduleObservedTabRelease(stable_tab_id);
++    static_cast<SupervisionServiceResult&>(result) = ServiceFailure(
++        SupervisionErrorCode::kExpiredCode, "The pairing code has expired",
++        "Create a new pairing code");
++    return result;
++  }
++  if (pairing->state != SupervisionPairingState::kPending) {
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kInvalidCode,
++                       "The pairing code is no longer redeemable",
++                       "Create a new pairing code");
++    return result;
++  }
++
++  tabs::TabInterface* tab = ResolveExactTarget(*pairing);
++  ObservedTab* observed = AcquireObservedTab(tab);
++  if (!tab || !observed || !observed->lease.data()) {
++    last_pairing_states_[stable_tab_id] = SupervisionPairingState::kTargetLost;
++    pending_pairings_.erase(stable_tab_id);
++    ScheduleObservedTabRelease(stable_tab_id);
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kStaleTarget,
++                       "The paired tab is no longer available",
++                       "Create a new pairing for a live tab");
++    return result;
++  }
++
++  const size_t viewers_for_tab = viewer_count_for_testing(stable_tab_id);
++  if (viewers_.size() >= limits_.sessions_per_profile ||
++      viewers_for_tab >= limits_.viewers_per_tab) {
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kTooLarge,
++                       "The viewer session limit has been reached",
++                       "End an existing viewer session and retry");
++    return result;
++  }
++
++  const std::string immutable_owner =
++      observed->lease.data()->owner_session_id();
++  base::WeakPtr<BrowserWindowInterface> exact_browser = pairing->exact_browser;
++  raw_ptr<tabs::TabInterface> exact_tab = pairing->tab;
++  pending_pairings_.erase(stable_tab_id);
++
++  auto viewer = std::make_unique<ViewerSession>();
++  viewer->dashboard_session = base::UnguessableToken::Create();
++  viewer->stable_tab_id = stable_tab_id;
++  viewer->tab = exact_tab;
++  viewer->exact_browser = std::move(exact_browser);
++  viewer->immutable_owner_session_id = immutable_owner;
++  viewer->client_label = DeriveSupervisionSafeClientLabel(client_label);
++  viewer->connected_at = now;
++  viewer->last_seen_at = now;
++  viewer->expires_at = now + ViewerTtl(limits_);
++
++  result.dashboard_session = viewer->dashboard_session;
++  result.stable_tab_id = stable_tab_id;
++  result.expires_at = viewer->expires_at;
++  viewers_[viewer->dashboard_session] = std::move(viewer);
++  last_pairing_states_[stable_tab_id] = SupervisionPairingState::kRedeemed;
++  AddAudit(stable_tab_id, SupervisionAuditEvent::kDashboardPaired,
++           std::optional<std::string>(
++               viewers_.at(result.dashboard_session)->client_label));
++  AddAudit(stable_tab_id, SupervisionAuditEvent::kViewingStarted,
++           std::optional<std::string>(
++               viewers_.at(result.dashboard_session)->client_label));
++  NotifySnapshotChanged(stable_tab_id);
++
++  static_cast<SupervisionServiceResult&>(result) =
++      SupervisionServiceResult::Success();
+   return result;
+ }
+ 
+ SupervisionServiceResult PrometheusSupervisionProfileService::EnableControl(
+     const base::UnguessableToken& dashboard_session) {
+-  return UnavailableResult();
++  if (shutdown_) {
++    return UnavailableResult();
++  }
++  SweepExpired();
++  auto viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end()) {
++    return UnknownSessionResult();
++  }
++  const int32_t stable_tab_id = viewer->second->stable_tab_id;
++  if (!RevalidateViewerOwner(dashboard_session)) {
++    return ServiceFailure(SupervisionErrorCode::kViewOnly,
++                          "The viewer no longer has agent authority",
++                          "Create and redeem a new pairing");
++  }
++  viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end()) {
++    return UnknownSessionResult();
++  }
++  if (viewer->second->immutable_owner_session_id.empty()) {
++    return ServiceFailure(SupervisionErrorCode::kViewOnly,
++                          "Control requires an agent-owned tab",
++                          "Pair again after an agent claims the tab");
++  }
++  auto controller = controllers_.find(stable_tab_id);
++  if (controller != controllers_.end() &&
++      controller->second != dashboard_session) {
++    return ServiceFailure(SupervisionErrorCode::kControllerConflict,
++                          "Another dashboard controls this tab",
++                          "Stop the existing controller and retry");
++  }
++  if (viewer->second->viewer_state == SupervisionViewerState::kController) {
++    return SupervisionServiceResult::Success();
++  }
++
++  controllers_[stable_tab_id] = dashboard_session;
++  viewer->second->viewer_state = SupervisionViewerState::kController;
++  ++viewer->second->authority_generation;
++  AddAudit(stable_tab_id, SupervisionAuditEvent::kControlEnabled,
++           std::optional<std::string>(viewer->second->client_label));
++  NotifySnapshotChanged(stable_tab_id);
++  return SupervisionServiceResult::Success();
+ }
+ 
+ SupervisionServiceResult PrometheusSupervisionProfileService::StopControl(
+     const base::UnguessableToken& dashboard_session) {
+-  return UnavailableResult();
++  if (shutdown_) {
++    return UnavailableResult();
++  }
++  SweepExpired();
++  auto viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end()) {
++    return UnknownSessionResult();
++  }
++  if (viewer->second->viewer_state != SupervisionViewerState::kController) {
++    return ServiceFailure(SupervisionErrorCode::kViewOnly,
++                          "This dashboard is already view-only",
++                          "Enable control before stopping it");
++  }
++  const int32_t stable_tab_id = viewer->second->stable_tab_id;
++  controllers_.erase(stable_tab_id);
++  viewer->second->viewer_state = SupervisionViewerState::kViewOnly;
++  ++viewer->second->authority_generation;
++  AddAudit(stable_tab_id, SupervisionAuditEvent::kControlStopped,
++           std::optional<std::string>(viewer->second->client_label));
++  NotifySnapshotChanged(stable_tab_id);
++  return SupervisionServiceResult::Success();
+ }
+ 
+ SupervisionServiceResult PrometheusSupervisionProfileService::RevokeSession(
+     const base::UnguessableToken& dashboard_session) {
+-  return UnavailableResult();
++  if (shutdown_) {
++    return UnavailableResult();
++  }
++  SweepExpired();
++  if (!viewers_.contains(dashboard_session)) {
++    return UnknownSessionResult();
++  }
++  TerminateViewer(dashboard_session, SupervisionViewerState::kRevoked,
++                  SupervisionTerminalReason::kRevoked,
++                  SupervisionAuditEvent::kAccessRevoked,
++                  SupervisionErrorCode::kNone);
++  return SupervisionServiceResult::Success();
+ }
+ 
+ SupervisionServiceResult PrometheusSupervisionProfileService::EndSession(
+     const base::UnguessableToken& dashboard_session) {
+-  return UnavailableResult();
++  if (shutdown_) {
++    return UnavailableResult();
++  }
++  SweepExpired();
++  if (!viewers_.contains(dashboard_session)) {
++    return UnknownSessionResult();
++  }
++  TerminateViewer(dashboard_session, SupervisionViewerState::kEnded,
++                  SupervisionTerminalReason::kNone,
++                  SupervisionAuditEvent::kControlStopped,
++                  SupervisionErrorCode::kNone);
++  return SupervisionServiceResult::Success();
+ }
+ 
+ void PrometheusSupervisionProfileService::HandleTargetLost(
+-    int32_t stable_tab_id) {}
++    int32_t stable_tab_id) {
++  if (shutdown_) {
++    return;
++  }
++  auto pairing = pending_pairings_.find(stable_tab_id);
++  if (pairing != pending_pairings_.end() &&
++      pairing->second->state == SupervisionPairingState::kPending) {
++    last_pairing_states_[stable_tab_id] = SupervisionPairingState::kTargetLost;
++    pending_pairings_.erase(pairing);
++  }
++  TerminateViewersForTab(stable_tab_id, SupervisionViewerState::kTargetClosed,
++                         SupervisionTerminalReason::kTargetClosed,
++                         SupervisionAuditEvent::kTargetClosed,
++                         SupervisionErrorCode::kStaleTarget);
++  ScheduleObservedTabRelease(stable_tab_id);
++}
+ 
+ SanitizedSupervisionSnapshot
+ PrometheusSupervisionProfileService::GetSanitizedSnapshot(
+     int32_t stable_tab_id) {
+-  return {};
++  if (!shutdown_) {
++    SweepExpired();
++  }
++  return BuildSanitizedSnapshot(stable_tab_id);
+ }
+ 
+ void PrometheusSupervisionProfileService::AddObserver(Observer* observer) {
+-  observers_.AddObserver(observer);
++  if (!shutdown_ && observer && !observers_.HasObserver(observer)) {
++    observers_.AddObserver(observer);
++  }
+ }
+ 
+ void PrometheusSupervisionProfileService::RemoveObserver(Observer* observer) {
+-  observers_.RemoveObserver(observer);
++  if (observer && observers_.HasObserver(observer)) {
++    observers_.RemoveObserver(observer);
++  }
+ }
+ 
+ void PrometheusSupervisionProfileService::Shutdown() {
+@@ -160,19 +592,28 @@ void PrometheusSupervisionProfileService::Shutdown() {
+   weak_factory_.InvalidateWeakPtrs();
+   controllers_.clear();
+   viewers_.clear();
+-  observed_tabs_.clear();
+   pending_pairings_.clear();
++  recent_terminal_sessions_.clear();
++  failed_attempts_.clear();
++  observed_tabs_.clear();
+   observers_.Clear();
+ }
+ 
+ size_t PrometheusSupervisionProfileService::pending_pairing_count_for_testing()
+     const {
+-  return pending_pairings_.size();
++  return std::count_if(pending_pairings_.begin(), pending_pairings_.end(),
++                       [](const auto& entry) {
++                         return entry.second->state ==
++                                SupervisionPairingState::kPending;
++                       });
+ }
+ 
+ size_t PrometheusSupervisionProfileService::viewer_count_for_testing(
+     int32_t stable_tab_id) const {
+-  return 0;
++  return std::count_if(viewers_.begin(), viewers_.end(),
++                       [stable_tab_id](const auto& entry) {
++                         return entry.second->stable_tab_id == stable_tab_id;
++                       });
+ }
+ 
+ size_t PrometheusSupervisionProfileService::observed_tab_count_for_testing()
+@@ -198,26 +639,423 @@ PrometheusSupervisionProfileService::global_failed_attempt_count_for_testing()
+ std::optional<std::string>
+ PrometheusSupervisionProfileService::immutable_owner_for_testing(
+     const base::UnguessableToken& dashboard_session) const {
+-  return std::nullopt;
++  auto viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end()) {
++    return std::nullopt;
++  }
++  return viewer->second->immutable_owner_session_id;
+ }
+ 
+ uint64_t PrometheusSupervisionProfileService::authority_generation_for_testing(
+     const base::UnguessableToken& dashboard_session) const {
+-  return 0;
++  auto viewer = viewers_.find(dashboard_session);
++  if (viewer != viewers_.end()) {
++    return viewer->second->authority_generation;
++  }
++  auto recent = std::find_if(
++      recent_terminal_sessions_.begin(), recent_terminal_sessions_.end(),
++      [&dashboard_session](const RecentTerminalSession& entry) {
++        return entry.dashboard_session == dashboard_session;
++      });
++  return recent == recent_terminal_sessions_.end()
++             ? 0
++             : recent->authority_generation;
++}
++
++base::Time PrometheusSupervisionProfileService::Now() const {
++  return now_callback_.Run();
++}
++
++std::string PrometheusSupervisionProfileService::GeneratePairingCode() const {
++  if (pairing_code_generator_) {
++    return NormalizePairingCode(pairing_code_generator_.Run());
++  }
++  const std::string random =
++      base::RandBytesAsString(kHardSupervisionPairingCodeCharacters);
++  std::string code;
++  code.reserve(kHardSupervisionPairingCodeCharacters);
++  for (unsigned char byte : random) {
++    code.push_back(kPairingAlphabet[byte % kPairingAlphabet.size()]);
++  }
++  return code;
++}
++
++void PrometheusSupervisionProfileService::SweepExpired() {
++  const base::Time now = Now();
++  SweepFailedAttempts(now);
++  SweepExpiredPairings(now);
++  SweepExpiredViewers(now);
++  while (!recent_terminal_sessions_.empty() &&
++         recent_terminal_sessions_.front().retained_until <= now) {
++    recent_terminal_sessions_.pop_front();
++  }
++}
++
++void PrometheusSupervisionProfileService::SweepExpiredPairings(base::Time now) {
++  std::vector<int32_t> expired;
++  for (auto& [stable_tab_id, pairing] : pending_pairings_) {
++    if (pairing->state == SupervisionPairingState::kPending &&
++        pairing->expires_at <= now) {
++      pairing->state = SupervisionPairingState::kExpired;
++      last_pairing_states_[stable_tab_id] = SupervisionPairingState::kExpired;
++      expired.push_back(stable_tab_id);
++    }
++  }
++  for (int32_t stable_tab_id : expired) {
++    AddAudit(stable_tab_id, SupervisionAuditEvent::kPairingCodeExpired,
++             std::nullopt, SupervisionErrorCode::kExpiredCode);
++    NotifySnapshotChanged(stable_tab_id);
++    ScheduleObservedTabRelease(stable_tab_id);
++  }
++}
++
++void PrometheusSupervisionProfileService::SweepExpiredViewers(base::Time now) {
++  std::vector<base::UnguessableToken> expired;
++  for (const auto& [dashboard_session, viewer] : viewers_) {
++    if (viewer->expires_at <= now) {
++      expired.push_back(dashboard_session);
++    }
++  }
++  for (const base::UnguessableToken& dashboard_session : expired) {
++    TerminateViewer(dashboard_session, SupervisionViewerState::kExpired,
++                    SupervisionTerminalReason::kExpired,
++                    SupervisionAuditEvent::kAccessExpired,
++                    SupervisionErrorCode::kNone);
++  }
++}
++
++void PrometheusSupervisionProfileService::SweepFailedAttempts(base::Time now) {
++  while (!failed_attempts_.empty() &&
++         failed_attempts_.front() + PairingTtl(limits_) <= now) {
++    failed_attempts_.pop_front();
++  }
++}
++
++PrometheusSupervisionProfileService::PendingPairing*
++PrometheusSupervisionProfileService::FindPendingPairing(
++    std::string_view normalized_code) {
++  if (!IsValidSupervisionPairingCode(normalized_code)) {
++    return nullptr;
++  }
++  PendingPairing* match = nullptr;
++  for (auto& [stable_tab_id, pairing] : pending_pairings_) {
++    const std::string candidate = PairingDigest(pairing->salt, normalized_code);
++    if (DigestsEqual(candidate, pairing->digest)) {
++      match = pairing.get();
++    }
++  }
++  return match;
++}
++
++tabs::TabInterface* PrometheusSupervisionProfileService::ResolveExactTarget(
++    const PendingPairing& pairing) const {
++  auto observed = observed_tabs_.find(pairing.stable_tab_id);
++  if (observed == observed_tabs_.end() || !observed->second->lease.data() ||
++      observed->second->tab != pairing.tab || !pairing.exact_browser ||
++      !IsEligibleTarget(profile_, pairing.exact_browser.get(), pairing.tab)) {
++    return nullptr;
++  }
++  return pairing.tab;
++}
++
++tabs::TabInterface* PrometheusSupervisionProfileService::ResolveExactTarget(
++    const ViewerSession& viewer) const {
++  auto observed = observed_tabs_.find(viewer.stable_tab_id);
++  if (observed == observed_tabs_.end() || !observed->second->lease.data() ||
++      observed->second->tab != viewer.tab || !viewer.exact_browser ||
++      !IsEligibleTarget(profile_, viewer.exact_browser.get(), viewer.tab)) {
++    return nullptr;
++  }
++  return viewer.tab;
++}
++
++PrometheusSupervisionProfileService::ObservedTab*
++PrometheusSupervisionProfileService::AcquireObservedTab(
++    tabs::TabInterface* tab) {
++  if (!tab || !observe_tab_data_) {
++    return nullptr;
++  }
++  const int32_t stable_tab_id = tab->GetHandle().raw_value();
++  auto existing = observed_tabs_.find(stable_tab_id);
++  if (existing != observed_tabs_.end()) {
++    return existing->second->tab == tab && existing->second->lease.data()
++               ? existing->second.get()
++               : nullptr;
++  }
++
++  auto observed = std::make_unique<ObservedTab>();
++  observed->stable_tab_id = stable_tab_id;
++  observed->tab = tab;
++  observed->observer = std::make_unique<TabOwnerObserver>(
++      weak_factory_.GetWeakPtr(), stable_tab_id);
++  observed->lease = observe_tab_data_.Run(tab, observed->observer.get());
++  if (!observed->lease.data()) {
++    return nullptr;
++  }
++  ObservedTab* result = observed.get();
++  observed_tabs_[stable_tab_id] = std::move(observed);
++  return result;
++}
++
++void PrometheusSupervisionProfileService::ReleaseObservedTabIfUnused(
++    int32_t stable_tab_id) {
++  auto observed = observed_tabs_.find(stable_tab_id);
++  if (observed == observed_tabs_.end()) {
++    return;
++  }
++  auto pairing = pending_pairings_.find(stable_tab_id);
++  if ((pairing != pending_pairings_.end() &&
++       pairing->second->state == SupervisionPairingState::kPending) ||
++      viewer_count_for_testing(stable_tab_id) != 0) {
++    return;
++  }
++  observed_tabs_.erase(observed);
++}
++
++void PrometheusSupervisionProfileService::ScheduleObservedTabRelease(
++    int32_t stable_tab_id) {
++  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE,
++      base::BindOnce(
++          &PrometheusSupervisionProfileService::ReleaseObservedTabIfUnused,
++          weak_factory_.GetWeakPtr(), stable_tab_id));
++}
++
++void PrometheusSupervisionProfileService::OnObservedOwnerChanged(
++    int32_t stable_tab_id,
++    std::string_view old_owner_session_id,
++    std::string_view new_owner_session_id) {
++  if (shutdown_ || old_owner_session_id == new_owner_session_id) {
++    return;
++  }
++  TerminateViewersForTab(stable_tab_id, SupervisionViewerState::kAuthorityLost,
++                         SupervisionTerminalReason::kOwnerLost,
++                         SupervisionAuditEvent::kAuthorityLost,
++                         SupervisionErrorCode::kViewOnly);
++}
++
++void PrometheusSupervisionProfileService::OnObservedTabDataDestroying(
++    int32_t stable_tab_id) {
++  auto observed = observed_tabs_.find(stable_tab_id);
++  if (observed != observed_tabs_.end()) {
++    observed->second->tab = nullptr;
++    observed->second->lease.Reset();
++  }
++  HandleTargetLost(stable_tab_id);
++}
++
++void PrometheusSupervisionProfileService::TerminateViewer(
++    const base::UnguessableToken& dashboard_session,
++    SupervisionViewerState viewer_state,
++    SupervisionTerminalReason reason,
++    SupervisionAuditEvent audit_event,
++    SupervisionErrorCode error_code) {
++  auto viewer_it = viewers_.find(dashboard_session);
++  if (viewer_it == viewers_.end()) {
++    return;
++  }
++  std::unique_ptr<ViewerSession> viewer = std::move(viewer_it->second);
++  viewers_.erase(viewer_it);
++  auto controller = controllers_.find(viewer->stable_tab_id);
++  if (controller != controllers_.end() &&
++      controller->second == dashboard_session) {
++    controllers_.erase(controller);
++  }
++  viewer->viewer_state = viewer_state;
++  viewer->stream_state = SupervisionStreamState::kEnded;
++  viewer->terminal_reason = reason;
++  ++viewer->authority_generation;
++
++  SupervisionSessionSnapshot snapshot;
++  snapshot.client.display_label = viewer->client_label;
++  snapshot.client.connected_at_ms =
++      viewer->connected_at.InMillisecondsSinceUnixEpoch();
++  snapshot.client.last_seen_at_ms =
++      viewer->last_seen_at.InMillisecondsSinceUnixEpoch();
++  snapshot.client.expires_at_ms =
++      viewer->expires_at.InMillisecondsSinceUnixEpoch();
++  snapshot.viewer_state = viewer->viewer_state;
++  snapshot.stream_state = viewer->stream_state;
++  snapshot.terminal_reason = viewer->terminal_reason;
++
++  recent_terminal_sessions_.push_back(RecentTerminalSession{
++      dashboard_session, viewer->stable_tab_id, std::move(snapshot),
++      viewer->authority_generation, Now() + ViewerTtl(limits_)});
++  while (recent_terminal_sessions_.size() > limits_.sessions_per_profile) {
++    recent_terminal_sessions_.pop_front();
++  }
++
++  const int32_t stable_tab_id = viewer->stable_tab_id;
++  AddAudit(stable_tab_id, audit_event,
++           std::optional<std::string>(viewer->client_label), error_code);
++  NotifySnapshotChanged(stable_tab_id);
++  ScheduleObservedTabRelease(stable_tab_id);
++}
++
++void PrometheusSupervisionProfileService::TerminateViewersForTab(
++    int32_t stable_tab_id,
++    SupervisionViewerState viewer_state,
++    SupervisionTerminalReason reason,
++    SupervisionAuditEvent audit_event,
++    SupervisionErrorCode error_code) {
++  std::vector<base::UnguessableToken> sessions;
++  for (const auto& [dashboard_session, viewer] : viewers_) {
++    if (viewer->stable_tab_id == stable_tab_id) {
++      sessions.push_back(dashboard_session);
++    }
++  }
++  for (const base::UnguessableToken& dashboard_session : sessions) {
++    TerminateViewer(dashboard_session, viewer_state, reason, audit_event,
++                    error_code);
++  }
++}
++
++bool PrometheusSupervisionProfileService::RevalidateViewerOwner(
++    const base::UnguessableToken& dashboard_session) {
++  auto viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end()) {
++    return false;
++  }
++  auto observed = observed_tabs_.find(viewer->second->stable_tab_id);
++  if (!ResolveExactTarget(*viewer->second) ||
++      observed == observed_tabs_.end() || !observed->second->lease.data()) {
++    TerminateViewer(dashboard_session, SupervisionViewerState::kTargetClosed,
++                    SupervisionTerminalReason::kTargetClosed,
++                    SupervisionAuditEvent::kTargetClosed,
++                    SupervisionErrorCode::kStaleTarget);
++    return false;
++  }
++  if (observed->second->lease.data()->owner_session_id() !=
++      viewer->second->immutable_owner_session_id) {
++    TerminateViewer(dashboard_session, SupervisionViewerState::kAuthorityLost,
++                    SupervisionTerminalReason::kAuthorityLost,
++                    SupervisionAuditEvent::kAuthorityLost,
++                    SupervisionErrorCode::kViewOnly);
++    return false;
++  }
++  return true;
++}
++
++void PrometheusSupervisionProfileService::AddAudit(
++    int32_t stable_tab_id,
++    SupervisionAuditEvent event,
++    std::optional<std::string> client_label,
++    SupervisionErrorCode error_code) {
++  tabs::TabInterface* tab = nullptr;
++  auto observed = observed_tabs_.find(stable_tab_id);
++  if (observed != observed_tabs_.end()) {
++    tab = observed->second->tab;
++  }
++  SupervisionAuditSnapshot row;
++  row.event = event;
++  row.timestamp_ms = Now().InMillisecondsSinceUnixEpoch();
++  if (client_label.has_value()) {
++    row.client_label = DeriveSupervisionSafeClientLabel(*client_label);
++  }
++  row.safe_target_title = SafeTitle(tab);
++  row.safe_origin = SafeOrigin(tab);
++  row.error_code = error_code;
++  audit_.emplace_back(stable_tab_id, std::move(row));
++  while (audit_.size() > limits_.audit_rows) {
++    audit_.pop_front();
++  }
++}
++
++void PrometheusSupervisionProfileService::NotifySnapshotChanged(
++    int32_t stable_tab_id) {
++  if (shutdown_) {
++    return;
++  }
++  const SanitizedSupervisionSnapshot snapshot =
++      BuildSanitizedSnapshot(stable_tab_id);
++  for (Observer& observer : observers_) {
++    observer.OnPrometheusSupervisionSnapshotChanged(stable_tab_id, snapshot);
++  }
++}
++
++SanitizedSupervisionSnapshot
++PrometheusSupervisionProfileService::BuildSanitizedSnapshot(
++    int32_t stable_tab_id) const {
++  SanitizedSupervisionSnapshot snapshot;
++  auto pairing = pending_pairings_.find(stable_tab_id);
++  auto last_pairing = last_pairing_states_.find(stable_tab_id);
++  if (pairing != pending_pairings_.end()) {
++    snapshot.pairing_state = pairing->second->state;
++  } else if (last_pairing != last_pairing_states_.end()) {
++    snapshot.pairing_state = last_pairing->second;
++  }
++
++  tabs::TabInterface* tab = nullptr;
++  PrometheusAgentTabData* data = nullptr;
++  auto observed = observed_tabs_.find(stable_tab_id);
++  if (observed != observed_tabs_.end()) {
++    tab = observed->second->tab;
++    data = observed->second->lease.data();
++  }
++  snapshot.target.safe_title = SafeTitle(tab);
++  snapshot.target.safe_origin = SafeOrigin(tab);
++  snapshot.target.eligible = tab && tab->GetProfile() == profile_ &&
++                             tab->GetURL().is_valid() &&
++                             tab->GetURL().SchemeIsHTTPOrHTTPS();
++  snapshot.target.agent_active = data && !data->owner_session_id().empty();
++  if (data && !data->owner_label().empty()) {
++    snapshot.target.owner_label =
++        DeriveSupervisionSafeClientLabel(data->owner_label());
++  }
++  snapshot.target.viewer_count = viewer_count_for_testing(stable_tab_id);
++  auto controller = controllers_.find(stable_tab_id);
++  if (controller != controllers_.end()) {
++    auto controller_viewer = viewers_.find(controller->second);
++    if (controller_viewer != viewers_.end()) {
++      snapshot.target.controller_label =
++          controller_viewer->second->client_label;
++    }
++  }
++
++  for (const auto& [dashboard_session, viewer] : viewers_) {
++    if (viewer->stable_tab_id != stable_tab_id ||
++        snapshot.sessions.size() >= limits_.sessions_per_profile) {
++      continue;
++    }
++    SupervisionSessionSnapshot session;
++    session.client.display_label = viewer->client_label;
++    session.client.connected_at_ms =
++        viewer->connected_at.InMillisecondsSinceUnixEpoch();
++    session.client.last_seen_at_ms =
++        viewer->last_seen_at.InMillisecondsSinceUnixEpoch();
++    session.client.expires_at_ms =
++        viewer->expires_at.InMillisecondsSinceUnixEpoch();
++    session.viewer_state = viewer->viewer_state;
++    session.stream_state = viewer->stream_state;
++    session.terminal_reason = viewer->terminal_reason;
++    snapshot.sessions.push_back(std::move(session));
++  }
++  for (const RecentTerminalSession& recent : recent_terminal_sessions_) {
++    if (recent.stable_tab_id == stable_tab_id &&
++        snapshot.sessions.size() < limits_.sessions_per_profile) {
++      snapshot.sessions.push_back(recent.snapshot);
++    }
++  }
++  for (const auto& [audit_tab_id, row] : audit_) {
++    if (audit_tab_id == stable_tab_id) {
++      snapshot.audit.push_back(row);
++    }
++  }
++  return snapshot;
+ }
+ 
+ SupervisionServiceResult
+ PrometheusSupervisionProfileService::UnavailableResult() const {
+-  return SupervisionServiceResult::Failure(
+-      SupervisionErrorCode::kShutdown, "Supervision is unavailable",
+-      "Return to a regular Prometheus profile and retry");
++  return ServiceFailure(SupervisionErrorCode::kShutdown,
++                        "Supervision is unavailable",
++                        "Return to a regular Prometheus profile and retry");
+ }
+ 
+ SupervisionServiceResult
+ PrometheusSupervisionProfileService::UnknownSessionResult() const {
+-  return SupervisionServiceResult::Failure(
+-      SupervisionErrorCode::kUnknownSession, "Supervision session is unknown",
+-      "Create and redeem a new pairing");
++  return ServiceFailure(SupervisionErrorCode::kUnknownSession,
++                        "Supervision session is unknown",
++                        "Create and redeem a new pairing");
+ }
+ 
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+
