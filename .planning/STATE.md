@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 6
+current_plan: 7
 status: executing
-stopped_at: Completed 21-05-PLAN.md
-last_updated: "2026-07-22T02:11:04.351Z"
+stopped_at: Completed 21-06-PLAN.md
+last_updated: "2026-07-22T03:13:41.143Z"
 last_activity: 2026-07-22
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 71
-  percent: 77
+  completed_plans: 72
+  percent: 78
 ---
 
 # Project State
@@ -36,24 +36,29 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 6 of 26
+Plan: 7 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 6
+**Current Plan:** 7
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [████████░░] 77%
+**Progress:** [████████░░] 78%
 **Last Activity:** 2026-07-22
-**Last Activity Description:** Completed Plan 21-05 — exact regular-profile
-Agent/supervision keyed-service composition, weak observation forwarding, OTR
-denial, and safe teardown in both service destruction orders.
+**Last Activity Description:** Completed Plan 21-06 — document-scoped Blink
+dirty/overflow signaling, bidirectional Mojo, bounded MutationObserver work,
+and complete renderer disconnect/navigation teardown.
 
-Milestone work is 71 of 92 existing plans complete (77%); cumulative project
-work is 122 of 144 existing plans summarized (85%).
+Milestone work is 72 of 92 existing plans complete (78%); cumulative project
+work is 123 of 144 existing plans summarized (85%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 6: the exact 12-test Blink lifecycle gate and retained 68-test
+  supervision regression pass with generated-Mojo and renderer-initializer
+  compile proof, source privacy guards, stable patch identity, and byte-identical
+  Ninja metadata.
 
 - Phase 21 Plan 5: the exact 8-test factory/profile gate and combined 68-test
   supervision regression pass with sole-Agent ownership guards, exact-profile
@@ -200,6 +205,8 @@ work is 122 of 144 existing plans summarized (85%).
 - [Phase 21]: Keep PrometheusAgentService as the sole creator, registrar, owner, detach observer, and destroyer of tab authority data; supervision receives only a coalesced move-only observation lease. — One lifetime owner avoids duplicate registration, observer-list violations, and use-after-free across detach and shutdown.
 - [Phase 21]: Retain only salted pairing-code digests and expose only bounded newest-first metadata through supervision snapshots and audit. — Raw credentials and browser authority remain memory-only and structurally absent from routine surfaces.
 - [Phase 21]: Compose supervision only through the exact regular profile Agent keyed service and inject a weak observation callback. — Explicit factory dependency and fail-closed null, OTR, missing, and mismatched checks preserve one tab-data owner across teardown.
+- [Phase 21]: Emit only kDirty or kOverflow from a document-scoped Blink Supplement while browser code retains capture, identity, sequence, and fan-out authority. — Content-free invalidation wakes APC recapture without creating a renderer serializer or second authority owner.
+- [Phase 21]: Reduce MutationObserver delivery only through a fixed record-count ceiling and one 50 ms timer, with every Mojo and document teardown path converging on Disable. — Bounded coalescing and idempotent cleanup prevent content inspection, callback amplification, and late cross-document signals.
 
 ## Performance Metrics
 
@@ -220,6 +227,7 @@ work is 122 of 144 existing plans summarized (85%).
 | Phase 21 P03 | 38min | 3 tasks | 12 files |
 | Phase 21 P04 | 42min | 3 tasks | 14 files |
 | Phase 21 P05 | 1h28min | 2 tasks | 13 files |
+| Phase 21 P06 | 56min | 3 tasks | 15 files |
 
 ## Blockers and Deferred Items
 
@@ -234,11 +242,11 @@ work is 122 of 144 existing plans summarized (85%).
 
 ## Session
 
-**Last Date:** 2026-07-22T02:11:04.246Z
-**Stopped At:** Completed 21-05-PLAN.md
+**Last Date:** 2026-07-22T03:13:41.137Z
+**Stopped At:** Completed 21-06-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-06-PLAN.md` to add the Blink document supplement and bidirectional
-dirty-signal Mojo path on the safely composed regular-profile service boundary.
+Execute `21-07-PLAN.md` to create the sole browser-owned per-target/document
+capture hub over the new Blink dirty-signal path.
