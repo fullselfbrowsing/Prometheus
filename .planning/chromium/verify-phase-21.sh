@@ -321,6 +321,10 @@ verify_gateway_contract() {
   require_literal 'SetSupervisionGatewayDispatcher' "${gateway_source}"
   require_literal 'ParseSupervisionTransportRequest' "${gateway_source}"
   require_literal 'supervision_dispatcher_->dispatch.Run' "${gateway_source}"
+  require_literal 'supervision_dispatcher_->cancel.Run' "${gateway_source}"
+  require_literal 'supervision_dispatcher_->readiness.Run' "${gateway_source}"
+  require_literal 'ShutdownSupervisionDispatcher' "${gateway_source}"
+  require_literal 'OnTransportRequestTerminated' "${gateway_source}"
   require_literal '"prometheus_agent_gateway_contract.h"' "${browser_build}"
   sed -n '/source_set("prometheus_agent_gateway") {/,/^}/p' \
     "${browser_build}" >"${gateway_build_block}"
