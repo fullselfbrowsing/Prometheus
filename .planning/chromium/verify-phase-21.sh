@@ -340,6 +340,46 @@ verify_gateway_contract() {
   note 'gateway abstract-dispatch contract and GN static guards passed'
 }
 
+verify_agent_supervision_transport_contract() {
+  local route_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_route.h"
+  local route_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_route.cc"
+  local codec_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_transport_codec.h"
+  local codec_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_transport_codec.cc"
+  local codec_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc"
+  local browser_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
+
+  require_file "${route_header}"
+  require_file "${route_source}"
+  require_file "${codec_header}"
+  require_file "${codec_source}"
+  require_file "${codec_test}"
+  require_literal 'kAgentSupervisionRouteCount = 5' "${route_header}"
+  require_literal 'kCreateSupervisionPairing' "${route_header}"
+  require_literal 'kStartSupervisionSession' "${route_header}"
+  require_literal 'kGetSupervisionSnapshot' "${route_header}"
+  require_literal 'kGetSupervisionDiff' "${route_header}"
+  require_literal 'kEndSupervisionSession' "${route_header}"
+  require_literal 'using AgentSupervisionPayload =' "${route_header}"
+  require_literal 'AgentSupervisionLocalUiResult' "${route_header}"
+  require_literal 'AgentSupervisionBaselineResult' "${route_header}"
+  require_literal 'AgentSupervisionDiffResult' "${route_header}"
+  require_literal 'AgentSupervisionNoChangeResult' "${route_header}"
+  require_literal 'AgentSupervisionEndedResult' "${route_header}"
+  require_literal 'SupervisionManifestHasExactlyFiveBijectiveRoutes' "${codec_test}"
+  require_literal 'SupervisionRequestsAcceptOnlyEmptyCallerScopedObjects' "${codec_test}"
+  require_literal 'SupervisionRejectsRecursiveAuthorityContentAndSecretSentinels' "${codec_test}"
+  require_literal '"prometheus_agent_transport_codec_unittest.cc"' "${browser_build}"
+  reject_pattern \
+    'prometheus_supervision_(profile_service|profile_service_factory|capture_hub)|PrometheusSupervision(ProfileService|ProfileServiceFactory|CaptureHub)|prometheus_supervision_document|RenderFrameHost|WebContents' \
+    'Agent route/codec contract gained concrete supervision service, capture, or renderer ownership' \
+    "${route_header}" "${route_source}" "${codec_header}" "${codec_source}"
+  reject_pattern \
+    'start_visual_session|end_visual_session' \
+    'legacy visual-session names re-entered the native Agent route or codec' \
+    "${route_header}" "${route_source}" "${codec_header}" "${codec_source}"
+  note 'Agent supervision route/result declarations, privacy fixture, and GN guards passed'
+}
+
 sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
@@ -726,6 +766,10 @@ build_browser_focused_blink_modules() {
 build_focused_binary() {
   local route_object='obj/chrome/browser/prometheus/prometheus_agent_route/prometheus_agent_route.o'
   local route_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_route_unittest.o'
+  local agent_codec_object='obj/chrome/browser/prometheus/prometheus_agent_transport_codec/prometheus_agent_transport_codec.o'
+  local agent_codec_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_transport_codec_unittest.o'
+  local agent_codec_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc"
+  local agent_transport_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_transport_unittest.o'
   local agent_service_object='obj/chrome/browser/prometheus/prometheus_agent_service/prometheus_agent_service.o'
   local agent_service_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_service_unittest.o'
   local agent_tab_data_object='obj/chrome/browser/prometheus/prometheus_agent_tab_data/prometheus_agent_tab_data.o'
@@ -784,6 +828,8 @@ build_focused_binary() {
     cd "${OUT_DIR}"
     compile_exact_object "${route_object}"
     compile_exact_object "${route_test_object}"
+    compile_exact_object "${agent_codec_object}"
+    compile_exact_object "${agent_transport_test_object}"
     compile_exact_object "${agent_tab_data_object}"
     compile_exact_object "${agent_service_object}"
     compile_exact_object "${agent_service_test_object}"
@@ -796,6 +842,11 @@ build_focused_binary() {
       compile_exact_object "${gateway_browser_object}"
     fi
   )
+
+  [[ -s "${agent_codec_test_source}" ]] \
+    || fail 'Agent supervision transport codec test is missing or empty'
+  compile_synthesized_object "${agent_transport_test_object}" "${agent_codec_test_object}" \
+    prometheus_agent_transport_unittest prometheus_agent_transport_codec_unittest
 
   if [[ -e "${agent_profile_test_source}" ]]; then
     [[ -s "${agent_profile_test_source}" ]] \
@@ -1030,6 +1081,7 @@ if [[ "${FOCUS_KIND}" == 'blink' ]]; then
 else
   verify_composition_contract
   verify_gateway_contract
+  verify_agent_supervision_transport_contract
   if [[ -e "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h" ]]; then
     verify_capture_hub_contract
   fi
