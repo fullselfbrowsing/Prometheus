@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 13
+current_plan: 14
 status: ready
-stopped_at: Completed 21-12-PLAN.md
-last_updated: "2026-07-22T12:48:06.000Z"
+stopped_at: Completed 21-13-PLAN.md
+last_updated: "2026-07-22T13:06:04.647Z"
 last_activity: 2026-07-22
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 78
-  percent: 85
+  completed_plans: 79
+  percent: 86
 ---
 
 # Project State
@@ -36,24 +36,29 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 13 of 26
+Plan: 14 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 13
+**Current Plan:** 14
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [████████▌░] 85%
+**Progress:** [█████████░] 86%
 **Last Activity:** 2026-07-22
-**Last Activity Description:** Completed Plan 21-12 — real shared-hub Agent
-compatibility semantics, serialization-safe independent cursors, mixed live
-dashboard/Agent mutations, and production dual-path unbind proof.
+**Last Activity Description:** Completed Plan 21-13 — exact five-name native
+MCP catalog promotion, empty authority-free schemas, live supervision health,
+and frozen Node RED/GREEN privacy gates.
 
-Milestone work is 78 of 92 existing plans complete (85%); cumulative project
-work is 129 of 144 existing plans summarized (90%).
+Milestone work is 79 of 92 existing plans complete (86%); cumulative project
+work is 130 of 144 existing plans summarized (90%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 13: the 7-test exact Node GREEN gate and complete 80-test MCP
+  regression pass with a 54/12/22/0/2 catalog, five deeply empty native
+  supervision schemas, authority-free forwarding/results, live supervision
+  health, retained extension deferral, and unchanged nested Chromium tree.
 
 - Phase 21 Plan 12: the exact 2-test mixed live-browser gate and final 14-test
   service/codec regression pass with five real shared-hub compatibility
@@ -263,6 +268,9 @@ work is 129 of 144 existing plans summarized (90%).
 - [Phase 21]: Treat successful closed-codec serialization as the Agent cursor commit boundary. — Rejected baseline or diff output remains unacknowledged and readable for safe resynchronization.
 - [Phase 21]: Return Agent no-change only after a fresh validated read sees no batch and the shared hub is settled. — Compatibility cannot manufacture an empty result while capture work or a baseline is pending.
 - [Phase 21]: End composition-owned dashboard sessions after cancelling waits and before clearing Agent dispatch. — Ordered dual unbind releases dashboard resources, completes pending transport exactly once, and makes later paths fail safely.
+- [Phase 21]: Keep the 90-name MCP union fixed while promoting exactly five supervision dispositions to native. — Public tool identity remains stable while only browser-backed availability changes.
+- [Phase 21]: Forward supervision through the existing empty native command envelope and keep target, stream, code, cursor, and controller authority browser-owned. — The authenticated Agent binding already pins exact scope, so Node must not synthesize a second authority surface.
+- [Phase 21]: Apply recursive authority-field defense only to supervision results and pass through live supervision readiness while extensions remain Phase 22 not-ready. — This protects supervision credentials without removing legitimate content from ordinary page tools or weakening the extension boundary.
 
 ## Performance Metrics
 
@@ -290,6 +298,7 @@ work is 129 of 144 existing plans summarized (90%).
 | Phase 21 P10 | 50min | 2 tasks | 13 files |
 | Phase 21 P11 | 57min | 3 tasks | 18 files |
 | Phase 21 P12 | 1h51min | 3 tasks | 18 files |
+| Phase 21 P13 | 10min | 2 tasks | 9 files |
 
 ## Blockers and Deferred Items
 
@@ -304,11 +313,11 @@ work is 129 of 144 existing plans summarized (90%).
 
 ## Session
 
-**Last Date:** 2026-07-22T12:48:06.000Z
-**Stopped At:** Completed 21-12-PLAN.md
+**Last Date:** 2026-07-22T13:06:04.641Z
+**Stopped At:** Completed 21-13-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-13-PLAN.md` to promote the five real supervision compatibility
-tools in the dependency-free Node catalog.
+Execute `21-14-PLAN.md` to route approved remote-control actions through the
+existing typed Agent action engine without creating a second dispatcher.
