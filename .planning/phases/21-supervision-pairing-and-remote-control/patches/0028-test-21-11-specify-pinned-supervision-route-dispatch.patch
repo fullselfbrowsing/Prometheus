@@ -1,0 +1,215 @@
+From 481a7363c22ea305d53ea553188398edde7cebd0 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 05:18:54 -0500
+Subject: [PATCH] test(21-11): specify pinned supervision route dispatch
+
+Retain the five-route RED contract for exact Browser and Agent-only abstract dispatch before production wiring.
+---
+ .../prometheus/prometheus_agent_service.cc    | 15 +++
+ .../prometheus/prometheus_agent_service.h     | 10 ++
+ .../prometheus_agent_service_unittest.cc      | 96 +++++++++++++++++++
+ 3 files changed, 121 insertions(+)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.cc b/chrome/browser/prometheus/prometheus_agent_service.cc
+index 5225ab6b99..38ec69fb2b 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service.cc
+@@ -15,6 +15,7 @@
+ #include "base/check.h"
+ #include "base/containers/span.h"
+ #include "base/functional/bind.h"
++#include "base/no_destructor.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/sequenced_task_runner.h"
+@@ -223,6 +224,14 @@ std::optional<ConfirmedVaultTargetBinding> CaptureConfirmedVaultTarget(
+ 
+ namespace {
+ 
++PrometheusAgentService::SupervisionRouteDispatcher&
++SupervisionRouteDispatcherStorage() {
++  static base::NoDestructor<
++      PrometheusAgentService::SupervisionRouteDispatcher>
++      supervision_route_dispatcher_;
++  return *supervision_route_dispatcher_;
++}
++
+ bool IsNullTabHandle(tabs::TabHandle handle) {
+   return handle.raw_value() == tabs::TabHandle::NullValue;
+ }
+@@ -429,6 +438,12 @@ std::vector<AgentWindowMetadata> BuildWindowMetadata(Profile* profile) {
+ 
+ }  // namespace
+ 
++// static
++void PrometheusAgentService::SetSupervisionRouteDispatcher(
++    SupervisionRouteDispatcher dispatcher) {
++  SupervisionRouteDispatcherStorage() = std::move(dispatcher);
++}
++
+ struct PrometheusAgentService::OwnedTabData {
+   OwnedTabData(std::unique_ptr<PrometheusAgentTabData> data,
+                base::CallbackListSubscription will_detach_subscription)
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.h b/chrome/browser/prometheus/prometheus_agent_service.h
+index 2e2431c156..cb5820ee73 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_service.h
+@@ -191,6 +191,10 @@ class PrometheusAgentService {
+  public:
+   using NowCallback = base::RepeatingCallback<base::Time()>;
+   using RouteCallback = base::OnceCallback<void(AgentRouteResult)>;
++  using SupervisionRouteDispatcher = base::RepeatingCallback<void(
++      BrowserWindowInterface*,
++      const AgentRouteRequest&,
++      RouteCallback)>;
+   using ConfirmedVaultCallback =
+       base::OnceCallback<void(ConfirmedVaultInsertionResult)>;
+   using ConfirmedVaultTargetInspector =
+@@ -214,6 +218,12 @@ class PrometheusAgentService {
+   PrometheusAgentService& operator=(const PrometheusAgentService&) = delete;
+   ~PrometheusAgentService();
+ 
++  // Installs the process-owned compatibility bridge. The callback contract is
++  // deliberately Agent-only so this target remains independent from concrete
++  // supervision services. Passing an empty callback is an idempotent unbind.
++  static void SetSupervisionRouteDispatcher(
++      SupervisionRouteDispatcher dispatcher);
++
+   AgentSessionResult CreateSession(std::string display_label);
+   AgentRouteResult CloseSession(std::string_view session_id);
+   void ReleaseSessionOwnership(std::string_view session_id);
+diff --git a/chrome/browser/prometheus/prometheus_agent_service_unittest.cc b/chrome/browser/prometheus/prometheus_agent_service_unittest.cc
+index b2b244ef4b..c00b529ad8 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service_unittest.cc
+@@ -15,6 +15,8 @@
+ #include "base/test/task_environment.h"
+ #include "base/test/test_future.h"
+ #include "chrome/browser/prometheus/prometheus_agent_session.h"
++#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
++#include "components/sessions/core/session_id.h"
+ #include "components/tabs/public/mock_tab_interface.h"
+ #include "testing/gmock/include/gmock/gmock.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+@@ -48,6 +50,10 @@ class PrometheusAgentServiceTest : public testing::Test {
+         &PrometheusAgentServiceTest::InsertField, base::Unretained(this)));
+   }
+ 
++  ~PrometheusAgentServiceTest() override {
++    PrometheusAgentService::SetSupervisionRouteDispatcher({});
++  }
++
+  protected:
+   base::Time Now() const { return now_; }
+ 
+@@ -137,8 +143,60 @@ class PrometheusAgentServiceTest : public testing::Test {
+     return future.Get();
+   }
+ 
++  void ConfigureSupervisionTarget() {
++    browser_ = &supervision_browser_;
++    other_browser_ = &other_supervision_browser_;
++    ON_CALL(supervision_browser_, GetProfile())
++        .WillByDefault(testing::Return(profile_.get()));
++    ON_CALL(supervision_browser_, GetSessionID())
++        .WillByDefault(testing::ReturnRef(supervision_browser_session_id_));
++    ON_CALL(supervision_browser_, GetType())
++        .WillByDefault(
++            testing::Return(BrowserWindowInterface::TYPE_NORMAL));
++    ON_CALL(supervision_browser_, IsDeleteScheduled())
++        .WillByDefault(testing::Return(false));
++    ON_CALL(other_supervision_browser_, GetProfile())
++        .WillByDefault(testing::Return(profile_.get()));
++    ON_CALL(other_supervision_browser_, GetSessionID())
++        .WillByDefault(
++            testing::ReturnRef(other_supervision_browser_session_id_));
++    ON_CALL(other_supervision_browser_, GetType())
++        .WillByDefault(
++            testing::Return(BrowserWindowInterface::TYPE_NORMAL));
++    ON_CALL(other_supervision_browser_, IsDeleteScheduled())
++        .WillByDefault(testing::Return(false));
++    ON_CALL(supervision_tab_, GetBrowserWindowInterface())
++        .WillByDefault(testing::Return(&supervision_browser_));
++  }
++
++  AgentRouteRequest SupervisionRequest(AgentRouteName route_name) const {
++    AgentRouteRequest request;
++    request.route_name = route_name;
++    request.session_id = session_id_;
++    request.target.browser_session_id = supervision_browser_session_id_.id();
++    request.target.window_session_id = supervision_browser_session_id_.id();
++    request.target.tab_handle = supervision_tab_.GetHandle();
++    return request;
++  }
++
++  AgentRouteResult ExecuteAgentRoute(BrowserWindowInterface* browser,
++                                     const AgentRouteRequest& request) {
++    std::optional<AgentRouteResult> result;
++    service_.ExecuteRoute(
++        browser, request,
++        base::BindOnce(
++            [](std::optional<AgentRouteResult>* output,
++               AgentRouteResult route_result) {
++              output->emplace(std::move(route_result));
++            },
++            &result));
++    CHECK(result.has_value());
++    return std::move(*result);
++  }
++
+   void OnWipe() { ++wipe_count_; }
+ 
++  base::test::TaskEnvironment task_environment_;
+   base::Time now_;
+   AgentSessionRegistry registry_;
+   PrometheusAgentService service_;
+@@ -164,8 +222,46 @@ class PrometheusAgentServiceTest : public testing::Test {
+   std::vector<AgentFrameTarget> inserted_frames_;
+   std::vector<std::string> inserted_refs_;
+   std::vector<std::string> inserted_values_;
++  testing::NiceMock<MockBrowserWindowInterface> supervision_browser_;
++  testing::NiceMock<MockBrowserWindowInterface> other_supervision_browser_;
++  const SessionID supervision_browser_session_id_ =
++      SessionID::FromSerializedValue(19);
++  const SessionID other_supervision_browser_session_id_ =
++      SessionID::FromSerializedValue(20);
++  tabs::MockTabInterface supervision_tab_;
+ };
+ 
++TEST_F(PrometheusAgentServiceTest,
++       SupervisionRoutesReachAbstractDispatcherWithExactScope) {
++  ConfigureSupervisionTarget();
++  constexpr AgentRouteName kRoutes[] = {
++      AgentRouteName::kCreateSupervisionPairing,
++      AgentRouteName::kStartSupervisionSession,
++      AgentRouteName::kGetSupervisionSnapshot,
++      AgentRouteName::kGetSupervisionDiff,
++      AgentRouteName::kEndSupervisionSession,
++  };
++  size_t dispatch_count = 0;
++  PrometheusAgentService::SetSupervisionRouteDispatcher(base::BindRepeating(
++      [](size_t* dispatch_count, BrowserWindowInterface* expected_browser,
++         BrowserWindowInterface* browser, const AgentRouteRequest& request,
++         PrometheusAgentService::RouteCallback callback) {
++        ++*dispatch_count;
++        EXPECT_EQ(expected_browser, browser);
++        EXPECT_TRUE(request.target.browser_session_id.has_value());
++        EXPECT_TRUE(request.target.window_session_id.has_value());
++        std::move(callback).Run(AgentRouteResult::Success({"supervision"}));
++      },
++      &dispatch_count, &supervision_browser_));
++
++  for (AgentRouteName route : kRoutes) {
++    AgentRouteResult result =
++        ExecuteAgentRoute(&supervision_browser_, SupervisionRequest(route));
++    EXPECT_TRUE(result.ok) << AgentRouteNameToString(route);
++  }
++  EXPECT_EQ(dispatch_count, std::size(kRoutes));
++}
++
+ TEST_F(PrometheusAgentServiceTest,
+        ConfirmedVaultMoveOnlySequentialSuccessAndPostCompletionWiping) {
+   static_assert(!std::is_copy_constructible_v<ConfirmedVaultInsertionRequest>);
+-- 
+2.50.1 (Apple Git-155)
+

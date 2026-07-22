@@ -770,6 +770,7 @@ build_focused_binary() {
   local agent_codec_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_transport_codec_unittest.o'
   local agent_codec_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc"
   local agent_transport_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_transport_unittest.o'
+  local agent_session_object='obj/chrome/browser/prometheus/prometheus_agent_session/prometheus_agent_session.o'
   local agent_service_object='obj/chrome/browser/prometheus/prometheus_agent_service/prometheus_agent_service.o'
   local agent_service_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_service_unittest.o'
   local agent_tab_data_object='obj/chrome/browser/prometheus/prometheus_agent_tab_data/prometheus_agent_tab_data.o'
@@ -830,6 +831,7 @@ build_focused_binary() {
     compile_exact_object "${route_test_object}"
     compile_exact_object "${agent_codec_object}"
     compile_exact_object "${agent_transport_test_object}"
+    compile_exact_object "${agent_session_object}"
     compile_exact_object "${agent_tab_data_object}"
     compile_exact_object "${agent_service_object}"
     compile_exact_object "${agent_service_test_object}"
