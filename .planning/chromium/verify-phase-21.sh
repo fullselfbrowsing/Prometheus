@@ -3,10 +3,11 @@ set -euo pipefail
 shopt -s nullglob
 
 FOCUS_FILTER=''
+FOCUS_KIND=''
 EXPECT_FAILURE=false
 
 usage() {
-  printf 'Usage: %s --focus FILTER [--expect-failure]\n' "$0" >&2
+  printf 'Usage: %s (--focus FILTER | --focus-blink FILTER) [--expect-failure]\n' "$0" >&2
 }
 
 while [[ "$#" -gt 0 ]]; do
@@ -21,6 +22,20 @@ while [[ "$#" -gt 0 ]]; do
         exit 2
       }
       FOCUS_FILTER="$2"
+      FOCUS_KIND='browser'
+      shift 2
+      ;;
+    --focus-blink)
+      [[ "$#" -ge 2 ]] || {
+        usage
+        exit 2
+      }
+      [[ -z "${FOCUS_FILTER}" ]] || {
+        usage
+        exit 2
+      }
+      FOCUS_FILTER="$2"
+      FOCUS_KIND='blink'
       shift 2
       ;;
     --expect-failure)
@@ -55,6 +70,11 @@ LIST_LOG="${LOG_DIR}/phase21-focused-list.log"
 TEST_LOG="${LOG_DIR}/phase21-focused-test.log"
 BUILD_LOG="${LOG_DIR}/phase21-focused-build.log"
 METADATA_CAPTURED=false
+
+if [[ "${FOCUS_KIND}" == 'blink' ]]; then
+  FOCUSED_BINARY="${OUT_DIR}/phase21_blink_tests"
+  TEMP_FOCUSED_BINARY="${FOCUSED_BINARY}"
+fi
 
 fail() {
   printf 'Phase 21 focused verification failed: %s\n' "$1" >&2
@@ -124,6 +144,46 @@ verify_composition_contract() {
   note 'Agent ownership and keyed-service composition static guards passed'
 }
 
+verify_blink_contract() {
+  local mojom="${CHROMIUM_DIR}/third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom"
+  local public_build="${CHROMIUM_DIR}/third_party/blink/public/mojom/BUILD.gn"
+  local supplement_header="${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h"
+  local supplement_source="${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc"
+  local supplement_test="${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc"
+  local content_build="${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/BUILD.gn"
+  local modules_build="${CHROMIUM_DIR}/third_party/blink/renderer/modules/BUILD.gn"
+
+  require_file "${mojom}"
+  require_file "${supplement_header}"
+  require_file "${supplement_source}"
+  require_file "${supplement_test}"
+  require_literal 'enum PrometheusSupervisionDirtySignal {' "${mojom}"
+  require_literal 'kDirty,' "${mojom}"
+  require_literal 'kOverflow,' "${mojom}"
+  require_literal 'interface PrometheusSupervisionDocumentHost {' "${mojom}"
+  require_literal 'OnDocumentDirty(PrometheusSupervisionDirtySignal signal);' "${mojom}"
+  require_literal 'interface PrometheusSupervisionDocument {' "${mojom}"
+  require_literal 'Enable(pending_remote<PrometheusSupervisionDocumentHost> host);' "${mojom}"
+  require_literal 'Disable();' "${mojom}"
+  reject_pattern \
+    '(^|[^[:alnum:]_])(string|array|map|struct|union|url|origin|node|record|identity|epoch|sequence)([^[:alnum:]_]|$)' \
+    'Blink supervision Mojo contract gained content or identity payloads' \
+    "${mojom}"
+
+  [[ "$(rg -c '^[[:space:]]*OnDocumentDirty\(' "${mojom}")" -eq 1 ]] \
+    || fail 'Blink host contract must expose exactly one dirty callback'
+  [[ "$(rg -c '^[[:space:]]*(Enable|Disable)\(' "${mojom}")" -eq 2 ]] \
+    || fail 'Blink document contract must expose only Enable and Disable'
+
+  require_literal '"content_extraction/prometheus_supervision_document.mojom"' "${public_build}"
+  require_literal '"prometheus_supervision_document_supplement.cc"' "${content_build}"
+  require_literal '"prometheus_supervision_document_supplement.h"' "${content_build}"
+  require_literal '"content_extraction/prometheus_supervision_document_supplement_unittest.cc"' "${modules_build}"
+  require_literal 'public Supplement<Document>' "${supplement_header}"
+  require_literal 'PrometheusSupervisionDocumentSupplement::BindReceiver' "${supplement_source}"
+  note 'Blink document, Mojo privacy, and GN static guards passed'
+}
+
 sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
@@ -168,8 +228,12 @@ compile_exact_object() {
   local command
   command="$(query_compile_command "${object}")"
   [[ -n "${command}" ]] || fail "compile command not found for ${object}"
+  mkdir -p "${OUT_DIR}/$(dirname "${object}")"
   printf 'compile %s\n' "${object}" >>"${BUILD_LOG}"
-  /bin/zsh -c "${command}" >>"${BUILD_LOG}" 2>&1 || {
+  (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${command}"
+  ) >>"${BUILD_LOG}" 2>&1 || {
     tail -n 80 "${BUILD_LOG}" >&2 || true
     fail "direct compile failed for ${object}"
   }
@@ -205,6 +269,202 @@ query_browser_link_command() {
            command = $0
          }
          END { print command }'
+}
+
+query_blink_link_command() {
+  LC_ALL=C "${SISO}" query commands -C "${OUT_DIR}" \
+      prometheus_action_dispatcher_unittests 2>/dev/null \
+    | LC_ALL=C awk \
+        'index($0, "linker_driver.py") &&
+         index($0, "@./prometheus_action_dispatcher_unittests.rsp") {
+           command = $0
+         }
+         END { print command }'
+}
+
+write_link_response() {
+  local target_ninja="$1"
+  local edge_output="$2"
+  local response_file="$3"
+  shift 3
+
+  {
+    perl -0777 -pe 's/\$\r?\n//g' "${OUT_DIR}/${target_ninja}" \
+      | awk -v output="${edge_output}" '
+          $1 == "build" {
+            first = $2
+            sub(/:$/, "", first)
+            if (first != output) next
+            start = 0
+            for (i = 1; i <= NF; ++i) {
+              if ($i == "link" || $i == "solink" ||
+                  $i == "solink_module") {
+                start = i + 1
+                break
+              }
+            }
+            if (!start) exit 2
+            for (i = start; i <= NF; ++i) {
+              if ($i == "|" || $i == "||") break
+              printf "%s ", $i
+            }
+            found = 1
+            exit
+          }
+          END { if (!found) exit 2 }
+        '
+    local extra
+    for extra in "$@"; do
+      printf '%s ' "${extra}"
+    done
+    perl -0777 -pe 's/\$\r?\n//g' "${OUT_DIR}/${target_ninja}" \
+      | awk -v output="${edge_output}" '
+          function value(prefix) {
+            return substr($0, length(prefix) + 1)
+          }
+          $1 == "build" {
+            if (active) exit
+            first = $2
+            sub(/:$/, "", first)
+            if (first == output) {
+              active = 1
+              found = 1
+            }
+            next
+          }
+          active && /^  frameworks = / { frameworks = value("  frameworks = ") }
+          active && /^  swiftmodules = / { swiftmodules = value("  swiftmodules = ") }
+          active && /^  solibs = / { solibs = value("  solibs = ") }
+          active && /^  libs = / { libs = value("  libs = ") }
+          END {
+            if (!found) exit 2
+            printf "%s %s %s %s\n", frameworks, swiftmodules, solibs, libs
+          }
+        '
+  } >"${OUT_DIR}/${response_file}"
+  require_file "${OUT_DIR}/${response_file}"
+}
+
+generate_blink_mojo_bindings() {
+  local mojom='../../third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom'
+  local parser_rsp='phase21-focused/prometheus-supervision-parser.rsp'
+  local blink_rsp='phase21-focused/prometheus-supervision-blink.rsp'
+  local shared_rsp='phase21-focused/prometheus-supervision-shared.rsp'
+  local message_ids_rsp='phase21-focused/prometheus-supervision-message-ids.rsp'
+  printf '%s\n' "${mojom}" >"${OUT_DIR}/${parser_rsp}"
+  printf '%s\n' "${mojom}" >"${OUT_DIR}/${blink_rsp}"
+  printf '%s\n' "${mojom}" >"${OUT_DIR}/${shared_rsp}"
+  printf '%s\n' "${mojom}" >"${OUT_DIR}/${message_ids_rsp}"
+
+  if ! (
+    cd "${OUT_DIR}"
+    python3 ../../mojo/public/tools/mojom/mojom_parser.py \
+      --input-root ../.. --input-root gen --output-root gen \
+      --mojom-file-list="${parser_rsp}" \
+      --enable-feature is_posix --enable-feature is_mac --enable-feature is_apple
+    python3 ../../mojo/public/tools/bindings/mojom_bindings_generator.py \
+      --use_bundled_pylibs -o gen generate -d ../../ -I ../../ \
+      --bytecode_path gen/mojo/public/tools/bindings \
+      --filelist="${message_ids_rsp}" --generate_non_variant_code \
+      --generate_message_ids -g c++
+    python3 ../../mojo/public/tools/bindings/mojom_bindings_generator.py \
+      --use_bundled_pylibs -o gen generate -d ../../ -I ../../ \
+      --bytecode_path gen/mojo/public/tools/bindings \
+      --export_attribute PLATFORM_EXPORT \
+      --export_header third_party/blink/renderer/platform/platform_export.h \
+      --filelist="${blink_rsp}" -g c++ --variant blink \
+      --typemap gen/third_party/blink/public/mojom/mojom_platform_blink__type_mappings \
+      --for_blink
+    python3 ../../mojo/public/tools/bindings/mojom_bindings_generator.py \
+      --use_bundled_pylibs -o gen generate -d ../../ -I ../../ \
+      --bytecode_path gen/mojo/public/tools/bindings \
+      --filelist="${shared_rsp}" --generate_non_variant_code -g c++ \
+      --export_attribute 'COMPONENT_EXPORT(MOJOM_SHARED_BLINK_COMMON_EXPORT)' \
+      --export_header base/component_export.h
+  ) >>"${BUILD_LOG}" 2>&1; then
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused Blink Mojo generation failed'
+  fi
+
+  require_file "${OUT_DIR}/gen/third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom-blink.cc"
+  require_file "${OUT_DIR}/gen/third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom-shared.cc"
+}
+
+build_blink_focused_binary() {
+  local production_template='obj/third_party/blink/renderer/modules/content_extraction/content_extraction/frame_metadata_observer_registry.o'
+  local production_object='obj/third_party/blink/renderer/modules/content_extraction/content_extraction/prometheus_supervision_document_supplement.o'
+  local test_template='obj/third_party/blink/renderer/modules/unit_tests/frame_metadata_observer_registry_unittest.o'
+  local test_object='obj/third_party/blink/renderer/modules/unit_tests/prometheus_supervision_document_supplement_unittest.o'
+  local blink_template='obj/third_party/blink/public/mojom/mojom_platform_blink/frame_metadata_observer_registry.mojom-blink.o'
+  local blink_object='obj/third_party/blink/public/mojom/mojom_platform_blink/prometheus_supervision_document.mojom-blink.o'
+  local shared_template='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/frame_metadata_observer_registry.mojom-shared.o'
+  local shared_object='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/prometheus_supervision_document.mojom-shared.o'
+  local frame_test_helpers_object='obj/third_party/blink/renderer/core/unit_test_support/frame_test_helpers.o'
+  local fake_web_plugin_object='obj/third_party/blink/renderer/core/unit_test_support/fake_web_plugin.o'
+  local blink_test_main_object='obj/third_party/blink/renderer/controller/blink_unittests_sources/run_all_tests.o'
+  local target_ninja='obj/chrome/renderer/prometheus_action_dispatcher_unittests.ninja'
+  local response_file='phase21_blink_tests.rsp'
+  local extra_objects=(
+    "${production_object}"
+    "${test_object}"
+    "${blink_object}"
+    "${shared_object}"
+    "${frame_test_helpers_object}"
+    "${fake_web_plugin_object}"
+    "${blink_test_main_object}"
+  )
+
+  : >"${BUILD_LOG}"
+  generate_blink_mojo_bindings
+  compile_synthesized_object "${production_template}" "${production_object}" \
+    frame_metadata_observer_registry prometheus_supervision_document_supplement
+  compile_synthesized_object "${test_template}" "${test_object}" \
+    frame_metadata_observer_registry_unittest prometheus_supervision_document_supplement_unittest
+  compile_synthesized_object "${blink_template}" "${blink_object}" \
+    frame_metadata_observer_registry prometheus_supervision_document
+  compile_synthesized_object "${shared_template}" "${shared_object}" \
+    frame_metadata_observer_registry prometheus_supervision_document
+  compile_exact_object "${frame_test_helpers_object}"
+  compile_exact_object "${fake_web_plugin_object}"
+  compile_exact_object "${blink_test_main_object}"
+
+  local object
+  for object in "${extra_objects[@]}"; do
+    require_file "${OUT_DIR}/${object}"
+  done
+  write_link_response "${target_ninja}" \
+    ./prometheus_action_dispatcher_unittests "${response_file}" \
+    "${extra_objects[@]}"
+  perl -0pi -e \
+    's#obj/content/test/librun_all_unittests\.a[[:space:]]*##g' \
+    "${OUT_DIR}/${response_file}"
+
+  local link_command
+  link_command="$(query_blink_link_command)"
+  [[ -n "${link_command}" ]] \
+    || fail 'Blink-capable direct link command not found'
+  local original_output='-o "./prometheus_action_dispatcher_unittests"'
+  local focused_output='-o "./phase21_blink_tests"'
+  local original_response='@./prometheus_action_dispatcher_unittests.rsp'
+  local focused_response="@./${response_file}"
+  link_command="${link_command/${original_output}/${focused_output}}"
+  link_command="${link_command/${original_response}/${focused_response}}"
+  [[ "${link_command}" == *'-o "./phase21_blink_tests"'* ]] \
+    || fail 'Blink-capable output argument was not replaced'
+  [[ "${link_command}" == *"@./${response_file}"* ]] \
+    || fail 'Blink-capable response file was not replaced'
+
+  rm -f "${FOCUSED_BINARY}"
+  if ! (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${link_command}"
+    codesign --force --sign - ./phase21_blink_tests
+    codesign --verify --strict ./phase21_blink_tests
+  ) >>"${BUILD_LOG}" 2>&1; then
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused Blink unit-test link failed'
+  fi
+  require_file "${FOCUSED_BINARY}"
 }
 
 build_focused_binary() {
@@ -444,8 +704,13 @@ mkdir -p "${LOG_DIR}"
 require_file "${OUT_DIR}/build.ninja"
 capture_build_metadata
 trap verify_build_metadata_on_exit EXIT
-verify_composition_contract
-build_focused_binary
+if [[ "${FOCUS_KIND}" == 'blink' ]]; then
+  verify_blink_contract
+  build_blink_focused_binary
+else
+  verify_composition_contract
+  build_focused_binary
+fi
 list_selected_tests
 run_selected_tests
 note "focused verification complete; logs: ${LOG_DIR}"
