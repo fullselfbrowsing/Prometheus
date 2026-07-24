@@ -1410,6 +1410,34 @@ verify_side_panel_supervision_strip_contract() {
   note 'side-panel supervision strip scaffold, resource, and privacy guards passed'
 }
 
+verify_control_panel_supervision_runtime_contract() {
+  local runtime_header="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+  local runtime_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc"
+  local webui_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc"
+  local browser_test="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc"
+  require_file "${runtime_header}"
+  require_file "${runtime_source}"
+  require_file "${webui_source}"
+  require_file "${browser_test}"
+  require_literal 'PrometheusControlSupervisionSnapshot' "${runtime_header}"
+  require_literal 'PrometheusControlSupervisionCreateResult' "${runtime_header}"
+  require_literal 'formatted_code' "${runtime_header}"
+  require_literal '"prometheusControlSelectSupervisionTarget"' "${webui_source}"
+  require_literal '"prometheusControlCreatePairing"' "${webui_source}"
+  require_literal '"prometheusControlReplacePairing"' "${webui_source}"
+  require_literal '"prometheusControlCancelPairingPresentation"' "${webui_source}"
+  require_literal 'prometheusControlReceivePairingCreateResult' "${webui_source}"
+  require_literal 'SupervisionRuntimeSnapshotContractIsClosedAndCodeFree' \
+    "${browser_test}"
+  require_literal 'SupervisionRuntimeCreateContractIsOneShotAndStrict' \
+    "${browser_test}"
+  reject_pattern \
+    'Set\("(pairing_code|session_id|lease_id|owner_id|profile_path|browser_id|tab_id|document_epoch|sequence|bearer|address|content|raw_value)"' \
+    'Control Panel supervision transport gained identity, content, or an alternate bearer field' \
+    "${runtime_source}"
+  note 'Control Panel supervision snapshot, message, and one-shot guards passed'
+}
+
 build_focused_binary() {
   local route_object='obj/chrome/browser/prometheus/prometheus_agent_route/prometheus_agent_route.o'
   local route_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_route_unittest.o'
@@ -1810,6 +1838,7 @@ else
   verify_supervision_tab_badge_contract
   verify_side_panel_supervision_runtime_contract
   verify_side_panel_supervision_strip_contract
+  verify_control_panel_supervision_runtime_contract
   if [[ -e "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h" ]]; then
     verify_capture_hub_contract
   fi
