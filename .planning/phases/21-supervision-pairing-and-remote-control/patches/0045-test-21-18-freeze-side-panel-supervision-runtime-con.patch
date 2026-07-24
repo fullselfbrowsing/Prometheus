@@ -1,0 +1,492 @@
+From 1c641d971be41cde1c88615c71dbc596600052db Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 06:52:48 -0500
+Subject: [PATCH 45/45] test(21-18): freeze side-panel supervision runtime
+ contract
+
+---
+ .../prometheus_side_panel_runtime.cc          | 133 ++++++++++++++++++
+ .../prometheus_side_panel_runtime.h           |  52 +++++++
+ .../ui/webui/prometheus/prometheus_web_ui.cc  |  72 ++++++++++
+ .../ui/webui/prometheus/prometheus_web_ui.h   |   3 +
+ .../prometheus_web_ui_browsertest.cc          | 124 ++++++++++++++++
+ 5 files changed, 384 insertions(+)
+
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+index b6c13c9bbe..56961cabea 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+@@ -4,8 +4,15 @@
+ 
+ #include "chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+ 
++#include <algorithm>
++#include <array>
++#include <cstddef>
++#include <string>
++#include <string_view>
+ #include <utility>
+ 
++#include "base/strings/string_util.h"
++#include "base/strings/utf_string_conversions.h"
+ #include "base/no_destructor.h"
+ 
+ namespace prometheus {
+@@ -21,8 +28,134 @@ PrometheusControlPanelRuntimeFactory& ControlRuntimeFactory() {
+   return *factory;
+ }
+ 
++constexpr std::array<std::string_view, 11> kRejectedTitleFragments = {
++    "://",       "session", "controller", "owner",    "token", "secret",
++    "password",  "pairing", "principal",  "document", "selector",
++};
++
++bool HasRejectedTitleCharacter(char16_t character) {
++  return character < 0x20 || character == 0x7f || character == u'/' ||
++         character == u'\\' || character == u'?' || character == u'#' ||
++         (character >= 0x202a && character <= 0x202e) ||
++         (character >= 0x2066 && character <= 0x2069);
++}
++
++std::string_view SupervisionActivityValue(
++    PrometheusSidePanelSupervisionActivity activity) {
++  switch (activity) {
++    case PrometheusSidePanelSupervisionActivity::kViewing:
++      return "viewing";
++    case PrometheusSidePanelSupervisionActivity::kControlReady:
++      return "control_ready";
++    case PrometheusSidePanelSupervisionActivity::kValidatingRemoteAction:
++      return "validating_remote_action";
++    case PrometheusSidePanelSupervisionActivity::kRemoteAction:
++      return "remote_action";
++    case PrometheusSidePanelSupervisionActivity::kConfirmationRequired:
++      return "confirmation_required";
++    case PrometheusSidePanelSupervisionActivity::kResyncing:
++      return "resyncing";
++    case PrometheusSidePanelSupervisionActivity::kPausedForResync:
++      return "paused_for_resync";
++    case PrometheusSidePanelSupervisionActivity::kRemoteActionBlocked:
++      return "remote_action_blocked";
++    case PrometheusSidePanelSupervisionActivity::kStoppingControl:
++      return "stopping_control";
++  }
++}
++
++std::string_view SupervisionActionCategoryValue(
++    PrometheusSidePanelSupervisionActionCategory category) {
++  switch (category) {
++    case PrometheusSidePanelSupervisionActionCategory::kClick:
++      return "click";
++    case PrometheusSidePanelSupervisionActionCategory::kType:
++      return "type";
++    case PrometheusSidePanelSupervisionActionCategory::kKeyPress:
++      return "key_press";
++    case PrometheusSidePanelSupervisionActionCategory::kScroll:
++      return "scroll";
++    case PrometheusSidePanelSupervisionActionCategory::kHover:
++      return "hover";
++    case PrometheusSidePanelSupervisionActionCategory::kSelect:
++      return "select";
++    case PrometheusSidePanelSupervisionActionCategory::kClear:
++      return "clear";
++    case PrometheusSidePanelSupervisionActionCategory::kDrag:
++      return "drag";
++    case PrometheusSidePanelSupervisionActionCategory::kDrop:
++      return "drop";
++    case PrometheusSidePanelSupervisionActionCategory::kNavigate:
++      return "navigate";
++  }
++}
++
++base::DictValue UnavailableSupervisionOperation() {
++  base::DictValue value;
++  value.Set("status", "NOT_READY");
++  value.Set("accepted", false);
++  value.Set("recovery", "Use a live supervised tab in this window");
++  return value;
++}
++
+ }  // namespace
+ 
++std::string SanitizeSidePanelSupervisionTargetTitle(
++    std::u16string_view title) {
++  std::u16string candidate(title);
++  base::TrimWhitespace(candidate, base::TRIM_ALL, &candidate);
++  if (candidate.empty() ||
++      std::ranges::any_of(candidate, HasRejectedTitleCharacter)) {
++    return "this tab";
++  }
++
++  const std::string lower = base::ToLowerASCII(base::UTF16ToUTF8(candidate));
++  if (std::ranges::any_of(kRejectedTitleFragments,
++                          [&lower](std::string_view fragment) {
++                            return lower.find(fragment) != std::string::npos;
++                          })) {
++    return "this tab";
++  }
++
++  if (candidate.size() > kMaxSidePanelSafeTargetTitleCharacters) {
++    candidate.resize(kMaxSidePanelSafeTargetTitleCharacters);
++  }
++  return base::UTF16ToUTF8(candidate);
++}
++
++base::DictValue SidePanelSupervisionSnapshotValue(
++    const PrometheusSidePanelSupervisionSnapshot& snapshot) {
++  base::DictValue value;
++  value.Set("available", snapshot.available);
++  value.Set("viewer_count", static_cast<int>(snapshot.viewer_count));
++  value.Set("controlled", snapshot.controlled);
++  if (snapshot.client_label.has_value()) {
++    value.Set("client_label", *snapshot.client_label);
++  }
++  value.Set("activity", SupervisionActivityValue(snapshot.activity));
++  if (snapshot.action_category.has_value()) {
++    value.Set("action_category",
++              SupervisionActionCategoryValue(*snapshot.action_category));
++  }
++  value.Set("resyncing", snapshot.resyncing);
++  value.Set("stopping", snapshot.stopping);
++  value.Set("ending", snapshot.ending);
++  value.Set("safe_target_title", snapshot.safe_target_title);
++  return value;
++}
++
++base::DictValue PrometheusSidePanelRuntime::StopSupervisionControl() {
++  return UnavailableSupervisionOperation();
++}
++
++base::DictValue PrometheusSidePanelRuntime::EndSelectedTabSupervision() {
++  return UnavailableSupervisionOperation();
++}
++
++base::DictValue PrometheusSidePanelRuntime::OpenSupervisionManagement() {
++  return UnavailableSupervisionOperation();
++}
++
+ void SetPrometheusSidePanelRuntimeFactory(
+     PrometheusSidePanelRuntimeFactory factory) {
+   RuntimeFactory() = std::move(factory);
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+index 2329349d50..daaf839653 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+@@ -24,6 +24,55 @@ class WebContents;
+ 
+ namespace prometheus {
+ 
++inline constexpr size_t kMaxSidePanelSafeTargetTitleCharacters = 80;
++
++// Closed browser-owned activity vocabulary for the selected-tab supervision
++// strip. WebUI maps these values to copy and never receives free-form activity
++// text or remote action values.
++enum class PrometheusSidePanelSupervisionActivity {
++  kViewing,
++  kControlReady,
++  kValidatingRemoteAction,
++  kRemoteAction,
++  kConfirmationRequired,
++  kResyncing,
++  kPausedForResync,
++  kRemoteActionBlocked,
++  kStoppingControl,
++};
++
++enum class PrometheusSidePanelSupervisionActionCategory {
++  kClick,
++  kType,
++  kKeyPress,
++  kScroll,
++  kHover,
++  kSelect,
++  kClear,
++  kDrag,
++  kDrop,
++  kNavigate,
++};
++
++struct PrometheusSidePanelSupervisionSnapshot {
++  bool available = false;
++  size_t viewer_count = 0;
++  bool controlled = false;
++  std::optional<std::string> client_label;
++  PrometheusSidePanelSupervisionActivity activity =
++      PrometheusSidePanelSupervisionActivity::kViewing;
++  std::optional<PrometheusSidePanelSupervisionActionCategory> action_category;
++  bool resyncing = false;
++  bool stopping = false;
++  bool ending = false;
++  std::string safe_target_title = "this tab";
++};
++
++std::string SanitizeSidePanelSupervisionTargetTitle(
++    std::u16string_view title);
++base::DictValue SidePanelSupervisionSnapshotValue(
++    const PrometheusSidePanelSupervisionSnapshot& snapshot);
++
+ // Browser-process-only authority used by one side-panel controller. Concrete
+ // implementations retain the move-only runtime principal; this narrow UI-layer
+ // interface deliberately has no identity getters or serialization methods.
+@@ -43,6 +92,9 @@ class PrometheusSidePanelRuntime {
+       std::string requested_execution,
+       std::optional<std::string> provider_id) = 0;
+   virtual base::DictValue CancelTask(std::string task_id) = 0;
++  virtual base::DictValue StopSupervisionControl();
++  virtual base::DictValue EndSelectedTabSupervision();
++  virtual base::DictValue OpenSupervisionManagement();
+   virtual void HandleTargetLost() = 0;
+ };
+ 
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index 0c8d2fc1fa..04d5e19069 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -707,6 +707,21 @@ class PrometheusSidePanelMessageHandler : public content::WebUIMessageHandler {
+         base::BindRepeating(
+             &PrometheusSidePanelMessageHandler::HandleRuntimeCancel,
+             base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusStopSupervisionControl",
++        base::BindRepeating(
++            &PrometheusSidePanelMessageHandler::HandleStopSupervisionControl,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusEndSelectedTabSupervision",
++        base::BindRepeating(
++            &PrometheusSidePanelMessageHandler::HandleEndSelectedTabSupervision,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusOpenSupervisionManagement",
++        base::BindRepeating(
++            &PrometheusSidePanelMessageHandler::HandleOpenSupervisionManagement,
++            base::Unretained(this)));
+   }
+ 
+   void HandleRequestAskFsbSeed(const base::ListValue& args) {
+@@ -787,6 +802,45 @@ class PrometheusSidePanelMessageHandler : public content::WebUIMessageHandler {
+     owner_->HandleRuntimeCancelForWebUI(args[0].GetString());
+   }
+ 
++  void HandleStopSupervisionControl(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (!args.empty()) {
++      owner_->HandleInvalidRuntimeMessageForWebUI(
++          "Stop control accepts no target or session values");
++      return;
++    }
++    owner_->HandleStopSupervisionControlForWebUI();
++  }
++
++  void HandleEndSelectedTabSupervision(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (!args.empty()) {
++      owner_->HandleInvalidRuntimeMessageForWebUI(
++          "End supervision accepts no result, title, target, or session values");
++      return;
++    }
++    owner_->HandleEndSelectedTabSupervisionForWebUI();
++  }
++
++  void HandleOpenSupervisionManagement(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (!args.empty()) {
++      owner_->HandleInvalidRuntimeMessageForWebUI(
++          "Manage supervision accepts no target or profile values");
++      return;
++    }
++    owner_->HandleOpenSupervisionManagementForWebUI();
++  }
++
+   base::WeakPtr<PrometheusSidePanelUI> owner_;
+ };
+ 
+@@ -909,6 +963,24 @@ void PrometheusSidePanelUI::HandleRuntimeCancelForWebUI(std::string task_id) {
+   SendFreshRuntimeSnapshot();
+ }
+ 
++void PrometheusSidePanelUI::HandleStopSupervisionControlForWebUI() {
++  SendRuntimeOperation(runtime_ ? runtime_->StopSupervisionControl()
++                                : RuntimeUnavailableSnapshot());
++  SendFreshRuntimeSnapshot();
++}
++
++void PrometheusSidePanelUI::HandleEndSelectedTabSupervisionForWebUI() {
++  SendRuntimeOperation(runtime_ ? runtime_->EndSelectedTabSupervision()
++                                : RuntimeUnavailableSnapshot());
++  SendFreshRuntimeSnapshot();
++}
++
++void PrometheusSidePanelUI::HandleOpenSupervisionManagementForWebUI() {
++  SendRuntimeOperation(runtime_ ? runtime_->OpenSupervisionManagement()
++                                : RuntimeUnavailableSnapshot());
++  SendFreshRuntimeSnapshot();
++}
++
+ void PrometheusSidePanelUI::HandleInvalidRuntimeMessageForWebUI(
+     std::string recovery) {
+   SendRuntimeOperation(
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+index f8552a8261..516785ad76 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+@@ -87,6 +87,9 @@ class PrometheusSidePanelUI : public TopChromeWebUIController {
+                                    std::string requested_execution,
+                                    std::optional<std::string> provider_id);
+   void HandleRuntimeCancelForWebUI(std::string task_id);
++  void HandleStopSupervisionControlForWebUI();
++  void HandleEndSelectedTabSupervisionForWebUI();
++  void HandleOpenSupervisionManagementForWebUI();
+   void HandleInvalidRuntimeMessageForWebUI(std::string recovery);
+ 
+   BrowserWindowInterface* browser_window_interface_for_testing() const {
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 1a2c69b6b1..edadfb84ed 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -218,6 +218,9 @@ class PrometheusControlPanelBrowserTest
+   }
+ };
+ 
++class PrometheusWebUIBrowserTest
++    : public PrometheusWebUIFoundationBrowserTest {};
++
+ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+                        NewTabCreatesControllerAndRendersRequiredCopy) {
+   content::WebContents* const web_contents =
+@@ -3188,3 +3191,124 @@ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+   )")
+                   .ExtractBool());
+ }
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    SidePanelSupervisionRuntimeStateIsSanitizedAndBounded) {
++  content::WebContents* const target_contents =
++      browser()->tab_strip_model()->GetActiveWebContents();
++  ASSERT_TRUE(target_contents);
++  ASSERT_TRUE(content::ExecJs(target_contents, R"(
++    document.title =
++        'https://private.example/path?token=TITLE_SECRET\u202e-HOSTILE';
++  )"));
++
++  PrometheusSidePanelUI* const controller = ShowSidePanel(browser());
++  ASSERT_TRUE(controller);
++  content::WebContents* const side_panel_contents =
++      visible_side_panel_web_contents();
++  ASSERT_TRUE(side_panel_contents);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      !!window.prometheusRuntimeSnapshotForTesting;
++    )")
++        .ExtractBool();
++  }));
++
++  const std::string serialized = content::EvalJs(side_panel_contents, R"(
++    JSON.stringify(window.prometheusRuntimeSnapshotForTesting);
++  )")
++                                     .ExtractString();
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    const state = window.prometheusRuntimeSnapshotForTesting.supervision;
++    const allowedKeys = new Set([
++      'available', 'viewer_count', 'controlled', 'client_label', 'activity',
++      'action_category', 'resyncing', 'stopping', 'ending',
++      'safe_target_title',
++    ]);
++    !!state && Object.keys(state).every(key => allowedKeys.has(key)) &&
++        state.safe_target_title === 'this tab' &&
++        state.safe_target_title.length <= 80 &&
++        Number.isInteger(state.viewer_count) &&
++        typeof state.available === 'boolean' &&
++        typeof state.controlled === 'boolean' &&
++        typeof state.activity === 'string' &&
++        typeof state.resyncing === 'boolean' &&
++        typeof state.stopping === 'boolean' &&
++        typeof state.ending === 'boolean';
++  )")
++                  .ExtractBool())
++      << serialized;
++  for (const std::string& forbidden : std::vector<std::string>{
++           "private.example", "/path", "TITLE_SECRET", "dashboard_session",
++           "controller_lease", "owner_session", "principal_id", "tab_id",
++           "window_id", "document_epoch", "sequence", "selector", "dom",
++           "pairing_code", "raw_value"}) {
++    EXPECT_EQ(std::string::npos, serialized.find(forbidden)) << forbidden;
++  }
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    SidePanelSupervisionRuntimeActionsRequireZeroArguments) {
++  PrometheusSidePanelUI* const controller = ShowSidePanel(browser());
++  ASSERT_TRUE(controller);
++  content::WebContents* const side_panel_contents =
++      visible_side_panel_web_contents();
++  ASSERT_TRUE(side_panel_contents);
++
++  for (const std::string& message :
++       std::vector<std::string>{"prometheusStopSupervisionControl",
++                                "prometheusEndSelectedTabSupervision",
++                                "prometheusOpenSupervisionManagement"}) {
++    ASSERT_TRUE(content::ExecJs(
++        side_panel_contents, content::JsReplace(R"(
++          window.prometheusRuntimeOperationForTesting = null;
++          chrome.send($1, [{
++            tab_id: 1,
++            window_id: 2,
++            dashboard_session: 'FORGED_SESSION',
++            controller_lease: 'FORGED_CONTROLLER',
++            result: 'FORGED_RESULT',
++            title: 'FORGED_TITLE',
++          }]);
++        )",
++                                                message)));
++    ASSERT_TRUE(base::test::RunUntil([&]() {
++      return content::EvalJs(side_panel_contents, R"(
++        window.prometheusRuntimeOperationForTesting?.status ===
++            'INVALID_REQUEST';
++      )")
++          .ExtractBool();
++    })) << message;
++    const std::string operation =
++        content::EvalJs(side_panel_contents, R"(
++          JSON.stringify(window.prometheusRuntimeOperationForTesting);
++        )")
++            .ExtractString();
++    EXPECT_EQ(std::string::npos, operation.find("FORGED_SESSION")) << message;
++    EXPECT_EQ(std::string::npos, operation.find("FORGED_CONTROLLER"))
++        << message;
++    EXPECT_EQ(std::string::npos, operation.find("FORGED_RESULT")) << message;
++    EXPECT_EQ(std::string::npos, operation.find("FORGED_TITLE")) << message;
++  }
++
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    window.prometheusRuntimeOperationForTesting = null;
++    chrome.send('prometheusEndSelectedTabSupervision');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      !!window.prometheusRuntimeOperationForTesting;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    const operation = window.prometheusRuntimeOperationForTesting;
++    typeof operation.accepted === 'boolean' &&
++        typeof operation.status === 'string' &&
++        !['tab_id', 'window_id', 'dashboard_session', 'controller_lease',
++          'result', 'title'].some(key => Object.hasOwn(operation, key));
++  )")
++                  .ExtractBool());
++}
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1219,6 +1219,25 @@ build_browser_focused_blink_modules() {
   note 'temporary Blink modules library contains the supervision document endpoint'
 }
 
+verify_side_panel_supervision_runtime_contract() {
+  local runtime_header="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+  local runtime_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc"
+  local webui_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc"
+  local browser_test="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc"
+  require_file "${runtime_header}"
+  require_file "${runtime_source}"
+  require_file "${webui_source}"
+  require_file "${browser_test}"
+  require_literal 'kMaxSidePanelSafeTargetTitleCharacters = 80' "${runtime_header}"
+  require_literal 'PrometheusSidePanelSupervisionActivity' "${runtime_header}"
+  require_literal 'SanitizeSidePanelSupervisionTargetTitle' "${runtime_source}"
+  require_literal '"prometheusStopSupervisionControl"' "${webui_source}"
+  require_literal '"prometheusEndSelectedTabSupervision"' "${webui_source}"
+  require_literal '"prometheusOpenSupervisionManagement"' "${webui_source}"
+  require_literal 'SidePanelSupervisionRuntimeStateIsSanitizedAndBounded' "${browser_test}"
+  require_literal 'SidePanelSupervisionRuntimeActionsRequireZeroArguments' "${browser_test}"
+}
+
 build_focused_binary() {
   local route_object='obj/chrome/browser/prometheus/prometheus_agent_route/prometheus_agent_route.o'
   local route_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_route_unittest.o'
@@ -1285,6 +1304,9 @@ build_focused_binary() {
   local gateway_contract_object='obj/chrome/browser/prometheus/prometheus_agent_gateway_contract/prometheus_agent_gateway_contract.o'
   local gateway_object='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_agent_gateway.o'
   local browser_composition_object='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_browser_main_extra_parts.o'
+  local side_panel_runtime_object='obj/chrome/browser/ui/webui/prometheus/side_panel_ui/prometheus_side_panel_runtime.o'
+  local side_panel_webui_object='obj/chrome/browser/ui/webui/prometheus/side_panel_ui/prometheus_web_ui.o'
+  local side_panel_browser_test_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_web_ui_browsertest.o'
   local gateway_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_gateway_unittest.o'
   local gateway_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_agent_gateway_browsertest.o'
   local browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_page_adapter_browsertest.o'
@@ -1315,6 +1337,8 @@ build_focused_binary() {
     compile_exact_object "${gateway_contract_object}"
     compile_exact_object "${gateway_object}"
     compile_exact_object "${browser_composition_object}"
+    compile_exact_object "${side_panel_runtime_object}"
+    compile_exact_object "${side_panel_webui_object}"
     compile_exact_object "${gateway_test_object}"
     compile_exact_object "${runtime_dialogs}"
     compile_exact_object "${tab_view_object}"
@@ -1322,6 +1346,7 @@ build_focused_binary() {
     if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
       compile_exact_object "${views_browser_test_template}"
       compile_exact_object "${gateway_browser_object}"
+      compile_exact_object "${side_panel_browser_test_object}"
     fi
   )
 
@@ -1611,6 +1636,7 @@ else
   verify_supervision_dialog_contract
   verify_supervision_tab_state_contract
   verify_supervision_tab_badge_contract
+  verify_side_panel_supervision_runtime_contract
   if [[ -e "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h" ]]; then
     verify_capture_hub_contract
   fi
