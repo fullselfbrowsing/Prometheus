@@ -1,0 +1,1537 @@
+From 9056606bd7b4334ecf4925e3ee633aaa63a30136 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 18:58:45 -0500
+Subject: [PATCH] test(21-23): freeze supervision test handoff contract
+
+Add RED coverage for the validated two-slot launch boundary and conditional authenticated gateway route.
+
+Keep the dependency-neutral dispatcher absent by default while preserving every existing perimeter denial.
+---
+ chrome/browser/prometheus/BUILD.gn            |  17 +
+ .../prometheus/prometheus_agent_gateway.cc    |  71 +++-
+ .../prometheus/prometheus_agent_gateway.h     |  11 +-
+ .../prometheus_agent_gateway_contract.cc      | 119 +++++-
+ .../prometheus_agent_gateway_contract.h       |  86 +++-
+ .../prometheus_agent_gateway_unittest.cc      | 224 ++++++++--
+ .../prometheus_supervision_test_bootstrap.cc  |  87 ++++
+ .../prometheus_supervision_test_bootstrap.h   | 170 ++++++++
+ ...eus_supervision_test_bootstrap_unittest.cc | 401 ++++++++++++++++++
+ 9 files changed, 1138 insertions(+), 48 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_test_bootstrap_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 6a2cf9f4fb..cba475e9f2 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -528,6 +528,21 @@ source_set("prometheus_runtime_test_bootstrap") {
+   ]
+ }
+ 
++source_set("prometheus_supervision_test_bootstrap") {
++  sources = [
++    "prometheus_supervision_test_bootstrap.cc",
++    "prometheus_supervision_test_bootstrap.h",
++  ]
++
++  deps = [
++    ":prometheus_agent_gateway_contract",
++    ":prometheus_runtime_test_bootstrap",
++    "//base",
++    "//crypto",
++    "//url",
++  ]
++}
++
+ source_set("prometheus_runtime_profile_service") {
+   sources = [
+     "prometheus_runtime_profile_service.cc",
+@@ -684,6 +699,7 @@ test("prometheus_unittests") {
+     "prometheus_supervision_profile_service_unittest.cc",
+     "prometheus_supervision_projection_unittest.cc",
+     "prometheus_supervision_transport_codec_unittest.cc",
++    "prometheus_supervision_test_bootstrap_unittest.cc",
+     "prometheus_supervision_types_unittest.cc",
+     "prometheus_tab_state_unittest.cc",
+     "prometheus_vault_service_unittest.cc",
+@@ -728,6 +744,7 @@ test("prometheus_unittests") {
+     ":prometheus_supervision_profile_service",
+     ":prometheus_supervision_projection",
+     ":prometheus_supervision_transport_codec",
++    ":prometheus_supervision_test_bootstrap",
+     ":prometheus_supervision_types",
+     ":prometheus_tab_state",
+     ":prometheus_vault_service",
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.cc b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+index dbd99f1119..efe4baeb9f 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+@@ -736,13 +736,15 @@ class PrometheusAgentGateway::IOThreadData : public net::HttpServer::Delegate {
+                std::string bearer,
+                base::TimeDelta timeout,
+                std::atomic_size_t* pending_count,
+-               std::atomic_size_t* terminal_count)
++               std::atomic_size_t* terminal_count,
++               std::atomic_bool* supervision_test_handoff_enabled)
+       : owner_(std::move(owner)),
+         ui_task_runner_(std::move(ui_task_runner)),
+         bearer_(std::move(bearer)),
+         timeout_(timeout),
+         pending_count_(pending_count),
+-        terminal_count_(terminal_count) {
++        terminal_count_(terminal_count),
++        supervision_test_handoff_enabled_(supervision_test_handoff_enabled) {
+     DETACH_FROM_SEQUENCE(sequence_checker_);
+   }
+ 
+@@ -846,8 +848,9 @@ class PrometheusAgentGateway::IOThreadData : public net::HttpServer::Delegate {
+       return;
+     }
+     const PrometheusAgentRequestRejection rejection =
+-        ValidatePrometheusAgentGatewayRequestForTesting(request, port_, bearer_,
+-                                                        pending_.size());
++        ValidatePrometheusAgentGatewayRequestForTesting(
++            request, port_, bearer_, pending_.size(),
++            supervision_test_handoff_enabled_->load());
+     if (rejection != PrometheusAgentRequestRejection::kNone) {
+       SendJson(connection_id, RejectionStatus(rejection),
+                RejectionBody(rejection));
+@@ -872,8 +875,9 @@ class PrometheusAgentGateway::IOThreadData : public net::HttpServer::Delegate {
+                           const net::HttpServerRequestInfo& request) override {
+     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+     const PrometheusAgentRequestRejection rejection =
+-        ValidatePrometheusAgentGatewayRequestForTesting(request, port_, bearer_,
+-                                                        pending_.size());
++        ValidatePrometheusAgentGatewayRequestForTesting(
++            request, port_, bearer_, pending_.size(),
++            supervision_test_handoff_enabled_->load());
+     const PrometheusAgentRequestRejection response =
+         rejection == PrometheusAgentRequestRejection::kNone
+             ? PrometheusAgentRequestRejection::kMethodNotAllowed
+@@ -930,6 +934,7 @@ class PrometheusAgentGateway::IOThreadData : public net::HttpServer::Delegate {
+   base::TimeDelta timeout_;
+   const raw_ptr<std::atomic_size_t> pending_count_;
+   const raw_ptr<std::atomic_size_t> terminal_count_;
++  const raw_ptr<std::atomic_bool> supervision_test_handoff_enabled_;
+   std::unique_ptr<net::HttpServer> server_;
+   int port_ = 0;
+   uint64_t next_request_id_ = 1;
+@@ -950,6 +955,7 @@ PrometheusAgentGateway::PrometheusAgentGateway(Options options)
+ 
+ PrometheusAgentGateway::~PrometheusAgentGateway() {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  ShutdownSupervisionTestHandoffDispatcher();
+   ShutdownSupervisionDispatcher(/*complete_unavailable=*/false);
+   weak_ptr_factory_.InvalidateWeakPtrs();
+   if (io_data_ && io_thread_.IsRunning()) {
+@@ -993,7 +999,8 @@ void PrometheusAgentGateway::Start(base::OnceCallback<void(bool)> callback) {
+   io_data_ = std::make_unique<IOThreadData>(
+       weak_ptr_factory_.GetWeakPtr(),
+       base::SequencedTaskRunner::GetCurrentDefault(), bearer_, request_timeout_,
+-      &pending_request_count_, &terminal_request_count_);
++      &pending_request_count_, &terminal_request_count_,
++      &supervision_test_handoff_enabled_);
+   io_thread_.task_runner()->PostTask(
+       FROM_HERE,
+       base::BindOnce(
+@@ -1055,6 +1062,7 @@ void PrometheusAgentGateway::Shutdown(base::OnceClosure callback) {
+     return;
+   }
+   shutting_down_ = true;
++  ShutdownSupervisionTestHandoffDispatcher();
+   ShutdownSupervisionDispatcher(/*complete_unavailable=*/true);
+   if (!io_data_) {
+     shutting_down_ = false;
+@@ -1156,6 +1164,33 @@ void PrometheusAgentGateway::SetSupervisionGatewayDispatcher(
+   }
+ }
+ 
++void PrometheusAgentGateway::SetSupervisionTestHandoffDispatcher(
++    SupervisionTestHandoffDispatcher dispatcher) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  ShutdownSupervisionTestHandoffDispatcher();
++  if (dispatcher.IsComplete()) {
++    supervision_test_handoff_dispatcher_ = std::move(dispatcher);
++    supervision_test_handoff_enabled_.store(true);
++  }
++}
++
++void PrometheusAgentGateway::ShutdownSupervisionTestHandoffDispatcher() {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  supervision_test_handoff_enabled_.store(false);
++  if (supervision_test_handoff_dispatcher_) {
++    supervision_test_handoff_dispatcher_->shutdown.Run();
++    supervision_test_handoff_dispatcher_.reset();
++  }
++}
++
++void PrometheusAgentGateway::OnSupervisionTestHandoffCompleted(
++    ResponseCallback callback,
++    SupervisionTestHandoffResult result) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  std::move(callback).Run(net::HTTP_OK,
++                          SerializeSupervisionTestHandoffResult(result));
++}
++
+ void PrometheusAgentGateway::HandleNativeRequestForTesting(
+     std::string_view path,
+     std::string_view body,
+@@ -1802,6 +1837,28 @@ void PrometheusAgentGateway::HandleNativeRequest(
+   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+   PruneSessionBindings();
+ 
++  if (path == "/v1/test/supervision-handoff") {
++    if (!supervision_test_handoff_dispatcher_) {
++      std::move(callback).Run(net::HTTP_NOT_FOUND,
++                              R"({"ok":false,"error":"REQUEST_REJECTED"})");
++      return;
++    }
++    SupervisionTestHandoffParseResult request =
++        ParseSupervisionTestHandoffRequest(body);
++    if (!request.has_value()) {
++      std::move(callback).Run(
++          net::HTTP_BAD_REQUEST,
++          SerializeSupervisionTestHandoffResult(request.error()));
++      return;
++    }
++    supervision_test_handoff_dispatcher_->dispatch.Run(
++        std::move(request.value()),
++        base::BindOnce(
++            &PrometheusAgentGateway::OnSupervisionTestHandoffCompleted,
++            weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
++    return;
++  }
++
+   if (path == "/v1/supervision") {
+     auto request = ParseSupervisionTransportRequest(body);
+     if (!request.has_value()) {
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.h b/chrome/browser/prometheus/prometheus_agent_gateway.h
+index 84ecfe13e2..c4e1260f50 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.h
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.h
+@@ -143,8 +143,9 @@ class PrometheusAgentGateway {
+   void SetProfileSelectorForTesting(ProfileSelector selector);
+   void SetBrowserSelectorForTesting(BrowserSelector selector);
+   void SetStableTabSelectorForTesting(StableTabSelector selector);
+-  void SetSupervisionGatewayDispatcher(
+-      SupervisionGatewayDispatcher dispatcher);
++  void SetSupervisionGatewayDispatcher(SupervisionGatewayDispatcher dispatcher);
++  void SetSupervisionTestHandoffDispatcher(
++      SupervisionTestHandoffDispatcher dispatcher);
+   void HandleNativeRequestForTesting(std::string_view path,
+                                      std::string_view body,
+                                      ResponseCallback callback);
+@@ -201,6 +202,9 @@ class PrometheusAgentGateway {
+       SupervisionGatewayResult result);
+   void CancelOutstandingSupervisionRequests(bool complete_unavailable);
+   void ShutdownSupervisionDispatcher(bool complete_unavailable);
++  void ShutdownSupervisionTestHandoffDispatcher();
++  void OnSupervisionTestHandoffCompleted(ResponseCallback callback,
++                                         SupervisionTestHandoffResult result);
+   void OnRequestHandled(uint64_t request_id, int status, std::string body);
+   void OnIoStopped(base::OnceClosure callback);
+   void OnDescriptorDeleted(base::OnceClosure callback, bool deleted);
+@@ -229,12 +233,15 @@ class PrometheusAgentGateway {
+   BrowserSelector browser_selector_for_testing_;
+   StableTabSelector stable_tab_selector_for_testing_;
+   std::optional<SupervisionGatewayDispatcher> supervision_dispatcher_;
++  std::optional<SupervisionTestHandoffDispatcher>
++      supervision_test_handoff_dispatcher_;
+   std::map<std::string, SessionBinding, std::less<>> session_bindings_;
+   std::map<uint64_t, PendingSupervisionRequest> pending_supervision_requests_;
+   PrometheusGatewayRuntimeTaskTracker runtime_task_tracker_;
+   PrometheusGatewayDiscoveryTracker runtime_discovery_tracker_;
+   std::atomic_size_t pending_request_count_{0};
+   std::atomic_size_t terminal_request_count_{0};
++  std::atomic_bool supervision_test_handoff_enabled_{false};
+   bool started_ = false;
+   bool shutting_down_ = false;
+   uint64_t next_direct_supervision_token_ = uint64_t{1} << 63;
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc b/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
+index 7bc7260e4b..deb5151f36 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
+@@ -2,13 +2,17 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include "chrome/browser/prometheus/prometheus_agent_gateway_contract.h"
++
+ #include <algorithm>
+ #include <array>
++#include <string_view>
+ #include <utility>
+ 
+ #include "base/containers/span.h"
++#include "base/json/json_reader.h"
++#include "base/json/json_writer.h"
+ #include "base/strings/string_util.h"
+-#include "chrome/browser/prometheus/prometheus_agent_gateway_contract.h"
+ #include "crypto/secure_util.h"
+ #include "net/base/ip_address.h"
+ #include "net/server/http_server_request_info.h"
+@@ -22,6 +26,8 @@ constexpr std::array<std::string_view, 7> kClosedPaths = {
+     "/v1/session/create", "/v1/session/resume", "/v1/session/touch",
+     "/v1/session/close",  "/v1/agent/command",  "/v1/health",
+     "/v1/supervision"};
++constexpr std::string_view kSupervisionTestHandoffPath =
++    "/v1/test/supervision-handoff";
+ 
+ bool IsJsonContentType(std::string_view content_type) {
+   const size_t separator = content_type.find(';');
+@@ -61,13 +67,44 @@ bool HasValidBearer(std::string_view authorization, std::string_view bearer) {
+       base::as_byte_span(bearer));
+ }
+ 
++void ClearString(std::string* value) {
++  if (!value->empty()) {
++    crypto::SecureZeroBuffer(base::as_writable_byte_span(*value));
++    value->clear();
++  }
++}
++
++std::string_view HandoffStatusString(SupervisionTestHandoffStatus status) {
++  switch (status) {
++    case SupervisionTestHandoffStatus::kDelivered:
++      return "DELIVERED";
++    case SupervisionTestHandoffStatus::kInvalidRequest:
++      return "INVALID_REQUEST";
++    case SupervisionTestHandoffStatus::kDenied:
++      return "DENIED";
++    case SupervisionTestHandoffStatus::kNotReady:
++      return "NOT_READY";
++    case SupervisionTestHandoffStatus::kOutOfOrder:
++      return "OUT_OF_ORDER";
++    case SupervisionTestHandoffStatus::kExhausted:
++      return "EXHAUSTED";
++    case SupervisionTestHandoffStatus::kTargetLost:
++      return "TARGET_LOST";
++    case SupervisionTestHandoffStatus::kExpired:
++      return "EXPIRED";
++    case SupervisionTestHandoffStatus::kShutdown:
++      return "SHUTDOWN";
++  }
++}
++
+ }  // namespace
+ 
+ PrometheusAgentRequestRejection ValidatePrometheusAgentGatewayRequestForTesting(
+     const net::HttpServerRequestInfo& request,
+     int port,
+     std::string_view bearer,
+-    size_t in_flight) {
++    size_t in_flight,
++    bool supervision_test_handoff_enabled) {
+   if (request.peer.address() != net::IPAddress::IPv4Localhost()) {
+     return PrometheusAgentRequestRejection::kNonLoopbackPeer;
+   }
+@@ -80,8 +117,12 @@ PrometheusAgentRequestRejection ValidatePrometheusAgentGatewayRequestForTesting(
+   if (!HasValidBearer(request.GetHeaderValue("authorization"), bearer)) {
+     return PrometheusAgentRequestRejection::kUnauthorized;
+   }
+-  if (std::find(kClosedPaths.begin(), kClosedPaths.end(), request.path) ==
+-      kClosedPaths.end()) {
++  const bool closed_production_path =
++      std::find(kClosedPaths.begin(), kClosedPaths.end(), request.path) !=
++      kClosedPaths.end();
++  const bool enabled_test_path = supervision_test_handoff_enabled &&
++                                 request.path == kSupervisionTestHandoffPath;
++  if (!closed_production_path && !enabled_test_path) {
+     return PrometheusAgentRequestRejection::kNotFound;
+   }
+   if (request.headers.contains("upgrade") ||
+@@ -116,4 +157,74 @@ bool PrometheusAgentOneShotCompletion::TryComplete() {
+   return true;
+ }
+ 
++SupervisionTestHandoffRequest::SupervisionTestHandoffRequest() = default;
++
++SupervisionTestHandoffRequest::SupervisionTestHandoffRequest(
++    std::string challenge,
++    std::string session_id,
++    int sequence)
++    : challenge(std::move(challenge)),
++      session_id(std::move(session_id)),
++      sequence(sequence) {}
++
++SupervisionTestHandoffRequest::SupervisionTestHandoffRequest(
++    SupervisionTestHandoffRequest&&) = default;
++
++SupervisionTestHandoffRequest& SupervisionTestHandoffRequest::operator=(
++    SupervisionTestHandoffRequest&&) = default;
++
++SupervisionTestHandoffRequest::~SupervisionTestHandoffRequest() {
++  ClearString(&challenge);
++  ClearString(&session_id);
++}
++
++SupervisionTestHandoffResult::SupervisionTestHandoffResult() = default;
++SupervisionTestHandoffResult::SupervisionTestHandoffResult(
++    SupervisionTestHandoffResult&&) = default;
++SupervisionTestHandoffResult& SupervisionTestHandoffResult::operator=(
++    SupervisionTestHandoffResult&&) = default;
++
++SupervisionTestHandoffResult::~SupervisionTestHandoffResult() {
++  ClearString(&pairing_code);
++}
++
++SupervisionTestHandoffResult SupervisionTestHandoffResult::Delivered(
++    int sequence,
++    std::string pairing_code) {
++  SupervisionTestHandoffResult result;
++  result.status = SupervisionTestHandoffStatus::kDelivered;
++  result.sequence = sequence;
++  result.pairing_code = std::move(pairing_code);
++  return result;
++}
++
++SupervisionTestHandoffResult SupervisionTestHandoffResult::Failure(
++    SupervisionTestHandoffStatus status) {
++  SupervisionTestHandoffResult result;
++  result.status = status;
++  return result;
++}
++
++SupervisionTestHandoffParseResult ParseSupervisionTestHandoffRequest(
++    std::string_view body) {
++  static_cast<void>(body);
++  return base::unexpected(SupervisionTestHandoffResult::Failure(
++      SupervisionTestHandoffStatus::kInvalidRequest));
++}
++
++std::string SerializeSupervisionTestHandoffResult(
++    const SupervisionTestHandoffResult& result) {
++  base::DictValue value;
++  const bool delivered =
++      result.status == SupervisionTestHandoffStatus::kDelivered;
++  value.Set("ok", delivered);
++  value.Set("status", HandoffStatusString(result.status));
++  if (delivered) {
++    value.Set("sequence", result.sequence);
++    value.Set("pairing_code", result.pairing_code);
++  }
++  return base::WriteJson(value).value_or(
++      R"({"ok":false,"status":"INVALID_REQUEST"})");
++}
++
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_contract.h b/chrome/browser/prometheus/prometheus_agent_gateway_contract.h
+index 276e66c541..618bda91c9 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_contract.h
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_contract.h
+@@ -11,6 +11,7 @@
+ #include <string_view>
+ 
+ #include "base/functional/callback.h"
++#include "base/types/expected.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_transport_codec.h"
+ 
+ namespace net {
+@@ -36,7 +37,8 @@ PrometheusAgentRequestRejection ValidatePrometheusAgentGatewayRequestForTesting(
+     const net::HttpServerRequestInfo& request,
+     int port,
+     std::string_view bearer,
+-    size_t in_flight);
++    size_t in_flight,
++    bool supervision_test_handoff_enabled);
+ 
+ class PrometheusAgentOneShotCompletion {
+  public:
+@@ -95,9 +97,9 @@ struct SupervisionGatewayReadiness {
+ struct SupervisionGatewayDispatcher {
+   using ResultCallback =
+       base::OnceCallback<void(SupervisionGatewayResult result)>;
+-  using DispatchCallback = base::RepeatingCallback<void(
+-      SupervisionGatewayRequest request,
+-      ResultCallback callback)>;
++  using DispatchCallback =
++      base::RepeatingCallback<void(SupervisionGatewayRequest request,
++                                   ResultCallback callback)>;
+   using CancelCallback =
+       base::RepeatingCallback<void(SupervisionGatewayCancellationToken token)>;
+   using ReadinessCallback =
+@@ -113,6 +115,82 @@ struct SupervisionGatewayDispatcher {
+   base::RepeatingClosure shutdown;
+ };
+ 
++enum class SupervisionTestHandoffStatus {
++  kDelivered,
++  kInvalidRequest,
++  kDenied,
++  kNotReady,
++  kOutOfOrder,
++  kExhausted,
++  kTargetLost,
++  kExpired,
++  kShutdown,
++};
++
++// Move-only because challenge and browser-issued session authority must be
++// cleared when dispatch completes or is denied.
++struct SupervisionTestHandoffRequest {
++  SupervisionTestHandoffRequest();
++  SupervisionTestHandoffRequest(std::string challenge,
++                                std::string session_id,
++                                int sequence);
++  SupervisionTestHandoffRequest(SupervisionTestHandoffRequest&&);
++  SupervisionTestHandoffRequest& operator=(SupervisionTestHandoffRequest&&);
++  SupervisionTestHandoffRequest(const SupervisionTestHandoffRequest&) = delete;
++  SupervisionTestHandoffRequest& operator=(
++      const SupervisionTestHandoffRequest&) = delete;
++  ~SupervisionTestHandoffRequest();
++
++  std::string challenge;
++  std::string session_id;
++  int sequence = 0;
++};
++
++// The pairing code is present only for kDelivered and is securely cleared by
++// the move-only result owner after the gateway has serialized it.
++struct SupervisionTestHandoffResult {
++  SupervisionTestHandoffResult();
++  SupervisionTestHandoffResult(SupervisionTestHandoffResult&&);
++  SupervisionTestHandoffResult& operator=(SupervisionTestHandoffResult&&);
++  SupervisionTestHandoffResult(const SupervisionTestHandoffResult&) = delete;
++  SupervisionTestHandoffResult& operator=(const SupervisionTestHandoffResult&) =
++      delete;
++  ~SupervisionTestHandoffResult();
++
++  static SupervisionTestHandoffResult Delivered(int sequence,
++                                                std::string pairing_code);
++  static SupervisionTestHandoffResult Failure(
++      SupervisionTestHandoffStatus status);
++
++  SupervisionTestHandoffStatus status =
++      SupervisionTestHandoffStatus::kInvalidRequest;
++  int sequence = 0;
++  std::string pairing_code;
++};
++
++using SupervisionTestHandoffParseResult =
++    base::expected<SupervisionTestHandoffRequest, SupervisionTestHandoffResult>;
++
++SupervisionTestHandoffParseResult ParseSupervisionTestHandoffRequest(
++    std::string_view body);
++std::string SerializeSupervisionTestHandoffResult(
++    const SupervisionTestHandoffResult& result);
++
++// Dependency-neutral seam. The gateway knows only whether this validated
++// dispatcher is installed; concrete profile/service composition is deferred.
++struct SupervisionTestHandoffDispatcher {
++  using ResultCallback =
++      base::OnceCallback<void(SupervisionTestHandoffResult result)>;
++  using DispatchCallback =
++      base::RepeatingCallback<void(SupervisionTestHandoffRequest request,
++                                   ResultCallback callback)>;
++
++  bool IsComplete() const { return dispatch && shutdown; }
++
++  DispatchCallback dispatch;
++  base::RepeatingClosure shutdown;
++};
++
+ }  // namespace prometheus
+ 
+ #endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_GATEWAY_CONTRACT_H_
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+index 0f4c839b01..0c49fb5c84 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+@@ -20,8 +20,8 @@
+ #include "base/functional/bind.h"
+ #include "base/json/json_reader.h"
+ #include "build/build_config.h"
+-#include "chrome/browser/prometheus/prometheus_agent_transport_codec.h"
+ #include "chrome/browser/prometheus/prometheus_agent_gateway_contract.h"
++#include "chrome/browser/prometheus/prometheus_agent_transport_codec.h"
+ #include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_transport_codec.h"
+ #include "chrome/common/chrome_switches.h"
+@@ -73,18 +73,17 @@ class FakeSupervisionGatewayDispatcher {
+  public:
+   SupervisionGatewayDispatcher Bind() {
+     return SupervisionGatewayDispatcher{
+-        .dispatch = base::BindRepeating(
+-            &FakeSupervisionGatewayDispatcher::Dispatch,
+-            base::Unretained(this)),
+-        .cancel = base::BindRepeating(
+-            &FakeSupervisionGatewayDispatcher::Cancel,
+-            base::Unretained(this)),
+-        .readiness = base::BindRepeating(
+-            &FakeSupervisionGatewayDispatcher::Readiness,
+-            base::Unretained(this)),
+-        .shutdown = base::BindRepeating(
+-            &FakeSupervisionGatewayDispatcher::Shutdown,
+-            base::Unretained(this)),
++        .dispatch =
++            base::BindRepeating(&FakeSupervisionGatewayDispatcher::Dispatch,
++                                base::Unretained(this)),
++        .cancel = base::BindRepeating(&FakeSupervisionGatewayDispatcher::Cancel,
++                                      base::Unretained(this)),
++        .readiness =
++            base::BindRepeating(&FakeSupervisionGatewayDispatcher::Readiness,
++                                base::Unretained(this)),
++        .shutdown =
++            base::BindRepeating(&FakeSupervisionGatewayDispatcher::Shutdown,
++                                base::Unretained(this)),
+     };
+   }
+ 
+@@ -124,6 +123,38 @@ class FakeSupervisionGatewayDispatcher {
+   size_t shutdowns = 0;
+ };
+ 
++class FakeSupervisionTestHandoffDispatcher {
++ public:
++  SupervisionTestHandoffDispatcher Bind() {
++    return {
++        .dispatch =
++            base::BindRepeating(&FakeSupervisionTestHandoffDispatcher::Dispatch,
++                                base::Unretained(this)),
++        .shutdown =
++            base::BindRepeating(&FakeSupervisionTestHandoffDispatcher::Shutdown,
++                                base::Unretained(this)),
++    };
++  }
++
++  void Dispatch(SupervisionTestHandoffRequest request,
++                SupervisionTestHandoffDispatcher::ResultCallback callback) {
++    ++dispatches;
++    last_sequence = request.sequence;
++    last_challenge = request.challenge;
++    last_session_id = request.session_id;
++    std::move(callback).Run(SupervisionTestHandoffResult::Delivered(
++        request.sequence, request.sequence == 1 ? "ABCD-EFGH" : "JKLM-NPQR"));
++  }
++
++  void Shutdown() { ++shutdowns; }
++
++  int dispatches = 0;
++  int shutdowns = 0;
++  int last_sequence = 0;
++  std::string last_challenge;
++  std::string last_session_id;
++};
++
+ net::HttpServerRequestInfo ValidRequest(std::string_view path) {
+   net::HttpServerRequestInfo request;
+   request.peer =
+@@ -139,11 +170,29 @@ net::HttpServerRequestInfo ValidRequest(std::string_view path) {
+   return request;
+ }
+ 
++NativeResponse HandleSupervisionTestHandoffRequest(
++    PrometheusAgentGateway& gateway,
++    std::string_view body) {
++  NativeResponse response;
++  gateway.HandleNativeRequestForTesting(
++      "/v1/test/supervision-handoff", body,
++      base::BindOnce(
++          [](NativeResponse* output, int status, std::string body) {
++            ++output->callbacks;
++            output->status = status;
++            output->body = std::move(body);
++          },
++          &response));
++  return response;
++}
++
+ void ExpectRejected(const net::HttpServerRequestInfo& request,
+                     PrometheusAgentRequestRejection rejection,
+-                    size_t in_flight = 0) {
++                    size_t in_flight = 0,
++                    bool supervision_test_handoff_enabled = false) {
+   EXPECT_EQ(rejection, ValidatePrometheusAgentGatewayRequestForTesting(
+-                           request, kTestPort, kBearer, in_flight));
++                           request, kTestPort, kBearer, in_flight,
++                           supervision_test_handoff_enabled));
+ }
+ 
+ TEST(PrometheusEndpointDescriptorTest,
+@@ -337,8 +386,9 @@ TEST(PrometheusAgentGatewayTest,
+                  PrometheusAgentRequestRejection::kUnauthorized);
+ }
+ 
+-TEST(PrometheusAgentGatewayTest,
+-     SupervisionContractRejectsUpgradeMethodMediaSizeAndInflightBeforeDispatch) {
++TEST(
++    PrometheusAgentGatewayTest,
++    SupervisionContractRejectsUpgradeMethodMediaSizeAndInflightBeforeDispatch) {
+   int dispatch_calls = 0;
+   auto expect_rejected_without_dispatch =
+       [&dispatch_calls](const net::HttpServerRequestInfo& request,
+@@ -373,6 +423,116 @@ TEST(PrometheusAgentGatewayTest,
+       PrometheusAgentRequestRejection::kTooManyRequests, 16);
+ }
+ 
++TEST(PrometheusAgentGatewayTest,
++     SupervisionTestHandoffAbsentDispatcherIsNotFoundBeforeNativeDispatch) {
++  const net::HttpServerRequestInfo request =
++      ValidRequest("/v1/test/supervision-handoff");
++  ExpectRejected(request, PrometheusAgentRequestRejection::kNotFound,
++                 /*in_flight=*/0,
++                 /*supervision_test_handoff_enabled=*/false);
++
++  PrometheusAgentGateway gateway({});
++  NativeResponse response = HandleSupervisionTestHandoffRequest(
++      gateway,
++      R"({"challenge":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","session_id":"owner-session","sequence":1})");
++  EXPECT_EQ(1u, response.callbacks);
++  EXPECT_EQ(net::HTTP_NOT_FOUND, response.status);
++  EXPECT_EQ(std::string::npos, response.body.find("0123456789abcdef"));
++}
++
++TEST(PrometheusAgentGatewayTest,
++     SupervisionTestHandoffBoundRoutePreservesCompletePerimeter) {
++  auto valid = ValidRequest("/v1/test/supervision-handoff");
++  ExpectRejected(valid, PrometheusAgentRequestRejection::kNone,
++                 /*in_flight=*/0,
++                 /*supervision_test_handoff_enabled=*/true);
++
++  auto remote_peer = valid;
++  remote_peer.peer = net::IPEndPoint(net::IPAddress(192, 0, 2, 1), 52123);
++  ExpectRejected(remote_peer, PrometheusAgentRequestRejection::kNonLoopbackPeer,
++                 0, true);
++
++  auto bad_host = valid;
++  bad_host.headers["host"] = "localhost:43210";
++  ExpectRejected(bad_host, PrometheusAgentRequestRejection::kInvalidHost, 0,
++                 true);
++
++  auto origin = valid;
++  origin.headers["origin"] = "http://127.0.0.1:43210";
++  ExpectRejected(origin, PrometheusAgentRequestRejection::kOriginForbidden, 0,
++                 true);
++
++  auto missing_bearer = valid;
++  missing_bearer.headers.erase("authorization");
++  ExpectRejected(missing_bearer, PrometheusAgentRequestRejection::kUnauthorized,
++                 0, true);
++
++  auto wrong_method = valid;
++  wrong_method.method = "GET";
++  ExpectRejected(wrong_method,
++                 PrometheusAgentRequestRejection::kMethodNotAllowed, 0, true);
++
++  auto wrong_media = valid;
++  wrong_media.headers["content-type"] = "text/plain";
++  ExpectRejected(wrong_media,
++                 PrometheusAgentRequestRejection::kUnsupportedMediaType, 0,
++                 true);
++
++  auto oversized = valid;
++  oversized.data.assign(1'048'577, 'x');
++  ExpectRejected(oversized, PrometheusAgentRequestRejection::kRequestTooLarge,
++                 0, true);
++  ExpectRejected(valid, PrometheusAgentRequestRejection::kTooManyRequests, 16,
++                 true);
++}
++
++TEST(PrometheusAgentGatewayTest,
++     SupervisionTestHandoffInstallDispatchAndUnbindRestoresNotFound) {
++  constexpr std::string_view kChallenge =
++      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
++  const std::string body =
++      "{\"challenge\":\"" + std::string(kChallenge) +
++      "\",\"session_id\":\"owner-session\",\"sequence\":1}";
++  FakeSupervisionTestHandoffDispatcher fake;
++  PrometheusAgentGateway gateway({});
++  gateway.SetSupervisionTestHandoffDispatcher(fake.Bind());
++
++  NativeResponse delivered = HandleSupervisionTestHandoffRequest(gateway, body);
++  EXPECT_EQ(1u, delivered.callbacks);
++  EXPECT_EQ(net::HTTP_OK, delivered.status);
++  EXPECT_NE(std::string::npos, delivered.body.find("\"ok\":true"));
++  EXPECT_NE(std::string::npos, delivered.body.find("ABCD-EFGH"));
++  EXPECT_EQ(1, fake.dispatches);
++  EXPECT_EQ(1, fake.last_sequence);
++  EXPECT_EQ(kChallenge, fake.last_challenge);
++  EXPECT_EQ("owner-session", fake.last_session_id);
++
++  gateway.SetSupervisionTestHandoffDispatcher({});
++  EXPECT_EQ(1, fake.shutdowns);
++  NativeResponse absent = HandleSupervisionTestHandoffRequest(gateway, body);
++  EXPECT_EQ(net::HTTP_NOT_FOUND, absent.status);
++  EXPECT_EQ(1, fake.dispatches);
++}
++
++TEST(PrometheusAgentGatewayTest,
++     SupervisionTestHandoffMalformedBodyNeverDispatchesOrEchoesSecrets) {
++  FakeSupervisionTestHandoffDispatcher fake;
++  PrometheusAgentGateway gateway({});
++  gateway.SetSupervisionTestHandoffDispatcher(fake.Bind());
++  for (
++      std::string_view body :
++      {R"({"challenge":"SECRET-SENTINEL","session_id":"owner-session","sequence":1})",
++       R"({"challenge":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","session_id":"owner-session","sequence":1,"pairing_code":"SECRET-SENTINEL"})",
++       R"({"challenge":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","session_id":"owner-session","sequence":3})"}) {
++    NativeResponse response =
++        HandleSupervisionTestHandoffRequest(gateway, body);
++    EXPECT_EQ(1u, response.callbacks);
++    EXPECT_EQ(net::HTTP_BAD_REQUEST, response.status);
++    EXPECT_EQ(std::string::npos, response.body.find("SECRET-SENTINEL"));
++  }
++  EXPECT_EQ(0, fake.dispatches);
++}
++
+ TEST(PrometheusAgentGatewayTest,
+      SupervisionDispatchesEveryClosedOperationThroughFake) {
+   FakeSupervisionGatewayDispatcher fake;
+@@ -407,16 +567,14 @@ TEST(PrometheusAgentGatewayTest,
+   PrometheusAgentGateway gateway({});
+ 
+   NativeResponse malformed = HandleSupervisionRequest(
+-      gateway,
+-      R"({"operation":"heartbeat","params":{"session":"legacy"}})");
++      gateway, R"({"operation":"heartbeat","params":{"session":"legacy"}})");
+   EXPECT_EQ(1u, malformed.callbacks);
+   EXPECT_EQ(net::HTTP_BAD_REQUEST, malformed.status);
+   auto malformed_body =
+       base::JSONReader::ReadDict(malformed.body, base::JSON_PARSE_RFC);
+   ASSERT_TRUE(malformed_body.has_value()) << malformed.body;
+   EXPECT_EQ(false, malformed_body->FindBool("ok"));
+-  const std::string* malformed_code =
+-      malformed_body->FindString("error_code");
++  const std::string* malformed_code = malformed_body->FindString("error_code");
+   ASSERT_TRUE(malformed_code);
+   EXPECT_NE("NONE", *malformed_code);
+ 
+@@ -506,7 +664,8 @@ TEST(PrometheusAgentGatewayTest,
+           },
+           &response));
+   bool stopped = false;
+-  gateway.Shutdown(base::BindOnce([](bool* value) { *value = true; }, &stopped));
++  gateway.Shutdown(
++      base::BindOnce([](bool* value) { *value = true; }, &stopped));
+   EXPECT_TRUE(stopped);
+   ASSERT_EQ(1u, fake.cancellations.size());
+   EXPECT_EQ(fake.requests[0].cancellation_token, fake.cancellations[0]);
+@@ -521,8 +680,7 @@ TEST(PrometheusAgentGatewayTest,
+   EXPECT_EQ(1u, response.callbacks);
+ }
+ 
+-TEST(PrometheusAgentGatewayTest,
+-     SupervisionReadinessIsBoundedAndContentFree) {
++TEST(PrometheusAgentGatewayTest, SupervisionReadinessIsBoundedAndContentFree) {
+   RuntimeGatewayHealthState runtime_health;
+   SupervisionGatewayReadiness ready{
+       .status = SupervisionGatewayReadinessStatus::kReady,
+@@ -531,9 +689,11 @@ TEST(PrometheusAgentGatewayTest,
+   };
+   AgentRouteResult health = BuildPrometheusGatewayHealthForTesting(
+       /*active_regular=*/true, runtime_health, ready);
+-  auto component = std::ranges::find(
+-      health.diagnostics, "supervision",
+-      [](const AgentDiagnosticComponent& diagnostic) { return diagnostic.key; });
++  auto component =
++      std::ranges::find(health.diagnostics, "supervision",
++                        [](const AgentDiagnosticComponent& diagnostic) {
++                          return diagnostic.key;
++                        });
+   ASSERT_NE(health.diagnostics.end(), component);
+   EXPECT_EQ(AgentDiagnosticStatus::kReady, component->status);
+   EXPECT_EQ(ready.reason, component->reason);
+@@ -542,9 +702,10 @@ TEST(PrometheusAgentGatewayTest,
+   ready.reason = "Bearer SECRET-SENTINEL";
+   health = BuildPrometheusGatewayHealthForTesting(
+       /*active_regular=*/true, runtime_health, ready);
+-  component = std::ranges::find(
+-      health.diagnostics, "supervision",
+-      [](const AgentDiagnosticComponent& diagnostic) { return diagnostic.key; });
++  component = std::ranges::find(health.diagnostics, "supervision",
++                                [](const AgentDiagnosticComponent& diagnostic) {
++                                  return diagnostic.key;
++                                });
+   ASSERT_NE(health.diagnostics.end(), component);
+   EXPECT_EQ(AgentDiagnosticStatus::kNotReady, component->status);
+   auto serialized = SerializeAgentTransportResult(health);
+@@ -1005,7 +1166,8 @@ TEST(PrometheusAgentGatewayTest,
+                                 "/v1/session/touch", "/v1/session/close"}) {
+     EXPECT_EQ(PrometheusAgentRequestRejection::kNone,
+               ValidatePrometheusAgentGatewayRequestForTesting(
+-                  ValidRequest(path), kTestPort, kBearer, /*in_flight=*/0));
++                  ValidRequest(path), kTestPort, kBearer, /*in_flight=*/0,
++                  /*supervision_test_handoff_enabled=*/false));
+   }
+ 
+   auto page = ParseAgentTransportRequest(
+diff --git a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc
+new file mode 100644
+index 0000000000..57a8f7040c
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc
+@@ -0,0 +1,87 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h"
++
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h"
++
++namespace prometheus {
++
++PrometheusSupervisionTestBootstrap::PrometheusSupervisionTestBootstrap() =
++    default;
++
++PrometheusSupervisionTestBootstrap::~PrometheusSupervisionTestBootstrap() {
++  Shutdown();
++}
++
++PrometheusSupervisionTestBootstrapResult
++PrometheusSupervisionTestBootstrap::Create(
++    const base::CommandLine& command_line,
++    bool is_official_build,
++    PrometheusSupervisionTestBootstrapProfileFacts profile_facts,
++    const PrometheusSupervisionTestBootstrapFileAccess& file_access,
++    BindingCallback binding,
++    CreatePairingCodeCallback create_pairing_code,
++    NowCallback now,
++    ZeroizationCallback zeroization,
++    std::unique_ptr<PrometheusSupervisionTestBootstrap>* bootstrap) {
++  static_cast<void>(command_line);
++  static_cast<void>(is_official_build);
++  static_cast<void>(profile_facts);
++  static_cast<void>(file_access);
++  static_cast<void>(binding);
++  static_cast<void>(create_pairing_code);
++  static_cast<void>(now);
++  static_cast<void>(zeroization);
++  if (bootstrap) {
++    bootstrap->reset();
++  }
++  return PrometheusSupervisionTestBootstrapResult::kNotRequested;
++}
++
++SupervisionTestHandoffDispatcher
++PrometheusSupervisionTestBootstrap::CreateGatewayDispatcher() {
++  return {};
++}
++
++bool PrometheusSupervisionTestBootstrap::ObservePairingRedeemed(int sequence) {
++  static_cast<void>(sequence);
++  return false;
++}
++
++std::optional<PrometheusSupervisionTestDialogResponse>
++PrometheusSupervisionTestBootstrap::ConsumeDialogResponse(
++    PrometheusSupervisionTestDialog dialog) {
++  static_cast<void>(dialog);
++  return std::nullopt;
++}
++
++void PrometheusSupervisionTestBootstrap::Shutdown() {
++  terminal_ = true;
++  weak_ptr_factory_.InvalidateWeakPtrs();
++}
++
++void PrometheusSupervisionTestBootstrap::Dispatch(
++    SupervisionTestHandoffRequest request,
++    SupervisionTestHandoffDispatcher::ResultCallback callback) {
++  static_cast<void>(request);
++  std::move(callback).Run(SupervisionTestHandoffResult::Failure(
++      SupervisionTestHandoffStatus::kNotReady));
++}
++
++void PrometheusSupervisionTestBootstrap::ClearTerminalState(
++    SupervisionTestHandoffStatus status) {
++  static_cast<void>(status);
++  Shutdown();
++}
++
++PrometheusSupervisionTestBootstrapFileAccess
++CreatePrometheusSupervisionTestBootstrapFileAccess() {
++  return {};
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h
+new file mode 100644
+index 0000000000..571400fb4e
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h
+@@ -0,0 +1,170 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_TEST_BOOTSTRAP_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_TEST_BOOTSTRAP_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++#include <optional>
++#include <string>
++
++#include "base/command_line.h"
++#include "base/files/file_path.h"
++#include "base/functional/callback.h"
++#include "base/memory/weak_ptr.h"
++#include "base/time/time.h"
++#include "chrome/browser/prometheus/prometheus_agent_gateway_contract.h"
++
++namespace prometheus {
++
++inline constexpr char kPrometheusSupervisionTestBootstrapSwitch[] =
++    "prometheus-supervision-test-bootstrap";
++inline constexpr size_t kPrometheusSupervisionTestChallengeBytes = 64;
++inline constexpr size_t kMaxPrometheusSupervisionTestBootstrapBytes = 16 * 1024;
++inline constexpr int kPrometheusSupervisionTestPairingSlots = 2;
++inline constexpr int kMaxPrometheusSupervisionTestHandoffAttempts = 8;
++inline constexpr base::TimeDelta kPrometheusSupervisionTestHandoffTtl =
++    base::Minutes(5);
++
++enum class PrometheusSupervisionTestBootstrapResult {
++  kApplied,
++  kNotRequested,
++  kOfficialBuildDenied,
++  kLaunchDenied,
++  kProfileDenied,
++  kPathDenied,
++  kFileDenied,
++  kReadDenied,
++  kJsonDenied,
++  kSchemaDenied,
++  kOriginDenied,
++  kBindingDenied,
++};
++
++struct PrometheusSupervisionTestBootstrapProfileFacts {
++  bool is_regular_profile = false;
++  bool is_disposable_profile = false;
++  bool is_off_the_record = false;
++};
++
++struct PrometheusSupervisionTestBootstrapFileFacts {
++  bool is_regular_file = false;
++  bool is_symbolic_link = false;
++  bool is_owned_by_current_user = false;
++  int posix_permissions = 0;
++  int64_t size = 0;
++};
++
++struct PrometheusSupervisionTestBootstrapFileAccess {
++  using InspectCallback = base::RepeatingCallback<std::optional<
++      PrometheusSupervisionTestBootstrapFileFacts>(const base::FilePath&)>;
++  using ReadCallback =
++      base::RepeatingCallback<std::optional<std::string>(const base::FilePath&,
++                                                         size_t max_bytes)>;
++
++  InspectCallback inspect;
++  ReadCallback read;
++};
++
++enum class PrometheusSupervisionTestDialog {
++  kEnableControl,
++  kRemoteAction,
++};
++
++enum class PrometheusSupervisionTestDialogResponse {
++  kAccept,
++};
++
++// Opaque identities are supplied by the composition owner. The bootstrap
++// compares them only for exact continuity and never resolves an active target.
++struct PrometheusSupervisionTestBindingFacts {
++  uint64_t profile_identity = 0;
++  uint64_t browser_identity = 0;
++  int32_t stable_tab_id = 0;
++  std::string expected_origin;
++  std::string document_identity;
++  std::string owner_session_id;
++  bool profile_live = false;
++  bool browser_live = false;
++  bool target_live = false;
++  bool document_live = false;
++  bool is_regular_profile = false;
++  bool is_off_the_record = false;
++};
++
++class PrometheusSupervisionTestBootstrap {
++ public:
++  using BindingCallback = base::RepeatingCallback<
++      std::optional<PrometheusSupervisionTestBindingFacts>()>;
++  using CreatePairingCodeCallback =
++      base::RepeatingCallback<std::optional<std::string>()>;
++  using NowCallback = base::RepeatingCallback<base::TimeTicks()>;
++  using ZeroizationCallback =
++      base::RepeatingCallback<void(std::string_view buffer_name,
++                                   size_t bytes_cleared)>;
++
++  PrometheusSupervisionTestBootstrap(
++      const PrometheusSupervisionTestBootstrap&) = delete;
++  PrometheusSupervisionTestBootstrap& operator=(
++      const PrometheusSupervisionTestBootstrap&) = delete;
++  ~PrometheusSupervisionTestBootstrap();
++
++  static PrometheusSupervisionTestBootstrapResult Create(
++      const base::CommandLine& command_line,
++      bool is_official_build,
++      PrometheusSupervisionTestBootstrapProfileFacts profile_facts,
++      const PrometheusSupervisionTestBootstrapFileAccess& file_access,
++      BindingCallback binding,
++      CreatePairingCodeCallback create_pairing_code,
++      NowCallback now,
++      ZeroizationCallback zeroization,
++      std::unique_ptr<PrometheusSupervisionTestBootstrap>* bootstrap);
++
++  SupervisionTestHandoffDispatcher CreateGatewayDispatcher();
++  bool ObservePairingRedeemed(int sequence);
++  std::optional<PrometheusSupervisionTestDialogResponse> ConsumeDialogResponse(
++      PrometheusSupervisionTestDialog dialog);
++  void Shutdown();
++
++  bool is_terminal_for_testing() const { return terminal_; }
++  int delivered_slots_for_testing() const { return delivered_slots_; }
++  int redeemed_slots_for_testing() const { return redeemed_slots_; }
++  int dialog_responses_consumed_for_testing() const {
++    return dialog_responses_consumed_;
++  }
++  int attempts_for_testing() const { return attempts_; }
++
++ private:
++  PrometheusSupervisionTestBootstrap();
++
++  void Dispatch(SupervisionTestHandoffRequest request,
++                SupervisionTestHandoffDispatcher::ResultCallback callback);
++  void ClearTerminalState(SupervisionTestHandoffStatus status);
++
++  BindingCallback binding_;
++  CreatePairingCodeCallback create_pairing_code_;
++  NowCallback now_;
++  ZeroizationCallback zeroization_;
++  PrometheusSupervisionTestBindingFacts initial_binding_;
++  std::string challenge_;
++  std::string pinned_session_id_;
++  base::TimeTicks expires_at_;
++  int delivered_slots_ = 0;
++  int redeemed_slots_ = 0;
++  int dialog_responses_consumed_ = 0;
++  int attempts_ = 0;
++  bool terminal_ = false;
++
++  base::WeakPtrFactory<PrometheusSupervisionTestBootstrap> weak_ptr_factory_{
++      this};
++};
++
++PrometheusSupervisionTestBootstrapFileAccess
++CreatePrometheusSupervisionTestBootstrapFileAccess();
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_TEST_BOOTSTRAP_H_
+diff --git a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap_unittest.cc
+new file mode 100644
+index 0000000000..5663f337c8
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap_unittest.cc
+@@ -0,0 +1,401 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h"
++
++#include <memory>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <utility>
++#include <vector>
++
++#include "base/files/file_util.h"
++#include "base/files/scoped_temp_dir.h"
++#include "base/functional/bind.h"
++#include "chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++namespace {
++
++constexpr char kConfigPath[] = "/tmp/prometheus-phase21-supervision.json";
++constexpr char kChallenge[] =
++    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
++constexpr char kOrigin[] = "http://127.0.0.1:43210";
++
++std::string MakeConfig(std::string_view challenge = kChallenge,
++                       std::string_view origin = kOrigin) {
++  return "{\"schema_version\":1,\"challenge\":\"" + std::string(challenge) +
++         "\",\"expected_origin\":\"" + std::string(origin) +
++         "\",\"pairing_slots\":2,\"dialog_responses\":["
++         "\"enable_control:accept\",\"remote_action:accept\"]}";
++}
++
++base::CommandLine MakeLaunch(const base::FilePath& path) {
++  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
++  command_line.AppendSwitchASCII(kPrometheusRuntimeTestTypeSwitch,
++                                 kPrometheusRuntimeTestType);
++  command_line.AppendSwitchPath(kPrometheusSupervisionTestBootstrapSwitch,
++                                path);
++  return command_line;
++}
++
++struct HandoffResponse {
++  std::optional<SupervisionTestHandoffResult> result;
++  size_t callbacks = 0;
++};
++
++class PrometheusSupervisionTestBootstrapTest : public testing::Test {
++ protected:
++  PrometheusSupervisionTestBootstrapTest() {
++    contents_ = MakeConfig();
++    facts_ = ValidFileFacts();
++    access_ = {
++        .inspect = base::BindRepeating(
++            &PrometheusSupervisionTestBootstrapTest::Inspect,
++            base::Unretained(this)),
++        .read =
++            base::BindRepeating(&PrometheusSupervisionTestBootstrapTest::Read,
++                                base::Unretained(this)),
++    };
++    current_binding_ = {
++        .profile_identity = 101,
++        .browser_identity = 202,
++        .stable_tab_id = 41,
++        .expected_origin = kOrigin,
++        .document_identity = "document-1",
++        .owner_session_id = "owner-session",
++        .profile_live = true,
++        .browser_live = true,
++        .target_live = true,
++        .document_live = true,
++        .is_regular_profile = true,
++        .is_off_the_record = false,
++    };
++  }
++
++  static PrometheusSupervisionTestBootstrapFileFacts ValidFileFacts() {
++    return {
++        .is_regular_file = true,
++        .is_symbolic_link = false,
++        .is_owned_by_current_user = true,
++        .posix_permissions = 0600,
++        .size = static_cast<int64_t>(MakeConfig().size()),
++    };
++  }
++
++  std::optional<PrometheusSupervisionTestBootstrapFileFacts> Inspect(
++      const base::FilePath&) {
++    ++inspect_calls_;
++    return inspect_succeeds_ ? std::optional(facts_) : std::nullopt;
++  }
++
++  std::optional<std::string> Read(const base::FilePath&, size_t max_bytes) {
++    ++read_calls_;
++    last_max_bytes_ = max_bytes;
++    return read_succeeds_ ? std::optional(contents_) : std::nullopt;
++  }
++
++  std::optional<PrometheusSupervisionTestBindingFacts> GetBinding() {
++    ++binding_calls_;
++    return binding_available_ ? std::optional(current_binding_) : std::nullopt;
++  }
++
++  std::optional<std::string> CreatePairingCode() {
++    ++create_code_calls_;
++    return create_code_succeeds_
++               ? std::optional(create_code_calls_ == 1 ? "ABCD-EFGH"
++                                                       : "JKLM-NPQR")
++               : std::nullopt;
++  }
++
++  void ObserveZeroization(std::string_view buffer_name, size_t bytes_cleared) {
++    zeroized_.emplace_back(buffer_name, bytes_cleared);
++  }
++
++  PrometheusSupervisionTestBootstrapResult Create(
++      const base::CommandLine& command_line,
++      bool official_build = false,
++      PrometheusSupervisionTestBootstrapProfileFacts profile = {
++          .is_regular_profile = true,
++          .is_disposable_profile = true,
++          .is_off_the_record = false}) {
++    return PrometheusSupervisionTestBootstrap::Create(
++        command_line, official_build, profile, access_,
++        base::BindRepeating(&PrometheusSupervisionTestBootstrapTest::GetBinding,
++                            base::Unretained(this)),
++        base::BindRepeating(
++            &PrometheusSupervisionTestBootstrapTest::CreatePairingCode,
++            base::Unretained(this)),
++        base::BindRepeating(
++            [](PrometheusSupervisionTestBootstrapTest* test) {
++              return test->now_;
++            },
++            base::Unretained(this)),
++        base::BindRepeating(
++            &PrometheusSupervisionTestBootstrapTest::ObserveZeroization,
++            base::Unretained(this)),
++        &bootstrap_);
++  }
++
++  HandoffResponse Dispatch(std::string challenge,
++                           std::string session_id,
++                           int sequence) {
++    HandoffResponse response;
++    SupervisionTestHandoffDispatcher dispatcher =
++        bootstrap_->CreateGatewayDispatcher();
++    dispatcher.dispatch.Run(
++        SupervisionTestHandoffRequest(std::move(challenge),
++                                      std::move(session_id), sequence),
++        base::BindOnce(
++            [](HandoffResponse* output, SupervisionTestHandoffResult result) {
++              ++output->callbacks;
++              output->result.emplace(std::move(result));
++            },
++            &response));
++    return response;
++  }
++
++  void SetContents(std::string contents) {
++    contents_ = std::move(contents);
++    facts_.size = static_cast<int64_t>(contents_.size());
++  }
++
++  PrometheusSupervisionTestBootstrapFileFacts facts_;
++  PrometheusSupervisionTestBootstrapFileAccess access_;
++  PrometheusSupervisionTestBindingFacts current_binding_;
++  std::unique_ptr<PrometheusSupervisionTestBootstrap> bootstrap_;
++  std::string contents_;
++  base::TimeTicks now_ = base::TimeTicks() + base::Seconds(10);
++  std::vector<std::pair<std::string, size_t>> zeroized_;
++  bool inspect_succeeds_ = true;
++  bool read_succeeds_ = true;
++  bool binding_available_ = true;
++  bool create_code_succeeds_ = true;
++  int inspect_calls_ = 0;
++  int read_calls_ = 0;
++  int binding_calls_ = 0;
++  int create_code_calls_ = 0;
++  size_t last_max_bytes_ = 0;
++};
++
++TEST_F(PrometheusSupervisionTestBootstrapTest,
++       ExactLaunchCreatesValidatedTwoSlotDispatcher) {
++  EXPECT_EQ(Create(MakeLaunch(base::FilePath(kConfigPath))),
++            PrometheusSupervisionTestBootstrapResult::kApplied);
++  ASSERT_TRUE(bootstrap_);
++  EXPECT_TRUE(bootstrap_->CreateGatewayDispatcher().IsComplete());
++  EXPECT_EQ(1, inspect_calls_);
++  EXPECT_EQ(1, read_calls_);
++  EXPECT_EQ(kMaxPrometheusSupervisionTestBootstrapBytes, last_max_bytes_);
++  EXPECT_EQ(1, binding_calls_);
++}
++
++TEST_F(PrometheusSupervisionTestBootstrapTest,
++       OrdinaryWrongOfficialPersistentAndOtrLaunchesAreInert) {
++  base::CommandLine ordinary(base::CommandLine::NO_PROGRAM);
++  EXPECT_EQ(Create(ordinary),
++            PrometheusSupervisionTestBootstrapResult::kNotRequested);
++
++  base::CommandLine config_only(base::CommandLine::NO_PROGRAM);
++  config_only.AppendSwitchPath(kPrometheusSupervisionTestBootstrapSwitch,
++                               base::FilePath(kConfigPath));
++  EXPECT_EQ(Create(config_only),
++            PrometheusSupervisionTestBootstrapResult::kLaunchDenied);
++
++  base::CommandLine wrong_type = MakeLaunch(base::FilePath(kConfigPath));
++  wrong_type.AppendSwitchASCII(kPrometheusRuntimeTestTypeSwitch,
++                               "browser-test");
++  EXPECT_EQ(Create(wrong_type),
++            PrometheusSupervisionTestBootstrapResult::kLaunchDenied);
++  EXPECT_EQ(Create(MakeLaunch(base::FilePath(kConfigPath)),
++                   /*official_build=*/true),
++            PrometheusSupervisionTestBootstrapResult::kOfficialBuildDenied);
++  EXPECT_EQ(Create(MakeLaunch(base::FilePath(kConfigPath)), false,
++                   {.is_regular_profile = true,
++                    .is_disposable_profile = false,
++                    .is_off_the_record = false}),
++            PrometheusSupervisionTestBootstrapResult::kProfileDenied);
++  EXPECT_EQ(Create(MakeLaunch(base::FilePath(kConfigPath)), false,
++                   {.is_regular_profile = false,
++                    .is_disposable_profile = true,
++                    .is_off_the_record = true}),
++            PrometheusSupervisionTestBootstrapResult::kProfileDenied);
++  EXPECT_EQ(0, inspect_calls_);
++  EXPECT_EQ(0, read_calls_);
++  EXPECT_EQ(0, binding_calls_);
++  EXPECT_FALSE(bootstrap_);
++}
++
++TEST_F(PrometheusSupervisionTestBootstrapTest,
++       UnsafeFilesMalformedDuplicateExtraAndRemoteSchemasAreDenied) {
++  const base::CommandLine launch = MakeLaunch(base::FilePath(kConfigPath));
++  const PrometheusSupervisionTestBootstrapFileFacts valid = facts_;
++  facts_.is_symbolic_link = true;
++  EXPECT_EQ(Create(launch),
++            PrometheusSupervisionTestBootstrapResult::kFileDenied);
++  facts_ = valid;
++  facts_.posix_permissions = 0644;
++  EXPECT_EQ(Create(launch),
++            PrometheusSupervisionTestBootstrapResult::kFileDenied);
++  facts_ = valid;
++
++  for (std::string invalid :
++       {std::string("not json"),
++        MakeConfig().substr(0, MakeConfig().size() - 1) +
++            ",\"pairing_code\":\"SECRET-SENTINEL\"}",
++        std::string(
++            "{\"schema_version\":1,\"schema_version\":1,\"challenge\":\"") +
++            kChallenge + "\",\"expected_origin\":\"" + kOrigin +
++            "\",\"pairing_slots\":2,\"dialog_responses\":["
++            "\"enable_control:accept\",\"remote_action:accept\"]}",
++        MakeConfig(kChallenge, "https://example.test")}) {
++    SetContents(std::move(invalid));
++    EXPECT_NE(Create(launch),
++              PrometheusSupervisionTestBootstrapResult::kApplied);
++    EXPECT_FALSE(bootstrap_);
++  }
++}
++
++TEST_F(PrometheusSupervisionTestBootstrapTest,
++       HandoffDeliversExactlyTwoOrderedSlotsAfterRedemption) {
++  ASSERT_EQ(Create(MakeLaunch(base::FilePath(kConfigPath))),
++            PrometheusSupervisionTestBootstrapResult::kApplied);
++  ASSERT_TRUE(bootstrap_);
++
++  HandoffResponse early = Dispatch(kChallenge, "owner-session", 2);
++  ASSERT_EQ(1u, early.callbacks);
++  EXPECT_EQ(SupervisionTestHandoffStatus::kOutOfOrder, early.result->status);
++  EXPECT_TRUE(early.result->pairing_code.empty());
++
++  HandoffResponse first = Dispatch(kChallenge, "owner-session", 1);
++  ASSERT_EQ(1u, first.callbacks);
++  EXPECT_EQ(SupervisionTestHandoffStatus::kDelivered, first.result->status);
++  EXPECT_EQ("ABCD-EFGH", first.result->pairing_code);
++  EXPECT_EQ(1, create_code_calls_);
++
++  HandoffResponse replay = Dispatch(kChallenge, "owner-session", 1);
++  EXPECT_NE(SupervisionTestHandoffStatus::kDelivered, replay.result->status);
++  EXPECT_TRUE(replay.result->pairing_code.empty());
++  HandoffResponse before_redemption = Dispatch(kChallenge, "owner-session", 2);
++  EXPECT_EQ(SupervisionTestHandoffStatus::kNotReady,
++            before_redemption.result->status);
++
++  EXPECT_TRUE(bootstrap_->ObservePairingRedeemed(1));
++  HandoffResponse second = Dispatch(kChallenge, "owner-session", 2);
++  EXPECT_EQ(SupervisionTestHandoffStatus::kDelivered, second.result->status);
++  EXPECT_EQ("JKLM-NPQR", second.result->pairing_code);
++  EXPECT_EQ(2, create_code_calls_);
++  EXPECT_FALSE(bootstrap_->ObservePairingRedeemed(1));
++  EXPECT_TRUE(bootstrap_->ObservePairingRedeemed(2));
++  EXPECT_TRUE(bootstrap_->is_terminal_for_testing());
++}
++
++TEST_F(PrometheusSupervisionTestBootstrapTest,
++       WrongChallengeOwnerTargetDocumentTimeoutAndShutdownReturnNoCredential) {
++  ASSERT_EQ(Create(MakeLaunch(base::FilePath(kConfigPath))),
++            PrometheusSupervisionTestBootstrapResult::kApplied);
++  ASSERT_TRUE(bootstrap_);
++
++  std::vector<HandoffResponse> denials;
++  denials.push_back(
++      Dispatch(std::string(kPrometheusSupervisionTestChallengeBytes, 'a'),
++               "owner-session", 1));
++  denials.push_back(Dispatch(kChallenge, "replacement-owner", 1));
++  for (const HandoffResponse& response : denials) {
++    ASSERT_TRUE(response.result);
++    EXPECT_NE(SupervisionTestHandoffStatus::kDelivered,
++              response.result->status);
++    EXPECT_TRUE(response.result->pairing_code.empty());
++  }
++  EXPECT_EQ(0, create_code_calls_);
++
++  current_binding_.document_identity = "document-2";
++  HandoffResponse changed_document = Dispatch(kChallenge, "owner-session", 1);
++  EXPECT_EQ(SupervisionTestHandoffStatus::kTargetLost,
++            changed_document.result->status);
++  EXPECT_TRUE(changed_document.result->pairing_code.empty());
++
++  bootstrap_.reset();
++  current_binding_.document_identity = "document-1";
++  ASSERT_EQ(Create(MakeLaunch(base::FilePath(kConfigPath))),
++            PrometheusSupervisionTestBootstrapResult::kApplied);
++  now_ += kPrometheusSupervisionTestHandoffTtl + base::Milliseconds(1);
++  HandoffResponse expired = Dispatch(kChallenge, "owner-session", 1);
++  EXPECT_EQ(SupervisionTestHandoffStatus::kExpired, expired.result->status);
++  EXPECT_TRUE(expired.result->pairing_code.empty());
++
++  bootstrap_.reset();
++  now_ = base::TimeTicks() + base::Seconds(10);
++  ASSERT_EQ(Create(MakeLaunch(base::FilePath(kConfigPath))),
++            PrometheusSupervisionTestBootstrapResult::kApplied);
++  bootstrap_->Shutdown();
++  HandoffResponse shutdown = Dispatch(kChallenge, "owner-session", 1);
++  EXPECT_EQ(SupervisionTestHandoffStatus::kShutdown, shutdown.result->status);
++  EXPECT_TRUE(shutdown.result->pairing_code.empty());
++}
++
++TEST_F(PrometheusSupervisionTestBootstrapTest,
++       DialogResponsesAreClosedOrderedAndConsumedOnce) {
++  ASSERT_EQ(Create(MakeLaunch(base::FilePath(kConfigPath))),
++            PrometheusSupervisionTestBootstrapResult::kApplied);
++  ASSERT_TRUE(bootstrap_);
++  EXPECT_FALSE(bootstrap_->ConsumeDialogResponse(
++      PrometheusSupervisionTestDialog::kRemoteAction));
++  EXPECT_EQ(PrometheusSupervisionTestDialogResponse::kAccept,
++            bootstrap_->ConsumeDialogResponse(
++                PrometheusSupervisionTestDialog::kEnableControl));
++  EXPECT_EQ(PrometheusSupervisionTestDialogResponse::kAccept,
++            bootstrap_->ConsumeDialogResponse(
++                PrometheusSupervisionTestDialog::kRemoteAction));
++  EXPECT_FALSE(bootstrap_->ConsumeDialogResponse(
++      PrometheusSupervisionTestDialog::kRemoteAction));
++}
++
++TEST_F(PrometheusSupervisionTestBootstrapTest,
++       RealFileBoundaryAccepts0600AndRejectsSymlinkAndWrongMode) {
++  base::ScopedTempDir temp_dir;
++  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
++  const base::FilePath config_path =
++      temp_dir.GetPath().AppendASCII("supervision.json");
++  ASSERT_TRUE(base::WriteFile(config_path, MakeConfig()));
++  ASSERT_TRUE(base::SetPosixFilePermissions(config_path, 0600));
++
++  const auto real_access = CreatePrometheusSupervisionTestBootstrapFileAccess();
++  std::unique_ptr<PrometheusSupervisionTestBootstrap> bootstrap;
++  auto create = [&](const base::FilePath& path) {
++    return PrometheusSupervisionTestBootstrap::Create(
++        MakeLaunch(path), false,
++        {.is_regular_profile = true,
++         .is_disposable_profile = true,
++         .is_off_the_record = false},
++        real_access,
++        base::BindRepeating(
++            [](PrometheusSupervisionTestBindingFacts binding)
++                -> std::optional<PrometheusSupervisionTestBindingFacts> {
++              return binding;
++            },
++            current_binding_),
++        base::BindRepeating(
++            []() -> std::optional<std::string> { return "ABCD-EFGH"; }),
++        base::BindRepeating([]() { return base::TimeTicks::Now(); }),
++        PrometheusSupervisionTestBootstrap::ZeroizationCallback(), &bootstrap);
++  };
++  EXPECT_EQ(PrometheusSupervisionTestBootstrapResult::kApplied,
++            create(config_path));
++
++  bootstrap.reset();
++  ASSERT_TRUE(base::SetPosixFilePermissions(config_path, 0644));
++  EXPECT_EQ(PrometheusSupervisionTestBootstrapResult::kFileDenied,
++            create(config_path));
++
++  const base::FilePath link_path = temp_dir.GetPath().AppendASCII("link.json");
++  ASSERT_TRUE(base::CreateSymbolicLink(config_path, link_path));
++  EXPECT_EQ(PrometheusSupervisionTestBootstrapResult::kFileDenied,
++            create(link_path));
++}
++
++}  // namespace
++}  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+
