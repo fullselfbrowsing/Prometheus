@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 17
+current_plan: 18
 status: ready
-stopped_at: Completed 21-16-PLAN.md
-last_updated: "2026-07-22T17:12:59.848Z"
-last_activity: 2026-07-22
+stopped_at: Completed 21-17-PLAN.md
+last_updated: "2026-07-24T11:22:54.362Z"
+last_activity: 2026-07-24
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 82
-  percent: 89
+  completed_plans: 83
+  percent: 90
 ---
 
 # Project State
@@ -36,24 +36,29 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 17 of 26
+Plan: 18 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 17
+**Current Plan:** 18
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [█████████░] 89%
-**Last Activity:** 2026-07-22
-**Last Activity Description:** Completed Plan 21-16 — authority-free browser
-tab-state projection through the exact Agent-owned observation lease, with
-coherent controller/action teardown before downstream observer delivery.
+**Progress:** [█████████░] 90%
+**Last Activity:** 2026-07-24
+**Last Activity Description:** Completed Plan 21-17 — live noninteractive
+native tab supervision badges with complete accessible state and geometry-safe
+compression.
 
-Milestone work is 82 of 92 existing plans complete (89%); cumulative project
-work is 133 of 144 existing plans summarized (92%).
+Milestone work is 83 of 92 existing plans complete (90%); cumulative project
+work is 134 of 144 existing plans summarized (93%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 17: all 8 badge browser tests and both actual compact-layout
+  browser tests pass with exact icon/name priority, complete accessibility
+  under visual compression, real-tab lifecycle/isolation, invariant native
+  geometry, stable patch identity, and byte-identical reviewed build artifacts.
 
 - Phase 21 Plan 16: the intended 8-test RED gate, matching 8-test GREEN gate,
   final 15-test tab-state regression, and 3-test real service-path regression
@@ -298,6 +303,8 @@ work is 133 of 144 existing plans summarized (92%).
 - [Phase 21]: Treat native approval as visible intent rather than authority and revalidate the exact session, target, immutable owner, controller lease, expiry, document, sequence, and generation afterward. — Safe focus, Escape, close, stale callbacks, and lifecycle loss all deny without mutation.
 - [Phase 21]: Bind consequential consent directly to one pending action ID and leave vault-shaped work on its separate native confirmation path. — A dashboard cannot pre-approve a later action or reuse supervision control to bypass vault policy.
 - [Phase 21]: Project browser chrome supervision only from the authoritative sanitized service snapshot through the exact Agent-owned tab-data lease, with authority fields structurally absent. — One display-only whole-value replacement keeps eligible unowned viewing visible, clears controller/action state coherently before observers render it, and prevents chrome surfaces from inventing a second target, owner, or credential authority.
+- [Phase 21]: Compress native tab badge visuals in supervision, active-Agent, health, then idle-owner priority while preserving the complete sanitized accessible name. — Display compression must never hide semantic supervision truth from assistive technology.
+- [Phase 21]: Allocate the native badge only from spare title width before the existing alert/close controls. — Supervision changes cannot move or cover the close target, change tab height, or alter active-address geometry.
 
 ## Performance Metrics
 
@@ -329,6 +336,7 @@ work is 133 of 144 existing plans summarized (92%).
 | Phase 21 P14 | 80min | 3 tasks | 12 files |
 | Phase 21 P15 | 87min | 3 tasks | 15 files |
 | Phase 21 P16 | 1h7min | 3 tasks | 10 files |
+| Phase 21 P17 | 1h45min | 3 tasks | 11 files |
 
 ## Blockers and Deferred Items
 
@@ -343,11 +351,11 @@ work is 133 of 144 existing plans summarized (92%).
 
 ## Session
 
-**Last Date:** 2026-07-22T17:12:59.844Z
-**Stopped At:** Completed 21-16-PLAN.md
+**Last Date:** 2026-07-24T11:22:54.357Z
+**Stopped At:** Completed 21-17-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-17-PLAN.md` to wire the existing native tab badge to the live,
-sanitized browser-owned supervision state.
+Execute `21-18-PLAN.md` to expose the selected tab's live supervision state and
+immediate stop actions through the existing side/control runtime adapter.
