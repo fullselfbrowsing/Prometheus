@@ -1440,8 +1440,13 @@ verify_control_panel_supervision_runtime_contract() {
   if ! [[ "${EXPECT_FAILURE}" == true ]]; then
     require_literal 'BuildSupervisionSnapshot' "${browser_extra_parts}"
     require_literal 'ResolveSupervisionTarget' "${browser_extra_parts}"
+    require_literal 'CreateOrReplaceSupervisionPairing' \
+      "${browser_extra_parts}"
     require_literal 'IsEligibleTargetForLocalControl' "${supervision_service}"
+    require_literal 'ReplacePairing' "${supervision_service}"
     require_literal 'SupervisionRuntimeTargetRejectsStaleCrossWindowAndPrivilegedRows' \
+      "${browser_test}"
+    require_literal 'SupervisionRuntimeCreateReplacementIsExplicitAndOneShot' \
       "${browser_test}"
   fi
   reject_pattern \

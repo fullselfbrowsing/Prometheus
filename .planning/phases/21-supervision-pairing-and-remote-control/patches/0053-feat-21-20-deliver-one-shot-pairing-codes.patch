@@ -1,0 +1,361 @@
+From ab3c5fe80a3e14c58e149d2f523bfb8e04f2e51b Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 11:17:24 -0500
+Subject: [PATCH] feat(21-20): deliver one-shot pairing codes
+
+---
+ .../prometheus_browser_main_extra_parts.cc    |  66 ++++++++++
+ .../prometheus_supervision_profile_service.cc |  65 +++++++--
+ .../prometheus_supervision_profile_service.h  |   6 +
+ ...us_supervision_profile_service_unittest.cc |   9 +-
+ .../prometheus_web_ui_browsertest.cc          | 123 ++++++++++++++++++
+ 5 files changed, 258 insertions(+), 11 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index b67ae658a0..c02454cd18 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -1453,6 +1453,30 @@ class NativePrometheusControlPanelRuntime final
+     return {.status = "OK", .accepted = true};
+   }
+ 
++  PrometheusControlSupervisionCreateResult CreateSupervisionPairing(
++      size_t ordinal) override {
++    return CreateOrReplaceSupervisionPairing(ordinal, /*replace=*/false);
++  }
++
++  PrometheusControlSupervisionCreateResult ReplaceSupervisionPairing(
++      size_t ordinal) override {
++    return CreateOrReplaceSupervisionPairing(ordinal, /*replace=*/true);
++  }
++
++  PrometheusControlSupervisionOperationResult
++  CancelSupervisionPairingPresentation(size_t ordinal) override {
++    tabs::TabInterface* const target = ResolveSupervisionTarget(ordinal);
++    if (!target || !supervision_service_) {
++      return InvalidSupervisionTarget();
++    }
++    const SupervisionServiceResult cancelled =
++        supervision_service_->CancelPairing(
++            target->GetHandle().raw_value());
++    return {.status = cancelled.ok ? "OK" : "INVALID_REQUEST",
++            .accepted = cancelled.ok,
++            .recovery = cancelled.ok ? std::string() : cancelled.recovery};
++  }
++
+   void OnRuntimeSidePanelSnapshotChanged() override {
+     if (snapshot_callback_) {
+       snapshot_callback_.Run(GetSanitizedSnapshot());
+@@ -1485,6 +1509,48 @@ class NativePrometheusControlPanelRuntime final
+                 "create a new pairing code."};
+   }
+ 
++  PrometheusControlSupervisionCreateResult
++  CreateOrReplaceSupervisionPairing(size_t ordinal, bool replace) {
++    tabs::TabInterface* const target = ResolveSupervisionTarget(ordinal);
++    if (!target || !supervision_service_) {
++      return {.status = "TARGET_LOST",
++              .accepted = false,
++              .recovery = InvalidSupervisionTarget().recovery};
++    }
++    SupervisionPairingCreationResult creation =
++        replace ? supervision_service_->ReplacePairing(exact_browser_, target)
++                : supervision_service_->CreatePairing(exact_browser_, target);
++    if (!creation.ok) {
++      const bool replacement_required =
++          creation.error_code == SupervisionErrorCode::kControllerConflict;
++      return {.status = replacement_required ? "REPLACEMENT_REQUIRED"
++                                             : "INVALID_REQUEST",
++              .accepted = false,
++              .replacement_required = replacement_required,
++              .recovery = std::move(creation.recovery)};
++    }
++    if (creation.pairing_code.size() != 8u ||
++        !IsValidSupervisionPairingCode(creation.pairing_code)) {
++      std::ranges::fill(creation.pairing_code, '\0');
++      creation.pairing_code.clear();
++      return {.status = "NOT_READY",
++              .accepted = false,
++              .recovery = "A pairing code could not be created. Retry pairing."};
++    }
++
++    std::string formatted_code =
++        creation.pairing_code.substr(0, 4) + "-" +
++        creation.pairing_code.substr(4, 4);
++    std::ranges::fill(creation.pairing_code, '\0');
++    creation.pairing_code.clear();
++    return {.status = "OK",
++            .accepted = true,
++            .replacement_required = false,
++            .formatted_code = std::move(formatted_code),
++            .expires_at_ms =
++                creation.expires_at.InMillisecondsSinceUnixEpoch()};
++  }
++
+   bool IsEligibleSupervisionTarget(tabs::TabInterface* target) const {
+     return IsBoundTo(exact_profile_, exact_web_contents_) && exact_browser_ &&
+            exact_browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+index b897de803a..d2075577fc 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+@@ -402,6 +402,61 @@ SupervisionPairingCreationResult
+ PrometheusSupervisionProfileService::CreatePairing(
+     BrowserWindowInterface* exact_browser,
+     tabs::TabInterface* exact_tab) {
++  if (!shutdown_ && profile_kind_ == SupervisionProfileKind::kRegular &&
++      exact_tab) {
++    SweepExpired();
++    const auto existing =
++        pending_pairings_.find(exact_tab->GetHandle().raw_value());
++    if (existing != pending_pairings_.end() &&
++        existing->second->state == SupervisionPairingState::kPending) {
++      SupervisionPairingCreationResult result;
++      static_cast<SupervisionServiceResult&>(result) = ServiceFailure(
++          SupervisionErrorCode::kControllerConflict,
++          "A pending pairing already exists for this tab",
++          "Confirm replacement before creating another pairing code");
++      return result;
++    }
++  }
++  return CreatePairingAfterReplacementCheck(exact_browser, exact_tab);
++}
++
++SupervisionPairingCreationResult
++PrometheusSupervisionProfileService::ReplacePairing(
++    BrowserWindowInterface* exact_browser,
++    tabs::TabInterface* exact_tab) {
++  SupervisionPairingCreationResult result;
++  if (shutdown_ || profile_kind_ != SupervisionProfileKind::kRegular ||
++      !IsEligibleTarget(profile_, exact_browser, exact_tab)) {
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kRestrictedTarget,
++                       "The selected tab is not eligible for supervision",
++                       "Choose a live HTTP or HTTPS tab in this regular profile");
++    return result;
++  }
++  SweepExpired();
++  const int32_t stable_tab_id = exact_tab->GetHandle().raw_value();
++  auto previous = pending_pairings_.find(stable_tab_id);
++  if (previous == pending_pairings_.end() ||
++      previous->second->state != SupervisionPairingState::kPending) {
++    static_cast<SupervisionServiceResult&>(result) = ServiceFailure(
++        SupervisionErrorCode::kInvalidCode,
++        "No pending pairing exists for this tab",
++        "Create a new pairing code");
++    return result;
++  }
++
++  // Invalidate the old digest before any new bearer material is generated.
++  last_pairing_states_[stable_tab_id] = SupervisionPairingState::kCancelled;
++  pending_pairings_.erase(previous);
++  AddAudit(stable_tab_id, SupervisionAuditEvent::kPairingCodeCancelled,
++           std::nullopt);
++  return CreatePairingAfterReplacementCheck(exact_browser, exact_tab);
++}
++
++SupervisionPairingCreationResult
++PrometheusSupervisionProfileService::CreatePairingAfterReplacementCheck(
++    BrowserWindowInterface* exact_browser,
++    tabs::TabInterface* exact_tab) {
+   SupervisionPairingCreationResult result;
+   if (shutdown_ || profile_kind_ != SupervisionProfileKind::kRegular ||
+       !observe_tab_data_) {
+@@ -435,16 +490,6 @@ PrometheusSupervisionProfileService::CreatePairing(
+     return result;
+   }
+ 
+-  auto previous = pending_pairings_.find(stable_tab_id);
+-  if (previous != pending_pairings_.end()) {
+-    if (previous->second->state == SupervisionPairingState::kPending) {
+-      last_pairing_states_[stable_tab_id] = SupervisionPairingState::kCancelled;
+-      AddAudit(stable_tab_id, SupervisionAuditEvent::kPairingCodeCancelled,
+-               std::nullopt);
+-    }
+-    pending_pairings_.erase(previous);
+-  }
+-
+   while (pending_pairings_.size() >= limits_.sessions_per_profile) {
+     auto terminal = std::find_if(
+         pending_pairings_.begin(), pending_pairings_.end(),
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.h b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+index 8aa1ac1d00..7cc185481d 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+@@ -144,6 +144,9 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+   SupervisionPairingCreationResult CreatePairing(
+       BrowserWindowInterface* exact_browser,
+       tabs::TabInterface* exact_tab);
++  SupervisionPairingCreationResult ReplacePairing(
++      BrowserWindowInterface* exact_browser,
++      tabs::TabInterface* exact_tab);
+   SupervisionServiceResult CancelPairing(int32_t stable_tab_id);
+   SupervisionRedemptionResult RedeemPairing(std::string_view pairing_code,
+                                             std::string_view client_label);
+@@ -228,6 +231,9 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+ 
+   base::Time Now() const;
+   std::string GeneratePairingCode() const;
++  SupervisionPairingCreationResult CreatePairingAfterReplacementCheck(
++      BrowserWindowInterface* exact_browser,
++      tabs::TabInterface* exact_tab);
+   void SweepExpired();
+   void SweepExpiredPairings(base::Time now);
+   void SweepExpiredViewers(base::Time now);
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+index 95c7ab9b09..2da6cc320d 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+@@ -328,7 +328,14 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+        PairingReplacementHappensBeforeNewCodeBecomesRedeemable) {
+   SupervisionPairingCreationResult first = CreatePairing();
+   ASSERT_TRUE(first.ok);
+-  SupervisionPairingCreationResult second = CreatePairing();
++  SupervisionPairingCreationResult duplicate = CreatePairing();
++  EXPECT_FALSE(duplicate.ok);
++  EXPECT_EQ(SupervisionErrorCode::kControllerConflict,
++            duplicate.error_code);
++  EXPECT_TRUE(
++      service_->MatchesPendingPairingForComposition(first.pairing_code));
++  SupervisionPairingCreationResult second =
++      service_->ReplacePairing(&browser_, &tab_);
+   ASSERT_TRUE(second.ok);
+   EXPECT_NE(first.pairing_code, second.pairing_code);
+   EXPECT_FALSE(service_->RedeemPairing(first.pairing_code, "old").ok);
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 2094ef20c6..15abc086fc 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -426,6 +426,129 @@ IN_PROC_BROWSER_TEST_F(PrometheusWebUIBrowserTest,
+                    .ExtractBool());
+ }
+ 
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    SupervisionRuntimeCreateReplacementIsExplicitAndOneShot) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("/title1.html")));
++  auto* const service = supervision_service();
++  ASSERT_TRUE(service);
++  ASSERT_TRUE(AddTabAtIndexToBrowser(
++      browser(), 1, GURL(chrome::kChromeUIPrometheusControlPanelURL),
++      ui::PAGE_TRANSITION_TYPED));
++  content::WebContents* const control_contents =
++      browser()->tab_strip_model()->GetActiveWebContents();
++  ASSERT_TRUE(control_contents);
++  ASSERT_TRUE(content::WaitForLoadStop(control_contents));
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlReceiveSnapshot = snapshot => {
++      window.prometheusControlSnapshotForTesting = snapshot;
++    };
++    window.prometheusControlReceiveOperation = operation => {
++      window.prometheusControlOperationForTesting = operation;
++    };
++    window.prometheusControlReceivePairingCreateResult = result => {
++      window.prometheusControlPairingCreateResultForTesting = result;
++    };
++    chrome.send('prometheusControlInitialize');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlSnapshotForTesting?.supervision?.targets
++          ?.length === 1
++    )")
++        .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlCreatePairing', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlPairingCreateResultForTesting?.accepted === true
++    )")
++        .ExtractBool();
++  }));
++  const std::string first_code = content::EvalJs(control_contents, R"(
++    window.prometheusControlPairingCreateResultForTesting.formatted_code
++  )")
++                                     .ExtractString();
++  const double first_expiry = content::EvalJs(control_contents, R"(
++    window.prometheusControlPairingCreateResultForTesting.expires_at_ms
++  )")
++                                  .ExtractDouble();
++  EXPECT_TRUE(service->MatchesPendingPairingForComposition(first_code));
++  const double remaining_ms =
++      first_expiry -
++      static_cast<double>(base::Time::Now().InMillisecondsSinceUnixEpoch());
++  EXPECT_GT(remaining_ms, base::Minutes(4).InMilliseconds());
++  EXPECT_LE(remaining_ms, base::Minutes(5).InMilliseconds());
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlPairingCreateResultForTesting = undefined;
++    chrome.send('prometheusControlCreatePairing', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlPairingCreateResultForTesting
++          ?.replacement_required === true
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(content::EvalJs(control_contents, R"(
++    !Object.hasOwn(
++        window.prometheusControlPairingCreateResultForTesting,
++        'formatted_code')
++  )")
++                  .ExtractBool());
++  EXPECT_TRUE(service->MatchesPendingPairingForComposition(first_code));
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlPairingCreateResultForTesting = undefined;
++    chrome.send('prometheusControlReplacePairing', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlPairingCreateResultForTesting?.accepted === true
++    )")
++        .ExtractBool();
++  }));
++  const std::string second_code = content::EvalJs(control_contents, R"(
++    window.prometheusControlPairingCreateResultForTesting.formatted_code
++  )")
++                                      .ExtractString();
++  EXPECT_FALSE(service->MatchesPendingPairingForComposition(first_code));
++  EXPECT_TRUE(service->MatchesPendingPairingForComposition(second_code));
++
++  const std::string snapshot_json = content::EvalJs(control_contents, R"(
++    JSON.stringify(window.prometheusControlSnapshotForTesting)
++  )")
++                                        .ExtractString();
++  EXPECT_EQ(std::string::npos, snapshot_json.find(first_code));
++  EXPECT_EQ(std::string::npos, snapshot_json.find(second_code));
++  EXPECT_EQ(std::string::npos, snapshot_json.find("formatted_code"));
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlPairingCreateResultForTesting = undefined;
++    chrome.send('prometheusControlCancelPairingPresentation', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_FALSE(service->MatchesPendingPairingForComposition(second_code));
++  EXPECT_FALSE(content::EvalJs(control_contents, R"(
++    Object.hasOwn(
++        window,
++        'prometheusControlPairingCreateResultForTesting') &&
++        window.prometheusControlPairingCreateResultForTesting !== undefined
++  )")
++                   .ExtractBool());
++}
++
+ IN_PROC_BROWSER_TEST_F(
+     PrometheusWebUIBrowserTest,
+     SupervisionRuntimeTargetRejectsStaleCrossWindowAndPrivilegedRows) {
+-- 
+2.50.1 (Apple Git-155)
+
