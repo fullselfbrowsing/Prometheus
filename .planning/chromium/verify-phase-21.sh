@@ -1425,12 +1425,16 @@ verify_control_panel_supervision_runtime_contract() {
   local browser_test="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc"
   local browser_extra_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
   local supervision_service="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local supervision_service_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc"
+  local capture_hub="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc"
   require_file "${runtime_header}"
   require_file "${runtime_source}"
   require_file "${webui_source}"
   require_file "${browser_test}"
   require_file "${browser_extra_parts}"
   require_file "${supervision_service}"
+  require_file "${supervision_service_test}"
+  require_file "${capture_hub}"
   require_literal 'PrometheusControlSupervisionSnapshot' "${runtime_header}"
   require_literal 'PrometheusControlSupervisionCreateResult' "${runtime_header}"
   require_literal 'formatted_code' "${runtime_header}"
@@ -1456,6 +1460,17 @@ verify_control_panel_supervision_runtime_contract() {
       "${browser_extra_parts}"
     require_literal 'IsEligibleTargetForLocalControl' "${supervision_service}"
     require_literal 'ReplacePairing' "${supervision_service}"
+    require_literal 'GetDashboardRowsForLocalUi' "${supervision_service}"
+    require_literal 'IsDashboardRowFreshForLocalUi' "${supervision_service}"
+    require_literal 'RequestDashboardBaseline' "${supervision_service}"
+    require_literal 'EndSupervisionForLocalUi' "${supervision_service}"
+    require_literal 'RequestBaseline' "${capture_hub}"
+    require_literal 'ControllerRetryBaselineMarksOnlyRequestedDashboardConsumer' \
+      "${supervision_service_test}"
+    require_literal 'ControllerShutdownObserverRunsAfterAuthorityAndPairingErasure' \
+      "${supervision_service_test}"
+    require_literal 'retained_pairing_digest_count_for_testing' \
+      "${supervision_service_test}"
     require_literal 'SupervisionRuntimeTargetRejectsStaleCrossWindowAndPrivilegedRows' \
       "${browser_test}"
     require_literal 'SupervisionRuntimeCreateReplacementIsExplicitAndOneShot' \
