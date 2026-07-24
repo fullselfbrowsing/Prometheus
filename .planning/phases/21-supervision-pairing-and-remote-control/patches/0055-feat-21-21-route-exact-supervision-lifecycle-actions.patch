@@ -1,0 +1,760 @@
+From 46b156ba3760c6c86024d48299ab979f2dd1f229 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 12:42:39 -0500
+Subject: [PATCH] feat(21-21): route exact supervision lifecycle actions
+
+---
+ .../prometheus_browser_main_extra_parts.cc    | 223 ++++++++++++++++--
+ .../prometheus_supervision_capture_hub.cc     |  19 ++
+ .../prometheus_supervision_capture_hub.h      |   1 +
+ .../prometheus_supervision_profile_service.cc | 145 ++++++++++++
+ .../prometheus_supervision_profile_service.h  |  21 ++
+ .../prometheus_side_panel_runtime.cc          |   5 +
+ .../prometheus_side_panel_runtime.h           |   3 +
+ .../ui/webui/prometheus/prometheus_web_ui.cc  |  16 ++
+ .../ui/webui/prometheus/prometheus_web_ui.h   |   2 +
+ .../prometheus_web_ui_browsertest.cc          |   2 +-
+ 10 files changed, 422 insertions(+), 15 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index c02454cd18..efd4a7399d 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -196,6 +196,22 @@ base::DictValue SupervisionOperationValue(SupervisionServiceResult result) {
+   return value;
+ }
+ 
++PrometheusControlSupervisionOperationResult ControlSupervisionOperationResult(
++    SupervisionServiceResult result) {
++  PrometheusControlSupervisionOperationResult operation;
++  operation.accepted = result.ok;
++  if (result.ok) {
++    operation.status = "OK";
++  } else {
++    const std::optional<std::string_view> error =
++        SupervisionErrorCodeToString(result.error_code);
++    operation.status =
++        error ? base::ToUpperASCII(std::string(*error)) : "NOT_READY";
++  }
++  operation.recovery = std::move(result.recovery);
++  return operation;
++}
++
+ PrometheusSidePanelSupervisionActionCategory SidePanelActionCategory(
+     SupervisionRemoteActionCategory category) {
+   switch (category) {
+@@ -1000,6 +1016,20 @@ class NativePrometheusControlPanelRuntime final
+     uint64_t generation = 0;
+   };
+ 
++  struct SupervisionConnectedRowBinding {
++    base::WeakPtr<tabs::TabInterface> target;
++    tabs::TabHandle handle;
++    base::UnguessableToken dashboard_session;
++    uint64_t authority_generation = 0;
++    uint64_t generation = 0;
++  };
++
++  struct PairingPresentationBinding {
++    base::WeakPtr<tabs::TabInterface> target;
++    tabs::TabHandle handle;
++    int32_t stable_tab_id = 0;
++  };
++
+  public:
+   NativePrometheusControlPanelRuntime(
+       PrometheusRuntimeProfileService* service,
+@@ -1018,7 +1048,10 @@ class NativePrometheusControlPanelRuntime final
+     observing_ = true;
+   }
+ 
+-  ~NativePrometheusControlPanelRuntime() override { StopObserving(); }
++  ~NativePrometheusControlPanelRuntime() override {
++    InvalidateSupervisionPairingPresentation(/*cancel_pending=*/true);
++    StopObserving();
++  }
+ 
+   bool IsBoundTo(Profile* exact_profile,
+                  content::WebContents* exact_web_contents) const override {
+@@ -1037,6 +1070,11 @@ class NativePrometheusControlPanelRuntime final
+     snapshot_callback_ = std::move(callback);
+   }
+ 
++  void SetPairingPresentationInvalidatedCallback(
++      PairingPresentationInvalidatedCallback callback) override {
++    pairing_presentation_invalidated_callback_ = std::move(callback);
++  }
++
+   base::DictValue GetSanitizedSnapshot() override {
+     if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
+       return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
+@@ -1448,6 +1486,10 @@ class NativePrometheusControlPanelRuntime final
+     if (!target) {
+       return InvalidSupervisionTarget();
+     }
++    if (supervision_pairing_presentation_.has_value() &&
++        !PairingPresentationMatches(target)) {
++      InvalidateSupervisionPairingPresentation(/*cancel_pending=*/true);
++    }
+     selected_supervision_target_ = target->GetHandle();
+     supervision_selection_initialized_ = true;
+     return {.status = "OK", .accepted = true};
+@@ -1469,12 +1511,66 @@ class NativePrometheusControlPanelRuntime final
+     if (!target || !supervision_service_) {
+       return InvalidSupervisionTarget();
+     }
++    if (PairingPresentationMatches(target)) {
++      InvalidateSupervisionPairingPresentation(/*cancel_pending=*/false);
++    }
+     const SupervisionServiceResult cancelled =
+         supervision_service_->CancelPairing(
+             target->GetHandle().raw_value());
+-    return {.status = cancelled.ok ? "OK" : "INVALID_REQUEST",
+-            .accepted = cancelled.ok,
+-            .recovery = cancelled.ok ? std::string() : cancelled.recovery};
++    return ControlSupervisionOperationResult(cancelled);
++  }
++
++  PrometheusControlSupervisionOperationResult EnableSupervisionControl(
++      size_t ordinal) override {
++    const std::optional<SupervisionConnectedRowBinding> row =
++        ResolveSupervisionConnectedRow(ordinal);
++    return row && supervision_service_
++               ? ControlSupervisionOperationResult(
++                     supervision_service_->EnableControl(
++                         row->dashboard_session))
++               : InvalidSupervisionTarget();
++  }
++
++  PrometheusControlSupervisionOperationResult StopSupervisionControl(
++      size_t ordinal) override {
++    const std::optional<SupervisionConnectedRowBinding> row =
++        ResolveSupervisionConnectedRow(ordinal);
++    return row && supervision_service_
++               ? ControlSupervisionOperationResult(
++                     supervision_service_->StopControl(row->dashboard_session))
++               : InvalidSupervisionTarget();
++  }
++
++  PrometheusControlSupervisionOperationResult RevokeSupervisionSession(
++      size_t ordinal) override {
++    const std::optional<SupervisionConnectedRowBinding> row =
++        ResolveSupervisionConnectedRow(ordinal);
++    return row && supervision_service_
++               ? ControlSupervisionOperationResult(
++                     supervision_service_->RevokeSession(
++                         row->dashboard_session))
++               : InvalidSupervisionTarget();
++  }
++
++  PrometheusControlSupervisionOperationResult EndTargetSupervision(
++      size_t ordinal) override {
++    tabs::TabInterface* const target = ResolveSupervisionTarget(ordinal);
++    return target && supervision_service_ && exact_browser_
++               ? ControlSupervisionOperationResult(
++                     supervision_service_->EndSupervisionForLocalUi(
++                         exact_browser_, target))
++               : InvalidSupervisionTarget();
++  }
++
++  PrometheusControlSupervisionOperationResult RetrySupervisionBaseline(
++      size_t ordinal) override {
++    const std::optional<SupervisionConnectedRowBinding> row =
++        ResolveSupervisionConnectedRow(ordinal);
++    return row && supervision_service_
++               ? ControlSupervisionOperationResult(
++                     supervision_service_->RequestDashboardBaseline(
++                         row->dashboard_session))
++               : InvalidSupervisionTarget();
+   }
+ 
+   void OnRuntimeSidePanelSnapshotChanged() override {
+@@ -1486,8 +1582,20 @@ class NativePrometheusControlPanelRuntime final
+   void OnPrometheusSupervisionSnapshotChanged(
+       int32_t stable_tab_id,
+       const SanitizedSupervisionSnapshot& snapshot) override {
+-    (void)stable_tab_id;
+-    (void)snapshot;
++    if (supervision_pairing_presentation_.has_value() &&
++        supervision_pairing_presentation_->stable_tab_id == stable_tab_id &&
++        snapshot.pairing_state != SupervisionPairingState::kPending) {
++      InvalidateSupervisionPairingPresentation(/*cancel_pending=*/false);
++    }
++    if (snapshot_callback_) {
++      snapshot_callback_.Run(GetSanitizedSnapshot());
++    }
++  }
++
++  void OnPrometheusSupervisionServiceShuttingDown() override {
++    InvalidateSupervisionPairingPresentation(/*cancel_pending=*/false);
++    supervision_target_rows_.clear();
++    supervision_connected_rows_.clear();
+     if (snapshot_callback_) {
+       snapshot_callback_.Run(GetSanitizedSnapshot());
+     }
+@@ -1517,6 +1625,9 @@ class NativePrometheusControlPanelRuntime final
+               .accepted = false,
+               .recovery = InvalidSupervisionTarget().recovery};
+     }
++    if (replace && PairingPresentationMatches(target)) {
++      InvalidateSupervisionPairingPresentation(/*cancel_pending=*/false);
++    }
+     SupervisionPairingCreationResult creation =
+         replace ? supervision_service_->ReplacePairing(exact_browser_, target)
+                 : supervision_service_->CreatePairing(exact_browser_, target);
+@@ -1533,11 +1644,17 @@ class NativePrometheusControlPanelRuntime final
+         !IsValidSupervisionPairingCode(creation.pairing_code)) {
+       std::ranges::fill(creation.pairing_code, '\0');
+       creation.pairing_code.clear();
++      supervision_service_->CancelPairing(target->GetHandle().raw_value());
+       return {.status = "NOT_READY",
+               .accepted = false,
+               .recovery = "A pairing code could not be created. Retry pairing."};
+     }
+ 
++    supervision_pairing_presentation_ = PairingPresentationBinding{
++        .target = target->GetWeakPtr(),
++        .handle = target->GetHandle(),
++        .stable_tab_id = target->GetHandle().raw_value(),
++    };
+     std::string formatted_code =
+         creation.pairing_code.substr(0, 4) + "-" +
+         creation.pairing_code.substr(4, 4);
+@@ -1577,9 +1694,56 @@ class NativePrometheusControlPanelRuntime final
+     return target;
+   }
+ 
++  std::optional<SupervisionConnectedRowBinding> ResolveSupervisionConnectedRow(
++      size_t ordinal) const {
++    if (ordinal >= supervision_connected_rows_.size() ||
++        !supervision_service_ || !exact_browser_) {
++      return std::nullopt;
++    }
++    const SupervisionConnectedRowBinding row =
++        supervision_connected_rows_[ordinal];
++    tabs::TabInterface* const target = row.target.get();
++    TabListInterface* const tab_list = TabListInterface::From(exact_browser_);
++    if (!target || row.generation != supervision_target_generation_ ||
++        target->GetHandle() != row.handle ||
++        selected_supervision_target_ != row.handle || !tab_list ||
++        tab_list->GetIndexOfTab(row.handle) < 0 ||
++        !IsEligibleSupervisionTarget(target) ||
++        !supervision_service_->IsDashboardRowFreshForLocalUi(
++            row.dashboard_session, row.authority_generation, exact_browser_,
++            target)) {
++      return std::nullopt;
++    }
++    return row;
++  }
++
++  bool PairingPresentationMatches(tabs::TabInterface* target) const {
++    return target && supervision_pairing_presentation_.has_value() &&
++           supervision_pairing_presentation_->target.get() == target &&
++           supervision_pairing_presentation_->handle == target->GetHandle() &&
++           supervision_pairing_presentation_->stable_tab_id ==
++               target->GetHandle().raw_value();
++  }
++
++  void InvalidateSupervisionPairingPresentation(bool cancel_pending) {
++    if (!supervision_pairing_presentation_.has_value()) {
++      return;
++    }
++    const int32_t stable_tab_id =
++        supervision_pairing_presentation_->stable_tab_id;
++    supervision_pairing_presentation_.reset();
++    if (pairing_presentation_invalidated_callback_) {
++      pairing_presentation_invalidated_callback_.Run();
++    }
++    if (cancel_pending && supervision_service_) {
++      supervision_service_->CancelPairing(stable_tab_id);
++    }
++  }
++
+   PrometheusControlSupervisionSnapshot BuildSupervisionSnapshot() {
+     PrometheusControlSupervisionSnapshot result;
+     supervision_target_rows_.clear();
++    supervision_connected_rows_.clear();
+     ++supervision_target_generation_;
+     if (supervision_target_generation_ == 0) {
+       ++supervision_target_generation_;
+@@ -1656,6 +1820,9 @@ class NativePrometheusControlPanelRuntime final
+     SanitizedSupervisionSnapshot snapshot =
+         supervision_service_->GetSanitizedSnapshot(
+             selected_target->GetHandle().raw_value());
++    const std::vector<SupervisionLocalUiDashboardBinding> row_bindings =
++        supervision_service_->GetDashboardRowsForLocalUi(
++            selected_target->GetHandle().raw_value());
+     result.pairing_state =
+         snapshot.target.eligible
+             ? EnumValue(SupervisionPairingStateToString(snapshot.pairing_state))
+@@ -1663,6 +1830,12 @@ class NativePrometheusControlPanelRuntime final
+     result.viewer_count = snapshot.target.viewer_count;
+     result.controller_label = snapshot.target.controller_label;
+ 
++    struct ConnectedRowAndBinding {
++      PrometheusControlSupervisionConnectedRow row;
++      SupervisionConnectedRowBinding binding;
++    };
++    std::vector<ConnectedRowAndBinding> connected_rows;
++    size_t connected_binding_index = 0;
+     for (const SupervisionSessionSnapshot& row : snapshot.sessions) {
+       if (IsTerminalSupervisionViewerState(row.viewer_state)) {
+         if (result.recent.size() >= kMaxControlSupervisionRecentRows) {
+@@ -1678,10 +1851,14 @@ class NativePrometheusControlPanelRuntime final
+         });
+         continue;
+       }
+-      if (result.connected.size() >=
+-          kMaxControlSupervisionConnectedRows) {
++      if (connected_rows.size() >= kMaxControlSupervisionConnectedRows) {
++        break;
++      }
++      if (connected_binding_index >= row_bindings.size()) {
+         continue;
+       }
++      const SupervisionLocalUiDashboardBinding& authority =
++          row_bindings[connected_binding_index++];
+       PrometheusControlSupervisionConnectedRow connected;
+       connected.display_label = row.client.display_label;
+       connected.access =
+@@ -1697,16 +1874,30 @@ class NativePrometheusControlPanelRuntime final
+       connected.connected_at_ms = row.client.connected_at_ms;
+       connected.last_seen_at_ms = row.client.last_seen_at_ms;
+       connected.expires_at_ms = row.client.expires_at_ms;
+-      result.connected.push_back(std::move(connected));
++      connected_rows.push_back({
++          .row = std::move(connected),
++          .binding =
++              {
++                  .target = selected_target->GetWeakPtr(),
++                  .handle = selected_target->GetHandle(),
++                  .dashboard_session = authority.dashboard_session,
++                  .authority_generation = authority.authority_generation,
++                  .generation = supervision_target_generation_,
++              },
++      });
+     }
+     std::ranges::stable_sort(
+-        result.connected, [](const auto& left, const auto& right) {
+-          if ((left.access == "controller") !=
+-              (right.access == "controller")) {
+-            return left.access == "controller";
++        connected_rows, [](const auto& left, const auto& right) {
++          if ((left.row.access == "controller") !=
++              (right.row.access == "controller")) {
++            return left.row.access == "controller";
+           }
+-          return left.display_label < right.display_label;
++          return left.row.display_label < right.row.display_label;
+         });
++    for (ConnectedRowAndBinding& connected : connected_rows) {
++      result.connected.push_back(std::move(connected.row));
++      supervision_connected_rows_.push_back(std::move(connected.binding));
++    }
+ 
+     for (const SupervisionAuditSnapshot& row : snapshot.audit) {
+       if (result.audit.size() >= kMaxControlSupervisionAuditRows) {
+@@ -1851,10 +2042,14 @@ class NativePrometheusControlPanelRuntime final
+   raw_ptr<content::WebContents> exact_web_contents_;
+   raw_ptr<BrowserWindowInterface> exact_browser_;
+   SnapshotCallback snapshot_callback_;
++  PairingPresentationInvalidatedCallback
++      pairing_presentation_invalidated_callback_;
+   std::map<uint64_t, std::string> pending_discoveries_;
+   base::RepeatingTimer discovery_poll_timer_;
+   std::string selected_document_id_;
+   std::vector<SupervisionTargetRowBinding> supervision_target_rows_;
++  std::vector<SupervisionConnectedRowBinding> supervision_connected_rows_;
++  std::optional<PairingPresentationBinding> supervision_pairing_presentation_;
+   tabs::TabHandle selected_supervision_target_;
+   uint64_t supervision_target_generation_ = 0;
+   bool supervision_selection_initialized_ = false;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc b/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
+index 649a1f9a1a..4e55bab914 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
+@@ -454,6 +454,25 @@ bool PrometheusSupervisionCaptureHub::CancelDiffWait(
+   return true;
+ }
+ 
++bool PrometheusSupervisionCaptureHub::RequestBaseline(
++    SupervisionCaptureConsumerId consumer_id) {
++  SweepExpiredConsumers();
++  auto consumer = consumers_.find(consumer_id);
++  if (consumer == consumers_.end()) {
++    return false;
++  }
++  if (consumer->second.needs_baseline) {
++    NotifyReadyDiffWaiters();
++    return true;
++  }
++  RequireBaseline(consumer->second);
++  if (!IsUsableBaseline(baseline_) || sequence_ == 0u) {
++    RequestCapture(/*force_baseline=*/false);
++  }
++  NotifyReadyDiffWaiters();
++  return true;
++}
++
+ bool PrometheusSupervisionCaptureHub::RevokeConsumer(
+     SupervisionCaptureConsumerId consumer_id) {
+   SweepExpiredConsumers();
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub.h b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+index 61d8674ec0..655f34a7cd 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+@@ -105,6 +105,7 @@ class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
+   bool WaitForNextDiff(SupervisionCaptureConsumerId consumer_id,
+                        DiffWaitCallback callback);
+   bool CancelDiffWait(SupervisionCaptureConsumerId consumer_id);
++  bool RequestBaseline(SupervisionCaptureConsumerId consumer_id);
+   bool RevokeConsumer(SupervisionCaptureConsumerId consumer_id);
+   bool DetachConsumer(SupervisionCaptureConsumerId consumer_id);
+   void SweepExpiredConsumers();
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+index d2075577fc..3953e98988 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+@@ -1238,6 +1238,91 @@ SupervisionServiceResult PrometheusSupervisionProfileService::StopControl(
+   return SupervisionServiceResult::Success();
+ }
+ 
++SupervisionServiceResult
++PrometheusSupervisionProfileService::RequestDashboardBaseline(
++    const base::UnguessableToken& dashboard_session) {
++  if (shutdown_) {
++    return UnavailableResult();
++  }
++  SweepExpired();
++  if (!viewers_.contains(dashboard_session)) {
++    return UnknownSessionResult();
++  }
++  if (!RevalidateViewerOwner(dashboard_session)) {
++    return ServiceFailure(SupervisionErrorCode::kUnknownSession,
++                          "The dashboard session no longer has authority",
++                          "Create and redeem a new pairing");
++  }
++
++  auto viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end()) {
++    return UnknownSessionResult();
++  }
++  CaptureHubEntry* const capture_hub = FindCaptureHub(*viewer->second);
++  if (!capture_hub || !viewer->second->capture_consumer_token.has_value() ||
++      !capture_hub->hub->RequestBaseline(
++          *viewer->second->capture_consumer_token)) {
++    return ServiceFailure(SupervisionErrorCode::kStaleTarget,
++                          "The dashboard capture target is unavailable",
++                          "Create and redeem a new pairing");
++  }
++  viewer->second->last_acknowledged_stamp.reset();
++  viewer->second->stream_state = SupervisionStreamState::kResyncing;
++  NotifySnapshotChanged(viewer->second->stable_tab_id);
++  return SupervisionServiceResult::Success();
++}
++
++bool PrometheusSupervisionProfileService::IsDashboardRowFreshForLocalUi(
++    const base::UnguessableToken& dashboard_session,
++    uint64_t authority_generation,
++    BrowserWindowInterface* exact_browser,
++    tabs::TabInterface* exact_tab) {
++  if (shutdown_ || profile_kind_ != SupervisionProfileKind::kRegular ||
++      !dashboard_session || !exact_browser || !exact_tab) {
++    return false;
++  }
++  SweepExpired();
++  auto viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end() ||
++      viewer->second->authority_generation != authority_generation ||
++      viewer->second->stable_tab_id != exact_tab->GetHandle().raw_value() ||
++      viewer->second->exact_browser.get() != exact_browser ||
++      viewer->second->tab != exact_tab ||
++      ResolveExactTarget(*viewer->second) != exact_tab) {
++    return false;
++  }
++  if (!RevalidateViewerOwner(dashboard_session)) {
++    return false;
++  }
++  viewer = viewers_.find(dashboard_session);
++  return viewer != viewers_.end() &&
++         viewer->second->authority_generation == authority_generation &&
++         viewer->second->stable_tab_id == exact_tab->GetHandle().raw_value() &&
++         viewer->second->exact_browser.get() == exact_browser &&
++         viewer->second->tab == exact_tab &&
++         ResolveExactTarget(*viewer->second) == exact_tab;
++}
++
++std::vector<SupervisionLocalUiDashboardBinding>
++PrometheusSupervisionProfileService::GetDashboardRowsForLocalUi(
++    int32_t stable_tab_id) const {
++  std::vector<SupervisionLocalUiDashboardBinding> result;
++  if (shutdown_ || profile_kind_ != SupervisionProfileKind::kRegular) {
++    return result;
++  }
++  for (const auto& [dashboard_session, viewer] : viewers_) {
++    if (viewer->stable_tab_id != stable_tab_id) {
++      continue;
++    }
++    if (result.size() >= limits_.sessions_per_profile) {
++      break;
++    }
++    result.push_back({.dashboard_session = dashboard_session,
++                      .authority_generation = viewer->authority_generation});
++  }
++  return result;
++}
++
+ SupervisionServiceResult
+ PrometheusSupervisionProfileService::StopControlForSelectedTab(
+     BrowserWindowInterface* exact_browser,
+@@ -1491,6 +1576,63 @@ SupervisionServiceResult PrometheusSupervisionProfileService::EndSession(
+   return SupervisionServiceResult::Success();
+ }
+ 
++SupervisionServiceResult
++PrometheusSupervisionProfileService::EndSupervisionForLocalUi(
++    BrowserWindowInterface* exact_browser,
++    tabs::TabInterface* exact_tab) {
++  if (shutdown_) {
++    return UnavailableResult();
++  }
++  SweepExpired();
++  if (!IsEligibleTarget(profile_, exact_browser, exact_tab)) {
++    return ServiceFailure(
++        SupervisionErrorCode::kStaleTarget,
++        "The supervision target is no longer live",
++        "Choose the intended supervised tab in this window and retry");
++  }
++  const int32_t stable_tab_id = exact_tab->GetHandle().raw_value();
++  std::vector<base::UnguessableToken> sessions;
++  for (const auto& [dashboard_session, viewer] : viewers_) {
++    if (viewer->stable_tab_id == stable_tab_id &&
++        viewer->exact_browser.get() == exact_browser &&
++        viewer->tab == exact_tab && ResolveExactTarget(*viewer) == exact_tab) {
++      sessions.push_back(dashboard_session);
++    }
++  }
++  if (sessions.empty()) {
++    return ServiceFailure(SupervisionErrorCode::kUnknownSession,
++                          "No live dashboard access remains for this tab",
++                          "Refresh the supervision dashboard list");
++  }
++  for (const base::UnguessableToken& dashboard_session : sessions) {
++    if (!RevalidateViewerOwner(dashboard_session)) {
++      return ServiceFailure(
++          SupervisionErrorCode::kViewOnly,
++          "Supervision ended because the Agent owner is no longer live",
++          "Create a new supervised session from the intended tab");
++    }
++  }
++  for (const base::UnguessableToken& dashboard_session : sessions) {
++    auto viewer = viewers_.find(dashboard_session);
++    if (viewer == viewers_.end() ||
++        viewer->second->stable_tab_id != stable_tab_id ||
++        viewer->second->exact_browser.get() != exact_browser ||
++        viewer->second->tab != exact_tab ||
++        ResolveExactTarget(*viewer->second) != exact_tab) {
++      return ServiceFailure(SupervisionErrorCode::kStaleTarget,
++                            "The supervision authority changed before end",
++                            "Refresh the supervision dashboard list");
++    }
++  }
++  for (const base::UnguessableToken& dashboard_session : sessions) {
++    TerminateViewer(dashboard_session, SupervisionViewerState::kEnded,
++                    SupervisionTerminalReason::kNone,
++                    SupervisionAuditEvent::kControlStopped,
++                    SupervisionErrorCode::kNone);
++  }
++  return SupervisionServiceResult::Success();
++}
++
+ void PrometheusSupervisionProfileService::ExecuteCompatibilityRoute(
+     BrowserWindowInterface* exact_browser,
+     const AgentRouteRequest& request,
+@@ -1767,6 +1909,9 @@ void PrometheusSupervisionProfileService::Shutdown() {
+     return;
+   }
+   shutdown_ = true;
++  for (Observer& observer : observers_) {
++    observer.OnPrometheusSupervisionServiceShuttingDown();
++  }
+   weak_factory_.InvalidateWeakPtrs();
+   controllers_.clear();
+   std::vector<DashboardDiffWaitCallback> pending_waits;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.h b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+index 7cc185481d..943ec26d20 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+@@ -13,6 +13,7 @@
+ #include <optional>
+ #include <string>
+ #include <string_view>
++#include <vector>
+ 
+ #include "base/functional/callback.h"
+ #include "base/memory/raw_ptr.h"
+@@ -84,6 +85,13 @@ struct SupervisionDashboardDiffWaitRegistration : SupervisionServiceResult {
+   base::UnguessableToken wait_token;
+ };
+ 
++// Browser-process-only row authority retained by the local Control Panel
++// adapter. Neither member is admitted to WebUI snapshots or operation results.
++struct SupervisionLocalUiDashboardBinding {
++  base::UnguessableToken dashboard_session;
++  uint64_t authority_generation = 0;
++};
++
+ // In-memory, regular-profile authority for pairing and viewer/controller
+ // lifecycles. It can observe tab ownership only through the narrow Agent-owned
+ // move-only lease callback supplied by composition.
+@@ -94,6 +102,7 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+     virtual void OnPrometheusSupervisionSnapshotChanged(
+         int32_t stable_tab_id,
+         const SanitizedSupervisionSnapshot& snapshot) = 0;
++    virtual void OnPrometheusSupervisionServiceShuttingDown() {}
+   };
+ 
+   using ObserveTabDataCallback =
+@@ -167,6 +176,15 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+       const base::UnguessableToken& dashboard_session);
+   SupervisionServiceResult StopControl(
+       const base::UnguessableToken& dashboard_session);
++  SupervisionServiceResult RequestDashboardBaseline(
++      const base::UnguessableToken& dashboard_session);
++  bool IsDashboardRowFreshForLocalUi(
++      const base::UnguessableToken& dashboard_session,
++      uint64_t authority_generation,
++      BrowserWindowInterface* exact_browser,
++      tabs::TabInterface* exact_tab);
++  std::vector<SupervisionLocalUiDashboardBinding> GetDashboardRowsForLocalUi(
++      int32_t stable_tab_id) const;
+   SupervisionServiceResult StopControlForSelectedTab(
+       BrowserWindowInterface* exact_browser,
+       tabs::TabInterface* exact_tab);
+@@ -176,6 +194,9 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+   SupervisionServiceResult EndSelectedTabSupervision(
+       BrowserWindowInterface* exact_browser,
+       tabs::TabInterface* exact_tab);
++  SupervisionServiceResult EndSupervisionForLocalUi(
++      BrowserWindowInterface* exact_browser,
++      tabs::TabInterface* exact_tab);
+   void ExecuteDashboardAction(const base::UnguessableToken& dashboard_session,
+                               std::string_view document_epoch,
+                               uint64_t sequence,
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+index ab89dd002b..1208e744fc 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+@@ -271,6 +271,11 @@ PrometheusControlPanelRuntime::SelectSupervisionTarget(size_t ordinal) {
+   return UnavailableControlSupervisionOperation();
+ }
+ 
++void PrometheusControlPanelRuntime::SetPairingPresentationInvalidatedCallback(
++    PairingPresentationInvalidatedCallback callback) {
++  (void)callback;
++}
++
+ PrometheusControlSupervisionCreateResult
+ PrometheusControlPanelRuntime::CreateSupervisionPairing(size_t ordinal) {
+   (void)ordinal;
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+index 85f943ebc2..2ca9234633 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+@@ -249,6 +249,7 @@ class PrometheusControlPanelRuntime {
+  public:
+   using SnapshotCallback =
+       base::RepeatingCallback<void(base::DictValue snapshot)>;
++  using PairingPresentationInvalidatedCallback = base::RepeatingClosure;
+ 
+   virtual ~PrometheusControlPanelRuntime() = default;
+ 
+@@ -256,6 +257,8 @@ class PrometheusControlPanelRuntime {
+                          content::WebContents* exact_web_contents) const = 0;
+   virtual bool IsObserving() const = 0;
+   virtual void SetSnapshotCallback(SnapshotCallback callback) = 0;
++  virtual void SetPairingPresentationInvalidatedCallback(
++      PairingPresentationInvalidatedCallback callback);
+   virtual base::DictValue GetSanitizedSnapshot() = 0;
+   virtual base::DictValue CancelTask(std::string task_id) = 0;
+   virtual base::DictValue SaveProvider(
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index b07b0424b6..50db1c5960 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -1270,6 +1270,10 @@ PrometheusControlPanelUI::PrometheusControlPanelUI(content::WebUI* web_ui)
+   control_runtime_->SetSnapshotCallback(
+       base::BindRepeating(&PrometheusControlPanelUI::SendControlSnapshot,
+                           weak_factory_.GetWeakPtr()));
++  control_runtime_->SetPairingPresentationInvalidatedCallback(
++      base::BindRepeating(
++          &PrometheusControlPanelUI::ClearControlPairingPresentation,
++          weak_factory_.GetWeakPtr()));
+   web_ui->AddMessageHandler(std::make_unique<PrometheusControlMessageHandler>(
+       weak_factory_.GetWeakPtr()));
+   control_handler_registered_ = true;
+@@ -1278,6 +1282,7 @@ PrometheusControlPanelUI::PrometheusControlPanelUI(content::WebUI* web_ui)
+ PrometheusControlPanelUI::~PrometheusControlPanelUI() {
+   weak_factory_.InvalidateWeakPtrs();
+   control_runtime_.reset();
++  pairing_presentation_active_ = false;
+   bound_web_contents_ = nullptr;
+   profile_ = nullptr;
+ }
+@@ -1643,10 +1648,21 @@ void PrometheusControlPanelUI::SendControlOperation(base::DictValue operation) {
+ 
+ void PrometheusControlPanelUI::SendControlPairingCreateResult(
+     prometheus::PrometheusControlSupervisionCreateResult result) {
++  const bool presents_code = result.accepted && !result.formatted_code.empty();
+   web_ui()->CallJavascriptFunctionUnsafe(
+       "prometheusControlReceivePairingCreateResult",
+       base::Value(
+           prometheus::ControlSupervisionCreateResultValue(std::move(result))));
++  pairing_presentation_active_ = presents_code;
++}
++
++void PrometheusControlPanelUI::ClearControlPairingPresentation() {
++  if (!pairing_presentation_active_) {
++    return;
++  }
++  pairing_presentation_active_ = false;
++  web_ui()->CallJavascriptFunctionUnsafe(
++      "prometheusControlClearPairingPresentation");
+ }
+ 
+ WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusSidePanelUI)
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+index e3e7c832af..9ba7d502fe 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+@@ -194,12 +194,14 @@ class PrometheusControlPanelUI : public content::WebUIController {
+   void SendControlOperation(base::DictValue operation);
+   void SendControlPairingCreateResult(
+       prometheus::PrometheusControlSupervisionCreateResult result);
++  void ClearControlPairingPresentation();
+ 
+   raw_ptr<Profile> profile_ = nullptr;
+   raw_ptr<content::WebContents> bound_web_contents_ = nullptr;
+   std::unique_ptr<prometheus::PrometheusControlPanelRuntime> control_runtime_;
+   size_t runtime_observer_delivery_count_ = 0;
+   bool control_handler_registered_ = false;
++  bool pairing_presentation_active_ = false;
+   base::WeakPtrFactory<PrometheusControlPanelUI> weak_factory_{this};
+ 
+   WEB_UI_CONTROLLER_TYPE_DECL();
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 0fc8569057..89f761ae31 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -791,7 +791,7 @@ IN_PROC_BROWSER_TEST_F(
+   )")
+                                      .ExtractString();
+   for (const std::string& forbidden : std::vector<std::string>{
+-           "formatted_code", "pairing_code", "session_id", "lease_id",
++           "formatted_code", "\"pairing_code\":", "session_id", "lease_id",
+            "owner_id", "profile_path", "browser_id", "tab_id", "document_",
+            "epoch", "sequence", "bearer", "address", "content", "raw_value"}) {
+     EXPECT_EQ(std::string::npos, serialized.find(forbidden)) << forbidden;
+-- 
+2.50.1 (Apple Git-155)
+
