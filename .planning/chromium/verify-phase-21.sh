@@ -91,6 +91,11 @@ OUT_DIR="${CHROMIUM_DIR}/out/Default"
 LOG_DIR="${OUT_DIR}/phase21-focused"
 FOCUSED_BLINK_MODULES_DIR="${LOG_DIR}/blink-modules"
 FOCUSED_BLINK_MODULES="${FOCUSED_BLINK_MODULES_DIR}/libblink_modules.dylib"
+FOCUSED_RESOURCE_DIR="${LOG_DIR}/resources"
+FOCUSED_PROMETHEUS_PAK="${FOCUSED_RESOURCE_DIR}/prometheus/prometheus_resources.pak"
+FOCUSED_FRAMEWORK_RESOURCES_PAK="${FOCUSED_RESOURCE_DIR}/framework-resources.pak"
+FRAMEWORK_RESOURCES_PAK="${OUT_DIR}/Prometheus Framework.framework/Resources/resources.pak"
+FRAMEWORK_RESOURCES_PAK_BACKUP="${FOCUSED_RESOURCE_DIR}/framework-resources.before-phase21.pak"
 SISO="${CHROMIUM_DIR}/third_party/siso/cipd/siso"
 FOCUSED_BINARY="${OUT_DIR}/browser_tests"
 TEMP_FOCUSED_BINARY="${OUT_DIR}/phase21_browser_tests"
@@ -98,6 +103,7 @@ LIST_LOG="${LOG_DIR}/phase21-focused-list.log"
 TEST_LOG="${LOG_DIR}/phase21-focused-test.log"
 BUILD_LOG="${LOG_DIR}/phase21-focused-build.log"
 METADATA_CAPTURED=false
+FRAMEWORK_RESOURCES_SWAPPED=false
 NODE_TEST_FILES=(
   "${ROOT_DIR}/tools/prometheus-mcp/test/catalog.test.mjs"
   "${ROOT_DIR}/tools/prometheus-mcp/test/tools.test.mjs"
@@ -849,14 +855,29 @@ capture_build_metadata() {
   NINJA_DEPS_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/.ninja_deps")"
   BLINK_MODULES_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/libblink_modules.dylib")"
   BLINK_MODULES_TOC_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/libblink_modules.dylib.TOC")"
+  if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+    require_file "${FRAMEWORK_RESOURCES_PAK}"
+    FRAMEWORK_RESOURCES_SHA256_BEFORE="$(
+      sha256_file "${FRAMEWORK_RESOURCES_PAK}"
+    )"
+  fi
   METADATA_CAPTURED=true
 }
 
 verify_build_metadata_on_exit() {
   local status="$?"
   trap - EXIT
+  if [[ "${FRAMEWORK_RESOURCES_SWAPPED}" == true ]]; then
+    if ! cp -p "${FRAMEWORK_RESOURCES_PAK_BACKUP}" \
+        "${FRAMEWORK_RESOURCES_PAK}"; then
+      printf 'Phase 21 focused verification failed: could not restore framework resources.pak\n' >&2
+      status=1
+    fi
+    FRAMEWORK_RESOURCES_SWAPPED=false
+  fi
   if [[ "${METADATA_CAPTURED}" == true ]]; then
-    local ninja_log_after ninja_deps_after blink_modules_after blink_modules_toc_after
+    local ninja_log_after ninja_deps_after blink_modules_after
+    local blink_modules_toc_after framework_resources_after
     ninja_log_after="$(sha256_file "${OUT_DIR}/.ninja_log" 2>/dev/null || true)"
     ninja_deps_after="$(sha256_file "${OUT_DIR}/.ninja_deps" 2>/dev/null || true)"
     blink_modules_after="$(sha256_file "${OUT_DIR}/libblink_modules.dylib" 2>/dev/null || true)"
@@ -869,10 +890,22 @@ verify_build_metadata_on_exit() {
       "${BLINK_MODULES_SHA256_BEFORE}" "${blink_modules_after}"
     printf '[phase21] reviewed libblink_modules.dylib.TOC SHA-256 before=%s after=%s\n' \
       "${BLINK_MODULES_TOC_SHA256_BEFORE}" "${blink_modules_toc_after}"
+    if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+      framework_resources_after="$(
+        sha256_file "${FRAMEWORK_RESOURCES_PAK}" 2>/dev/null || true
+      )"
+      printf '[phase21] framework resources.pak SHA-256 before=%s after=%s\n' \
+        "${FRAMEWORK_RESOURCES_SHA256_BEFORE}" "${framework_resources_after}"
+    fi
     if [[ "${ninja_log_after}" != "${NINJA_LOG_SHA256_BEFORE}" ||
           "${ninja_deps_after}" != "${NINJA_DEPS_SHA256_BEFORE}" ||
           "${blink_modules_after}" != "${BLINK_MODULES_SHA256_BEFORE}" ||
           "${blink_modules_toc_after}" != "${BLINK_MODULES_TOC_SHA256_BEFORE}" ]]; then
+      printf 'Phase 21 focused verification failed: direct verification changed reviewed build artifacts\n' >&2
+      status=1
+    fi
+    if [[ "${FOCUS_KIND}" == 'browser-integration' &&
+          "${framework_resources_after}" != "${FRAMEWORK_RESOURCES_SHA256_BEFORE}" ]]; then
       printf 'Phase 21 focused verification failed: direct verification changed reviewed build artifacts\n' >&2
       status=1
     fi
@@ -956,6 +989,84 @@ query_blink_modules_link_command() {
            command = $0
          }
          END { print command }'
+}
+
+query_framework_resource_repack_command() {
+  LC_ALL=C "${SISO}" query commands -C "${OUT_DIR}" \
+      gen/repack/resources.pak 2>/dev/null \
+    | LC_ALL=C awk \
+        'index($0, "pak_util.py repack gen/repack/resources.pak ") {
+           command = $0
+         }
+         END { print command }'
+}
+
+build_and_install_focused_resources() {
+  local prometheus_output="${FOCUSED_RESOURCE_DIR}/prometheus"
+  mkdir -p "${prometheus_output}"
+  (
+    cd "${OUT_DIR}"
+    python3 ../../tools/grit/grit.py \
+      -i ../../chrome/browser/resources/prometheus/prometheus_resources.grd \
+      build -o phase21-focused/resources/prometheus \
+      --depdir . \
+      --depfile phase21-focused/resources/prometheus/prometheus_resources_grit.d \
+      --write-only-new=1 \
+      -D DEVTOOLS_GRD_PATH=gen/third_party/devtools-frontend/src/front_end/devtools_resources \
+      -D SHARED_INTERMEDIATE_DIR=gen \
+      -D _google_chrome=false \
+      -D _is_chrome_for_testing_branded=false \
+      -D reven=false \
+      -D toolkit_views=true \
+      -D use_aura=false \
+      -D use_ozone=false \
+      -D use_titlecase=true \
+      -D is_desktop_android=false \
+      -D scale_factors=2x \
+      -E branding_path_component=chromium \
+      -E root_gen_dir=gen \
+      -E root_src_dir=../../ \
+      -E CHROMIUM_BUILD=chromium \
+      -t darwin \
+      -f gen/tools/gritsettings/default_resource_ids \
+      -p ../../tools/gritsettings/startup_resources_mac.txt
+  ) >>"${BUILD_LOG}" 2>&1 || {
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused Prometheus GRIT build failed'
+  }
+  require_file "${FOCUSED_PROMETHEUS_PAK}"
+  cmp -s \
+      "${OUT_DIR}/gen/chrome/grit/prometheus_resources.h" \
+      "${prometheus_output}/grit/prometheus_resources.h" \
+    || fail 'focused Prometheus GRIT build changed reviewed resource IDs'
+
+  local repack_command
+  repack_command="$(query_framework_resource_repack_command)"
+  [[ -n "${repack_command}" ]] \
+    || fail 'framework resource repack command not found'
+  local original_output='repack gen/repack/resources.pak'
+  local focused_output='repack phase21-focused/resources/framework-resources.pak'
+  local original_prometheus=' gen/chrome/prometheus_resources.pak '
+  local focused_prometheus=' phase21-focused/resources/prometheus/prometheus_resources.pak '
+  [[ "${repack_command}" == *"${original_output}"* &&
+     "${repack_command}" == *"${original_prometheus}"* ]] \
+    || fail 'framework resource repack command lacks expected Prometheus input'
+  repack_command="${repack_command/${original_output}/${focused_output}}"
+  repack_command="${repack_command/${original_prometheus}/${focused_prometheus}}"
+  (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${repack_command}"
+  ) >>"${BUILD_LOG}" 2>&1 || {
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused framework resource repack failed'
+  }
+  require_file "${FOCUSED_FRAMEWORK_RESOURCES_PAK}"
+
+  mkdir -p "${FOCUSED_RESOURCE_DIR}"
+  cp -p "${FRAMEWORK_RESOURCES_PAK}" "${FRAMEWORK_RESOURCES_PAK_BACKUP}"
+  FRAMEWORK_RESOURCES_SWAPPED=true
+  cp -p "${FOCUSED_FRAMEWORK_RESOURCES_PAK}" "${FRAMEWORK_RESOURCES_PAK}"
+  note 'focused framework resource pack contains current Prometheus HTML, JS, and CSS'
 }
 
 write_link_response() {
@@ -1680,6 +1791,9 @@ else
     verify_capture_hub_contract
   fi
   build_focused_binary
+  if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+    build_and_install_focused_resources
+  fi
 fi
 list_selected_tests
 run_selected_tests
