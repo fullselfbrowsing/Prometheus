@@ -118,6 +118,12 @@ NODE_RED_FAILURES=(
   'native supervision forwarding sanitizes thrown native failures'
   'native supervision forwarding uses empty browser-scoped envelopes'
 )
+LIFECYCLE_BROWSER_RED_FILTER='PrometheusWebUIBrowserTest.SupervisionRuntimeLifecycle*'
+LIFECYCLE_BROWSER_RED_FAILURES=(
+  'PrometheusWebUIBrowserTest.SupervisionRuntimeLifecycleActionsAreExactBoundedAndCodeFree'
+  'PrometheusWebUIBrowserTest.SupervisionRuntimeLifecycleObserversInvalidateBeforeFreshSnapshots'
+  'PrometheusWebUIBrowserTest.SupervisionRuntimeLifecyclePresentationErasesAtEveryBoundary'
+)
 
 if [[ "${FOCUS_KIND}" == 'blink' ]]; then
   FOCUSED_BINARY="${OUT_DIR}/phase21_blink_tests"
@@ -1437,6 +1443,12 @@ verify_control_panel_supervision_runtime_contract() {
     "${browser_test}"
   require_literal 'SupervisionRuntimeCreateContractIsOneShotAndStrict' \
     "${browser_test}"
+  require_literal 'SupervisionRuntimeLifecycleActionsAreExactBoundedAndCodeFree' \
+    "${browser_test}"
+  require_literal 'SupervisionRuntimeLifecycleObserversInvalidateBeforeFreshSnapshots' \
+    "${browser_test}"
+  require_literal 'SupervisionRuntimeLifecyclePresentationErasesAtEveryBoundary' \
+    "${browser_test}"
   if ! [[ "${EXPECT_FAILURE}" == true ]]; then
     require_literal 'BuildSupervisionSnapshot' "${browser_extra_parts}"
     require_literal 'ResolveSupervisionTarget' "${browser_extra_parts}"
@@ -1448,6 +1460,18 @@ verify_control_panel_supervision_runtime_contract() {
       "${browser_test}"
     require_literal 'SupervisionRuntimeCreateReplacementIsExplicitAndOneShot' \
       "${browser_test}"
+    require_literal '"prometheusControlEnableSupervisionControl"' \
+      "${webui_source}"
+    require_literal '"prometheusControlStopSupervisionControl"' \
+      "${webui_source}"
+    require_literal '"prometheusControlRevokeSupervisionSession"' \
+      "${webui_source}"
+    require_literal '"prometheusControlEndTargetSupervision"' \
+      "${webui_source}"
+    require_literal '"prometheusControlRetrySupervisionBaseline"' \
+      "${webui_source}"
+    require_literal 'prometheusControlClearPairingPresentation' \
+      "${webui_source}"
   fi
   reject_pattern \
     'Set\("(pairing_code|session_id|lease_id|owner_id|profile_path|browser_id|tab_id|document_epoch|sequence|bearer|address|content|raw_value)"' \
@@ -1816,6 +1840,21 @@ run_selected_tests() {
     if rg -qi 'segmentation fault|received signal|check failed|fatal error|addresssanitizer|crash' \
         "${TEST_LOG}"; then
       fail '--expect-failure rejected a crash or fatal process failure'
+    fi
+    if [[ "${FOCUS_FILTER}" == "${LIFECYCLE_BROWSER_RED_FILTER}" ]]; then
+      local actual_failures="${LOG_DIR}/phase21-browser-actual-failures.log"
+      local expected_failures="${LOG_DIR}/phase21-browser-expected-failures.log"
+      sed -nE \
+        's/^\[  FAILED  \] ([^, ]+)(, where .*)? \([0-9]+ ms\)$/\1/p' \
+        "${TEST_LOG}" | LC_ALL=C sort -u >"${actual_failures}"
+      printf '%s\n' "${LIFECYCLE_BROWSER_RED_FAILURES[@]}" |
+        LC_ALL=C sort >"${expected_failures}"
+      if ! diff -u "${expected_failures}" "${actual_failures}" \
+          >"${BUILD_LOG}.failures"; then
+        cat "${BUILD_LOG}.failures" >&2
+        fail 'focused lifecycle browser RED failures differ from the frozen allowlist'
+      fi
+      note "lifecycle RED failed only through ${#LIFECYCLE_BROWSER_RED_FAILURES[@]} intended tests"
     fi
     note 'selected suite failed only by intended GTest assertion'
     return
