@@ -124,6 +124,13 @@ LIFECYCLE_BROWSER_RED_FAILURES=(
   'PrometheusWebUIBrowserTest.SupervisionRuntimeLifecycleObserversInvalidateBeforeFreshSnapshots'
   'PrometheusWebUIBrowserTest.SupervisionRuntimeLifecyclePresentationErasesAtEveryBoundary'
 )
+CONTROL_SUPERVISION_BROWSER_RED_FILTER='PrometheusWebUIBrowserTest.ControlSupervision*'
+CONTROL_SUPERVISION_BROWSER_RED_FAILURES=(
+  'PrometheusWebUIBrowserTest.ControlSupervisionActionsFocusAndStatePreservation'
+  'PrometheusWebUIBrowserTest.ControlSupervisionErrorsPrivatePrivacyAndResourceBoundaries'
+  'PrometheusWebUIBrowserTest.ControlSupervisionLifecycleMatrixAndExactCopy'
+  'PrometheusWebUIBrowserTest.ControlSupervisionResponsiveAtContractWidthsAndZoom'
+)
 
 if [[ "${FOCUS_KIND}" == 'blink' ]]; then
   FOCUSED_BINARY="${OUT_DIR}/phase21_blink_tests"
@@ -1453,6 +1460,14 @@ verify_control_panel_supervision_runtime_contract() {
     "${browser_test}"
   require_literal 'SupervisionRuntimeLifecyclePresentationErasesAtEveryBoundary' \
     "${browser_test}"
+  require_literal 'ControlSupervisionLifecycleMatrixAndExactCopy' \
+    "${browser_test}"
+  require_literal 'ControlSupervisionActionsFocusAndStatePreservation' \
+    "${browser_test}"
+  require_literal 'ControlSupervisionErrorsPrivatePrivacyAndResourceBoundaries' \
+    "${browser_test}"
+  require_literal 'ControlSupervisionResponsiveAtContractWidthsAndZoom' \
+    "${browser_test}"
   if ! [[ "${EXPECT_FAILURE}" == true ]]; then
     require_literal 'BuildSupervisionSnapshot' "${browser_extra_parts}"
     require_literal 'ResolveSupervisionTarget' "${browser_extra_parts}"
@@ -1856,20 +1871,28 @@ run_selected_tests() {
         "${TEST_LOG}"; then
       fail '--expect-failure rejected a crash or fatal process failure'
     fi
-    if [[ "${FOCUS_FILTER}" == "${LIFECYCLE_BROWSER_RED_FILTER}" ]]; then
+    if [[ "${FOCUS_FILTER}" == "${LIFECYCLE_BROWSER_RED_FILTER}" ||
+          "${FOCUS_FILTER}" == "${CONTROL_SUPERVISION_BROWSER_RED_FILTER}" ]]; then
       local actual_failures="${LOG_DIR}/phase21-browser-actual-failures.log"
       local expected_failures="${LOG_DIR}/phase21-browser-expected-failures.log"
+      local red_label='lifecycle'
       sed -nE \
         's/^\[  FAILED  \] ([^, ]+)(, where .*)? \([0-9]+ ms\)$/\1/p' \
         "${TEST_LOG}" | LC_ALL=C sort -u >"${actual_failures}"
-      printf '%s\n' "${LIFECYCLE_BROWSER_RED_FAILURES[@]}" |
-        LC_ALL=C sort >"${expected_failures}"
+      if [[ "${FOCUS_FILTER}" == "${LIFECYCLE_BROWSER_RED_FILTER}" ]]; then
+        printf '%s\n' "${LIFECYCLE_BROWSER_RED_FAILURES[@]}" |
+          LC_ALL=C sort >"${expected_failures}"
+      else
+        printf '%s\n' "${CONTROL_SUPERVISION_BROWSER_RED_FAILURES[@]}" |
+          LC_ALL=C sort >"${expected_failures}"
+        red_label='Control Panel supervision'
+      fi
       if ! diff -u "${expected_failures}" "${actual_failures}" \
           >"${BUILD_LOG}.failures"; then
         cat "${BUILD_LOG}.failures" >&2
-        fail 'focused lifecycle browser RED failures differ from the frozen allowlist'
+        fail "focused ${red_label} browser RED failures differ from the frozen allowlist"
       fi
-      note "lifecycle RED failed only through ${#LIFECYCLE_BROWSER_RED_FAILURES[@]} intended tests"
+      note "${red_label} RED failed only through the intended tests"
     fi
     note 'selected suite failed only by intended GTest assertion'
     return
