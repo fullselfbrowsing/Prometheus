@@ -1224,10 +1224,14 @@ verify_side_panel_supervision_runtime_contract() {
   local runtime_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc"
   local webui_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc"
   local browser_test="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc"
+  local supervision_service="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local browser_extra_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
   require_file "${runtime_header}"
   require_file "${runtime_source}"
   require_file "${webui_source}"
   require_file "${browser_test}"
+  require_file "${supervision_service}"
+  require_file "${browser_extra_parts}"
   require_literal 'kMaxSidePanelSafeTargetTitleCharacters = 80' "${runtime_header}"
   require_literal 'PrometheusSidePanelSupervisionActivity' "${runtime_header}"
   require_literal 'SanitizeSidePanelSupervisionTargetTitle' "${runtime_source}"
@@ -1236,6 +1240,9 @@ verify_side_panel_supervision_runtime_contract() {
   require_literal '"prometheusOpenSupervisionManagement"' "${webui_source}"
   require_literal 'SidePanelSupervisionRuntimeStateIsSanitizedAndBounded' "${browser_test}"
   require_literal 'SidePanelSupervisionRuntimeActionsRequireZeroArguments' "${browser_test}"
+  require_literal 'EndSelectedTabSupervision' "${supervision_service}"
+  require_literal 'EndSelectedTabSupervision() override' "${browser_extra_parts}"
+  require_literal 'SidePanelSupervisionRuntimeEndIsZeroArgumentBulkExactAndTeardownSafe' "${browser_test}"
 }
 
 build_focused_binary() {
