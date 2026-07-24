@@ -118,11 +118,11 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 
 ### Supervision And Remote Control
 
-- [ ] **SUP-01**: Browser shows visible trusted-client, active-agent, and supervised-action state while external clients control the browser.
+- [x] **SUP-01**: Browser shows visible trusted-client, active-agent, and supervised-action state while external clients control the browser.
 - [ ] **SUP-02**: Browser can stream DOM-native snapshots/diffs or equivalent structured supervision data for live supervised sessions.
-- [ ] **SUP-03**: Supervision messages carry session identity so stale snapshots, diffs, or remote-control actions cannot affect the wrong tab/session.
-- [ ] **SUP-04**: Browser supports safe remote-control pairing with visible pairing state, expiration, revocation, audit logs, and target validation.
-- [ ] **SUP-05**: Remote control honors tab ownership, internal-surface permissions, vault boundaries, and user-visible confirmation requirements.
+- [x] **SUP-03**: Supervision messages carry session identity so stale snapshots, diffs, or remote-control actions cannot affect the wrong tab/session.
+- [x] **SUP-04**: Browser supports safe remote-control pairing with visible pairing state, expiration, revocation, audit logs, and target validation.
+- [x] **SUP-05**: Remote control honors tab ownership, internal-surface permissions, vault boundaries, and user-visible confirmation requirements.
 
 ### Extension Ecosystem
 

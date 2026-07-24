@@ -355,7 +355,7 @@ Plans:
 
 **Requirements:** SUP-01, SUP-02, SUP-03, SUP-04, SUP-05
 
-**Plans:** 20/26 plans executed
+**Plans:** 21/26 plans executed
 
 Plans:
 **Wave 1**
@@ -440,7 +440,7 @@ Plans:
 
 **Wave 21** *(blocked on Wave 20 completion)*
 
-- [ ] 21-21-PLAN.md — Complete Control Panel lifecycle actions, observation, and code erasure.
+- [x] 21-21-PLAN.md — Complete Control Panel lifecycle actions, observation, and code erasure.
 
 **Wave 22** *(blocked on Wave 21 completion)*
 
@@ -564,7 +564,7 @@ Plans:
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 8/8 | Complete    | 2026-07-12 |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 7/7 | Complete    | 2026-07-13 |
 | 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 14/14 | Complete    | 2026-07-20 |
-| 21. Supervision, Pairing, and Remote Control | v2.0 | 20/26 | In Progress|  |
+| 21. Supervision, Pairing, and Remote Control | v2.0 | 21/26 | In Progress|  |
 | 22. Chrome Extension Ecosystem and Policy | v2.0 | 0 | Planned | — |
 | 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
 | 24. Packaging, Release Validation, and Handoff | v2.0 | 0 | Planned | — |

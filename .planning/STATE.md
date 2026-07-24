@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 21
-status: ready
-stopped_at: Completed 21-20-PLAN.md
-last_updated: "2026-07-24T16:30:26.349Z"
+current_plan: 22
+status: executing
+stopped_at: Completed 21-21-PLAN.md
+last_updated: "2026-07-24T18:40:40.189Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 86
-  percent: 93
+  completed_plans: 87
+  percent: 71
 ---
 
 # Project State
@@ -36,15 +36,15 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 21 of 26
+Plan: 22 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 21
+**Current Plan:** 22
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [█████████░] 93%
+**Progress:** [██████████] 95%
 **Last Activity:** 2026-07-24
 **Last Activity Description:** Completed Plan 21-20 — exact-window sanitized
 Control Panel supervision snapshots, strict ordinal messages, and one-shot
@@ -334,6 +334,7 @@ work is 137 of 144 existing plans summarized (95%).
 - [Phase 21]: Preserve the current selected target while it remains eligible and never silently select a replacement after loss. — A closed or replaced tab cannot inherit an old renderer ordinal.
 - [Phase 21]: Require explicit replacement when an unredeemed pairing digest exists. — Ordinary create is non-mutating; replace erases the old digest before generating and returning a new one.
 - [Phase 21]: Format the eight-character code only in the native Control Panel adapter and immediately zero-fill and clear the raw buffer. — The direct result receives `XXXX-XXXX` once while the service retains only salt, digest, target authority, and expiry.
+- [Phase 21]: Keep lifecycle row authority and pairing presentation browser-only, revalidate exact targets before every action, retry only the selected capture consumer, and erase terminal pairing state before observer delivery. — This prevents renderer authority, sibling cursor mutation, stale control resurrection, and post-terminal pairing recovery.
 
 ## Performance Metrics
 
@@ -369,6 +370,7 @@ work is 137 of 144 existing plans summarized (95%).
 | Phase 21 P18 | 1h49min | 3 tasks | 9 files |
 | Phase 21 P19 | 1h37min | 3 tasks | 5 files |
 | Phase 21 P20 | 1h20min | 3 tasks | 10 files |
+| Phase 21 P21 | 2h04min | 3 tasks | 12 files |
 
 ## Blockers and Deferred Items
 
@@ -383,8 +385,8 @@ work is 137 of 144 existing plans summarized (95%).
 
 ## Session
 
-**Last Date:** 2026-07-24T16:30:26.345Z
-**Stopped At:** Completed 21-20-PLAN.md
+**Last Date:** 2026-07-24T18:40:40.185Z
+**Stopped At:** Completed 21-21-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
