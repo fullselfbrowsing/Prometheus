@@ -1341,6 +1341,8 @@ verify_side_panel_supervision_runtime_contract() {
   require_file "${runtime_source}"
   require_file "${webui_source}"
   require_file "${browser_test}"
+  require_file "${browser_extra_parts}"
+  require_file "${supervision_service}"
   require_file "${supervision_service}"
   require_file "${browser_extra_parts}"
   require_literal 'kMaxSidePanelSafeTargetTitleCharacters = 80' "${runtime_header}"
@@ -1415,10 +1417,14 @@ verify_control_panel_supervision_runtime_contract() {
   local runtime_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc"
   local webui_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc"
   local browser_test="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc"
+  local browser_extra_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
+  local supervision_service="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
   require_file "${runtime_header}"
   require_file "${runtime_source}"
   require_file "${webui_source}"
   require_file "${browser_test}"
+  require_file "${browser_extra_parts}"
+  require_file "${supervision_service}"
   require_literal 'PrometheusControlSupervisionSnapshot' "${runtime_header}"
   require_literal 'PrometheusControlSupervisionCreateResult' "${runtime_header}"
   require_literal 'formatted_code' "${runtime_header}"
@@ -1431,6 +1437,13 @@ verify_control_panel_supervision_runtime_contract() {
     "${browser_test}"
   require_literal 'SupervisionRuntimeCreateContractIsOneShotAndStrict' \
     "${browser_test}"
+  if ! [[ "${EXPECT_FAILURE}" == true ]]; then
+    require_literal 'BuildSupervisionSnapshot' "${browser_extra_parts}"
+    require_literal 'ResolveSupervisionTarget' "${browser_extra_parts}"
+    require_literal 'IsEligibleTargetForLocalControl' "${supervision_service}"
+    require_literal 'SupervisionRuntimeTargetRejectsStaleCrossWindowAndPrivilegedRows' \
+      "${browser_test}"
+  fi
   reject_pattern \
     'Set\("(pairing_code|session_id|lease_id|owner_id|profile_path|browser_id|tab_id|document_epoch|sequence|bearer|address|content|raw_value)"' \
     'Control Panel supervision transport gained identity, content, or an alternate bearer field' \
