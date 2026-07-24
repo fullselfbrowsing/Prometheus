@@ -4,16 +4,16 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 22
+current_plan: 23
 status: executing
-stopped_at: Completed 21-21-PLAN.md
-last_updated: "2026-07-24T18:40:40.189Z"
+stopped_at: Completed 21-22-PLAN.md
+last_updated: "2026-07-24T20:34:27.000Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 87
+  completed_plans: 88
   percent: 71
 ---
 
@@ -36,24 +36,37 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 22 of 26
+Plan: 23 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 22
+**Current Plan:** 23
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [██████████] 95%
+**Progress:** [██████████] 97%
 **Last Activity:** 2026-07-24
-**Last Activity Description:** Completed Plan 21-20 — exact-window sanitized
-Control Panel supervision snapshots, strict ordinal messages, and one-shot
-pairing creation with explicit replacement.
+**Last Activity Description:** Completed Plan 21-22 — responsive Control Panel
+supervision UI with private one-shot code presentation, closed renderer DTOs,
+ordinal-only actions, safe focus, and verified width/zoom behavior.
 
-Milestone work is 86 of 92 existing plans complete (93%); cumulative project
-work is 137 of 144 existing plans summarized (95%).
+Milestone work is 88 of 92 existing plans complete (96%); cumulative project
+work is 139 of 144 existing plans summarized (97%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 22: the intended 4-test RED gate, 3-test intermediate GREEN
+  gate, final 4-test supervision browser gate, and 4-test packaged-asset gate
+  pass with private code lifetime, exact copy cadence, ordinal-only actions,
+  safe focus, closed DTO privacy, OTR closure, 320/480/720/1024 widths,
+  200-percent zoom, stable patch identity/replay, and byte-identical reviewed
+  build artifacts.
+
+- Phase 21 Plan 21: the intended 3-test RED gate, 3-test lifecycle/dialog
+  GREEN gate, final 3-test lifecycle browser gate, and 11-test service gate
+  pass with exact lifecycle actions, consumer-local retry, terminal
+  presentation erasure, physical digest removal, stable patch identity/replay,
+  and byte-identical reviewed artifacts.
 
 - Phase 21 Plan 20: the intended 2-test RED gate, 2-test snapshot/target GREEN
   gate, 2-test create GREEN gate, 6-test service pairing gate, and final
@@ -335,6 +348,10 @@ work is 137 of 144 existing plans summarized (95%).
 - [Phase 21]: Require explicit replacement when an unredeemed pairing digest exists. — Ordinary create is non-mutating; replace erases the old digest before generating and returning a new one.
 - [Phase 21]: Format the eight-character code only in the native Control Panel adapter and immediately zero-fill and clear the raw buffer. — The direct result receives `XXXX-XXXX` once while the service retains only salt, digest, target authority, and expiry.
 - [Phase 21]: Keep lifecycle row authority and pairing presentation browser-only, revalidate exact targets before every action, retry only the selected capture consumer, and erase terminal pairing state before observer delivery. — This prevents renderer authority, sibling cursor mutation, stale control resurrection, and post-terminal pairing recovery.
+- [Phase 21]: Keep the formatted pairing code only in closure-private module state and one intentional sensitive text node, and erase both on every terminal, clear, or reload boundary. — One-shot presentation remains copyable only after explicit user action and unrecoverable after lifecycle loss.
+- [Phase 21]: Normalize every fresh native supervision snapshot through an explicit closed renderer whitelist before retaining it. — Unknown, credential-bearing, and authority-shaped injected fields are discarded rather than merely hidden during rendering.
+- [Phase 21]: Send only fresh row ordinals in lifecycle messages and retain only bounded sanitized labels in a WeakMap for focus continuity. — Renderer state cannot become session, lease, owner, epoch, or stale-row authority.
+- [Phase 21]: Use a 60/40 Control Panel split at 1024 CSS pixels and above and preserve the same semantic one-pane order below it. — Real 320/480/720/1024 widths and 200-percent zoom share one accessible reading and keyboard order.
 
 ## Performance Metrics
 
@@ -371,6 +388,7 @@ work is 137 of 144 existing plans summarized (95%).
 | Phase 21 P19 | 1h37min | 3 tasks | 5 files |
 | Phase 21 P20 | 1h20min | 3 tasks | 10 files |
 | Phase 21 P21 | 2h04min | 3 tasks | 12 files |
+| Phase 21 P22 | 1h48min | 3 tasks | 6 files |
 
 ## Blockers and Deferred Items
 
@@ -385,11 +403,11 @@ work is 137 of 144 existing plans summarized (95%).
 
 ## Session
 
-**Last Date:** 2026-07-24T18:40:40.185Z
-**Stopped At:** Completed 21-21-PLAN.md
+**Last Date:** 2026-07-24T20:34:27.000Z
+**Stopped At:** Completed 21-22-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-21-PLAN.md` to complete Control Panel lifecycle actions,
-observation, and terminal pairing-code presentation erasure.
+Execute `21-23-PLAN.md` to add the gated two-slot smoke bootstrap and
+conditional gateway contract path.
