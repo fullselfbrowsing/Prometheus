@@ -786,6 +786,7 @@ verify_supervision_tab_badge_contract() {
   local tab_header="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/tab.h"
   local tab_source="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/tab.cc"
   local badge_test="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc"
+  local compact_test="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_compact_chrome_browsertest.cc"
   local views_build="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/BUILD.gn"
 
   require_file "${badge_header}"
@@ -796,8 +797,13 @@ verify_supervision_tab_badge_contract() {
   require_file "${tab_header}"
   require_file "${tab_source}"
   require_file "${badge_test}"
+  require_file "${compact_test}"
   require_literal 'kIconSize = 12' "${badge_header}"
   require_literal 'kIconSpacing = 4' "${badge_header}"
+  require_literal 'kMaximumWidth' "${badge_header}"
+  require_literal 'SetAvailableWidth' "${badge_header}"
+  require_literal 'ApplyVisualCompression' "${badge_source}"
+  require_literal 'SetAvailableWidth' "${tab_source}"
   require_literal 'SetCanProcessEventsWithinSubtree(false)' "${badge_source}"
   require_literal 'StateSafeDefaultOwnerAgentAndSlotContract' "${badge_test}"
   require_literal 'StateViewerControllerAndActionPriority' "${badge_test}"
@@ -805,6 +811,13 @@ verify_supervision_tab_badge_contract() {
   require_literal 'StateTextIsContentFreeAndEventTransparent' "${badge_test}"
   require_literal 'RealTabLiveTransitionsAndTerminalClear' "${badge_test}"
   require_literal 'RealTabExactTabIsolation' "${badge_test}"
+  require_literal 'StateCompressionPriorityKeepsCompleteAccessibleName' \
+    "${badge_test}"
+  require_literal 'RealTabCompressionPreservesNativeGeometry' "${badge_test}"
+  require_literal 'kInitialWebUI' "${badge_test}"
+  require_literal 'kInitialWebUI' "${compact_test}"
+  require_literal 'kWebUIToolbarProcessOverheadExperiment' "${badge_test}"
+  require_literal 'kWebUIToolbarProcessOverheadExperiment' "${compact_test}"
   require_literal 'PrometheusTabStateObservation' "${badge_header}"
   require_literal 'PrometheusTabStatusBadge>(tab_handle_.Get())' "${tab_source}"
   require_literal 'NotifySourceAvailable' "${tab_state_source}"
@@ -817,6 +830,9 @@ verify_supervision_tab_badge_contract() {
     'PrometheusSupervisionProfileService|PrometheusSupervisionProfileServiceFactory|PrometheusAgentProfileServiceFactory|controller_lease|pairing_code|session_id|document_epoch|stable_tab_id|GetURL|GetLastActive|ExecuteRoute' \
     'native tab badge gained service, authority, fallback-target, or content access' \
     "${badge_header}" "${badge_source}" "${tab_header}" "${tab_source}"
+  reject_pattern 'gfx::Animation|Throb|[Pp]uls(e|ing)' \
+    'native supervision badge gained motion despite its steady-state contract' \
+    "${badge_header}" "${badge_source}"
   note 'native supervision badge contract and privacy guards passed'
 }
 
@@ -1304,6 +1320,7 @@ build_focused_binary() {
     compile_exact_object "${tab_view_object}"
     compile_exact_object "${tab_badge_object}"
     if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+      compile_exact_object "${views_browser_test_template}"
       compile_exact_object "${gateway_browser_object}"
     fi
   )
