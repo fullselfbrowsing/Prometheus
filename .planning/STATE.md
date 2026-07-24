@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 19
+current_plan: 20
 status: ready
-stopped_at: Completed 21-18-PLAN.md
-last_updated: "2026-07-24T13:21:13.377Z"
+stopped_at: Completed 21-19-PLAN.md
+last_updated: "2026-07-24T15:03:00.252Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 84
-  percent: 91
+  completed_plans: 85
+  percent: 92
 ---
 
 # Project State
@@ -36,24 +36,30 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 19 of 26
+Plan: 20 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 19
+**Current Plan:** 20
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [█████████░] 91%
+**Progress:** [█████████░] 92%
 **Last Activity:** 2026-07-24
-**Last Activity Description:** Completed Plan 21-18 — sanitized exact-tab
-side-panel supervision runtime with zero-authority stop, end, and same-window
-management actions.
+**Last Activity Description:** Completed Plan 21-19 — persistent responsive
+side-panel supervision strip with closed state copy, zero-authority actions,
+safe confirmation, and keyboard/privacy coverage.
 
-Milestone work is 84 of 92 existing plans complete (91%); cumulative project
-work is 135 of 144 existing plans summarized (94%).
+Milestone work is 85 of 92 existing plans complete (92%); cumulative project
+work is 136 of 144 existing plans summarized (94%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 19: the intended 3-test RED gate, 2-test state/action GREEN
+  gate, and final 3-test strip suite pass with persistent four-mode state,
+  exact closed copy, zero-argument actions, safe End confirmation, keyboard
+  focus, hostile-data privacy, 320–1024 widths, 200-percent zoom, stable patch
+  identity, fresh framework resources, and byte-identical reviewed artifacts.
 
 - Phase 21 Plan 18: the intended 2-test RED gate, 4-test exact state/action
   GREEN gate, isolated bulk-end/teardown regression, and final 5-test runtime
@@ -314,6 +320,9 @@ work is 135 of 144 existing plans summarized (94%).
 - [Phase 21]: Keep side-panel supervision available independently of task-principal acquisition. — Task actions remain unavailable without a principal while the persistent exact-tab supervision strip continues to reflect browser-owned state.
 - [Phase 21]: Route stop, manage, and end as zero-identity selected-tab intents into the authoritative profile service. — WebUI never retains dashboard sessions, controller leases, tab IDs, or any other mutation authority.
 - [Phase 21]: Gate native side-panel snapshots until the current WebUI document explicitly initializes. — Reload, destruction, and late service notifications cannot call JavaScript across document lifetimes.
+- [Phase 21]: Keep the supervision strip between the four-mode navigation and mode content, and remove it completely only when the sanitized viewer count reaches zero. — The strip stays persistent without becoming a fifth mode or inventing independent lifecycle state.
+- [Phase 21]: Re-whitelist Plan 18 supervision fields in the renderer and send stop, end, and manage only as zero-argument intents. — The side panel can present and request actions without retaining sessions, leases, target IDs, selectors, raw values, page content, or other authority.
+- [Phase 21]: Build fresh Prometheus GRIT resources and replay Chromium’s canonical full framework repack for focused browser tests, then restore and hash-check the reviewed package. — Focused test evidence must exercise current WebUI resources without mutating reviewed build metadata or leaving a changed application package.
 
 ## Performance Metrics
 
@@ -347,6 +356,7 @@ work is 135 of 144 existing plans summarized (94%).
 | Phase 21 P16 | 1h7min | 3 tasks | 10 files |
 | Phase 21 P17 | 1h45min | 3 tasks | 11 files |
 | Phase 21 P18 | 1h49min | 3 tasks | 9 files |
+| Phase 21 P19 | 1h37min | 3 tasks | 5 files |
 
 ## Blockers and Deferred Items
 
@@ -361,11 +371,11 @@ work is 135 of 144 existing plans summarized (94%).
 
 ## Session
 
-**Last Date:** 2026-07-24T13:21:13.373Z
-**Stopped At:** Completed 21-18-PLAN.md
+**Last Date:** 2026-07-24T15:03:00.249Z
+**Stopped At:** Completed 21-19-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-19-PLAN.md` to render the persistent responsive supervision strip
-from the closed exact-tab runtime and its zero-argument native actions.
+Execute `21-20-PLAN.md` to add strict Control Panel supervision snapshots and
+one-shot pairing creation.
