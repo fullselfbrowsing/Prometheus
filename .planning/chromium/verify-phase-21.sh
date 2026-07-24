@@ -1245,6 +1245,37 @@ verify_side_panel_supervision_runtime_contract() {
   require_literal 'SidePanelSupervisionRuntimeEndIsZeroArgumentBulkExactAndTeardownSafe' "${browser_test}"
 }
 
+verify_side_panel_supervision_strip_contract() {
+  local side_panel_html="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_side_panel.html"
+  local webui_source="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_webui.js"
+  local stylesheet="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_webui.css"
+  local resource_partial="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_resources.grdp"
+  local resource_build="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/BUILD.gn"
+  local browser_test="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc"
+
+  require_file "${side_panel_html}"
+  require_file "${webui_source}"
+  require_file "${stylesheet}"
+  require_file "${resource_partial}"
+  require_file "${resource_build}"
+  require_file "${browser_test}"
+  require_literal 'id="supervision-strip-template"' "${side_panel_html}"
+  require_literal 'id="supervision-end-dialog"' "${side_panel_html}"
+  require_literal 'IDR_PROMETHEUS_SIDE_PANEL_HTML' "${resource_partial}"
+  require_literal 'grit("prometheus_resources")' "${resource_build}"
+  require_literal 'SidePanelSupervisionStripStateRendersEveryModeAndClosedCopy' \
+    "${browser_test}"
+  require_literal 'SidePanelSupervisionStripActionsAreZeroArgumentSafeAndFocusStable' \
+    "${browser_test}"
+  require_literal 'SidePanelSupervisionStripResponsiveKeyboardPrivacyAndReachability' \
+    "${browser_test}"
+  reject_pattern \
+    'src="https?://|href="https?://|<iframe|<frame|<object|<embed' \
+    'side-panel supervision scaffold gained a remote resource or frame' \
+    "${side_panel_html}"
+  note 'side-panel supervision strip scaffold, resource, and RED test guards passed'
+}
+
 build_focused_binary() {
   local route_object='obj/chrome/browser/prometheus/prometheus_agent_route/prometheus_agent_route.o'
   local route_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_route_unittest.o'
@@ -1644,6 +1675,7 @@ else
   verify_supervision_tab_state_contract
   verify_supervision_tab_badge_contract
   verify_side_panel_supervision_runtime_contract
+  verify_side_panel_supervision_strip_contract
   if [[ -e "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h" ]]; then
     verify_capture_hub_contract
   fi

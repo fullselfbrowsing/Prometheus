@@ -1,0 +1,606 @@
+From 6f57006736f5677698d8634cb9bf6f86801066d8 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 08:49:50 -0500
+Subject: [PATCH] test(21-19): specify persistent supervision strip
+
+---
+ .../prometheus/prometheus_side_panel.html     |  47 ++
+ .../prometheus_web_ui_browsertest.cc          | 520 ++++++++++++++++++
+ 2 files changed, 567 insertions(+)
+
+diff --git a/chrome/browser/resources/prometheus/prometheus_side_panel.html b/chrome/browser/resources/prometheus/prometheus_side_panel.html
+index f5d73960c3..1005ae9d9d 100644
+--- a/chrome/browser/resources/prometheus/prometheus_side_panel.html
++++ b/chrome/browser/resources/prometheus/prometheus_side_panel.html
+@@ -49,6 +49,38 @@
+           </button>
+         </div>
+       </nav>
++      <template id="supervision-strip-template">
++        <section class="supervision-strip" id="supervision-strip"
++            aria-labelledby="supervision-strip-heading">
++          <div class="supervision-strip__heading"
++              data-supervision-order="viewers">
++            <h2 id="supervision-strip-heading">Supervised</h2>
++            <span id="supervision-viewer-count"></span>
++          </div>
++          <p class="supervision-strip__access" id="supervision-access"
++              data-supervision-order="access"></p>
++          <p class="supervision-strip__activity" id="supervision-activity"
++              data-supervision-order="activity" role="status"
++              aria-live="polite" aria-atomic="true"></p>
++          <div class="supervision-strip__actions">
++            <button class="danger-button" id="supervision-stop-action"
++                data-supervision-order="stop" type="button">
++              Stop control
++            </button>
++            <button class="danger-button" id="supervision-end-action"
++                data-supervision-order="end" type="button"
++                aria-haspopup="dialog" aria-expanded="false">
++              End supervision
++            </button>
++            <button class="quiet-button" id="supervision-manage-action"
++                data-supervision-order="manage" type="button">
++              Manage access
++            </button>
++          </div>
++          <p class="visually-hidden" id="supervision-authority-status"
++              role="status" aria-live="assertive" aria-atomic="true"></p>
++        </section>
++      </template>
+       <div class="mode-stack">
+         <section class="mode-panel" id="panel-fsb-agent" role="tabpanel"
+             aria-labelledby="mode-fsb-agent" data-mode-panel="fsb-agent">
+@@ -158,6 +190,21 @@
+         </section>
+       </div>
+     </aside>
++    <dialog class="cancel-dialog supervision-end-dialog"
++        id="supervision-end-dialog"
++        aria-labelledby="supervision-end-heading"
++        aria-describedby="supervision-end-description" aria-modal="true">
++      <form method="dialog">
++        <h2 id="supervision-end-heading">End supervision?</h2>
++        <p id="supervision-end-description"></p>
++        <div class="dialog-actions">
++          <button class="quiet-button" id="supervision-end-dismiss"
++              value="dismiss">Keep access</button>
++          <button class="danger-button" id="supervision-end-confirm"
++              value="confirm">End supervision</button>
++        </div>
++      </form>
++    </dialog>
+     <dialog class="cancel-dialog" id="runtime-cancel-dialog"
+         aria-labelledby="cancel-dialog-heading"
+         aria-describedby="cancel-dialog-description" aria-modal="true">
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index cf4a4ebe10..ece6844b8e 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -3746,3 +3746,523 @@ IN_PROC_BROWSER_TEST_F(
+                .ExtractBool();
+   }));
+ }
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    SidePanelSupervisionStripStateRendersEveryModeAndClosedCopy) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const GURL target_url =
++      embedded_test_server()->GetURL("a.test", "/title1.html");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), target_url));
++  ASSERT_TRUE(content::ExecJs(
++      browser()->tab_strip_model()->GetActiveWebContents(),
++      "document.title = 'Quarterly report';"));
++
++  PrometheusSidePanelUI* const controller = ShowSidePanel(browser());
++  ASSERT_TRUE(controller);
++  content::WebContents* const side_panel_contents =
++      visible_side_panel_web_contents();
++  ASSERT_TRUE(side_panel_contents);
++  prometheus::SupervisionRedemptionResult viewer =
++      RedeemSelectedTab("Review console");
++  ASSERT_TRUE(viewer.ok);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      window.prometheusRuntimeSnapshotForTesting?.supervision?.viewer_count ===
++          1;
++    )")
++        .ExtractBool();
++  }));
++
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    (() => {
++      const strip = document.querySelector('#supervision-strip');
++      const nav = document.querySelector(
++          'nav[aria-label="Prometheus side panel modes"]');
++      const stack = document.querySelector('.mode-stack');
++      if (!strip || nav.nextElementSibling !== strip ||
++          strip.nextElementSibling !== stack ||
++          strip.getAttribute('aria-labelledby') !==
++              'supervision-strip-heading') {
++        return false;
++      }
++      const order = Array.from(
++          strip.querySelectorAll('[data-supervision-order]'))
++          .map(node => node.dataset.supervisionOrder).join('|');
++      if (order !== 'viewers|access|activity|stop|end|manage' ||
++          strip.querySelector('#supervision-strip-heading')?.textContent !==
++              'Supervised' ||
++          strip.querySelector('#supervision-viewer-count')?.textContent !==
++              '1 viewer' ||
++          strip.querySelector('#supervision-access')?.textContent !==
++              'View only' ||
++          strip.querySelector('#supervision-activity')?.textContent !==
++              'Viewing current page' ||
++          strip.querySelector('#supervision-stop-action') !== null) {
++        return false;
++      }
++      for (const mode of ['fsb-agent', 'explorer', 'tabs', 'tools']) {
++        document.querySelector(`[data-mode-target="${mode}"]`).click();
++        if (document.querySelector('#supervision-strip') !== strip ||
++            strip.hidden) {
++          return false;
++        }
++      }
++
++      const base = structuredClone(
++          window.prometheusRuntimeSnapshotForTesting);
++      const states = [
++        [{viewer_count: 1, controlled: false, activity: 'viewing'},
++          '1 viewer|View only|Viewing current page'],
++        [{viewer_count: 2, controlled: false, activity: 'viewing'},
++          '2 viewers|View only|Viewing current page'],
++        [{viewer_count: 2, controlled: true,
++          client_label: 'Review console', activity: 'control_ready'},
++          '2 viewers|Controlled by Review console|Remote control ready'],
++        [{viewer_count: 2, controlled: true,
++          client_label: 'Review console',
++          activity: 'validating_remote_action'},
++          '2 viewers|Controlled by Review console|' +
++              'Validating remote action'],
++        [{viewer_count: 2, controlled: true,
++          client_label: 'Review console', activity: 'confirmation_required'},
++          '2 viewers|Controlled by Review console|' +
++              'Confirmation required in Prometheus'],
++        [{viewer_count: 2, controlled: true,
++          client_label: 'Review console', activity: 'resyncing',
++          resyncing: true},
++          '2 viewers|Controlled by Review console|' +
++              'Resyncing supervised view'],
++        [{viewer_count: 2, controlled: true,
++          client_label: 'Review console', activity: 'paused_for_resync',
++          resyncing: true},
++          '2 viewers|Controlled by Review console|' +
++              'View paused for resync'],
++        [{viewer_count: 2, controlled: true,
++          client_label: 'Review console', activity: 'remote_action_blocked'},
++          '2 viewers|Controlled by Review console|Remote action blocked'],
++        [{viewer_count: 2, controlled: true,
++          client_label: 'Review console', activity: 'stopping_control',
++          stopping: true},
++          '2 viewers|Controlled by Review console|Stopping control'],
++      ];
++      for (const [overrides, expected] of states) {
++        const supervision = {
++          available: true,
++          viewer_count: 1,
++          controlled: false,
++          activity: 'viewing',
++          resyncing: false,
++          stopping: false,
++          ending: false,
++          safe_target_title: 'Quarterly report',
++          ...overrides,
++        };
++        window.prometheusRuntimeReceiveSnapshot({...base, supervision});
++        const current = document.querySelector('#supervision-strip');
++        const actual = [
++          current?.querySelector('#supervision-viewer-count')?.textContent,
++          current?.querySelector('#supervision-access')?.textContent,
++          current?.querySelector('#supervision-activity')?.textContent,
++        ].join('|');
++        if (actual !== expected) {
++          return false;
++        }
++      }
++      const categories = new Map([
++        ['click', 'Click'], ['type', 'Type'], ['key_press', 'Key press'],
++        ['scroll', 'Scroll'], ['hover', 'Hover'], ['select', 'Select'],
++        ['clear', 'Clear'], ['drag', 'Drag'], ['drop', 'Drop'],
++        ['navigate', 'Navigate'],
++      ]);
++      for (const [category, label] of categories) {
++        window.prometheusRuntimeReceiveSnapshot({
++          ...base,
++          supervision: {
++            available: true,
++            viewer_count: 1,
++            controlled: true,
++            client_label: 'Review console',
++            activity: 'remote_action',
++            action_category: category,
++            resyncing: false,
++            stopping: false,
++            ending: false,
++            safe_target_title: 'Quarterly report',
++          },
++        });
++        if (document.querySelector('#supervision-activity')?.textContent !==
++            `Remote action: ${label}`) {
++          return false;
++        }
++      }
++      window.prometheusRuntimeReceiveSnapshot({
++        ...base,
++        supervision: {
++          available: true,
++          viewer_count: 0,
++          controlled: false,
++          activity: 'viewing',
++          resyncing: false,
++          stopping: false,
++          ending: false,
++          safe_target_title: 'Quarterly report',
++        },
++      });
++      return !document.querySelector('#supervision-strip');
++    })();
++  )")
++                  .ExtractBool());
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    SidePanelSupervisionStripActionsAreZeroArgumentSafeAndFocusStable) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const GURL target_url =
++      embedded_test_server()->GetURL("a.test", "/title1.html");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), target_url));
++  ASSERT_FALSE(ClaimSelectedTabForAgent("Strip owner").empty());
++  PrometheusSidePanelUI* const controller = ShowSidePanel(browser());
++  ASSERT_TRUE(controller);
++  content::WebContents* const side_panel_contents =
++      visible_side_panel_web_contents();
++  ASSERT_TRUE(side_panel_contents);
++  auto* const service = supervision_service();
++  ASSERT_TRUE(service);
++  prometheus::SupervisionRedemptionResult viewer =
++      RedeemSelectedTab("Keyboard reviewer");
++  ASSERT_TRUE(viewer.ok);
++  EnableControlAndAccept(viewer.dashboard_session);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      window.prometheusRuntimeSnapshotForTesting?.supervision?.controlled ===
++          true;
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::EvalJs(side_panel_contents, R"(
++    document.querySelector('#supervision-strip') !== null;
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    window.prometheusSupervisionMessagesForTesting = [];
++    document.querySelector('#supervision-end-action')?.focus();
++    document.querySelector('#supervision-end-action')?.click();
++  )"));
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    (() => {
++      const dialog = document.querySelector('#supervision-end-dialog');
++      return !!dialog?.open &&
++          document.activeElement?.id === 'supervision-end-dismiss' &&
++          document.querySelector(
++              '#supervision-end-description')?.textContent ===
++              'End supervision for this tab? All paired dashboards will ' +
++              'lose viewing and control immediately.';
++    })();
++  )")
++                  .ExtractBool());
++  content::SimulateKeyPress(side_panel_contents, ui::DomKey::ESCAPE,
++                            ui::DomCode::ESCAPE, ui::VKEY_ESCAPE, false, false,
++                            false, false);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      !document.querySelector('#supervision-end-dialog')?.open;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    window.prometheusSupervisionMessagesForTesting.length === 0 &&
++        document.activeElement?.id === 'supervision-end-action';
++  )")
++                  .ExtractBool());
++  EXPECT_EQ(1u, service->viewer_count_for_testing(viewer.stable_tab_id));
++
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    document.querySelector('#supervision-end-action').click();
++    document.querySelector('#supervision-end-dismiss').click();
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      !document.querySelector('#supervision-end-dialog')?.open;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    window.prometheusSupervisionMessagesForTesting.length === 0 &&
++        document.activeElement?.id === 'supervision-end-action';
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    document.querySelector('#supervision-end-action').click();
++    document.querySelector('#supervision-end-dialog').close('dismiss');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      !document.querySelector('#supervision-end-dialog')?.open;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    window.prometheusSupervisionMessagesForTesting.length === 0 &&
++        document.activeElement?.id === 'supervision-end-action';
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    const stop = document.querySelector('#supervision-stop-action');
++    stop.focus();
++    stop.click();
++    stop.click();
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->controller_count_for_testing() == 0u;
++  }));
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    (() => {
++      const messages = window.prometheusSupervisionMessagesForTesting;
++      return messages.length === 1 &&
++          messages[0].message === 'prometheusStopSupervisionControl' &&
++          Array.isArray(messages[0].args) && messages[0].args.length === 0 &&
++          document.activeElement?.id === 'supervision-manage-action';
++    })();
++  )")
++                  .ExtractBool());
++
++  const int initial_tab_count = browser()->tab_strip_model()->count();
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    document.querySelector('#supervision-manage-action').click();
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return browser()->GetActiveTabInterface() &&
++           browser()->GetActiveTabInterface()->GetURL() ==
++               GURL(chrome::kChromeUIPrometheusControlPanelURL);
++  }));
++  EXPECT_EQ(initial_tab_count + 1, browser()->tab_strip_model()->count());
++  browser()->tab_strip_model()->ActivateTabAt(0);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      document.querySelector('#supervision-end-action') !== null;
++    )")
++        .ExtractBool();
++  }));
++
++  EnableControlAndAccept(viewer.dashboard_session);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      window.prometheusRuntimeSnapshotForTesting?.supervision?.controlled ===
++          true;
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    window.prometheusSupervisionMessagesForTesting = [];
++    document.querySelector('#supervision-end-action').click();
++    const confirm = document.querySelector('#supervision-end-confirm');
++    confirm.click();
++    confirm.click();
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->viewer_count_for_testing(viewer.stable_tab_id) == 0u;
++  }));
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    (() => {
++      const messages = window.prometheusSupervisionMessagesForTesting;
++      return messages.length === 1 &&
++          messages[0].message ===
++              'prometheusEndSelectedTabSupervision' &&
++          Array.isArray(messages[0].args) && messages[0].args.length === 0 &&
++          !document.querySelector('#supervision-strip') &&
++          document.activeElement?.matches(
++              '[data-mode-target][aria-selected="true"]');
++    })();
++  )")
++                  .ExtractBool());
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    SidePanelSupervisionStripResponsiveKeyboardPrivacyAndReachability) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const GURL target_url =
++      embedded_test_server()->GetURL("a.test", "/title1.html");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), target_url));
++  ASSERT_FALSE(ClaimSelectedTabForAgent("Responsive owner").empty());
++  PrometheusSidePanelUI* const controller = ShowSidePanel(browser());
++  ASSERT_TRUE(controller);
++  content::WebContents* const side_panel_contents =
++      visible_side_panel_web_contents();
++  ASSERT_TRUE(side_panel_contents);
++  content::RenderWidgetHostView* const render_widget_host_view =
++      side_panel_contents->GetRenderWidgetHostView();
++  ASSERT_TRUE(render_widget_host_view);
++  prometheus::SupervisionRedemptionResult viewer =
++      RedeemSelectedTab("Responsive reviewer");
++  ASSERT_TRUE(viewer.ok);
++  EnableControlAndAccept(viewer.dashboard_session);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      window.prometheusRuntimeSnapshotForTesting?.supervision?.controlled ===
++          true;
++    )")
++        .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    window.prometheusStripResponsiveIssuesForTesting = () => {
++      const issues = [];
++      const viewport = document.documentElement.clientWidth;
++      const strip = document.querySelector('#supervision-strip');
++      const stack = document.querySelector('.mode-stack');
++      const composer = document.querySelector('#runtime-composer');
++      if (!strip || !stack || !composer) {
++        return 'missing-strip';
++      }
++      const stripRect = strip.getBoundingClientRect();
++      const stackRect = stack.getBoundingClientRect();
++      if (stripRect.left < -0.5 || stripRect.right > viewport + 0.5 ||
++          stripRect.bottom > stackRect.top + 0.5 ||
++          document.documentElement.scrollWidth > viewport ||
++          document.body.scrollWidth > viewport) {
++        issues.push('bounds-or-overflow');
++      }
++      const buttons = Array.from(strip.querySelectorAll('button'));
++      for (const button of buttons) {
++        const rect = button.getBoundingClientRect();
++        if (rect.height < 47.5 || rect.left < stripRect.left - 0.5 ||
++            rect.right > stripRect.right + 0.5 || button.tabIndex < 0) {
++          issues.push(`action:${button.id}`);
++        }
++        if (innerWidth <= 320 && rect.width < stripRect.width - 33) {
++          issues.push(`not-full-width:${button.id}`);
++        }
++      }
++      const stop = document.querySelector('#supervision-stop-action');
++      if (!stop || stop.getBoundingClientRect().height < 47.5) {
++        issues.push('stop-unreachable');
++      }
++      return issues.join('|');
++    };
++  )"));
++
++  for (const int width : std::array{320, 480, 720, 1024}) {
++    ASSERT_TRUE(base::test::RunUntil([&]() {
++      render_widget_host_view->SetSize(gfx::Size(width, 900));
++      return content::EvalJs(side_panel_contents, "window.innerWidth")
++                 .ExtractInt() == width;
++    })) << width;
++    EXPECT_TRUE(
++        content::EvalJs(side_panel_contents, R"(
++          window.prometheusStripResponsiveIssuesForTesting() === '';
++        )")
++            .ExtractBool())
++        << width;
++  }
++
++  render_widget_host_view->SetSize(gfx::Size(640, 900));
++  zoom::ZoomController* const zoom_controller =
++      zoom::ZoomController::FromWebContents(side_panel_contents);
++  ASSERT_TRUE(zoom_controller);
++  zoom_controller->SetZoomLevel(blink::ZoomFactorToZoomLevel(2.0));
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return zoom_controller->GetZoomPercent() == 200; }));
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    window.prometheusStripResponsiveIssuesForTesting() === '';
++  )")
++                  .ExtractBool());
++  zoom_controller->SetZoomLevel(blink::ZoomFactorToZoomLevel(1.0));
++
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    (() => {
++      const base = structuredClone(
++          window.prometheusRuntimeSnapshotForTesting);
++      const states = [
++        ['validating_remote_action', false, false],
++        ['confirmation_required', false, false],
++        ['resyncing', true, false],
++        ['paused_for_resync', true, false],
++        ['remote_action_blocked', false, false],
++        ['stopping_control', false, true],
++      ];
++      return states.every(([activity, resyncing, stopping]) => {
++        window.prometheusRuntimeReceiveSnapshot({
++          ...base,
++          supervision: {
++            available: true,
++            viewer_count: 1,
++            controlled: true,
++            client_label: 'Responsive reviewer',
++            activity,
++            resyncing,
++            stopping,
++            ending: false,
++            safe_target_title: 'Quarterly report',
++          },
++        });
++        const stop = document.querySelector('#supervision-stop-action');
++        return !!stop && stop.getBoundingClientRect().height >= 48;
++      });
++    })();
++  )")
++                  .ExtractBool());
++
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    (() => {
++      const base = structuredClone(
++          window.prometheusRuntimeSnapshotForTesting);
++      window.prometheusRuntimeReceiveSnapshot({
++        ...base,
++        supervision: {
++          available: true,
++          viewer_count: 1,
++          controlled: true,
++          client_label:
++              'https://client.example/path?token=CLIENT_SECRET',
++          activity: 'remote_action',
++          action_category: 'type',
++          resyncing: false,
++          stopping: false,
++          ending: false,
++          safe_target_title:
++              'https://private.example/path?token=TITLE_SECRET',
++          dashboard_session: 'FORGED_SESSION',
++          controller_lease: 'FORGED_LEASE',
++          selector: '#password',
++          raw_value: 'RAW_VALUE_SECRET',
++        },
++      });
++      const strip = document.querySelector('#supervision-strip');
++      const snapshot =
++          window.prometheusRuntimeSnapshotForTesting.supervision;
++      const allowedKeys = new Set([
++        'available', 'viewer_count', 'controlled', 'client_label', 'activity',
++        'action_category', 'resyncing', 'stopping', 'ending',
++        'safe_target_title',
++      ]);
++      const serialized = JSON.stringify({
++        snapshot,
++        dom: strip?.outerHTML,
++        accessibility: Array.from(strip?.querySelectorAll(
++            '[aria-label], [title], [role]') || []).map(node => ({
++          text: node.textContent,
++          label: node.getAttribute('aria-label'),
++          title: node.getAttribute('title'),
++        })),
++      });
++      return strip &&
++          document.querySelector('#supervision-access')?.textContent ===
++              'Controlled by Local dashboard' &&
++          document.querySelector('#supervision-end-action') &&
++          Object.keys(snapshot).every(key => allowedKeys.has(key)) &&
++          snapshot.safe_target_title === 'this tab' &&
++          ![
++            'client.example', 'private.example', '/path', 'CLIENT_SECRET',
++            'TITLE_SECRET', 'FORGED_SESSION', 'FORGED_LEASE', '#password',
++            'RAW_VALUE_SECRET',
++          ].some(value => serialized.includes(value));
++    })();
++  )")
++                  .ExtractBool());
++}
+-- 
+2.50.1 (Apple Git-155)
+
