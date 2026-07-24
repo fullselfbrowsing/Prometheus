@@ -1372,6 +1372,21 @@ verify_side_panel_supervision_strip_contract() {
   require_file "${browser_test}"
   require_literal 'id="supervision-strip-template"' "${side_panel_html}"
   require_literal 'id="supervision-end-dialog"' "${side_panel_html}"
+  require_literal 'aria-live="polite" aria-atomic="true"' "${side_panel_html}"
+  require_literal 'normalizeSupervisionSnapshot' "${webui_source}"
+  require_literal "sanitizeSupervisionText(value.safe_target_title, 'this tab')" \
+    "${webui_source}"
+  require_literal "Controlled by \${supervision.client_label}" \
+    "${webui_source}"
+  require_literal "'View only'" "${webui_source}"
+  require_literal "sendSupervisionMessage('prometheusStopSupervisionControl')" \
+    "${webui_source}"
+  require_literal "sendSupervisionMessage('prometheusEndSelectedTabSupervision')" \
+    "${webui_source}"
+  require_literal "sendSupervisionMessage('prometheusOpenSupervisionManagement')" \
+    "${webui_source}"
+  require_literal '.supervision-strip__action-slot button' "${stylesheet}"
+  require_literal 'overflow-wrap: anywhere' "${stylesheet}"
   require_literal 'IDR_PROMETHEUS_SIDE_PANEL_HTML' "${resource_partial}"
   require_literal 'grit("prometheus_resources")' "${resource_build}"
   require_literal 'SidePanelSupervisionStripStateRendersEveryModeAndClosedCopy' \
@@ -1384,7 +1399,15 @@ verify_side_panel_supervision_strip_contract() {
     'src="https?://|href="https?://|<iframe|<frame|<object|<embed' \
     'side-panel supervision scaffold gained a remote resource or frame' \
     "${side_panel_html}"
-  note 'side-panel supervision strip scaffold, resource, and RED test guards passed'
+  reject_pattern \
+    'innerHTML|insertAdjacentHTML|document\.write' \
+    'side-panel supervision rendering gained an unsafe HTML sink' \
+    "${webui_source}"
+  reject_pattern \
+    'chrome\.send\(.prometheus(StopSupervisionControl|EndSelectedTabSupervision|OpenSupervisionManagement).*,[[:space:]]*\[' \
+    'side-panel supervision authority action gained renderer arguments' \
+    "${webui_source}"
+  note 'side-panel supervision strip scaffold, resource, and privacy guards passed'
 }
 
 build_focused_binary() {

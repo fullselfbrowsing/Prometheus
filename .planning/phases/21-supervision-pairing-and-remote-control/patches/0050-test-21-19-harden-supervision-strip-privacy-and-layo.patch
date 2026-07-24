@@ -1,0 +1,140 @@
+From 344499e3f7237966f9b4fae8e8cbe42f453d7cfd Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 09:59:37 -0500
+Subject: [PATCH 50/50] test(21-19): harden supervision strip privacy and
+ layout
+
+---
+ .../prometheus_web_ui_browsertest.cc          | 80 ++++++++++++++++---
+ 1 file changed, 67 insertions(+), 13 deletions(-)
+
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index d3b45549e1..3bf9c977c8 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -41,8 +41,10 @@
+ #include "components/prefs/pref_service.h"
+ #include "components/tabs/public/tab_interface.h"
+ #include "components/zoom/zoom_controller.h"
++#include "content/public/browser/host_zoom_map.h"
+ #include "content/public/browser/navigation_entry.h"
+ #include "content/public/browser/reload_type.h"
++#include "content/public/browser/render_frame_host.h"
+ #include "content/public/browser/render_widget_host_view.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/browser/web_ui.h"
+@@ -4132,6 +4134,8 @@ IN_PROC_BROWSER_TEST_F(
+           document.body.scrollWidth > viewport) {
+         issues.push('bounds-or-overflow');
+       }
++      const actionsRect = strip.querySelector(
++          '.supervision-strip__actions').getBoundingClientRect();
+       const buttons = Array.from(strip.querySelectorAll('button'));
+       for (const button of buttons) {
+         const rect = button.getBoundingClientRect();
+@@ -4139,7 +4143,9 @@ IN_PROC_BROWSER_TEST_F(
+             rect.right > stripRect.right + 0.5 || button.tabIndex < 0) {
+           issues.push(`action:${button.id}`);
+         }
+-        if (innerWidth <= 320 && rect.width < stripRect.width - 33) {
++        if (innerWidth <= 320 &&
++            (Math.abs(rect.left - actionsRect.left) > 0.5 ||
++             Math.abs(rect.right - actionsRect.right) > 0.5)) {
+           issues.push(`not-full-width:${button.id}`);
+         }
+       }
+@@ -4157,26 +4163,33 @@ IN_PROC_BROWSER_TEST_F(
+       return content::EvalJs(side_panel_contents, "window.innerWidth")
+                  .ExtractInt() == width;
+     })) << width;
+-    EXPECT_TRUE(
+-        content::EvalJs(side_panel_contents, R"(
+-          window.prometheusStripResponsiveIssuesForTesting() === '';
+-        )")
+-            .ExtractBool())
+-        << width;
++    const std::string issues =
++        content::EvalJs(side_panel_contents,
++                        "window.prometheusStripResponsiveIssuesForTesting()")
++            .ExtractString();
++    EXPECT_TRUE(issues.empty()) << width << " " << issues;
+   }
+ 
+   render_widget_host_view->SetSize(gfx::Size(640, 900));
+   zoom::ZoomController* const zoom_controller =
+       zoom::ZoomController::FromWebContents(side_panel_contents);
+   ASSERT_TRUE(zoom_controller);
+-  zoom_controller->SetZoomLevel(blink::ZoomFactorToZoomLevel(2.0));
++  content::HostZoomMap* const zoom_map =
++      content::HostZoomMap::GetForWebContents(side_panel_contents);
++  ASSERT_TRUE(zoom_map);
++  const content::GlobalRenderFrameHostId side_panel_frame_id =
++      side_panel_contents->GetPrimaryMainFrame()->GetGlobalId();
++  zoom_map->SetTemporaryZoomLevel(
++      side_panel_frame_id, blink::ZoomFactorToZoomLevel(2.0));
+   ASSERT_TRUE(base::test::RunUntil(
+       [&]() { return zoom_controller->GetZoomPercent() == 200; }));
+-  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
+-    window.prometheusStripResponsiveIssuesForTesting() === '';
+-  )")
+-                  .ExtractBool());
+-  zoom_controller->SetZoomLevel(blink::ZoomFactorToZoomLevel(1.0));
++  const std::string zoom_issues =
++      content::EvalJs(side_panel_contents,
++                      "window.prometheusStripResponsiveIssuesForTesting()")
++          .ExtractString();
++  EXPECT_TRUE(zoom_issues.empty()) << "zoom=200% " << zoom_issues;
++  zoom_map->SetTemporaryZoomLevel(
++      side_panel_frame_id, blink::ZoomFactorToZoomLevel(1.0));
+ 
+   EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
+     (() => {
+@@ -4269,4 +4282,45 @@ IN_PROC_BROWSER_TEST_F(
+     })();
+   )")
+                   .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    window.prometheusSupervisionMessagesForTesting = [];
++    document.querySelector('#supervision-end-action').click();
++  )"));
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    (() => {
++      const dialog = document.querySelector('#supervision-end-dialog');
++      const serialized = JSON.stringify({
++        dialog: dialog?.outerHTML,
++        description: document.querySelector(
++            '#supervision-end-description')?.textContent,
++      });
++      return !!dialog?.open &&
++          document.activeElement?.id === 'supervision-end-dismiss' &&
++          document.querySelector(
++              '#supervision-end-description')?.textContent ===
++              'End supervision for this tab? All paired dashboards will ' +
++              'lose viewing and control immediately.' &&
++          ![
++            'client.example', 'private.example', '/path', 'CLIENT_SECRET',
++            'TITLE_SECRET', 'FORGED_SESSION', 'FORGED_LEASE', '#password',
++            'RAW_VALUE_SECRET',
++          ].some(value => serialized.includes(value));
++    })();
++  )")
++                  .ExtractBool());
++  content::SimulateKeyPress(side_panel_contents, ui::DomKey::ESCAPE,
++                            ui::DomCode::ESCAPE, ui::VKEY_ESCAPE, false, false,
++                            false, false);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      !document.querySelector('#supervision-end-dialog')?.open;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(content::EvalJs(side_panel_contents, R"(
++    window.prometheusSupervisionMessagesForTesting.length === 0 &&
++        document.activeElement?.id === 'supervision-end-action';
++  )")
++                  .ExtractBool());
+ }
+-- 
+2.50.1 (Apple Git-155)
+
