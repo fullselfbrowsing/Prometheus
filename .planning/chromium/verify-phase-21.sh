@@ -1429,6 +1429,10 @@ verify_control_panel_supervision_runtime_contract() {
   local runtime_header="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
   local runtime_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc"
   local webui_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc"
+  local renderer_source="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_webui.js"
+  local control_html="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_control_panel.html"
+  local stylesheet="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_webui.css"
+  local asset_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc"
   local browser_test="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc"
   local browser_extra_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
   local supervision_service="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
@@ -1437,6 +1441,10 @@ verify_control_panel_supervision_runtime_contract() {
   require_file "${runtime_header}"
   require_file "${runtime_source}"
   require_file "${webui_source}"
+  require_file "${renderer_source}"
+  require_file "${control_html}"
+  require_file "${stylesheet}"
+  require_file "${asset_test}"
   require_file "${browser_test}"
   require_file "${browser_extra_parts}"
   require_file "${supervision_service}"
@@ -1468,6 +1476,21 @@ verify_control_panel_supervision_runtime_contract() {
     "${browser_test}"
   require_literal 'ControlSupervisionResponsiveAtContractWidthsAndZoom' \
     "${browser_test}"
+  require_literal 'data-prometheus-sensitive="pairing-code"' \
+    "${control_html}"
+  require_literal 'controlPairingCode' "${renderer_source}"
+  require_literal 'normalizeControlSupervisionSnapshot' "${renderer_source}"
+  require_literal 'prometheusControlReceivePairingCreateResult' \
+    "${renderer_source}"
+  require_literal 'prometheusControlClearPairingPresentation' \
+    "${renderer_source}"
+  require_literal '@media (prefers-color-scheme: light)' "${stylesheet}"
+  require_literal '@media (min-width: 1024px)' "${stylesheet}"
+  require_literal '@media (max-width: 719px)' "${stylesheet}"
+  require_literal '@media (max-width: 479px)' "${stylesheet}"
+  require_literal 'IDR_PROMETHEUS_WEBUI_CSS' "${asset_test}"
+  require_literal 'IDR_PROMETHEUS_WEBUI_JS' "${asset_test}"
+  require_literal 'IDR_PROMETHEUS_CONTROL_PANEL_HTML' "${asset_test}"
   if ! [[ "${EXPECT_FAILURE}" == true ]]; then
     require_literal 'BuildSupervisionSnapshot' "${browser_extra_parts}"
     require_literal 'ResolveSupervisionTarget' "${browser_extra_parts}"
@@ -1507,7 +1530,19 @@ verify_control_panel_supervision_runtime_contract() {
     'Set\("(pairing_code|session_id|lease_id|owner_id|profile_path|browser_id|tab_id|document_epoch|sequence|bearer|address|content|raw_value)"' \
     'Control Panel supervision transport gained identity, content, or an alternate bearer field' \
     "${runtime_source}"
-  note 'Control Panel supervision snapshot, message, and one-shot guards passed'
+  reject_pattern \
+    'window\.[A-Za-z0-9_]*(Pairing|pairing)[A-Za-z0-9_]*(Code|code)[[:space:]]*=' \
+    'Control Panel renderer exposed pairing characters through a window property' \
+    "${renderer_source}"
+  reject_pattern \
+    'innerHTML|insertAdjacentHTML|document\.write' \
+    'Control Panel supervision rendering gained an unsafe HTML sink' \
+    "${renderer_source}"
+  reject_pattern \
+    'src="https?://|href="https?://|<iframe|<frame|<object|<embed' \
+    'Control Panel supervision scaffold gained a remote resource or frame' \
+    "${control_html}"
+  note 'Control Panel supervision snapshot, UI, resource, message, and one-shot guards passed'
 }
 
 build_focused_binary() {

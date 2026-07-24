@@ -1,0 +1,429 @@
+From 34784fe9b84062128a06cfe5a3a2a783586dfd15 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 15:29:35 -0500
+Subject: [PATCH] test(21-22): harden supervision privacy and layout
+
+---
+ .../prometheus_asset_resource_unittest.cc     |   5 +-
+ .../resources/prometheus/prometheus_webui.css |  35 +++++-
+ .../resources/prometheus/prometheus_webui.js  | 112 +++++++++++++++++-
+ .../prometheus_web_ui_browsertest.cc          |  87 ++++++++++++--
+ 4 files changed, 220 insertions(+), 19 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc b/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc
+index 657d213f49..33801770f9 100644
+--- a/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc
+@@ -117,6 +117,9 @@ constexpr PrometheusResourceExpectation kBrandAssetResources[] = {
+ 
+ constexpr PrometheusResourceExpectation kDevSurfaceResources[] = {
+     PROMETHEUS_RESOURCE(IDR_PROMETHEUS_CSS_FONTS),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_WEBUI_CSS),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_WEBUI_JS),
++    PROMETHEUS_RESOURCE(IDR_PROMETHEUS_CONTROL_PANEL_HTML),
+     PROMETHEUS_RESOURCE(IDR_PROMETHEUS_THEME_PREVIEW_HTML),
+ };
+ 
+@@ -127,7 +130,7 @@ static_assert(sizeof(kIconResources) / sizeof(kIconResources[0]) == 72);
+ static_assert(sizeof(kBrandAssetResources) / sizeof(kBrandAssetResources[0]) ==
+               7);
+ static_assert(sizeof(kDevSurfaceResources) / sizeof(kDevSurfaceResources[0]) ==
+-              2);
++              5);
+ 
+ class PrometheusAssetResourceTest : public testing::Test {
+  protected:
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.css b/chrome/browser/resources/prometheus/prometheus_webui.css
+index 882ee973be..7784b35cad 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.css
++++ b/chrome/browser/resources/prometheus/prometheus_webui.css
+@@ -23,7 +23,27 @@
+   --prometheus-accent: #ff6b35;
+   --prometheus-ok: #2f9e7e;
+   --prometheus-warning: #d29b36;
+-  font-family: system-ui, sans-serif;
++  font-family: Poppins, system-ui, sans-serif;
++}
++
++@media (prefers-color-scheme: light) {
++  :root {
++    --prometheus-color-bg-app: #e9e2da;
++    --prometheus-color-surface: #fffdfb;
++    --prometheus-color-surface-2: #f3ede6;
++    --prometheus-color-surface-3: #f1ebe4;
++    --prometheus-color-text: #211a16;
++    --prometheus-color-text-2: #6a584d;
++    --prometheus-color-text-3: #8d7a6e;
++    --prometheus-color-border: rgba(33, 26, 22, 0.16);
++    --prometheus-bg: #e9e2da;
++    --prometheus-surface: #fffdfb;
++    --prometheus-surface-2: #f3ede6;
++    --prometheus-surface-3: #f1ebe4;
++    --prometheus-text: #211a16;
++    --prometheus-text-muted: #6a584d;
++    --prometheus-warning: #9a6a1e;
++  }
+ }
+ 
+ html,
+@@ -1082,7 +1102,8 @@ textarea {
+   display: grid;
+   gap: 8px;
+   grid-template-columns: repeat(2, minmax(0, 1fr));
+-  min-width: min(100%, 320px);
++  min-width: 0;
++  width: 100%;
+ }
+ 
+ .control-supervision-summary .control-metric {
+@@ -1137,7 +1158,7 @@ textarea {
+ 
+ .control-supervision-invariant {
+   color: var(--prometheus-text-muted);
+-  font-family: ui-monospace, monospace;
++  font-family: "Space Mono", ui-monospace, monospace;
+   font-size: 12px;
+   margin: 0;
+ }
+@@ -1160,7 +1181,7 @@ textarea {
+ 
+ .control-pairing-code {
+   color: var(--prometheus-color-text);
+-  font-family: ui-monospace, monospace;
++  font-family: "Space Mono", ui-monospace, monospace;
+   font-size: 20px;
+   font-variant-numeric: tabular-nums;
+   font-weight: 800;
+@@ -1174,7 +1195,7 @@ textarea {
+ 
+ .control-pairing-timer {
+   color: var(--prometheus-text-muted);
+-  font-family: ui-monospace, monospace;
++  font-family: "Space Mono", ui-monospace, monospace;
+   font-size: 12px;
+   font-variant-numeric: tabular-nums;
+   margin: 0;
+@@ -1268,6 +1289,10 @@ textarea {
+ }
+ 
+ @media (max-width: 1023px) {
++  #section-supervision > .control-heading-row {
++    flex-direction: column;
++  }
++
+   .control-details,
+   .control-form-grid,
+   .control-filter-grid {
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.js b/chrome/browser/resources/prometheus/prometheus_webui.js
+index 87c04bd5de..4243118433 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.js
++++ b/chrome/browser/resources/prometheus/prometheus_webui.js
+@@ -1763,6 +1763,107 @@ const controlSupervisionAuditLabels = Object.freeze({
+   authority_lost: 'Authority lost',
+ });
+ 
++function controlSupervisionText(value, fallback = '', limit = 256) {
++  if (typeof value !== 'string' || value.length > limit ||
++      /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u
++          .test(value)) {
++    return fallback;
++  }
++  return value;
++}
++
++function controlSupervisionTimestamp(value) {
++  const number = Number(value);
++  return Number.isSafeInteger(number) && number >= 0 ? number : 0;
++}
++
++function normalizeControlSupervisionSnapshot(value) {
++  if (!value || typeof value !== 'object') {
++    return null;
++  }
++  const result = {
++    available: value.available === true,
++    pairing_state: controlSupervisionText(
++        value.pairing_state, 'target_lost', 32),
++    safe_target_title:
++        controlSupervisionText(value.safe_target_title, '', 256),
++    safe_origin: controlSupervisionText(value.safe_origin, '', 2048),
++    agent_active: value.agent_active === true,
++    viewer_count: controlInteger(value.viewer_count),
++    targets: [],
++    connected: [],
++    recent: [],
++    audit: [],
++  };
++  if (typeof value.controller_label === 'string') {
++    result.controller_label =
++        controlSupervisionText(value.controller_label, 'Local dashboard', 160);
++  }
++  for (const target of controlArray(value.targets).slice(0, 64)) {
++    const ordinal = Number(target?.ordinal);
++    if (!Number.isSafeInteger(ordinal) || ordinal < 0) {
++      continue;
++    }
++    result.targets.push({
++      ordinal,
++      safe_title: controlSupervisionText(
++          target?.safe_title, 'Untitled tab', 256),
++      safe_origin: controlSupervisionText(
++          target?.safe_origin, 'Unavailable', 2048),
++      selected: target?.selected === true,
++      agent_active: target?.agent_active === true,
++    });
++  }
++  for (const row of controlArray(value.connected).slice(0, 16)) {
++    const connected = {
++      display_label: controlSupervisionText(
++          row?.display_label, 'Local dashboard', 160),
++      access: controlSupervisionText(row?.access, 'view_only', 32),
++      stream_state: controlSupervisionText(row?.stream_state, 'ended', 32),
++      action_state: controlSupervisionText(row?.action_state, 'idle', 32),
++      connected_at_ms: controlSupervisionTimestamp(row?.connected_at_ms),
++      last_seen_at_ms: controlSupervisionTimestamp(row?.last_seen_at_ms),
++      expires_at_ms: controlSupervisionTimestamp(row?.expires_at_ms),
++    };
++    if (typeof row?.action_category === 'string') {
++      connected.action_category =
++          controlSupervisionText(row.action_category, '', 32);
++    }
++    result.connected.push(connected);
++  }
++  for (const row of controlArray(value.recent).slice(0, 20)) {
++    result.recent.push({
++      display_label: controlSupervisionText(
++          row?.display_label, 'Local dashboard', 160),
++      state: controlSupervisionText(row?.state, 'ended', 32),
++      reason: controlSupervisionText(row?.reason, 'none', 32),
++      last_seen_at_ms: controlSupervisionTimestamp(row?.last_seen_at_ms),
++    });
++  }
++  for (const row of controlArray(value.audit).slice(0, 20)) {
++    const audit = {
++      event: controlSupervisionText(row?.event, '', 48),
++      timestamp_ms: controlSupervisionTimestamp(row?.timestamp_ms),
++      safe_target_title: controlSupervisionText(
++          row?.safe_target_title, 'Unavailable', 256),
++      safe_origin: controlSupervisionText(
++          row?.safe_origin, 'Unavailable', 2048),
++      error: controlSupervisionText(row?.error, 'NONE', 48),
++      duration_ms: controlSupervisionTimestamp(row?.duration_ms),
++    };
++    if (typeof row?.client_label === 'string') {
++      audit.client_label = controlSupervisionText(
++          row.client_label, 'Local dashboard', 160);
++    }
++    if (typeof row?.action_category === 'string') {
++      audit.action_category =
++          controlSupervisionText(row.action_category, '', 32);
++    }
++    result.audit.push(audit);
++  }
++  return result;
++}
++
+ function controlSupervisionRows() {
+   const supervision = controlSnapshot.supervision;
+   return supervision && typeof supervision === 'object' ? supervision : null;
+@@ -2404,7 +2505,7 @@ function renderControlSnapshot(snapshot) {
+   const focusKey = document.activeElement?.dataset?.controlFocusKey || '';
+   const supervisionFocusLabel =
+       controlSupervisionFocusLabels.get(document.activeElement) || '';
+-  controlSnapshot = snapshot && typeof snapshot === 'object' ? snapshot : {
++  const candidate = snapshot && typeof snapshot === 'object' ? snapshot : {
+     status: 'INVALID_REQUEST',
+     tasks: [],
+     providers: [],
+@@ -2417,6 +2518,15 @@ function renderControlSnapshot(snapshot) {
+     diagnostics: [],
+     recovery: 'Refresh the control panel and retry',
+   };
++  const codeFreeCandidate = {...candidate};
++  const candidateSupervision = codeFreeCandidate.supervision;
++  delete codeFreeCandidate.formatted_code;
++  delete codeFreeCandidate.pairing_code;
++  delete codeFreeCandidate.supervision;
++  controlSnapshot = {
++    ...codeFreeCandidate,
++    supervision: normalizeControlSupervisionSnapshot(candidateSupervision),
++  };
+   window.prometheusControlSnapshotForTesting = controlSnapshot;
+   window.prometheusControlObserverCountForTesting++;
+   document.documentElement.dataset.controlRuntimeStatus =
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index c8dd554e00..920bc940d1 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -1355,9 +1355,10 @@ IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
+   EXPECT_TRUE(BodyTextContentContains(web_contents, "No runtime logs yet"));
+   EXPECT_TRUE(BodyTextContentContains(web_contents,
+                                       "Run a task or refresh diagnostics."));
+-  EXPECT_TRUE(BodyTextContentContains(web_contents, "Not ready"));
+   EXPECT_TRUE(BodyTextContentContains(
+-      web_contents, "Supervision and dashboard pairing arrive in Phase 21."));
++      web_contents, "No dashboards connected"));
++  EXPECT_TRUE(BodyTextContentContains(
++      web_contents, "Create a pairing code to begin view-only supervision."));
+   EXPECT_TRUE(BodyTextContentContains(web_contents, "No parity rows loaded"));
+   EXPECT_TRUE(BodyTextContentContains(
+       web_contents, "Generate parity evidence before claiming FSB parity."));
+@@ -1991,7 +1992,7 @@ IN_PROC_BROWSER_TEST_F(
+         }
+       }
+       if (document.querySelector('#section-supervision h2')?.textContent !==
+-              'Not ready' ||
++              'Target & access' ||
+           document.querySelector('#section-parity h2')?.textContent !==
+               'No parity rows loaded') {
+         issues.push('truthful-later-phase-state');
+@@ -2721,8 +2722,11 @@ IN_PROC_BROWSER_TEST_F(
+       return packaged &&
+           !document.querySelector('iframe, frame, object, embed') &&
+           !forbiddenControl &&
+-          supervision.querySelector('h2')?.textContent === 'Not ready' &&
+-          !supervision.querySelector('button, input, select, code');
++          supervision.querySelector('h2')?.textContent === 'Target & access' &&
++          supervision.querySelector('#control-supervision-target') &&
++          supervision.querySelector('#control-supervision-create') &&
++          supervision.querySelector(
++              '[data-prometheus-sensitive="pairing-code"]');
+     })();
+   )")
+                   .ExtractBool());
+@@ -3417,7 +3421,11 @@ IN_PROC_BROWSER_TEST_F(
+   EXPECT_TRUE(BodyTextContentContains(web_contents, "Locked on"));
+   EXPECT_TRUE(BodyTextContentContains(web_contents, "Native only"));
+   EXPECT_TRUE(BodyTextContentContains(web_contents, "Required every time"));
+-  EXPECT_TRUE(BodyTextContentContains(web_contents, "Not ready"));
++  EXPECT_TRUE(
++      BodyTextContentContains(web_contents, "Available locally"));
++  EXPECT_TRUE(BodyTextContentContains(
++      web_contents,
++      "View only by default. Control requires approval in Prometheus."));
+   EXPECT_TRUE(content::EvalJs(web_contents, R"(
+     [
+       '#control-tab-ownership-required',
+@@ -3431,8 +3439,7 @@ IN_PROC_BROWSER_TEST_F(
+             .vault_native_only === true &&
+         window.prometheusControlSnapshotForTesting.permissions
+             .vault_confirm_each_use === true &&
+-        window.prometheusControlSnapshotForTesting.permissions.supervision ===
+-            'not_ready';
++        document.querySelector('#control-supervision-ready').checked;
+   )")
+                   .ExtractBool());
+ }
+@@ -5192,7 +5199,7 @@ IN_PROC_BROWSER_TEST_F(
+   }));
+ 
+   EXPECT_EQ("", content::EvalJs(contents, R"(
+-    (() => {
++    (async () => {
+       document.querySelector(
+           '[data-section-target="supervision"]')?.click();
+       const issues = [];
+@@ -5246,6 +5253,7 @@ IN_PROC_BROWSER_TEST_F(
+                   'Prometheus is validating the target and local gateway.')) {
+         issues.push('loading');
+       }
++      await new Promise(resolve => setTimeout(resolve, 100));
+ 
+       window.prometheusControlReceivePairingCreateResult({
+         status: 'OK',
+@@ -5274,6 +5282,47 @@ IN_PROC_BROWSER_TEST_F(
+         issues.push('active');
+       }
+ 
++      let copied = '';
++      const clipboardStub = {writeText: async value => {
++        copied = value;
++      }};
++      Object.defineProperty(navigator, 'clipboard', {
++        configurable: true,
++        value: clipboardStub,
++      });
++      document.querySelector('#control-supervision-copy')?.click();
++      await new Promise(resolve => setTimeout(resolve, 0));
++      if (copied !== 'ABCD-EFGH' ||
++          !document.querySelector('#control-supervision-code-status')
++              ?.textContent.startsWith('Code copied. It expires in ') ||
++          document.querySelector('#control-supervision-code-status')
++              ?.textContent.includes('ABCD-EFGH')) {
++        issues.push('copy-success');
++      }
++      clipboardStub.writeText = undefined;
++      document.querySelector('#control-supervision-copy')?.click();
++      await new Promise(resolve => setTimeout(resolve, 0));
++      if (document.querySelector('#control-supervision-code-status')
++              ?.textContent !==
++          'Prometheus could not copy the code. Select it and copy it ' +
++              'manually.') {
++        issues.push(
++            `copy-failure:${
++              document.querySelector('#control-supervision-code-status')
++                  ?.textContent}`);
++      }
++
++      window.prometheusControlReceivePairingCreateResult({
++        status: 'OK',
++        accepted: true,
++        replacement_required: false,
++        formatted_code: 'STUV-WXYZ',
++        expires_at_ms: Date.now() + 59000,
++      });
++      if (document.querySelector('#control-supervision-code-status')
++              ?.textContent !== 'Pairing code expires in one minute') {
++        issues.push('one-minute');
++      }
+       window.prometheusControlReceivePairingCreateResult({
+         status: 'OK',
+         accepted: true,
+@@ -5284,7 +5333,10 @@ IN_PROC_BROWSER_TEST_F(
+       if (document.querySelector('#control-supervision-code-heading')
+               ?.textContent !== 'Pairing code expires soon' ||
+           !activePanel.textContent.includes(
+-              'Use this code now or create a new one after it expires.')) {
++              'Use this code now or create a new one after it expires.') ||
++          document.querySelector('#control-supervision-code-status')
++                  ?.textContent !==
++              'Pairing code expires in ten seconds') {
+         issues.push('expiring');
+       }
+ 
+@@ -5597,6 +5649,11 @@ IN_PROC_BROWSER_TEST_F(
+       const supervision = {
+         available: true,
+         pairing_state: 'pending',
++        pairing_code: 'SNAP-CODE',
++        session_id: 'FORGED_SESSION',
++        lease_id: 'FORGED_LEASE',
++        owner_id: 'FORGED_OWNER',
++        document_epoch: 'FORGED_EPOCH',
+         safe_target_title: 'Safe target',
+         safe_origin: 'https://example.test',
+         agent_active: false,
+@@ -5612,7 +5669,11 @@ IN_PROC_BROWSER_TEST_F(
+         recent: [],
+         audit: [],
+       };
+-      window.prometheusControlReceiveSnapshot({...base, supervision});
++      window.prometheusControlReceiveSnapshot({
++        ...base,
++        formatted_code: 'TOPS-CODE',
++        supervision,
++      });
+       window.prometheusControlReceivePairingCreateResult({
+         status: 'OK',
+         accepted: true,
+@@ -5679,7 +5740,9 @@ IN_PROC_BROWSER_TEST_F(
+       for (const forbidden of [
+         'session_id', 'lease_id', 'owner_id', 'browser_id', 'tab_id',
+         'profile_path', 'document_epoch', 'sequence', 'bearer', 'selector',
+-        'typed_value', 'raw_value', 'authorization',
++        'typed_value', 'raw_value', 'authorization', 'SNAP-CODE',
++        'TOPS-CODE', 'FORGED_SESSION', 'FORGED_LEASE', 'FORGED_OWNER',
++        'FORGED_EPOCH',
+       ]) {
+         if (serialized.includes(forbidden)) {
+           issues.push(`forbidden:${forbidden}`);
