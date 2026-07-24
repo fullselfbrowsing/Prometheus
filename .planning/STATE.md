@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 20
+current_plan: 21
 status: ready
-stopped_at: Completed 21-19-PLAN.md
-last_updated: "2026-07-24T15:03:00.252Z"
+stopped_at: Completed 21-20-PLAN.md
+last_updated: "2026-07-24T16:30:26.349Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 85
-  percent: 92
+  completed_plans: 86
+  percent: 93
 ---
 
 # Project State
@@ -36,24 +36,30 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 20 of 26
+Plan: 21 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 20
+**Current Plan:** 21
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [█████████░] 92%
+**Progress:** [█████████░] 93%
 **Last Activity:** 2026-07-24
-**Last Activity Description:** Completed Plan 21-19 — persistent responsive
-side-panel supervision strip with closed state copy, zero-authority actions,
-safe confirmation, and keyboard/privacy coverage.
+**Last Activity Description:** Completed Plan 21-20 — exact-window sanitized
+Control Panel supervision snapshots, strict ordinal messages, and one-shot
+pairing creation with explicit replacement.
 
-Milestone work is 85 of 92 existing plans complete (92%); cumulative project
-work is 136 of 144 existing plans summarized (94%).
+Milestone work is 86 of 92 existing plans complete (93%); cumulative project
+work is 137 of 144 existing plans summarized (95%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 20: the intended 2-test RED gate, 2-test snapshot/target GREEN
+  gate, 2-test create GREEN gate, 6-test service pairing gate, and final
+  4-test runtime suite pass with exact-window isolation, stale ordinal
+  rejection, one-shot code delivery, explicit old-digest-first replacement,
+  stable patch identity/replay, and byte-identical reviewed artifacts.
 
 - Phase 21 Plan 19: the intended 3-test RED gate, 2-test state/action GREEN
   gate, and final 3-test strip suite pass with persistent four-mode state,
@@ -323,6 +329,11 @@ work is 136 of 144 existing plans summarized (94%).
 - [Phase 21]: Keep the supervision strip between the four-mode navigation and mode content, and remove it completely only when the sanitized viewer count reaches zero. — The strip stays persistent without becoming a fifth mode or inventing independent lifecycle state.
 - [Phase 21]: Re-whitelist Plan 18 supervision fields in the renderer and send stop, end, and manage only as zero-argument intents. — The side panel can present and request actions without retaining sessions, leases, target IDs, selectors, raw values, page content, or other authority.
 - [Phase 21]: Build fresh Prometheus GRIT resources and replay Chromium’s canonical full framework repack for focused browser tests, then restore and hash-check the reviewed package. — Focused test evidence must exercise current WebUI resources without mutating reviewed build metadata or leaving a changed application package.
+- [Phase 21]: Keep formatted pairing characters exclusively on the dedicated direct create-result type. — Snapshot, observer, refresh, select, cancellation, diagnostics, audit, and MCP structures remain code-incapable.
+- [Phase 21]: Treat Control Panel target ordinals as one-generation display references to weak exact-window tabs. — Native code revalidates generation, handle, list membership, Browser, profile, and HTTP(S) eligibility before every selection or pairing mutation.
+- [Phase 21]: Preserve the current selected target while it remains eligible and never silently select a replacement after loss. — A closed or replaced tab cannot inherit an old renderer ordinal.
+- [Phase 21]: Require explicit replacement when an unredeemed pairing digest exists. — Ordinary create is non-mutating; replace erases the old digest before generating and returning a new one.
+- [Phase 21]: Format the eight-character code only in the native Control Panel adapter and immediately zero-fill and clear the raw buffer. — The direct result receives `XXXX-XXXX` once while the service retains only salt, digest, target authority, and expiry.
 
 ## Performance Metrics
 
@@ -357,6 +368,7 @@ work is 136 of 144 existing plans summarized (94%).
 | Phase 21 P17 | 1h45min | 3 tasks | 11 files |
 | Phase 21 P18 | 1h49min | 3 tasks | 9 files |
 | Phase 21 P19 | 1h37min | 3 tasks | 5 files |
+| Phase 21 P20 | 1h20min | 3 tasks | 10 files |
 
 ## Blockers and Deferred Items
 
@@ -371,11 +383,11 @@ work is 136 of 144 existing plans summarized (94%).
 
 ## Session
 
-**Last Date:** 2026-07-24T15:03:00.249Z
-**Stopped At:** Completed 21-19-PLAN.md
+**Last Date:** 2026-07-24T16:30:26.345Z
+**Stopped At:** Completed 21-20-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-20-PLAN.md` to add strict Control Panel supervision snapshots and
-one-shot pairing creation.
+Execute `21-21-PLAN.md` to complete Control Panel lifecycle actions,
+observation, and terminal pairing-code presentation erasure.
