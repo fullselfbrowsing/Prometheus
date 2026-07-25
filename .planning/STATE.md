@@ -4,16 +4,16 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 25
+current_plan: 26
 status: executing
-stopped_at: Completed 21-24-PLAN.md
-last_updated: "2026-07-25T01:38:00.000Z"
+stopped_at: Completed 21-25-PLAN.md
+last_updated: "2026-07-25T04:05:23.000Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 90
+  completed_plans: 91
   percent: 71
 ---
 
@@ -36,24 +36,33 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 25 of 26
+Plan: 26 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 24
+**Current Plan:** 25
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
-**Progress:** [██████████] 97%
+**Progress:** [██████████] 98%
 **Last Activity:** 2026-07-24
-**Last Activity Description:** Completed Plan 21-24 — sole browser-composition
-handoff binding, exact gateway-session target/service resolution, normal
-pairing creation, redemption observation, and early fail-closed teardown.
+**Last Activity Description:** Completed Plan 21-25 — actual native-dialog
+automation, secure built-app two-viewer/MCP lifecycle, production dispatcher
+readiness, pending cancellation, ordered teardown, and credential privacy.
 
-Milestone work is 90 of 92 existing plans complete (98%); cumulative project
-work is 141 of 144 existing plans summarized (98%).
+Milestone work is 91 of 92 existing plans complete (99%); cumulative project
+work is 142 of 144 existing plans summarized (99%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 25: the intended 3-case dialog RED, 3/3 dialog GREEN,
+  1/1 action completion regression, signed built-app two-viewer/MCP smoke,
+  7/7 production-binding/confirmation browser gate, and 21/21 final Node gate
+  pass with actual native widgets, exact Browser/kind/order, shared capture,
+  independent cursors, real actions, conflict/resync, sanitized readiness,
+  exact-once pending cancellation, ordered unbind/shutdown, recursive
+  credential privacy, stable patch identity/replay, and byte-identical reviewed
+  build artifacts.
 
 - Phase 21 Plan 24: the intended 4-test composition RED, final 25-test
   bootstrap/composition regression, and post-hardening 4-test composition gate
@@ -409,6 +418,7 @@ work is 141 of 144 existing plans summarized (98%).
 | Phase 21 P22 | 1h48min | 3 tasks | 6 files |
 | Phase 21 P23 | 50min | 3 tasks | 9 files |
 | Phase 21 P24 | 50min | 2 tasks | 8 files |
+| Phase 21 P25 | 2h35min | 3 tasks | 15 files |
 
 ## Blockers and Deferred Items
 
@@ -423,11 +433,11 @@ work is 141 of 144 existing plans summarized (98%).
 
 ## Session
 
-**Last Date:** 2026-07-25T01:38:00.000Z
-**Stopped At:** Completed 21-24-PLAN.md
+**Last Date:** 2026-07-25T04:05:23.000Z
+**Stopped At:** Completed 21-25-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-25-PLAN.md` to prove native dialogs and two-viewer/MCP
-supervision in the built app.
+Execute `21-26-PLAN.md` to run the complete Phase 21 verification matrix and
+publish closeout evidence.
