@@ -1,0 +1,676 @@
+From 434463300ba7c48d9c7f52b42abfc79c7a6f8f68 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 20:01:24 -0500
+Subject: [PATCH] test(21-24): specify supervision composition handoff
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   2 +
+ .../prometheus_browser_main_extra_parts.cc    |  47 ++++
+ .../prometheus_browser_main_extra_parts.h     |  55 ++++
+ .../prometheus_supervision_test_bootstrap.cc  |  43 +--
+ .../prometheus_supervision_test_bootstrap.h   |  11 +-
+ ...eus_supervision_test_bootstrap_unittest.cc | 262 +++++++++++++++++-
+ 6 files changed, 393 insertions(+), 27 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index cba475e9f2..fe300ba85f 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -648,6 +648,7 @@ source_set("prometheus_browser_composition") {
+     ":prometheus_runtime_profile_service",
+     ":prometheus_runtime_transport_codec",
+     ":prometheus_supervision_profile_service",
++    ":prometheus_supervision_test_bootstrap",
+     "//base",
+     "//chrome/browser:main_extra_parts",
+     "//chrome/browser/profiles",
+@@ -716,6 +717,7 @@ test("prometheus_unittests") {
+     ":prometheus_agent_audit",
+     ":prometheus_agent_gateway",
+     ":prometheus_agent_gateway_contract",
++    ":prometheus_browser_composition",
+     ":prometheus_agent_route",
+     ":prometheus_agent_service",
+     ":prometheus_agent_session",
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index efd4a7399d..78ccaf2e1b 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -2535,6 +2535,53 @@ class PrometheusSupervisionComposition {
+   base::WeakPtrFactory<PrometheusSupervisionComposition> weak_factory_{this};
+ };
+ 
++PrometheusSupervisionTestComposition::PrometheusSupervisionTestComposition(
++    std::unique_ptr<PrometheusSupervisionTestBootstrap> bootstrap,
++    PrometheusSupervisionTestCompositionHooks hooks)
++    : bootstrap_(std::move(bootstrap)),
++      set_dispatcher_(std::move(hooks.set_dispatcher)),
++      observe_lifecycle_(std::move(hooks.observe_lifecycle)) {}
++
++PrometheusSupervisionTestComposition::~PrometheusSupervisionTestComposition() {
++  Shutdown();
++}
++
++PrometheusSupervisionTestBootstrapResult
++PrometheusSupervisionTestComposition::Create(
++    const base::CommandLine& command_line,
++    bool is_official_build,
++    PrometheusSupervisionTestCompositionHooks hooks,
++    std::unique_ptr<PrometheusSupervisionTestComposition>* composition) {
++  if (!composition) {
++    return PrometheusSupervisionTestBootstrapResult::kBindingDenied;
++  }
++  composition->reset();
++  if (!hooks.service_available) {
++    return PrometheusSupervisionTestBootstrapResult::kBindingDenied;
++  }
++  std::unique_ptr<PrometheusSupervisionTestBootstrap> bootstrap;
++  return PrometheusSupervisionTestBootstrap::Create(
++      command_line, is_official_build, hooks.profile_facts, hooks.file_access,
++      std::move(hooks.binding), std::move(hooks.create_pairing_code),
++      std::move(hooks.now), std::move(hooks.zeroization), &bootstrap);
++}
++
++bool PrometheusSupervisionTestComposition::ObservePairingRedeemed(
++    int sequence) {
++  return bootstrap_ && bootstrap_->ObservePairingRedeemed(sequence);
++}
++
++void PrometheusSupervisionTestComposition::ObserveLifecycle(
++    std::string_view event) {
++  if (observe_lifecycle_) {
++    observe_lifecycle_.Run(event);
++  }
++}
++
++void PrometheusSupervisionTestComposition::Shutdown() {
++  shutdown_ = true;
++}
++
+ PrometheusBrowserMainExtraParts::PrometheusBrowserMainExtraParts(
+     bool is_integration_test)
+     : is_integration_test_(is_integration_test) {
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
+index 589f41d7db..256f313985 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
+@@ -6,14 +6,67 @@
+ #define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_BROWSER_MAIN_EXTRA_PARTS_H_
+ 
+ #include <memory>
++#include <string_view>
+ 
++#include "base/functional/callback.h"
+ #include "chrome/browser/chrome_browser_main_extra_parts.h"
++#include "chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h"
+ 
+ namespace prometheus {
+ 
+ class PrometheusAgentGateway;
+ class PrometheusSupervisionComposition;
+ 
++struct PrometheusSupervisionTestCompositionHooks {
++  PrometheusSupervisionTestBootstrapProfileFacts profile_facts;
++  bool service_available = false;
++  PrometheusSupervisionTestBootstrapFileAccess file_access;
++  PrometheusSupervisionTestBootstrap::BindingCallback binding;
++  PrometheusSupervisionTestBootstrap::CreatePairingCodeCallback
++      create_pairing_code;
++  PrometheusSupervisionTestBootstrap::NowCallback now;
++  PrometheusSupervisionTestBootstrap::ZeroizationCallback zeroization;
++  base::RepeatingCallback<void(SupervisionTestHandoffDispatcher)> set_dispatcher;
++  base::RepeatingCallback<void(std::string_view)> observe_lifecycle;
++};
++
++// Owns the validated runtime-test handoff and its gateway registration. The
++// caller supplies exact-session resolution; this owner supplies only lifetime
++// and teardown ordering.
++class PrometheusSupervisionTestComposition {
++ public:
++  PrometheusSupervisionTestComposition(
++      const PrometheusSupervisionTestComposition&) = delete;
++  PrometheusSupervisionTestComposition& operator=(
++      const PrometheusSupervisionTestComposition&) = delete;
++  ~PrometheusSupervisionTestComposition();
++
++  static PrometheusSupervisionTestBootstrapResult Create(
++      const base::CommandLine& command_line,
++      bool is_official_build,
++      PrometheusSupervisionTestCompositionHooks hooks,
++      std::unique_ptr<PrometheusSupervisionTestComposition>* composition);
++
++  bool ObservePairingRedeemed(int sequence);
++  void Shutdown();
++
++  bool is_bound_for_testing() const { return bound_; }
++
++ private:
++  PrometheusSupervisionTestComposition(
++      std::unique_ptr<PrometheusSupervisionTestBootstrap> bootstrap,
++      PrometheusSupervisionTestCompositionHooks hooks);
++
++  void ObserveLifecycle(std::string_view event);
++
++  std::unique_ptr<PrometheusSupervisionTestBootstrap> bootstrap_;
++  base::RepeatingCallback<void(SupervisionTestHandoffDispatcher)>
++      set_dispatcher_;
++  base::RepeatingCallback<void(std::string_view)> observe_lifecycle_;
++  bool bound_ = false;
++  bool shutdown_ = false;
++};
++
+ class PrometheusBrowserMainExtraParts final
+     : public ChromeBrowserMainExtraParts {
+  public:
+@@ -35,6 +88,8 @@ class PrometheusBrowserMainExtraParts final
+  private:
+   const bool is_integration_test_;
+   std::unique_ptr<PrometheusSupervisionComposition> supervision_composition_;
++  std::unique_ptr<PrometheusSupervisionTestComposition>
++      supervision_test_composition_;
+   std::unique_ptr<PrometheusAgentGateway> gateway_;
+ };
+ 
+diff --git a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc
+index ca3171ea20..3e4f1e0a98 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc
+@@ -374,7 +374,7 @@ PrometheusSupervisionTestBootstrap::Create(
+   if (is_official_build) {
+     return PrometheusSupervisionTestBootstrapResult::kOfficialBuildDenied;
+   }
+-  if (!profile_facts.is_regular_profile ||
++  if (!profile_facts.profile_identity || !profile_facts.is_regular_profile ||
+       !profile_facts.is_disposable_profile || profile_facts.is_off_the_record) {
+     return PrometheusSupervisionTestBootstrapResult::kProfileDenied;
+   }
+@@ -457,22 +457,15 @@ PrometheusSupervisionTestBootstrap::Create(
+     return PrometheusSupervisionTestBootstrapResult::kOriginDenied;
+   }
+ 
+-  const std::optional<PrometheusSupervisionTestBindingFacts> initial_binding =
+-      binding.Run();
+-  if (!initial_binding ||
+-      !IsValidInitialBinding(*initial_binding, *expected_origin)) {
+-    return PrometheusSupervisionTestBootstrapResult::kBindingDenied;
+-  }
+-
+   auto state = std::unique_ptr<PrometheusSupervisionTestBootstrap>(
+       new PrometheusSupervisionTestBootstrap());
+   state->binding_ = std::move(binding);
+   state->create_pairing_code_ = std::move(create_pairing_code);
+   state->now_ = std::move(now);
+   state->zeroization_ = std::move(zeroization);
+-  state->initial_binding_ = *initial_binding;
++  state->expected_profile_identity_ = profile_facts.profile_identity;
++  state->expected_origin_ = *expected_origin;
+   state->challenge_ = std::move(*challenge);
+-  state->pinned_session_id_ = initial_binding->owner_session_id;
+   state->expires_at_ = state->now_.Run() + kPrometheusSupervisionTestHandoffTtl;
+   *bootstrap = std::move(state);
+   return PrometheusSupervisionTestBootstrapResult::kApplied;
+@@ -504,7 +497,8 @@ bool PrometheusSupervisionTestBootstrap::HasExactLiveBinding(
+          !binding.owner_session_id.empty();
+ }
+ 
+-bool PrometheusSupervisionTestBootstrap::CheckLifetimeAndBinding() {
++bool PrometheusSupervisionTestBootstrap::CheckLifetimeAndBinding(
++    std::string_view requesting_session_id) {
+   if (terminal_) {
+     return false;
+   }
+@@ -513,8 +507,21 @@ bool PrometheusSupervisionTestBootstrap::CheckLifetimeAndBinding() {
+     return false;
+   }
+   const std::optional<PrometheusSupervisionTestBindingFacts> current =
+-      binding_ ? binding_.Run() : std::nullopt;
+-  if (!current || !HasExactLiveBinding(*current)) {
++      binding_ ? binding_.Run(requesting_session_id) : std::nullopt;
++  if (!current) {
++    ClearTerminalState(SupervisionTestHandoffStatus::kTargetLost);
++    return false;
++  }
++  if (pinned_session_id_.empty()) {
++    if (current->profile_identity != expected_profile_identity_ ||
++        current->owner_session_id != requesting_session_id ||
++        !IsValidInitialBinding(*current, expected_origin_)) {
++      ClearTerminalState(SupervisionTestHandoffStatus::kTargetLost);
++      return false;
++    }
++    initial_binding_ = *current;
++    pinned_session_id_ = current->owner_session_id;
++  } else if (!HasExactLiveBinding(*current)) {
+     ClearTerminalState(SupervisionTestHandoffStatus::kTargetLost);
+     return false;
+   }
+@@ -540,7 +547,7 @@ void PrometheusSupervisionTestBootstrap::Dispatch(
+     return;
+   }
+   ++attempts_;
+-  if (!CheckLifetimeAndBinding()) {
++  if (!CheckLifetimeAndBinding(request.session_id)) {
+     complete(SupervisionTestHandoffResult::Failure(terminal_status_));
+     return;
+   }
+@@ -578,7 +585,8 @@ void PrometheusSupervisionTestBootstrap::Dispatch(
+   const int sequence = request.sequence;
+   ++delivered_slots_;
+   std::optional<std::string> code =
+-      create_pairing_code_ ? create_pairing_code_.Run() : std::nullopt;
++      create_pairing_code_ ? create_pairing_code_.Run(initial_binding_)
++                           : std::nullopt;
+   if (!code || code->empty() || code->size() > kMaxPairingCodeBytes ||
+       !base::IsStringUTF8(*code)) {
+     if (code) {
+@@ -595,7 +603,8 @@ void PrometheusSupervisionTestBootstrap::Dispatch(
+ }
+ 
+ bool PrometheusSupervisionTestBootstrap::ObservePairingRedeemed(int sequence) {
+-  if (!CheckLifetimeAndBinding() || sequence != redeemed_slots_ + 1 ||
++  if (!CheckLifetimeAndBinding(pinned_session_id_) ||
++      sequence != redeemed_slots_ + 1 ||
+       sequence > delivered_slots_ ||
+       sequence > kPrometheusSupervisionTestPairingSlots) {
+     return false;
+@@ -608,7 +617,7 @@ bool PrometheusSupervisionTestBootstrap::ObservePairingRedeemed(int sequence) {
+ std::optional<PrometheusSupervisionTestDialogResponse>
+ PrometheusSupervisionTestBootstrap::ConsumeDialogResponse(
+     PrometheusSupervisionTestDialog dialog) {
+-  if (!CheckLifetimeAndBinding()) {
++  if (!CheckLifetimeAndBinding(pinned_session_id_)) {
+     return std::nullopt;
+   }
+   const PrometheusSupervisionTestDialog expected =
+diff --git a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h
+index aed6b54679..ca48246144 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h
++++ b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h
+@@ -45,6 +45,7 @@ enum class PrometheusSupervisionTestBootstrapResult {
+ };
+ 
+ struct PrometheusSupervisionTestBootstrapProfileFacts {
++  uint64_t profile_identity = 0;
+   bool is_regular_profile = false;
+   bool is_disposable_profile = false;
+   bool is_off_the_record = false;
+@@ -98,9 +99,11 @@ struct PrometheusSupervisionTestBindingFacts {
+ class PrometheusSupervisionTestBootstrap {
+  public:
+   using BindingCallback = base::RepeatingCallback<
+-      std::optional<PrometheusSupervisionTestBindingFacts>()>;
++      std::optional<PrometheusSupervisionTestBindingFacts>(
++          std::string_view requesting_session_id)>;
+   using CreatePairingCodeCallback =
+-      base::RepeatingCallback<std::optional<std::string>()>;
++      base::RepeatingCallback<std::optional<std::string>(
++          const PrometheusSupervisionTestBindingFacts& binding)>;
+   using NowCallback = base::RepeatingCallback<base::TimeTicks()>;
+   using ZeroizationCallback =
+       base::RepeatingCallback<void(std::string_view buffer_name,
+@@ -144,7 +147,7 @@ class PrometheusSupervisionTestBootstrap {
+                 SupervisionTestHandoffDispatcher::ResultCallback callback);
+   bool HasExactLiveBinding(
+       const PrometheusSupervisionTestBindingFacts& binding) const;
+-  bool CheckLifetimeAndBinding();
++  bool CheckLifetimeAndBinding(std::string_view requesting_session_id);
+   void MaybeComplete();
+   void ClearSensitiveString(std::string_view buffer_name, std::string* value);
+   void ClearTerminalState(SupervisionTestHandoffStatus status);
+@@ -154,6 +157,8 @@ class PrometheusSupervisionTestBootstrap {
+   NowCallback now_;
+   ZeroizationCallback zeroization_;
+   PrometheusSupervisionTestBindingFacts initial_binding_;
++  uint64_t expected_profile_identity_ = 0;
++  std::string expected_origin_;
+   std::string challenge_;
+   std::string pinned_session_id_;
+   base::TimeTicks expires_at_;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap_unittest.cc
+index f55d721fca..6526bb1137 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap_unittest.cc
+@@ -15,7 +15,11 @@
+ #include "base/files/file_util.h"
+ #include "base/files/scoped_temp_dir.h"
+ #include "base/functional/bind.h"
++#include "base/strings/string_number_conversions.h"
++#include "chrome/browser/prometheus/prometheus_agent_gateway.h"
++#include "chrome/browser/prometheus/prometheus_browser_main_extra_parts.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h"
++#include "net/http/http_status_code.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ 
+ namespace prometheus {
+@@ -75,9 +79,15 @@ class PrometheusSupervisionTestBootstrapTest : public testing::Test {
+         .is_regular_profile = true,
+         .is_off_the_record = false,
+     };
++    gateway_ = std::make_unique<PrometheusAgentGateway>(
++        PrometheusAgentGateway::Options());
+   }
+ 
+-  void TearDown() override { bootstrap_.reset(); }
++  void TearDown() override {
++    composition_.reset();
++    bootstrap_.reset();
++    gateway_.reset();
++  }
+ 
+   static PrometheusSupervisionTestBootstrapFileFacts ValidFileFacts() {
+     return {
+@@ -101,13 +111,22 @@ class PrometheusSupervisionTestBootstrapTest : public testing::Test {
+     return read_succeeds_ ? std::optional(contents_) : std::nullopt;
+   }
+ 
+-  std::optional<PrometheusSupervisionTestBindingFacts> GetBinding() {
++  std::optional<PrometheusSupervisionTestBindingFacts> GetBinding(
++      std::string_view requesting_session_id) {
+     ++binding_calls_;
++    if (!requesting_session_id.empty() &&
++        current_binding_.owner_session_id != requesting_session_id) {
++      return std::nullopt;
++    }
+     return binding_available_ ? std::optional(current_binding_) : std::nullopt;
+   }
+ 
+-  std::optional<std::string> CreatePairingCode() {
++  std::optional<std::string> CreatePairingCode(
++      const PrometheusSupervisionTestBindingFacts& binding) {
+     ++create_code_calls_;
++    if (binding.owner_session_id != current_binding_.owner_session_id) {
++      return std::nullopt;
++    }
+     return create_code_succeeds_
+                ? std::optional(create_code_calls_ == 1 ? "ABCD-EFGH"
+                                                        : "JKLM-NPQR")
+@@ -122,6 +141,7 @@ class PrometheusSupervisionTestBootstrapTest : public testing::Test {
+       const base::CommandLine& command_line,
+       bool official_build = false,
+       PrometheusSupervisionTestBootstrapProfileFacts profile = {
++          .profile_identity = 101,
+           .is_regular_profile = true,
+           .is_disposable_profile = true,
+           .is_off_the_record = false}) {
+@@ -175,6 +195,78 @@ class PrometheusSupervisionTestBootstrapTest : public testing::Test {
+     return created;
+   }
+ 
++  PrometheusSupervisionTestBootstrapResult CreateComposition(
++      const base::CommandLine& command_line,
++      bool official_build = false,
++      bool service_available = true,
++      PrometheusSupervisionTestBootstrapProfileFacts profile = {
++          .profile_identity = 101,
++          .is_regular_profile = true,
++          .is_disposable_profile = true,
++          .is_off_the_record = false}) {
++    PrometheusSupervisionTestCompositionHooks hooks{
++        .profile_facts = profile,
++        .service_available = service_available,
++        .file_access = access_,
++        .binding =
++            base::BindRepeating(
++                &PrometheusSupervisionTestBootstrapTest::GetBinding,
++                base::Unretained(this)),
++        .create_pairing_code =
++            base::BindRepeating(
++                &PrometheusSupervisionTestBootstrapTest::CreatePairingCode,
++                base::Unretained(this)),
++        .now =
++            base::BindRepeating(
++                [](PrometheusSupervisionTestBootstrapTest* test) {
++                  return test->now_;
++                },
++                base::Unretained(this)),
++        .zeroization =
++            base::BindRepeating(
++                &PrometheusSupervisionTestBootstrapTest::ObserveZeroization,
++                base::Unretained(this)),
++        .set_dispatcher =
++            base::BindRepeating(
++                [](PrometheusAgentGateway* gateway,
++                   SupervisionTestHandoffDispatcher dispatcher) {
++                  gateway->SetSupervisionTestHandoffDispatcher(
++                      std::move(dispatcher));
++                },
++                base::Unretained(gateway_.get())),
++        .observe_lifecycle =
++            base::BindRepeating(
++                [](PrometheusSupervisionTestBootstrapTest* test,
++                   std::string_view event) {
++                  test->lifecycle_.emplace_back(event);
++                },
++                base::Unretained(this)),
++    };
++    return PrometheusSupervisionTestComposition::Create(
++        command_line, official_build, std::move(hooks), &composition_);
++  }
++
++  std::pair<int, std::string> DispatchCompositionRequest(
++      int sequence = 1,
++      std::string_view session_id = "owner-session") {
++    std::pair<int, std::string> response{-1, std::string()};
++    int callbacks = 0;
++    gateway_->HandleNativeRequestForTesting(
++        "/v1/test/supervision-handoff",
++        "{\"challenge\":\"" + std::string(kChallenge) +
++            "\",\"session_id\":\"" + std::string(session_id) +
++            "\",\"sequence\":" + base::NumberToString(sequence) + "}",
++        base::BindOnce(
++            [](std::pair<int, std::string>* output, int* callback_count,
++               int status, std::string body) {
++              ++*callback_count;
++              *output = {status, std::move(body)};
++            },
++            &response, &callbacks));
++    EXPECT_EQ(1, callbacks);
++    return response;
++  }
++
+   size_t ZeroizationCount(std::string_view buffer_name) const {
+     return std::ranges::count(zeroized_, buffer_name,
+                               [](const std::pair<std::string, size_t>& event) {
+@@ -193,6 +285,8 @@ class PrometheusSupervisionTestBootstrapTest : public testing::Test {
+   PrometheusSupervisionTestBootstrapFileAccess access_;
+   PrometheusSupervisionTestBindingFacts current_binding_;
+   std::unique_ptr<PrometheusSupervisionTestBootstrap> bootstrap_;
++  std::unique_ptr<PrometheusAgentGateway> gateway_;
++  std::unique_ptr<PrometheusSupervisionTestComposition> composition_;
+   std::string contents_;
+   base::TimeTicks now_ = base::TimeTicks() + base::Seconds(10);
+   std::vector<std::pair<std::string, size_t>> zeroized_;
+@@ -205,6 +299,7 @@ class PrometheusSupervisionTestBootstrapTest : public testing::Test {
+   int binding_calls_ = 0;
+   int create_code_calls_ = 0;
+   size_t last_max_bytes_ = 0;
++  std::vector<std::string> lifecycle_;
+ };
+ 
+ TEST_F(PrometheusSupervisionTestBootstrapTest,
+@@ -216,7 +311,155 @@ TEST_F(PrometheusSupervisionTestBootstrapTest,
+   EXPECT_EQ(1, inspect_calls_);
+   EXPECT_EQ(1, read_calls_);
+   EXPECT_EQ(kMaxPrometheusSupervisionTestBootstrapBytes, last_max_bytes_);
++  EXPECT_EQ(0, binding_calls_);
++}
++
++TEST_F(PrometheusSupervisionTestBootstrapTest,
++       CompositionValidLaunchBindsAfterProductionAndCreatesExactCode) {
++  ASSERT_EQ(PrometheusSupervisionTestBootstrapResult::kApplied,
++            CreateComposition(MakeLaunch(base::FilePath(kConfigPath))));
++  ASSERT_TRUE(composition_);
++  EXPECT_TRUE(composition_->is_bound_for_testing());
++  const auto [status, body] = DispatchCompositionRequest();
++  EXPECT_EQ(net::HTTP_OK, status);
++  EXPECT_NE(std::string::npos, body.find("\"status\":\"delivered\""));
++  EXPECT_NE(std::string::npos, body.find("\"pairing_code\":\"ABCD-EFGH\""));
+   EXPECT_EQ(1, binding_calls_);
++  EXPECT_EQ(1, create_code_calls_);
++  EXPECT_EQ((std::vector<std::string>{"bootstrap_created",
++                                      "test_dispatcher_bound"}),
++            lifecycle_);
++}
++
++TEST_F(PrometheusSupervisionTestBootstrapTest,
++       CompositionOrdinaryOfficialInvalidPersistentOtrAndMissingServiceStay404) {
++  base::CommandLine ordinary(base::CommandLine::NO_PROGRAM);
++  EXPECT_EQ(PrometheusSupervisionTestBootstrapResult::kNotRequested,
++            CreateComposition(ordinary));
++  EXPECT_FALSE(composition_);
++
++  EXPECT_EQ(PrometheusSupervisionTestBootstrapResult::kOfficialBuildDenied,
++            CreateComposition(MakeLaunch(base::FilePath(kConfigPath)),
++                              /*official_build=*/true));
++  EXPECT_FALSE(composition_);
++
++  facts_.posix_permissions = 0644;
++  EXPECT_EQ(PrometheusSupervisionTestBootstrapResult::kFileDenied,
++            CreateComposition(MakeLaunch(base::FilePath(kConfigPath))));
++  facts_ = ValidFileFacts();
++
++  base::CommandLine wrong_type = MakeLaunch(base::FilePath(kConfigPath));
++  wrong_type.AppendSwitchASCII(kPrometheusRuntimeTestTypeSwitch,
++                               "browser-test");
++  EXPECT_EQ(PrometheusSupervisionTestBootstrapResult::kLaunchDenied,
++            CreateComposition(wrong_type));
++
++  EXPECT_EQ(PrometheusSupervisionTestBootstrapResult::kProfileDenied,
++            CreateComposition(
++                MakeLaunch(base::FilePath(kConfigPath)), false, true,
++                {.profile_identity = 101,
++                 .is_regular_profile = true,
++                 .is_disposable_profile = false,
++                 .is_off_the_record = false}));
++  EXPECT_EQ(PrometheusSupervisionTestBootstrapResult::kProfileDenied,
++            CreateComposition(
++                MakeLaunch(base::FilePath(kConfigPath)), false, true,
++                {.profile_identity = 101,
++                 .is_regular_profile = false,
++                 .is_disposable_profile = true,
++                 .is_off_the_record = true}));
++  EXPECT_EQ(PrometheusSupervisionTestBootstrapResult::kBindingDenied,
++            CreateComposition(MakeLaunch(base::FilePath(kConfigPath)), false,
++                              /*service_available=*/false));
++  EXPECT_FALSE(composition_);
++  EXPECT_EQ(net::HTTP_NOT_FOUND, DispatchCompositionRequest().first);
++  EXPECT_TRUE(lifecycle_.empty());
++  EXPECT_EQ(0, create_code_calls_);
++}
++
++TEST_F(PrometheusSupervisionTestBootstrapTest,
++       CompositionRejectsEveryExactBindingMismatchWithoutFallback) {
++  ASSERT_EQ(PrometheusSupervisionTestBootstrapResult::kApplied,
++            CreateComposition(MakeLaunch(base::FilePath(kConfigPath))));
++  ASSERT_TRUE(composition_);
++
++  current_binding_.owner_session_id = "replacement-owner";
++  const auto [status, body] = DispatchCompositionRequest();
++  EXPECT_EQ(net::HTTP_OK, status);
++  EXPECT_NE(std::string::npos, body.find("\"status\":\"target_lost\""));
++  EXPECT_EQ(0, create_code_calls_);
++  EXPECT_TRUE(bootstrap_ == nullptr);
++
++  const std::vector<
++      base::RepeatingCallback<void(PrometheusSupervisionTestBindingFacts*)>>
++      mutations = {
++          base::BindRepeating(
++              [](PrometheusSupervisionTestBindingFacts* facts) {
++                facts->profile_identity = 999;
++              }),
++          base::BindRepeating(
++              [](PrometheusSupervisionTestBindingFacts* facts) {
++                facts->browser_identity = 999;
++              }),
++          base::BindRepeating(
++              [](PrometheusSupervisionTestBindingFacts* facts) {
++                facts->stable_tab_id = 999;
++              }),
++          base::BindRepeating(
++              [](PrometheusSupervisionTestBindingFacts* facts) {
++                facts->expected_origin = "http://127.0.0.1:9";
++              }),
++          base::BindRepeating(
++              [](PrometheusSupervisionTestBindingFacts* facts) {
++                facts->document_identity = "replacement-document";
++              }),
++          base::BindRepeating(
++              [](PrometheusSupervisionTestBindingFacts* facts) {
++                facts->is_off_the_record = true;
++              }),
++      };
++  for (const auto& mutate : mutations) {
++    current_binding_ = {
++        .profile_identity = 101,
++        .browser_identity = 202,
++        .stable_tab_id = 41,
++        .expected_origin = kOrigin,
++        .document_identity = "document-1",
++        .owner_session_id = "owner-session",
++        .profile_live = true,
++        .browser_live = true,
++        .target_live = true,
++        .document_live = true,
++        .is_regular_profile = true,
++        .is_off_the_record = false,
++    };
++    mutate.Run(&current_binding_);
++    composition_.reset();
++    ASSERT_EQ(PrometheusSupervisionTestBootstrapResult::kApplied,
++              CreateComposition(MakeLaunch(base::FilePath(kConfigPath))));
++    ASSERT_TRUE(composition_);
++    EXPECT_NE(std::string::npos,
++              DispatchCompositionRequest().second.find(
++                  "\"status\":\"target_lost\""));
++  }
++  EXPECT_EQ(0, create_code_calls_);
++}
++
++TEST_F(PrometheusSupervisionTestBootstrapTest,
++       CompositionUnbindRestores404BeforeBootstrapAndProductionTeardown) {
++  ASSERT_EQ(PrometheusSupervisionTestBootstrapResult::kApplied,
++            CreateComposition(MakeLaunch(base::FilePath(kConfigPath))));
++  ASSERT_TRUE(composition_);
++  EXPECT_EQ(net::HTTP_OK, DispatchCompositionRequest().first);
++  composition_->Shutdown();
++  composition_->Shutdown();
++  EXPECT_EQ(net::HTTP_NOT_FOUND, DispatchCompositionRequest().first);
++  EXPECT_EQ((std::vector<std::string>{"bootstrap_created",
++                                      "test_dispatcher_bound",
++                                      "test_dispatcher_unbound",
++                                      "bootstrap_destroyed"}),
++            lifecycle_);
++  EXPECT_EQ(1u, ZeroizationCount("challenge"));
+ }
+ 
+ TEST_F(PrometheusSupervisionTestBootstrapTest,
+@@ -478,18 +721,23 @@ TEST_F(PrometheusSupervisionTestBootstrapTest,
+   auto create = [&](const base::FilePath& path) {
+     return PrometheusSupervisionTestBootstrap::Create(
+         MakeLaunch(path), false,
+-        {.is_regular_profile = true,
++        {.profile_identity = 101,
++         .is_regular_profile = true,
+          .is_disposable_profile = true,
+          .is_off_the_record = false},
+         real_access,
+         base::BindRepeating(
+-            [](PrometheusSupervisionTestBindingFacts binding)
++            [](PrometheusSupervisionTestBindingFacts binding,
++               std::string_view requesting_session_id)
+                 -> std::optional<PrometheusSupervisionTestBindingFacts> {
+-              return binding;
++              return binding.owner_session_id == requesting_session_id
++                         ? std::optional(binding)
++                         : std::nullopt;
+             },
+             current_binding_),
+         base::BindRepeating(
+-            []() -> std::optional<std::string> { return "ABCD-EFGH"; }),
++            [](const PrometheusSupervisionTestBindingFacts&)
++                -> std::optional<std::string> { return "ABCD-EFGH"; }),
+         base::BindRepeating([]() { return base::TimeTicks::Now(); }),
+         PrometheusSupervisionTestBootstrap::ZeroizationCallback(), &bootstrap);
+   };
+-- 
+2.50.1 (Apple Git-155)
+

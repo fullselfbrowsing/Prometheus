@@ -131,6 +131,12 @@ CONTROL_SUPERVISION_BROWSER_RED_FAILURES=(
   'PrometheusWebUIBrowserTest.ControlSupervisionLifecycleMatrixAndExactCopy'
   'PrometheusWebUIBrowserTest.ControlSupervisionResponsiveAtContractWidthsAndZoom'
 )
+SUPERVISION_TEST_COMPOSITION_RED_FILTER='PrometheusSupervisionTestBootstrapTest.Composition*'
+SUPERVISION_TEST_COMPOSITION_RED_FAILURES=(
+  'PrometheusSupervisionTestBootstrapTest.CompositionRejectsEveryExactBindingMismatchWithoutFallback'
+  'PrometheusSupervisionTestBootstrapTest.CompositionUnbindRestores404BeforeBootstrapAndProductionTeardown'
+  'PrometheusSupervisionTestBootstrapTest.CompositionValidLaunchBindsAfterProductionAndCreatesExactCode'
+)
 
 if [[ "${FOCUS_KIND}" == 'blink' ]]; then
   FOCUSED_BINARY="${OUT_DIR}/phase21_blink_tests"
@@ -502,6 +508,7 @@ verify_live_supervision_dispatch_contract() {
   local profile_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_profile_service.cc"
   local gateway_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway.h"
   local gateway_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway.cc"
+  local main_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h"
   local main_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
   local prometheus_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
   local browser_build="${CHROMIUM_DIR}/chrome/browser/BUILD.gn"
@@ -524,7 +531,7 @@ verify_live_supervision_dispatch_contract() {
   require_literal 'binding->second.stable_tab_id' "${gateway_source}"
 
   reject_pattern \
-    '#include .*prometheus_supervision_(profile_service|profile_service_factory|capture_hub)|#include .*prometheus_supervision_document|PrometheusSupervision(ProfileService|ProfileServiceFactory|CaptureHub)' \
+    '#include .*prometheus_supervision_(profile_service|profile_service_factory|capture_hub|test_bootstrap)|#include .*prometheus_supervision_document|PrometheusSupervision(ProfileService|ProfileServiceFactory|CaptureHub|TestBootstrap)' \
     'Agent service/profile/gateway gained a concrete supervision implementation edge' \
     "${agent_header}" "${agent_source}" "${profile_header}" \
     "${profile_source}" "${gateway_header}" "${gateway_source}"
@@ -551,6 +558,8 @@ verify_live_supervision_dispatch_contract() {
   require_literal '":prometheus_agent_gateway"' "${composition_block}"
   require_literal '":prometheus_supervision_profile_service"' \
     "${composition_block}"
+  require_literal '":prometheus_supervision_test_bootstrap"' \
+    "${composition_block}"
   require_literal \
     '"//chrome/browser/prometheus:prometheus_browser_composition"' \
     "${browser_build}"
@@ -561,6 +570,9 @@ verify_live_supervision_dispatch_contract() {
 
   require_literal '#include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"' \
     "${main_parts}"
+  require_literal 'class PrometheusSupervisionTestComposition' "${main_header}"
+  require_literal 'PrometheusSupervisionTestComposition::Create' "${main_parts}"
+  require_literal 'SupervisionTestHandoffDispatcher' "${main_header}"
   require_literal 'CreateDashboardDispatcher' "${main_parts}"
   require_literal 'DispatchAgentRoute' "${main_parts}"
   require_literal 'MatchesPendingPairingForComposition' "${main_parts}"
@@ -1611,6 +1623,10 @@ build_focused_binary() {
   local gateway_contract_object='obj/chrome/browser/prometheus/prometheus_agent_gateway_contract/prometheus_agent_gateway_contract.o'
   local gateway_object='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_agent_gateway.o'
   local browser_composition_object='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_browser_main_extra_parts.o'
+  local runtime_test_bootstrap_object='obj/chrome/browser/prometheus/prometheus_runtime_test_bootstrap/prometheus_runtime_test_bootstrap.o'
+  local runtime_test_bootstrap_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_runtime_test_bootstrap_unittest.o'
+  local supervision_test_bootstrap_object='obj/chrome/browser/prometheus/prometheus_supervision_test_bootstrap/prometheus_supervision_test_bootstrap.o'
+  local supervision_test_bootstrap_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_test_bootstrap_unittest.o'
   local side_panel_runtime_object='obj/chrome/browser/ui/webui/prometheus/side_panel_ui/prometheus_side_panel_runtime.o'
   local side_panel_webui_object='obj/chrome/browser/ui/webui/prometheus/side_panel_ui/prometheus_web_ui.o'
   local side_panel_browser_test_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_web_ui_browsertest.o'
@@ -1656,6 +1672,14 @@ build_focused_binary() {
       compile_exact_object "${side_panel_browser_test_object}"
     fi
   )
+
+  compile_synthesized_object "${runtime_test_bootstrap_object}" \
+    "${supervision_test_bootstrap_object}" \
+    prometheus_runtime_test_bootstrap prometheus_supervision_test_bootstrap
+  compile_synthesized_object "${runtime_test_bootstrap_test_object}" \
+    "${supervision_test_bootstrap_test_object}" \
+    prometheus_runtime_test_bootstrap_unittest \
+    prometheus_supervision_test_bootstrap_unittest
 
   [[ -s "${agent_codec_test_source}" ]] \
     || fail 'Agent supervision transport codec test is missing or empty'
@@ -1822,6 +1846,7 @@ build_focused_binary() {
   if [[ -s "${supervision_action_source}" ]]; then
     candidates+=("${supervision_action_object}")
   fi
+  candidates+=("${supervision_test_bootstrap_object}")
   if [[ "${FOCUS_KIND}" == 'browser-integration' &&
         -s "${supervision_hub_browser_source}" ]]; then
     candidates+=("${supervision_hub_browser_object}")
@@ -1907,7 +1932,8 @@ run_selected_tests() {
       fail '--expect-failure rejected a crash or fatal process failure'
     fi
     if [[ "${FOCUS_FILTER}" == "${LIFECYCLE_BROWSER_RED_FILTER}" ||
-          "${FOCUS_FILTER}" == "${CONTROL_SUPERVISION_BROWSER_RED_FILTER}" ]]; then
+          "${FOCUS_FILTER}" == "${CONTROL_SUPERVISION_BROWSER_RED_FILTER}" ||
+          "${FOCUS_FILTER}" == "${SUPERVISION_TEST_COMPOSITION_RED_FILTER}" ]]; then
       local actual_failures="${LOG_DIR}/phase21-browser-actual-failures.log"
       local expected_failures="${LOG_DIR}/phase21-browser-expected-failures.log"
       local red_label='lifecycle'
@@ -1917,10 +1943,14 @@ run_selected_tests() {
       if [[ "${FOCUS_FILTER}" == "${LIFECYCLE_BROWSER_RED_FILTER}" ]]; then
         printf '%s\n' "${LIFECYCLE_BROWSER_RED_FAILURES[@]}" |
           LC_ALL=C sort >"${expected_failures}"
-      else
+      elif [[ "${FOCUS_FILTER}" == "${CONTROL_SUPERVISION_BROWSER_RED_FILTER}" ]]; then
         printf '%s\n' "${CONTROL_SUPERVISION_BROWSER_RED_FAILURES[@]}" |
           LC_ALL=C sort >"${expected_failures}"
         red_label='Control Panel supervision'
+      else
+        printf '%s\n' "${SUPERVISION_TEST_COMPOSITION_RED_FAILURES[@]}" |
+          LC_ALL=C sort >"${expected_failures}"
+        red_label='supervision test composition'
       fi
       if ! diff -u "${expected_failures}" "${actual_failures}" \
           >"${BUILD_LOG}.failures"; then
