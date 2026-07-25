@@ -4,16 +4,16 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 23
+current_plan: 24
 status: executing
-stopped_at: Completed 21-22-PLAN.md
-last_updated: "2026-07-24T20:34:27.000Z"
+stopped_at: Completed 21-23-PLAN.md
+last_updated: "2026-07-25T00:29:08.000Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 88
+  completed_plans: 89
   percent: 71
 ---
 
@@ -36,24 +36,31 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 23 of 26
+Plan: 24 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
 **Completed Phases:** 10
-**Current Plan:** 23
+**Current Plan:** 24
 **Total Plans in Phase:** 26
 **Status:** Ready to execute
 **Progress:** [██████████] 97%
 **Last Activity:** 2026-07-24
-**Last Activity Description:** Completed Plan 21-22 — responsive Control Panel
-supervision UI with private one-shot code presentation, closed renderer DTOs,
-ordinal-only actions, safe focus, and verified width/zoom behavior.
+**Last Activity Description:** Completed Plan 21-23 — validated non-official
+two-slot supervision bootstrap, conditional authenticated gateway handoff,
+exact binding continuity, and instrumented secure cleanup.
 
-Milestone work is 88 of 92 existing plans complete (96%); cumulative project
-work is 139 of 144 existing plans summarized (97%).
+Milestone work is 89 of 92 existing plans complete (97%); cumulative project
+work is 140 of 144 existing plans summarized (97%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 23: the intended 11-test RED gate, 5-test focused GREEN gate,
+  and final 39-test gateway/bootstrap regression pass with exact launch/file/
+  schema/origin gating, absent-dispatcher 404, complete perimeter ordering,
+  two sequential exact-bound slots, recursive output privacy, exact-once
+  zeroization, stable patch identity/replay, and byte-identical reviewed build
+  artifacts.
 
 - Phase 21 Plan 22: the intended 4-test RED gate, 3-test intermediate GREEN
   gate, final 4-test supervision browser gate, and 4-test packaged-asset gate
@@ -352,6 +359,9 @@ work is 139 of 144 existing plans summarized (97%).
 - [Phase 21]: Normalize every fresh native supervision snapshot through an explicit closed renderer whitelist before retaining it. — Unknown, credential-bearing, and authority-shaped injected fields are discarded rather than merely hidden during rendering.
 - [Phase 21]: Send only fresh row ordinals in lifecycle messages and retain only bounded sanitized labels in a WeakMap for focus continuity. — Renderer state cannot become session, lease, owner, epoch, or stale-row authority.
 - [Phase 21]: Use a 60/40 Control Panel split at 1024 CSS pixels and above and preserve the same semantic one-pane order below it. — Real 320/480/720/1024 widths and 200-percent zoom share one accessible reading and keyboard order.
+- [Phase 21]: Recognize `/v1/test/supervision-handoff` only from the boolean fact that a complete abstract validated dispatcher is installed, after the unchanged gateway perimeter. — Ordinary and official launches remain 404 before body parsing or native dispatch, and the gateway gains no concrete bootstrap/profile dependency.
+- [Phase 21]: Create handoff state only for the exact non-official runtime-test switches, disposable regular non-OTR profile, 0600 no-follow closed-schema file, canonical loopback HTTP origin, and initial live exact binding. — The test-only seam cannot activate from ordinary launch, unsafe metadata, remote origin, or an ambiguous target.
+- [Phase 21]: Consume two pairing slots before return, require slot-one redemption before slot two, preserve exact profile/browser/tab/origin/document/current-owner continuity, and wipe request authority before callback reentrancy. — Replay, owner/target loss, timeout, unbind, shutdown, exhaustion, and code failure return no credential and converge on idempotent cleanup.
 
 ## Performance Metrics
 
@@ -389,6 +399,7 @@ work is 139 of 144 existing plans summarized (97%).
 | Phase 21 P20 | 1h20min | 3 tasks | 10 files |
 | Phase 21 P21 | 2h04min | 3 tasks | 12 files |
 | Phase 21 P22 | 1h48min | 3 tasks | 6 files |
+| Phase 21 P23 | 50min | 3 tasks | 9 files |
 
 ## Blockers and Deferred Items
 
@@ -403,11 +414,11 @@ work is 139 of 144 existing plans summarized (97%).
 
 ## Session
 
-**Last Date:** 2026-07-24T20:34:27.000Z
-**Stopped At:** Completed 21-22-PLAN.md
+**Last Date:** 2026-07-25T00:29:08.000Z
+**Stopped At:** Completed 21-23-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-23-PLAN.md` to add the gated two-slot smoke bootstrap and
-conditional gateway contract path.
+Execute `21-24-PLAN.md` to install the abstract test handoff from browser
+composition with exact service binding and fail-closed teardown.
