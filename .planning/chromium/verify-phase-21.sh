@@ -725,6 +725,55 @@ verify_built_supervision_smoke_contract() {
   note 'built-app supervision smoke, retention-gap, and credential-isolation guards passed'
 }
 
+verify_production_supervision_shutdown_contract() {
+  local integration_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc"
+  local main_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
+  local shutdown_block="${LOG_DIR}/phase21-production-supervision-shutdown.txt"
+  require_file "${integration_test}"
+  require_file "${main_parts}"
+  require_literal \
+    'SupervisionProductionBindingCancelsPendingDiffBeforeGatewayShutdown' \
+    "${integration_test}"
+  require_literal 'BindSupervisionGatewayForTesting(gateway_.get())' \
+    "${integration_test}"
+  require_literal \
+    'pending_supervision_request_count_for_testing() == 1u' \
+    "${integration_test}"
+  require_literal 'SetSupervisionTestHandoffDispatcher({})' \
+    "${integration_test}"
+  require_literal 'late_dialog_callbacks' "${integration_test}"
+  require_literal 'CAPABILITY_NOT_READY' "${integration_test}"
+
+  sed -n '/void PrometheusBrowserMainExtraParts::PostMainMessageLoopRun()/,/^}/p' \
+    "${main_parts}" >"${shutdown_block}"
+  require_file "${shutdown_block}"
+  local dialog_line
+  local test_composition_line
+  local dashboard_line
+  local agent_line
+  local gateway_line
+  dialog_line="$(rg -n -m1 'SetPrometheusSupervisionDialogAutomationForTesting' \
+    "${shutdown_block}" | cut -d: -f1)"
+  test_composition_line="$(rg -n -m1 'supervision_test_composition_->Shutdown' \
+    "${shutdown_block}" | cut -d: -f1)"
+  dashboard_line="$(rg -n -m1 'SetSupervisionGatewayDispatcher' \
+    "${shutdown_block}" | cut -d: -f1)"
+  agent_line="$(rg -n -m1 'SetSupervisionRouteDispatcher' \
+    "${shutdown_block}" | cut -d: -f1)"
+  gateway_line="$(rg -n -m1 'gateway_->Shutdown' \
+    "${shutdown_block}" | cut -d: -f1)"
+  [[ -n "${dialog_line}" && -n "${test_composition_line}" &&
+     -n "${dashboard_line}" && -n "${agent_line}" &&
+     -n "${gateway_line}" ]] \
+    || fail 'production supervision teardown steps are incomplete'
+  ((dialog_line < test_composition_line &&
+    test_composition_line < dashboard_line &&
+    dashboard_line < agent_line &&
+    agent_line < gateway_line)) \
+    || fail 'production supervision teardown order regressed'
+  note 'production binding, pending cancellation, privacy, and teardown-order guards passed'
+}
+
 verify_supervision_dialog_contract() {
   local header="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h"
   local source="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc"
@@ -2061,6 +2110,7 @@ else
   verify_supervision_action_controller_contract
   verify_supervision_dialog_contract
   verify_built_supervision_smoke_contract
+  verify_production_supervision_shutdown_contract
   verify_supervision_tab_state_contract
   verify_supervision_tab_badge_contract
   verify_side_panel_supervision_runtime_contract
