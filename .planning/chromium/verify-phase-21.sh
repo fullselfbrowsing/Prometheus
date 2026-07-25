@@ -515,6 +515,7 @@ verify_live_supervision_dispatch_contract() {
   local gateway_block="${LOG_DIR}/phase21-agent-gateway-target.gn"
   local composition_block="${LOG_DIR}/phase21-browser-composition-target.gn"
   local supervision_dispatch="${LOG_DIR}/phase21-agent-supervision-dispatch.cc"
+  local exact_test_binding="${LOG_DIR}/phase21-exact-test-binding.cc"
 
   require_literal 'using SupervisionRouteDispatcher =' "${agent_header}"
   require_literal 'SetSupervisionRouteDispatcher' "${agent_header}"
@@ -529,6 +530,8 @@ verify_live_supervision_dispatch_contract() {
   require_literal 'HasCallerSelectedSupervisionTarget' "${gateway_source}"
   require_literal 'binding->second.browser.get()' "${gateway_source}"
   require_literal 'binding->second.stable_tab_id' "${gateway_source}"
+  require_literal 'GetExactSessionBindingForComposition' "${gateway_header}"
+  require_literal 'GetExactSessionBindingForComposition' "${gateway_source}"
 
   reject_pattern \
     '#include .*prometheus_supervision_(profile_service|profile_service_factory|capture_hub|test_bootstrap)|#include .*prometheus_supervision_document|PrometheusSupervision(ProfileService|ProfileServiceFactory|CaptureHub|TestBootstrap)' \
@@ -573,6 +576,14 @@ verify_live_supervision_dispatch_contract() {
   require_literal 'class PrometheusSupervisionTestComposition' "${main_header}"
   require_literal 'PrometheusSupervisionTestComposition::Create' "${main_parts}"
   require_literal 'SupervisionTestHandoffDispatcher' "${main_header}"
+  require_literal 'ResolveExactSupervisionTestBinding' "${main_parts}"
+  require_literal 'GetExactSessionBindingForComposition' "${main_parts}"
+  require_literal 'CreateExactSupervisionTestPairingCode' "${main_parts}"
+  require_literal \
+    'resolved->service->CreatePairing(resolved->browser, resolved->tab);' \
+    "${main_parts}"
+  require_literal 'ObservePairingRedeemedForExactTarget' "${main_parts}"
+  require_literal 'SetSupervisionTestHandoffDispatcher' "${main_parts}"
   require_literal 'CreateDashboardDispatcher' "${main_parts}"
   require_literal 'DispatchAgentRoute' "${main_parts}"
   require_literal 'MatchesPendingPairingForComposition' "${main_parts}"
@@ -581,18 +592,43 @@ verify_live_supervision_dispatch_contract() {
     "${main_parts}"
   require_literal 'PrometheusAgentService::SetSupervisionRouteDispatcher({});' \
     "${main_parts}"
-  local dashboard_clear agent_clear gateway_shutdown
+  sed -n '/^ResolveExactSupervisionTestBinding(/,/^}/p' \
+    "${main_parts}" >"${exact_test_binding}"
+  require_file "${exact_test_binding}"
+  require_literal \
+    'gateway->GetExactSessionBindingForComposition(requesting_session_id)' \
+    "${exact_test_binding}"
+  require_literal 'PrometheusAgentTabData::From(tab)' "${exact_test_binding}"
+  require_literal \
+    'PrometheusSupervisionProfileServiceFactory::GetForProfile(profile)' \
+    "${exact_test_binding}"
+  reject_pattern \
+    'GetActiveTab|GetLastActive|GetLoadedProfiles|FindLastActive|ProfileManager|GetPrimaryUserProfile|GetLastUsedProfile' \
+    'supervision test request binding gained an active/global target fallback' \
+    "${exact_test_binding}"
+
+  local redemption_clear test_unbind dashboard_clear agent_clear
+  local gateway_shutdown
+  redemption_clear="$(rg -n --fixed-strings \
+    'supervision_composition_->SetPairingRedeemedCallback({});' \
+    "${main_parts}" | tail -1 | cut -d: -f1)"
+  test_unbind="$(rg -n --fixed-strings \
+    'supervision_test_composition_->Shutdown();' "${main_parts}" | tail -1 | cut -d: -f1)"
   dashboard_clear="$(rg -n --fixed-strings \
     'gateway_->SetSupervisionGatewayDispatcher({});' "${main_parts}" | tail -1 | cut -d: -f1)"
   agent_clear="$(rg -n --fixed-strings \
     'PrometheusAgentService::SetSupervisionRouteDispatcher({});' "${main_parts}" | tail -1 | cut -d: -f1)"
   gateway_shutdown="$(rg -n --fixed-strings \
     'gateway_->Shutdown(stopped.QuitClosure());' "${main_parts}" | tail -1 | cut -d: -f1)"
-  [[ -n "${dashboard_clear}" && -n "${agent_clear}" && \
-     -n "${gateway_shutdown}" && "${dashboard_clear}" -lt "${agent_clear}" && \
+  [[ -n "${redemption_clear}" && -n "${test_unbind}" && \
+     -n "${dashboard_clear}" && -n "${agent_clear}" && \
+     -n "${gateway_shutdown}" && \
+     "${redemption_clear}" -lt "${test_unbind}" && \
+     "${test_unbind}" -lt "${dashboard_clear}" && \
+     "${dashboard_clear}" -lt "${agent_clear}" && \
      "${agent_clear}" -lt "${gateway_shutdown}" ]] \
-    || fail 'composition teardown order is not dashboard clear, Agent clear, gateway shutdown'
-  note 'exact Agent dispatch, sole composition bridge, and teardown guards passed'
+    || fail 'composition teardown order is not redemption clear, test unbind/zeroize, dashboard clear, Agent clear, gateway shutdown'
+  note 'exact Agent/test dispatch, no-fallback bridge, and early-unbind teardown guards passed'
 }
 
 verify_agent_supervision_transport_contract() {
