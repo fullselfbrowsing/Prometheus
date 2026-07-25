@@ -723,12 +723,20 @@ verify_supervision_dialog_contract() {
   require_literal 'struct PrometheusSupervisionDialogModel' "${header}"
   require_literal 'PrometheusSupervisionDialogResult' "${header}"
   require_literal 'PrometheusSupervisionDialogLauncher' "${header}"
+  require_literal 'PrometheusSupervisionDialogAutomation' "${header}"
+  require_literal 'SetPrometheusSupervisionDialogAutomationForTesting' "${header}"
   require_literal 'ShowPrometheusSupervisionDialog' "${source}"
   require_literal 'PrometheusSupervisionConfirmationBrowserTest' "${test_source}"
   require_literal 'Enable remote control?' "${test_source}"
   require_literal 'Confirm remote action' "${test_source}"
   require_literal 'Keep view only' "${test_source}"
   require_literal 'Block action' "${test_source}"
+  require_literal 'TestBootstrapAcceptsOnlyVisibleExactSupervisionWidgetOnce' \
+    "${test_source}"
+  require_literal 'TestBootstrapMismatchReplayAndRemovalDoNotClick' \
+    "${test_source}"
+  require_literal 'TestBootstrapProviderAndVaultDialogsDoNotConsultAutomation' \
+    "${test_source}"
 
   sed -n '/struct PrometheusSupervisionDialogModel {/,/^};/p' \
     "${header}" >"${model_block}"
@@ -1594,6 +1602,7 @@ verify_control_panel_supervision_runtime_contract() {
 }
 
 build_focused_binary() {
+  local chrome_browser_main_object='obj/chrome/browser/core/chrome_browser_main.o'
   local route_object='obj/chrome/browser/prometheus/prometheus_agent_route/prometheus_agent_route.o'
   local route_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_route_unittest.o'
   local agent_codec_object='obj/chrome/browser/prometheus/prometheus_agent_transport_codec/prometheus_agent_transport_codec.o'
@@ -1680,6 +1689,7 @@ build_focused_binary() {
   : >"${BUILD_LOG}"
   (
     cd "${OUT_DIR}"
+    compile_exact_object "${chrome_browser_main_object}"
     compile_exact_object "${route_object}"
     compile_exact_object "${route_test_object}"
     compile_exact_object "${agent_codec_object}"
