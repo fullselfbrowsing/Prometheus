@@ -1,0 +1,504 @@
+From e328fef76d14c3202204644bae18e4b2f160829b Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 22:45:08 -0500
+Subject: [PATCH] feat(21-25): drive built supervision lifecycle
+
+---
+ .../prometheus_browser_main_extra_parts.cc    | 151 +++++++++++++++++-
+ .../prometheus_browser_main_extra_parts.h     |  10 +-
+ ...rometheus_supervision_action_controller.cc |  22 ++-
+ ...prometheus_supervision_action_controller.h |   1 +
+ ..._supervision_action_controller_unittest.cc |  21 +++
+ .../prometheus_supervision_test_bootstrap.cc  |   3 +
+ .../prometheus/prometheus_runtime_dialogs.cc  |  44 ++++-
+ 7 files changed, 233 insertions(+), 19 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index 78d55b8744..15a2f89c3f 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -17,6 +17,7 @@
+ #include "base/run_loop.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
++#include "base/task/sequenced_task_runner.h"
+ #include "base/timer/timer.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/profiles/profile.h"
+@@ -32,6 +33,7 @@
+ #include "chrome/browser/prometheus/prometheus_runtime_transport_codec.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h"
++#include "chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/tab_list/tab_list_interface.h"
+ #include "chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+@@ -2423,12 +2425,7 @@ class PrometheusSupervisionComposition {
+         End(request, std::move(callback));
+         return;
+       case SupervisionTransportOperation::kAction:
+-        Complete(std::move(callback),
+-                 SupervisionTransportResult::TransportFailure(
+-                     request.transport.operation,
+-                     SupervisionTransportErrorCode::kUnavailable,
+-                     "Remote actions are not connected to native control",
+-                     "Continue in view-only mode"));
++        Action(request, std::move(callback));
+         return;
+     }
+   }
+@@ -2620,6 +2617,90 @@ class PrometheusSupervisionComposition {
+     Complete(std::move(callback), std::move(result));
+   }
+ 
++  void Action(const SupervisionGatewayRequest& request,
++              SupervisionGatewayDispatcher::ResultCallback callback) {
++    const auto& params =
++        std::get<SupervisionActionParams>(request.transport.params);
++    DashboardOwner* owner = FindOwner(params.dashboard_session);
++    if (!owner || !owner->last_delivery ||
++        owner->last_delivery->document_epoch.ToString() !=
++            params.document_epoch ||
++        owner->last_delivery->sequence != params.sequence) {
++      CompleteUnknown(request.transport.operation, std::move(callback));
++      return;
++    }
++    SupervisionServiceResult enabled =
++        owner->service->EnableControl(owner->session);
++    if (!enabled.ok) {
++      Complete(std::move(callback),
++               Failure(request.transport.operation, enabled));
++      return;
++    }
++    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(
++            &PrometheusSupervisionComposition::ExecuteActionAfterControl,
++            weak_factory_.GetWeakPtr(), params.dashboard_session,
++            params.document_epoch, params.sequence, params.action,
++            std::move(callback)));
++  }
++
++  void ExecuteActionAfterControl(
++      std::string dashboard_session,
++      std::string document_epoch,
++      uint64_t sequence,
++      SupervisionRemoteActionRequest action,
++      SupervisionGatewayDispatcher::ResultCallback callback) {
++    DashboardOwner* owner = FindOwner(dashboard_session);
++    if (!owner || !owner->last_delivery ||
++        owner->last_delivery->document_epoch.ToString() != document_epoch ||
++        owner->last_delivery->sequence != sequence) {
++      CompleteUnknown(SupervisionTransportOperation::kAction,
++                      std::move(callback));
++      return;
++    }
++    owner->service->ExecuteDashboardAction(
++        owner->session, document_epoch, sequence, action,
++        base::BindOnce(&PrometheusSupervisionComposition::OnActionComplete,
++                       weak_factory_.GetWeakPtr(), std::move(dashboard_session),
++                       std::move(document_epoch), sequence,
++                       std::move(callback)));
++  }
++
++  void OnActionComplete(
++      std::string dashboard_session,
++      std::string document_epoch,
++      uint64_t sequence,
++      SupervisionGatewayDispatcher::ResultCallback callback,
++      SupervisionActionResult action_result) {
++    if (!action_result.ok) {
++      Complete(
++          std::move(callback),
++          SupervisionTransportResult::SupervisionFailure(
++              SupervisionTransportOperation::kAction,
++              action_result.error_code,
++              "The remote action was not completed",
++              "Refresh supervision state and retry"));
++      return;
++    }
++    DashboardOwner* owner = FindOwner(dashboard_session);
++    if (!owner) {
++      CompleteUnknown(SupervisionTransportOperation::kAction,
++                      std::move(callback));
++      return;
++    }
++    SupervisionTransportResult result = SupervisionTransportResult::Success(
++        SupervisionTransportOperation::kAction);
++    result.dashboard_authority = SupervisionDashboardWireAuthority{
++        .dashboard_session = std::move(dashboard_session),
++        .document_epoch = std::move(document_epoch),
++        .sequence = sequence,
++    };
++    result.sanitized_snapshot =
++        owner->service->GetSanitizedSnapshot(owner->stable_tab_id);
++    Complete(std::move(callback), std::move(result));
++  }
++
+   void Heartbeat(const SupervisionGatewayRequest& request,
+                  SupervisionGatewayDispatcher::ResultCallback callback) {
+     const auto& params =
+@@ -2786,16 +2867,62 @@ bool PrometheusSupervisionTestComposition::ObservePairingRedeemed(
+ 
+ bool PrometheusSupervisionTestComposition::ObservePairingRedeemedForExactTarget(
+     uint64_t profile_identity,
+-    int32_t stable_tab_id) {
++    int32_t stable_tab_id,
++    BrowserWindowInterface* exact_browser) {
+   if (!bootstrap_ ||
+       !bootstrap_->ObservePairingRedeemedForExactTarget(
+           next_redemption_sequence_, profile_identity, stable_tab_id)) {
+     return false;
+   }
++  if (exact_browser && !dialog_automation_bound_) {
++    InstallDialogAutomation(exact_browser);
++  }
+   ++next_redemption_sequence_;
+   return true;
+ }
+ 
++void PrometheusSupervisionTestComposition::InstallDialogAutomation(
++    BrowserWindowInterface* exact_browser) {
++  if (shutdown_ || !bootstrap_ || !exact_browser ||
++      exact_browser->IsDeleteScheduled()) {
++    return;
++  }
++  exact_browser_ = exact_browser->GetWeakPtr();
++  SetPrometheusSupervisionDialogAutomationForTesting(base::BindRepeating(
++      [](base::WeakPtr<PrometheusSupervisionTestComposition> composition,
++         BrowserWindowInterface* dialog_browser,
++         PrometheusSupervisionDialogKind dialog_kind) {
++        if (!composition || composition->shutdown_ ||
++            !composition->bootstrap_ || !composition->exact_browser_ ||
++            dialog_browser != composition->exact_browser_.get()) {
++          return PrometheusSupervisionDialogAutomationResponse::kNoResponse;
++        }
++        const PrometheusSupervisionTestDialog expected_dialog =
++            dialog_kind == PrometheusSupervisionDialogKind::kEnableControl
++                ? PrometheusSupervisionTestDialog::kEnableControl
++                : PrometheusSupervisionTestDialog::kRemoteAction;
++        const std::optional<PrometheusSupervisionTestDialogResponse> response =
++            composition->bootstrap_->ConsumeDialogResponse(expected_dialog);
++        return response ==
++                       PrometheusSupervisionTestDialogResponse::kAccept
++                   ? PrometheusSupervisionDialogAutomationResponse::kAccept
++                   : PrometheusSupervisionDialogAutomationResponse::kNoResponse;
++      },
++      weak_ptr_factory_.GetWeakPtr()));
++  dialog_automation_bound_ = true;
++  ObserveLifecycle("dialog_automation_bound");
++}
++
++void PrometheusSupervisionTestComposition::ClearDialogAutomation() {
++  if (!dialog_automation_bound_) {
++    return;
++  }
++  SetPrometheusSupervisionDialogAutomationForTesting({});
++  exact_browser_.reset();
++  dialog_automation_bound_ = false;
++  ObserveLifecycle("dialog_automation_unbound");
++}
++
+ base::WeakPtr<PrometheusSupervisionTestComposition>
+ PrometheusSupervisionTestComposition::GetWeakPtr() {
+   return weak_ptr_factory_.GetWeakPtr();
+@@ -2813,6 +2940,7 @@ void PrometheusSupervisionTestComposition::Shutdown() {
+     return;
+   }
+   shutdown_ = true;
++  ClearDialogAutomation();
+   weak_ptr_factory_.InvalidateWeakPtrs();
+   if (bound_) {
+     set_dispatcher_.Run({});
+@@ -2841,6 +2969,7 @@ PrometheusBrowserMainExtraParts::PrometheusBrowserMainExtraParts(
+ 
+ PrometheusBrowserMainExtraParts::~PrometheusBrowserMainExtraParts() {
+   weak_ptr_factory_.InvalidateWeakPtrs();
++  SetPrometheusSupervisionDialogAutomationForTesting({});
+   if (supervision_composition_) {
+     supervision_composition_->SetPairingRedeemedCallback({});
+   }
+@@ -2943,8 +3072,13 @@ void PrometheusBrowserMainExtraParts::OnGatewayStarted(bool started) {
+          int32_t stable_tab_id) {
+         if (composition && expected_service &&
+             expected_service.get() == redeemed_service) {
++          tabs::TabInterface* const exact_tab =
++              tabs::TabHandle(stable_tab_id).Get();
++          BrowserWindowInterface* const exact_browser =
++              exact_tab ? exact_tab->GetBrowserWindowInterface() : nullptr;
+           composition->ObservePairingRedeemedForExactTarget(profile_identity,
+-                                                            stable_tab_id);
++                                                            stable_tab_id,
++                                                            exact_browser);
+         }
+       },
+       supervision_test_composition_->GetWeakPtr(), exact_service->GetWeakPtr(),
+@@ -2967,6 +3101,7 @@ void PrometheusBrowserMainExtraParts::UnbindSupervisionAgentForTesting() {
+ 
+ void PrometheusBrowserMainExtraParts::PostMainMessageLoopRun() {
+   weak_ptr_factory_.InvalidateWeakPtrs();
++  SetPrometheusSupervisionDialogAutomationForTesting({});
+   if (supervision_composition_) {
+     supervision_composition_->SetPairingRedeemedCallback({});
+   }
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
+index 1d1d3e4698..217efb42a5 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
+@@ -13,6 +13,8 @@
+ #include "chrome/browser/chrome_browser_main_extra_parts.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h"
+ 
++class BrowserWindowInterface;
++
+ namespace prometheus {
+ 
+ class PrometheusAgentGateway;
+@@ -50,7 +52,9 @@ class PrometheusSupervisionTestComposition {
+ 
+   bool ObservePairingRedeemed(int sequence);
+   bool ObservePairingRedeemedForExactTarget(uint64_t profile_identity,
+-                                            int32_t stable_tab_id);
++                                            int32_t stable_tab_id,
++                                            BrowserWindowInterface*
++                                                exact_browser = nullptr);
+   base::WeakPtr<PrometheusSupervisionTestComposition> GetWeakPtr();
+   void Shutdown();
+ 
+@@ -61,13 +65,17 @@ class PrometheusSupervisionTestComposition {
+       std::unique_ptr<PrometheusSupervisionTestBootstrap> bootstrap,
+       PrometheusSupervisionTestCompositionHooks hooks);
+ 
++  void InstallDialogAutomation(BrowserWindowInterface* exact_browser);
++  void ClearDialogAutomation();
+   void ObserveLifecycle(std::string_view event);
+ 
+   std::unique_ptr<PrometheusSupervisionTestBootstrap> bootstrap_;
+   base::RepeatingCallback<void(SupervisionTestHandoffDispatcher)>
+       set_dispatcher_;
+   base::RepeatingCallback<void(std::string_view)> observe_lifecycle_;
++  base::WeakPtr<BrowserWindowInterface> exact_browser_;
+   bool bound_ = false;
++  bool dialog_automation_bound_ = false;
+   bool shutdown_ = false;
+   int next_redemption_sequence_ = 1;
+   base::WeakPtrFactory<PrometheusSupervisionTestComposition> weak_ptr_factory_{
+diff --git a/chrome/browser/prometheus/prometheus_supervision_action_controller.cc b/chrome/browser/prometheus/prometheus_supervision_action_controller.cc
+index 49bbf5661e..90a312e521 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_action_controller.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_action_controller.cc
+@@ -331,6 +331,7 @@ PrometheusSupervisionActionController::ValidateAuthority(
+     std::string_view document_epoch,
+     uint64_t sequence,
+     const SupervisionActionAuthoritySnapshot* admitted_authority,
++    bool allow_capture_advance,
+     SupervisionErrorCode* error_code) const {
+   *error_code = SupervisionErrorCode::kStaleTarget;
+   if (dashboard_session != dashboard_session_) {
+@@ -373,7 +374,7 @@ PrometheusSupervisionActionController::ValidateAuthority(
+     *error_code = SupervisionErrorCode::kViewOnly;
+     return std::nullopt;
+   }
+-  if (!authority->stream_live) {
++  if (!allow_capture_advance && !authority->stream_live) {
+     *error_code = SupervisionErrorCode::kResyncRequired;
+     return std::nullopt;
+   }
+@@ -381,7 +382,8 @@ PrometheusSupervisionActionController::ValidateAuthority(
+     *error_code = SupervisionErrorCode::kStaleEpoch;
+     return std::nullopt;
+   }
+-  if (authority->sequence != sequence) {
++  if ((!allow_capture_advance && authority->sequence != sequence) ||
++      (allow_capture_advance && authority->sequence < sequence)) {
+     *error_code = SupervisionErrorCode::kStaleSequence;
+     return std::nullopt;
+   }
+@@ -390,7 +392,10 @@ PrometheusSupervisionActionController::ValidateAuthority(
+       *error_code = SupervisionErrorCode::kStaleEpoch;
+       return std::nullopt;
+     }
+-    if (authority->sequence != admitted_authority->sequence) {
++    if ((!allow_capture_advance &&
++         authority->sequence != admitted_authority->sequence) ||
++        (allow_capture_advance &&
++         authority->sequence < admitted_authority->sequence)) {
+       *error_code = SupervisionErrorCode::kStaleSequence;
+       return std::nullopt;
+     }
+@@ -473,7 +478,7 @@ void PrometheusSupervisionActionController::ExecuteAction(
+   SupervisionErrorCode error_code = SupervisionErrorCode::kNone;
+   std::optional<SupervisionActionAuthoritySnapshot> authority =
+       ValidateAuthority(dashboard_session, document_epoch, sequence, nullptr,
+-                        &error_code);
++                        false, &error_code);
+   if (!authority.has_value()) {
+     std::move(callback).Run(AdmissionFailure(error_code));
+     return;
+@@ -557,7 +562,8 @@ void PrometheusSupervisionActionController::OnConfirmationResult(
+   if (!ValidateAuthority(pending_action_->dashboard_session,
+                          pending_action_->document_epoch,
+                          pending_action_->sequence,
+-                         &pending_action_->admitted_authority, &error_code)) {
++                         &pending_action_->admitted_authority, false,
++                         &error_code)) {
+     CompletePendingAction(AdmissionFailure(error_code));
+     return;
+   }
+@@ -579,7 +585,8 @@ void PrometheusSupervisionActionController::DispatchPendingAction() {
+   if (!ValidateAuthority(pending_action_->dashboard_session,
+                          pending_action_->document_epoch,
+                          pending_action_->sequence,
+-                         &pending_action_->admitted_authority, &error_code)) {
++                         &pending_action_->admitted_authority, false,
++                         &error_code)) {
+     CompletePendingAction(AdmissionFailure(error_code));
+     return;
+   }
+@@ -606,7 +613,8 @@ void PrometheusSupervisionActionController::OnAgentRouteCompleted(
+   if (!ValidateAuthority(pending_action_->dashboard_session,
+                          pending_action_->document_epoch,
+                          pending_action_->sequence,
+-                         &pending_action_->admitted_authority, &error_code)) {
++                         &pending_action_->admitted_authority, true,
++                         &error_code)) {
+     CompletePendingAction(AdmissionFailure(error_code));
+     return;
+   }
+diff --git a/chrome/browser/prometheus/prometheus_supervision_action_controller.h b/chrome/browser/prometheus/prometheus_supervision_action_controller.h
+index b9cfae330f..afb42a1d1c 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_action_controller.h
++++ b/chrome/browser/prometheus/prometheus_supervision_action_controller.h
+@@ -112,6 +112,7 @@ class PrometheusSupervisionActionController {
+       std::string_view document_epoch,
+       uint64_t sequence,
+       const SupervisionActionAuthoritySnapshot* admitted_authority,
++      bool allow_capture_advance,
+       SupervisionErrorCode* error_code) const;
+   std::optional<AgentRouteRequest> BuildAgentRoute(
+       const SupervisionRemoteActionRequest& action) const;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc
+index 9924d6bf4d..d365c0f252 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc
+@@ -710,6 +710,27 @@ TEST_F(PrometheusSupervisionActionControllerTest,
+   EXPECT_EQ(1u, results.size());
+ }
+ 
++TEST_F(PrometheusSupervisionActionControllerTest,
++       SuccessfulRouteMayAdvanceCaptureBeforeCompletion) {
++  hold_dispatch_ = true;
++  auto controller = MakeController();
++  std::vector<SupervisionActionResult> results;
++  controller->ExecuteAction(
++      dashboard_session_, document_epoch_.ToString(), sequence_,
++      Action(SupervisionRemoteActionCategory::kClick),
++      base::BindLambdaForTesting([&](SupervisionActionResult result) {
++        results.push_back(std::move(result));
++      }));
++  ASSERT_EQ(1u, pending_agent_callbacks_.size());
++  authority_.sequence = sequence_ + 1;
++  authority_.stream_live = false;
++  std::move(pending_agent_callbacks_[0])
++      .Run(AgentRouteResult::Success({"changed"}));
++  ASSERT_EQ(1u, results.size());
++  EXPECT_TRUE(results[0].ok);
++  EXPECT_EQ(SupervisionErrorCode::kNone, results[0].error_code);
++}
++
+ TEST_F(PrometheusSupervisionActionControllerTest,
+        NavigationOrOwnerChangeBeforeCallbackInvalidatesResult) {
+   hold_dispatch_ = true;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc
+index 5a02c4a29d..b768899f1b 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc
+@@ -18,6 +18,7 @@
+ #include "base/json/json_reader.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/strings/string_util.h"
++#include "base/threading/thread_restrictions.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h"
+ #include "crypto/secure_util.h"
+@@ -290,6 +291,7 @@ class ScopedStringWiper {
+ std::optional<PrometheusSupervisionTestBootstrapFileFacts> InspectConfigFile(
+     const base::FilePath& path) {
+ #if BUILDFLAG(IS_POSIX)
++  base::ScopedAllowBlockingForTesting allow_blocking;
+   base::stat_wrapper_t information;
+   if (base::File::Lstat(path, &information) != 0) {
+     return std::nullopt;
+@@ -309,6 +311,7 @@ std::optional<PrometheusSupervisionTestBootstrapFileFacts> InspectConfigFile(
+ std::optional<std::string> ReadConfigFile(const base::FilePath& path,
+                                           size_t max_bytes) {
+ #if BUILDFLAG(IS_POSIX)
++  base::ScopedAllowBlockingForTesting allow_blocking;
+   base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ |
+                             base::File::FLAG_NO_FOLLOW);
+   if (!file.IsValid()) {
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc b/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc
+index 4d2afbe268..5e00e58e67 100644
+--- a/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc
++++ b/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc
+@@ -18,6 +18,7 @@
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
++#include "base/task/sequenced_task_runner.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "components/constrained_window/constrained_window_views.h"
+ #include "ui/base/base_window.h"
+@@ -588,9 +589,46 @@ bool ShowPrometheusSupervisionDialog(
+       model.kind == PrometheusSupervisionDialogKind::kEnableControl
+           ? PrometheusRuntimeDialogKind::kSupervisionEnableControl
+           : PrometheusRuntimeDialogKind::kSupervisionConsequentialAction;
+-  return ShowDialog(exact_browser, kind,
+-                    std::make_unique<SupervisionConfirmationDialog>(
+-                        model, std::move(reply_callback)));
++  if (!ShowDialog(exact_browser, kind,
++                  std::make_unique<SupervisionConfirmationDialog>(
++                      model, std::move(reply_callback)))) {
++    return false;
++  }
++  views::Widget* const widget = PrometheusRuntimeDialogWidgetForTesting();
++  if (!widget || !SupervisionDialogAutomation()) {
++    return true;
++  }
++  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE,
++      base::BindOnce(
++          [](base::WeakPtr<views::Widget> weak_widget,
++             base::WeakPtr<BrowserWindowInterface> exact_browser,
++             PrometheusSupervisionDialogKind kind) {
++            if (!weak_widget || !exact_browser || !weak_widget->IsVisible() ||
++                !SupervisionDialogAutomation()) {
++              return;
++            }
++            const PrometheusSupervisionDialogAutomationResponse response =
++                SupervisionDialogAutomation().Run(exact_browser.get(), kind);
++            if (!weak_widget ||
++                response ==
++                    PrometheusSupervisionDialogAutomationResponse::kNoResponse) {
++              return;
++            }
++            views::DialogDelegate* const dialog =
++                weak_widget->widget_delegate()->AsDialogDelegate();
++            if (!dialog) {
++              return;
++            }
++            if (response ==
++                PrometheusSupervisionDialogAutomationResponse::kAccept) {
++              dialog->AcceptDialog();
++            } else {
++              dialog->CancelDialog();
++            }
++          },
++          widget->GetWeakPtr(), exact_browser->GetWeakPtr(), model.kind));
++  return true;
+ }
+ 
+ void SetPrometheusSupervisionDialogAutomationForTesting(
+-- 
+2.50.1 (Apple Git-155)
+

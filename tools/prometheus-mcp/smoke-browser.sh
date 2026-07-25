@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PROMETHEUS_BIN="${PROJECT_ROOT}/.context/chromium/src/out/Default/Prometheus.app/Contents/MacOS/Prometheus"
+FOCUSED_BLINK_DIR="${PROJECT_ROOT}/.context/chromium/src/out/Default/phase21-focused/blink-modules"
 FIXTURE_ENTRY="${SCRIPT_DIR}/test/fixture-server.mjs"
 SMOKE_CLIENT="${SCRIPT_DIR}/test/smoke-client.mjs"
 BRIDGE_ENTRY="${SCRIPT_DIR}/bin/prometheus-mcp.mjs"
@@ -18,6 +19,8 @@ fail() {
 }
 
 [ -x "${PROMETHEUS_BIN}" ] || fail 'built Prometheus app is unavailable'
+[ -s "${FOCUSED_BLINK_DIR}/libblink_modules.dylib" ] \
+  || fail 'focused supervision Blink module is unavailable'
 NODE_BIN="$(command -v node)" || fail 'Node.js is unavailable'
 
 umask 077
@@ -28,6 +31,7 @@ CAPTURE_DIR="${TEMP_ROOT}/capture"
 DESCRIPTOR_FILE="${TEMP_ROOT}/endpoint.json"
 FIXTURE_READY_FILE="${TEMP_ROOT}/fixture.json"
 PROVIDER_BOOTSTRAP_FILE="${TEMP_ROOT}/provider-bootstrap.json"
+SUPERVISION_BOOTSTRAP_FILE="${TEMP_ROOT}/supervision-bootstrap.json"
 DENYLIST_FILE="${TEMP_ROOT}/private-denylist.json"
 BROWSER_STDOUT="${TEMP_ROOT}/browser.stdout.log"
 BROWSER_STDERR="${TEMP_ROOT}/browser.stderr.log"
@@ -172,10 +176,63 @@ if (!metadata.isFile() || metadata.isSymbolicLink()
 }
 NODE
 
+SUPERVISION_CHALLENGE="$("${NODE_BIN}" - "${FIXTURE_READY_FILE}" \
+  "${SUPERVISION_BOOTSTRAP_FILE}" <<'NODE'
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const [readyFile, bootstrapFile] = process.argv.slice(2);
+const ready = JSON.parse(fs.readFileSync(readyFile, 'utf8'));
+if (!path.isAbsolute(bootstrapFile)
+    || typeof ready.origin !== 'string'
+    || !/^http:\/\/(?:127\.0\.0\.1|\[::1\]):[0-9]+$/.test(ready.origin)) {
+  process.exit(1);
+}
+const challengeBuffer = crypto.randomBytes(32);
+const challenge = challengeBuffer.toString('hex');
+challengeBuffer.fill(0);
+const config = {
+  schema_version: 1,
+  challenge,
+  expected_origin: ready.origin,
+  pairing_slots: 2,
+  dialog_responses: ['enable_control:accept', 'remote_action:accept'],
+};
+const descriptor = fs.openSync(bootstrapFile, 'wx', 0o600);
+try {
+  fs.writeFileSync(descriptor, JSON.stringify(config), 'utf8');
+  fs.fsyncSync(descriptor);
+} finally {
+  fs.closeSync(descriptor);
+}
+fs.chmodSync(bootstrapFile, 0o600);
+const metadata = fs.lstatSync(bootstrapFile);
+const observed = JSON.parse(fs.readFileSync(bootstrapFile, 'utf8'));
+if (!metadata.isFile() || metadata.isSymbolicLink()
+    || (metadata.mode & 0o777) !== 0o600
+    || Object.keys(observed).sort().join(',')
+      !== 'challenge,dialog_responses,expected_origin,pairing_slots,schema_version'
+    || observed.schema_version !== 1
+    || observed.challenge !== challenge
+    || !/^[0-9a-f]{64}$/.test(observed.challenge)
+    || observed.expected_origin !== ready.origin
+    || observed.pairing_slots !== 2
+    || JSON.stringify(observed.dialog_responses)
+      !== '["enable_control:accept","remote_action:accept"]') {
+  process.exit(1);
+}
+process.stdout.write(challenge);
+NODE
+)" || fail 'supervision bootstrap document is invalid'
+[ "${#SUPERVISION_CHALLENGE}" -eq 64 ] \
+  || fail 'supervision challenge generation failed'
+
 BROWSER_ARGS=(
   "--user-data-dir=${PROFILE_DIR}"
   --test-type=prometheus-runtime
   "--prometheus-runtime-test-provider-config=${PROVIDER_BOOTSTRAP_FILE}"
+  "--prometheus-supervision-test-bootstrap=${SUPERVISION_BOOTSTRAP_FILE}"
   --no-first-run
   --no-default-browser-check
   --no-proxy-server
@@ -190,6 +247,7 @@ BROWSER_ARGS=(
   "${FIXTURE_URL}"
 )
 MAC_CHROMIUM_TMPDIR="${TEMP_ROOT}" \
+DYLD_LIBRARY_PATH="${FOCUSED_BLINK_DIR}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
   "${PROMETHEUS_BIN}" "${BROWSER_ARGS[@]}" \
   >"${BROWSER_STDOUT}" 2>"${BROWSER_STDERR}" &
 BROWSER_LAUNCH_PID="$!"
@@ -214,6 +272,7 @@ PROMETHEUS_MCP_FIXTURE_URL="${FIXTURE_URL}" \
 PROMETHEUS_MCP_SMOKE_CAPTURE_DIR="${CAPTURE_DIR}" \
 PROMETHEUS_MCP_SMOKE_DENYLIST_FILE="${DENYLIST_FILE}" \
 PROMETHEUS_MCP_SMOKE_PROFILE_PATH="${PROFILE_DIR}" \
+PROMETHEUS_MCP_SMOKE_SUPERVISION_CHALLENGE="${SUPERVISION_CHALLENGE}" \
 PROMETHEUS_MCP_BRIDGE_ENTRY="${BRIDGE_ENTRY}" \
   "${NODE_BIN}" "${SMOKE_CLIENT}" >"${CLIENT_STDOUT}" 2>"${CLIENT_STDERR}" &
 CLIENT_PID="$!"
@@ -238,7 +297,13 @@ wait "${CLIENT_PID}"
 CLIENT_STATUS="$?"
 set -e
 if [ "${CLIENT_STATUS}" -ne 0 ]; then
-  fail 'independent stdio client failed'
+  CLIENT_FAILURE_STAGE="$("${NODE_BIN}" -e '
+    const fs = require("node:fs");
+    const text = fs.readFileSync(process.argv[1], "utf8").trim();
+    const match = /^prometheus-mcp smoke client: live smoke failed at ([a-z0-9_]+)$/.exec(text);
+    process.stdout.write(match?.[1] ?? "unknown");
+  ' "${CLIENT_STDERR}")"
+  fail "independent stdio client failed at ${CLIENT_FAILURE_STAGE}"
 fi
 deadline_guard
 
@@ -264,10 +329,16 @@ if (result.ok !== true || result.tools !== 90 || result.diagnostics !== 10
     || result.ownership_denied !== true
     || result.resume_proven !== true
     || result.expiry_released !== true
-    || result.close_released !== true) process.exit(1);
+    || result.close_released !== true
+    || result.supervision_two_viewers !== true
+    || result.supervision_shared_hub !== true
+    || result.supervision_actions !== true
+    || result.supervision_resync !== true
+    || result.supervision_cleanup !== true
+    || result.supervision_compatibility_private !== true) process.exit(1);
 
 const denied = JSON.parse(fs.readFileSync(denylistFile, 'utf8'));
-if (!Array.isArray(denied) || denied.length < 10) process.exit(1);
+if (!Array.isArray(denied) || denied.length < 15) process.exit(1);
 const files = [resultFile, clientErrorFile];
 for (const root of roots) {
   const metadata = fs.statSync(root);

@@ -32,10 +32,11 @@ const MAX_STDERR_BYTES = 1024 * 1024;
 const SESSION_GRACE_MS = 10_000;
 const DEFAULT_EXPIRY_WAIT_MS = 11_000;
 const STATUS_VALUES = new Set(['ready', 'degraded', 'not_ready', 'unavailable']);
-const LATER_DIAGNOSTICS = new Set(['supervision', 'extensions']);
+const LATER_DIAGNOSTICS = new Set(['extensions']);
 const PHASE20_PROVIDER_ID = 'phase20-smoke-local';
 const PHASE20_MODEL_ID = 'phase20-fixture-model';
 const MAX_SAFE_TITLE_BYTES = 256;
+let liveSmokeStage = 'startup';
 
 const requireCondition = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -493,6 +494,11 @@ const unwrapToolResult = (result, name) => {
 const expectToolSuccess = async (bridge, name, arguments_) => {
   const result = await bridge.callTool(name, arguments_);
   const structured = unwrapToolResult(result, name);
+  if (result.isError !== false || structured.ok !== true) {
+    liveSmokeStage = `${liveSmokeStage}_${String(
+      structured.error_code ?? structured.error?.code ?? 'unknown',
+    ).toLowerCase().replaceAll(/[^a-z0-9]+/gu, '_')}`;
+  }
   requireCondition(
     result.isError === false && structured.ok === true,
     `${name} failed (${structured.error_code ?? structured.error?.code ?? 'unknown'}).`,
@@ -626,6 +632,123 @@ const gatewayRequest = async (descriptor, requestPath, body) => {
   }
 };
 
+const gatewayAgentCommand = async (
+  descriptor,
+  sessionId,
+  route,
+  target,
+) => {
+  const body = { route, session_id: sessionId };
+  if (target !== undefined) body.target = target;
+  const result = await gatewayRequest(descriptor, '/v1/agent/command', body);
+  requireCondition(
+    result?.ok === true && result.error_code === 'NONE',
+    `Agent compatibility route ${route} failed (${result?.error_code ?? 'unknown'}).`,
+  );
+  return result;
+};
+
+const gatewaySupervision = async (
+  descriptor,
+  operation,
+  params,
+  expectedError,
+) => {
+  const response = await gatewayRequest(descriptor, '/v1/supervision', {
+    operation,
+    params,
+  });
+  requireCondition(
+    response?.operation === operation && isRecord(response.result),
+    `Supervision ${operation} returned an invalid closed response.`,
+  );
+  const failureDetail = `${response.message ?? ''} ${response.recovery ?? ''}`;
+  const failureKind = failureDetail.includes('unknown or expired')
+    ? 'unknown_session'
+    : failureDetail.includes('shutting down')
+      ? 'shutdown'
+      : '';
+  if (expectedError) {
+    if (response.ok !== false || response.error_code !== expectedError) {
+      liveSmokeStage = `${liveSmokeStage}_${String(
+        response.error_code ?? 'unknown',
+      ).toLowerCase().replaceAll(/[^a-z0-9]+/gu, '_')}${
+        failureKind ? `_${failureKind}` : ''
+      }`;
+    }
+    requireCondition(
+      response.ok === false && response.error_code === expectedError,
+      `Supervision ${operation} did not fail with ${expectedError}.`,
+    );
+  } else {
+    if (response.ok !== true || response.error_code !== 'NONE') {
+      liveSmokeStage = `${liveSmokeStage}_${String(
+        response.error_code ?? 'unknown',
+      ).toLowerCase().replaceAll(/[^a-z0-9]+/gu, '_')}${
+        failureKind ? `_${failureKind}` : ''
+      }`;
+    }
+    requireCondition(
+      response.ok === true && response.error_code === 'NONE',
+      `Supervision ${operation} failed (${response.error_code ?? 'unknown'}).`,
+    );
+  }
+  return response;
+};
+
+const dashboardAuthority = (response, operation) => {
+  const authority = response?.result;
+  requireCondition(
+    typeof authority?.dashboard_session === 'string'
+      && authority.dashboard_session.length > 0,
+    `Supervision ${operation} omitted dashboard authority.`,
+  );
+  if (operation !== 'redeem') {
+    requireCondition(
+      typeof authority.document_epoch === 'string'
+        && authority.document_epoch.length > 0
+        && Number.isSafeInteger(authority.sequence)
+        && authority.sequence > 0,
+      `Supervision ${operation} omitted its exact stream cursor.`,
+    );
+  }
+  return authority;
+};
+
+const endDashboardSession = async (descriptor, dashboardSession) => {
+  const response = await gatewayRequest(descriptor, '/v1/supervision', {
+    operation: 'end',
+    params: { dashboard_session: dashboardSession },
+  });
+  requireCondition(
+    response?.operation === 'end' && isRecord(response.result),
+    'Supervision end returned an invalid closed response.',
+  );
+  const explicitlyEnded = response.ok === true
+    && response.error_code === 'NONE'
+    && response.result.ended === true;
+  const alreadyTerminal = response.ok === false
+    && response.error_code === 'UNAVAILABLE'
+    && Object.keys(response.result).length === 0;
+  requireCondition(
+    explicitlyEnded || alreadyTerminal,
+    `Supervision end returned an invalid terminal result (${
+      response.error_code ?? 'unknown'
+    }).`,
+  );
+  return explicitlyEnded;
+};
+
+const assertCompatibilityHasNoDashboardAuthority = (value, route) => {
+  const serialized = JSON.stringify(value);
+  requireCondition(
+    !serialized.includes('dashboard_session')
+      && !serialized.includes('document_epoch')
+      && !serialized.includes('"sequence"'),
+    `${route} exposed dashboard authority through the Agent compatibility route.`,
+  );
+};
+
 const createRawSession = async (descriptor, displayLabel) => {
   const result = await gatewayRequest(descriptor, '/v1/session/create', {
     display_label: displayLabel,
@@ -683,6 +806,8 @@ const runLiveSmoke = async () => {
   const captureDirectory = process.env.PROMETHEUS_MCP_SMOKE_CAPTURE_DIR;
   const denylistFile = process.env.PROMETHEUS_MCP_SMOKE_DENYLIST_FILE;
   const profilePath = process.env.PROMETHEUS_MCP_SMOKE_PROFILE_PATH;
+  let supervisionChallenge =
+    process.env.PROMETHEUS_MCP_SMOKE_SUPERVISION_CHALLENGE;
   const bridgeEntry = path.resolve(
     process.env.PROMETHEUS_MCP_BRIDGE_ENTRY
       ?? new URL('../bin/prometheus-mcp.mjs', import.meta.url).pathname,
@@ -693,6 +818,7 @@ const runLiveSmoke = async () => {
     PROMETHEUS_MCP_SMOKE_CAPTURE_DIR: captureDirectory,
     PROMETHEUS_MCP_SMOKE_DENYLIST_FILE: denylistFile,
     PROMETHEUS_MCP_SMOKE_PROFILE_PATH: profilePath,
+    PROMETHEUS_MCP_SMOKE_SUPERVISION_CHALLENGE: supervisionChallenge,
   })) {
     requireCondition(typeof value === 'string' && value.length > 0, `${name} is required.`);
   }
@@ -700,6 +826,16 @@ const runLiveSmoke = async () => {
   requireCondition(path.isAbsolute(captureDirectory), 'Capture directory must be absolute.');
   requireCondition(path.isAbsolute(denylistFile), 'Denylist file must be absolute.');
   requireCondition(path.isAbsolute(profilePath), 'Profile path must be absolute.');
+  requireCondition(
+    /^[0-9a-f]{64}$/u.test(supervisionChallenge),
+    'Supervision challenge must be exactly 256 bits of lowercase hex.',
+  );
+  delete process.env.PROMETHEUS_MCP_SMOKE_SUPERVISION_CHALLENGE;
+  const supervisionChallengeBuffer =
+    Buffer.from(supervisionChallenge, 'utf8');
+  const supervisionChallengeSentinel =
+    supervisionChallengeBuffer.toString('utf8');
+  supervisionChallenge = '';
   const fixture = new URL(fixtureUrl);
   requireCondition(
     fixture.protocol === 'http:'
@@ -723,6 +859,8 @@ const runLiveSmoke = async () => {
   const secondPromptSentinel = `phase20-second-prompt-${process.pid}`;
   const providerSecretSentinel = `phase20-provider-secret-${process.pid}`;
   const sessionIds = [];
+  const pairingCodes = [];
+  const dashboardSessions = [];
   const bridges = [];
   let primary;
   let second;
@@ -790,16 +928,429 @@ const runLiveSmoke = async () => {
     return task;
   };
 
+  const requestHandoff = async (ownerSessionId, sequence) => {
+    const requestChallenge = Buffer.from(supervisionChallengeBuffer);
+    const body = {
+      challenge: requestChallenge.toString('utf8'),
+      session_id: ownerSessionId,
+      sequence,
+    };
+    requestChallenge.fill(0);
+    return gatewayRequest(
+      descriptor,
+      '/v1/test/supervision-handoff',
+      body,
+    );
+  };
+
+  const compatibilityTool = async (bridge, route) => {
+    const result = await bridge.callTool(route, {});
+    const structured = unwrapToolResult(result, route);
+    if (result.isError !== false || structured.ok !== true) {
+      const publicCode = String(
+        structured.error_code ?? structured.error?.code ?? 'unknown',
+      ).toLowerCase().replaceAll(/[^a-z0-9]+/gu, '_');
+      const publicDetail = `${
+        structured.message ?? structured.error?.message ?? ''
+      } ${structured.recovery ?? structured.error?.recovery ?? ''}`;
+      const reason = publicDetail.includes('capture hub')
+        ? 'capture_hub'
+        : publicDetail.includes('safe supervision baseline')
+          ? 'baseline_missing'
+        : publicDetail.includes('not bound')
+          ? 'not_bound'
+        : publicDetail.includes('exact browser')
+          ? 'exact_browser'
+          : publicDetail.includes('exact supervision tab')
+            ? 'exact_tab'
+            : publicDetail.includes('owner')
+              ? 'owner'
+              : 'other';
+      liveSmokeStage = `${liveSmokeStage}_${publicCode}_${reason}`;
+      throw new Error(`${route} returned a typed failure.`);
+    }
+    assertCompatibilityHasNoDashboardAuthority(structured, route);
+    return structured;
+  };
+
   try {
-    primary = createBridge('primary smoke bridge');
+    liveSmokeStage = 'owner_session';
+    const ownerSessionId = await createRawSession(
+      descriptor,
+      'supervision owner seam',
+    );
+    sessionIds.push(ownerSessionId);
+    liveSmokeStage = 'owner_tab_discovery';
+    const ownerTabs = await eventually(async () => {
+      const listedTabs = await gatewayAgentCommand(
+        descriptor,
+        ownerSessionId,
+        'list_tabs',
+      );
+      const active = listedTabs.tabs?.find((tab) => tab?.active === true);
+      if (!Number.isSafeInteger(active?.tab_id)
+          || !Number.isSafeInteger(active?.window_id)
+          || !hasSameOriginAndPath(active?.url, fixture)) {
+        return false;
+      }
+      return active;
+    });
+    const supervisedTarget = {
+      browser_session_id: ownerTabs.window_id,
+      window_session_id: ownerTabs.window_id,
+      tab_id: ownerTabs.tab_id,
+    };
+    liveSmokeStage = 'owner_tab_claim';
+    const ownerClaim = await gatewayAgentCommand(
+      descriptor,
+      ownerSessionId,
+      'activate_tab',
+      supervisedTarget,
+    );
+    requireCondition(
+      ownerClaim.target?.tab_id === ownerTabs.tab_id,
+      'Raw resumable session did not claim the exact initial fixture tab.',
+    );
+
+    liveSmokeStage = 'owner_bridge_resume';
+    primary = createBridge('primary smoke bridge', ownerSessionId);
     await primary.initialize();
     const listed = await primary.request('tools/list');
     assertCompatibilityInventory(listed.tools, expectedNames);
 
+    liveSmokeStage = 'owner_bridge_inventory';
     const initial = await expectToolSuccess(primary, 'list_tabs', {});
     const initialActive = initial.tabs?.find((tab) => tab.active === true);
-    requireCondition(Number.isSafeInteger(initialActive?.tab_id), 'Initial active tab handle is unavailable.');
+    requireCondition(
+      initialActive?.tab_id === ownerTabs.tab_id
+        && initialActive?.owned_by_session === true,
+      'Resumed MCP consumer did not retain the exact initial owner binding.',
+    );
 
+    liveSmokeStage = 'supervision_page_read';
+    const supervisedPage = await eventually(async () => {
+      const result = await expectToolSuccess(primary, 'read_page', {
+        tab_id: ownerTabs.tab_id,
+        max_chars: 20_000,
+        max_nodes: 1_000,
+      });
+      return result.page?.visible_text?.includes('Prometheus MCP fixture page text')
+        ? result
+        : false;
+    });
+    requireCondition(
+      supervisedPage.page.visible_text.includes('Prometheus MCP Fixture'),
+      'Initial supervised page omitted fixture title text.',
+    );
+    liveSmokeStage = 'supervision_dom_snapshot';
+    const supervisedSnapshot = await expectToolSuccess(
+      primary,
+      'get_dom_snapshot',
+      {
+        tab_id: ownerTabs.tab_id,
+        max_chars: 200_000,
+        max_nodes: 1_000,
+      },
+    );
+    let supervisedTargets = parseSnapshotTargets(supervisedSnapshot);
+
+    liveSmokeStage = 'supervision_compatibility_start';
+    const compatibilityStart = await compatibilityTool(
+      primary,
+      'start_supervision_session',
+    );
+    liveSmokeStage = 'supervision_compatibility_snapshot';
+    const compatibilityBaseline = await compatibilityTool(
+      primary,
+      'get_supervision_snapshot',
+    );
+    liveSmokeStage = 'supervision_compatibility_shape';
+    requireCondition(
+      JSON.stringify(compatibilityStart).includes('"kind":"baseline"')
+        && JSON.stringify(compatibilityBaseline).includes('"kind":"baseline"'),
+      'MCP compatibility consumer did not attach to a real baseline stream.',
+    );
+
+    liveSmokeStage = 'supervision_handoff';
+    const outOfOrder = await requestHandoff(ownerSessionId, 2);
+    requireCondition(
+      outOfOrder?.ok === false && outOfOrder.status === 'OUT_OF_ORDER',
+      'Supervision handoff accepted sequence two before sequence one.',
+    );
+    const wrongChallengeBuffer = Buffer.alloc(64, 0x30);
+    const wrongChallengeBody = {
+      challenge: wrongChallengeBuffer.toString('utf8'),
+      session_id: ownerSessionId,
+      sequence: 1,
+    };
+    wrongChallengeBuffer.fill(0);
+    const wrongChallenge = await gatewayRequest(
+      descriptor,
+      '/v1/test/supervision-handoff',
+      wrongChallengeBody,
+    );
+    requireCondition(
+      wrongChallenge?.ok === false && wrongChallenge.status === 'DENIED',
+      'Supervision handoff did not reject a wrong challenge.',
+    );
+
+    const handoffA = await requestHandoff(ownerSessionId, 1);
+    requireCondition(
+      handoffA?.ok === true
+        && handoffA.status === 'DELIVERED'
+        && handoffA.sequence === 1
+        && /^[A-Z0-9]{4}-[A-Z0-9]{4}$/u.test(handoffA.pairing_code),
+      'Supervision handoff slot one was not delivered exactly once.',
+    );
+    pairingCodes.push(handoffA.pairing_code);
+    const replayA = await requestHandoff(ownerSessionId, 1);
+    requireCondition(
+      replayA?.ok === false && replayA.status === 'OUT_OF_ORDER',
+      'Supervision handoff replay was not denied.',
+    );
+
+    const redeemedA = await gatewaySupervision(descriptor, 'redeem', {
+      pairing_code: handoffA.pairing_code,
+      client_label: 'Phase 21 viewer A',
+    });
+    handoffA.pairing_code = '';
+    const viewerA = dashboardAuthority(redeemedA, 'redeem').dashboard_session;
+    dashboardSessions.push(viewerA);
+    let baselineA = dashboardAuthority(
+      await gatewaySupervision(descriptor, 'baseline', {
+        dashboard_session: viewerA,
+      }),
+      'baseline',
+    );
+    await gatewaySupervision(descriptor, 'ack', {
+      dashboard_session: viewerA,
+      document_epoch: baselineA.document_epoch,
+      sequence: baselineA.sequence,
+    });
+
+    liveSmokeStage = 'supervision_action_ordinary';
+    const ordinaryAction = await gatewaySupervision(descriptor, 'action', {
+      dashboard_session: viewerA,
+      document_epoch: baselineA.document_epoch,
+      sequence: baselineA.sequence,
+      action: {
+        category: 'click',
+        ref: supervisedTargets.button.ref,
+      },
+    });
+    liveSmokeStage = 'supervision_action_controller';
+    requireCondition(
+      ordinaryAction.result.snapshot?.target?.controller_label
+        === 'Phase 21 viewer A',
+      'The real Enable Control dialog did not grant viewer A sole control.',
+    );
+    liveSmokeStage = 'supervision_action_diff';
+    const afterOrdinary = dashboardAuthority(
+      await gatewaySupervision(descriptor, 'diff', {
+        dashboard_session: viewerA,
+        document_epoch: baselineA.document_epoch,
+        after_sequence: baselineA.sequence,
+      }),
+      'diff',
+    );
+    await gatewaySupervision(descriptor, 'ack', {
+      dashboard_session: viewerA,
+      document_epoch: afterOrdinary.document_epoch,
+      sequence: afterOrdinary.sequence,
+    });
+
+    liveSmokeStage = 'supervision_action_consequential';
+    await gatewaySupervision(descriptor, 'action', {
+      dashboard_session: viewerA,
+      document_epoch: afterOrdinary.document_epoch,
+      sequence: afterOrdinary.sequence,
+      action: {
+        category: 'navigate',
+        navigation: `${fixtureUrl}#phase21-remote-action`,
+      },
+    });
+    baselineA = afterOrdinary;
+    liveSmokeStage = 'supervision_action_refresh_targets';
+    supervisedTargets = parseSnapshotTargets(
+      await expectToolSuccess(primary, 'get_dom_snapshot', {
+        tab_id: ownerTabs.tab_id,
+        max_chars: 200_000,
+        max_nodes: 1_000,
+      }),
+    );
+
+    liveSmokeStage = 'supervision_viewer_b_handoff';
+    const handoffB = await requestHandoff(ownerSessionId, 2);
+    supervisionChallengeBuffer.fill(0);
+    requireCondition(
+      handoffB?.ok === true
+        && handoffB.status === 'DELIVERED'
+        && handoffB.sequence === 2
+        && /^[A-Z0-9]{4}-[A-Z0-9]{4}$/u.test(handoffB.pairing_code),
+      'Supervision handoff slot two was not delivered after viewer A.',
+    );
+    pairingCodes.push(handoffB.pairing_code);
+    liveSmokeStage = 'supervision_viewer_b_redeem';
+    const redeemedB = await gatewaySupervision(descriptor, 'redeem', {
+      pairing_code: handoffB.pairing_code,
+      client_label: 'Phase 21 viewer B',
+    });
+    handoffB.pairing_code = '';
+    const viewerB = dashboardAuthority(redeemedB, 'redeem').dashboard_session;
+    dashboardSessions.push(viewerB);
+
+    liveSmokeStage = 'supervision_viewer_b_baseline';
+    let baselineB = dashboardAuthority(
+      await gatewaySupervision(descriptor, 'baseline', {
+        dashboard_session: viewerB,
+      }),
+      'baseline',
+    );
+    await gatewaySupervision(descriptor, 'ack', {
+      dashboard_session: viewerB,
+      document_epoch: baselineB.document_epoch,
+      sequence: baselineB.sequence,
+    });
+    await gatewaySupervision(descriptor, 'action', {
+      dashboard_session: viewerB,
+      document_epoch: baselineB.document_epoch,
+      sequence: baselineB.sequence,
+      action: {
+        category: 'scroll',
+        delta_y: 120,
+      },
+    }, 'CONTROLLER_CONFLICT');
+
+    liveSmokeStage = 'supervision_shared_mutation';
+    const supervisedMutation = await expectToolSuccess(primary, 'click', {
+      tab_id: ownerTabs.tab_id,
+      ...supervisedTargets.button,
+    });
+    requireCondition(
+      supervisedMutation.page?.verification_succeeded === true,
+      'MCP consumer did not produce the shared real mutation.',
+    );
+    liveSmokeStage = 'supervision_shared_viewer_a_diff';
+    const diffAResponse = await gatewaySupervision(descriptor, 'diff', {
+      dashboard_session: viewerA,
+      document_epoch: baselineA.document_epoch,
+      after_sequence: baselineA.sequence,
+    });
+    liveSmokeStage = 'supervision_shared_viewer_b_diff';
+    const diffBResponse = await gatewaySupervision(descriptor, 'diff', {
+      dashboard_session: viewerB,
+      document_epoch: baselineB.document_epoch,
+      after_sequence: baselineB.sequence,
+    });
+    liveSmokeStage = 'supervision_shared_compatibility_diff';
+    const compatibilityDiff = await compatibilityTool(
+      primary,
+      'get_supervision_diff',
+    );
+    const diffA = dashboardAuthority(diffAResponse, 'diff');
+    const diffB = dashboardAuthority(diffBResponse, 'diff');
+    requireCondition(
+      JSON.stringify(compatibilityDiff).includes('"kind":"diff"'),
+      'MCP compatibility cursor did not independently observe the mutation.',
+    );
+    await Promise.all([
+      gatewaySupervision(descriptor, 'ack', {
+        dashboard_session: viewerA,
+        document_epoch: diffA.document_epoch,
+        sequence: diffA.sequence,
+      }),
+      gatewaySupervision(descriptor, 'ack', {
+        dashboard_session: viewerB,
+        document_epoch: diffB.document_epoch,
+        sequence: diffB.sequence,
+      }),
+    ]);
+
+    liveSmokeStage = 'supervision_resync_gap_targets';
+    supervisedTargets = parseSnapshotTargets(
+      await expectToolSuccess(primary, 'get_dom_snapshot', {
+        tab_id: ownerTabs.tab_id,
+        max_chars: 200_000,
+        max_nodes: 1_000,
+      }),
+    );
+    for (let index = 0; index < 35; index += 1) {
+      liveSmokeStage = `supervision_resync_gap_click_${index}`;
+      const gapMutation = await expectToolSuccess(primary, 'click', {
+        tab_id: ownerTabs.tab_id,
+        ...supervisedTargets.button,
+      });
+      requireCondition(
+        gapMutation.page?.verification_succeeded === true,
+        'Gap mutation was not verified by the MCP consumer.',
+      );
+      liveSmokeStage = `supervision_resync_gap_snapshot_${index}`;
+      supervisedTargets = parseSnapshotTargets(
+        await expectToolSuccess(primary, 'get_dom_snapshot', {
+          tab_id: ownerTabs.tab_id,
+          max_chars: 200_000,
+          max_nodes: 1_000,
+        }),
+      );
+    }
+    liveSmokeStage = 'supervision_resync_viewer_a';
+    await gatewaySupervision(descriptor, 'diff', {
+      dashboard_session: viewerA,
+      document_epoch: diffA.document_epoch,
+      after_sequence: diffA.sequence,
+    }, 'RESYNC_REQUIRED');
+    liveSmokeStage = 'supervision_resync_viewer_b';
+    await gatewaySupervision(descriptor, 'diff', {
+      dashboard_session: viewerB,
+      document_epoch: diffB.document_epoch,
+      after_sequence: diffB.sequence,
+    }, 'RESYNC_REQUIRED');
+    liveSmokeStage = 'supervision_resync_baselines';
+    const [resyncBaselineA, resyncBaselineB] = await Promise.all([
+      gatewaySupervision(descriptor, 'baseline', {
+        dashboard_session: viewerA,
+      }),
+      gatewaySupervision(descriptor, 'baseline', {
+        dashboard_session: viewerB,
+      }),
+    ]);
+    baselineA = dashboardAuthority(resyncBaselineA, 'baseline');
+    baselineB = dashboardAuthority(resyncBaselineB, 'baseline');
+    const resyncSessions = resyncBaselineA.result.snapshot?.sessions ?? [];
+    const resyncViewerA = resyncSessions.find(
+      (session) => session?.client?.display_label === 'Phase 21 viewer A',
+    );
+    const resyncViewerB = resyncSessions.find(
+      (session) => session?.client?.display_label === 'Phase 21 viewer B',
+    );
+    requireCondition(
+      resyncViewerA?.client?.expires_at_ms > Date.now() + 60_000
+        && resyncViewerB?.client?.expires_at_ms > Date.now() + 60_000,
+      'Dashboard viewer TTL became unexpectedly short during gap recovery.',
+    );
+    requireCondition(
+      baselineA.document_epoch === baselineB.document_epoch
+        && baselineA.document_epoch === diffA.document_epoch
+        && baselineA.sequence === baselineB.sequence
+        && baselineA.sequence > diffA.sequence,
+      'Retention gap did not force both viewers onto one fresh shared baseline.',
+    );
+    liveSmokeStage = 'supervision_resync_end';
+    const ended = await Promise.all([
+      endDashboardSession(descriptor, viewerB),
+      endDashboardSession(descriptor, viewerA),
+    ]);
+    requireCondition(
+      ended.some(Boolean),
+      'Neither dashboard session completed an explicit terminal end.',
+    );
+    await compatibilityTool(primary, 'get_supervision_snapshot');
+    await gatewaySupervision(descriptor, 'heartbeat', {
+      dashboard_session: viewerA,
+    }, 'UNAVAILABLE');
+    await compatibilityTool(primary, 'end_supervision_session');
+
+    liveSmokeStage = 'phase20_regression';
     // Bind both independent callers while the freshly launched regular
     // browser and its initial tab are known to be active.
     second = createBridge('second smoke bridge');
@@ -1221,6 +1772,14 @@ const runLiveSmoke = async () => {
     });
     requireCondition(reclaimedExpired.target?.tab_id === expiryTabId, 'Expired ownership was not released.');
 
+    const localUiCompatibility = await compatibilityTool(
+      primary,
+      'create_supervision_pairing',
+    );
+    requireCondition(
+      JSON.stringify(localUiCompatibility).includes('"kind":"local_ui"'),
+      'Pairing compatibility route did not remain local-UI-only.',
+    );
     await primary.close({ graceful: true });
     const reclaimedClosed = await expectToolSuccess(second, 'navigate', {
       tab_id: ownedTabId,
@@ -1229,10 +1788,14 @@ const runLiveSmoke = async () => {
     requireCondition(reclaimedClosed.target?.tab_id === ownedTabId, 'Graceful close did not release ownership.');
     await second.close({ graceful: true });
 
+    liveSmokeStage = 'privacy_scan';
     const privateValues = [
       descriptor.bearer,
       descriptor.instance_nonce,
+      supervisionChallengeSentinel,
       ...sessionIds,
+      ...pairingCodes,
+      ...dashboardSessions,
       visualReason,
       typedText,
       primaryPromptSentinel,
@@ -1269,6 +1832,12 @@ const runLiveSmoke = async () => {
       resume_proven: true,
       expiry_released: true,
       close_released: true,
+      supervision_two_viewers: true,
+      supervision_shared_hub: true,
+      supervision_actions: true,
+      supervision_resync: true,
+      supervision_cleanup: true,
+      supervision_compatibility_private: true,
       children_closed: bridges.length,
     };
   } finally {
@@ -1286,7 +1855,9 @@ if (isMain) {
     const result = await runLiveSmoke();
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch {
-    process.stderr.write('prometheus-mcp smoke client: live smoke failed\n');
+    process.stderr.write(
+      `prometheus-mcp smoke client: live smoke failed at ${liveSmokeStage}\n`,
+    );
     process.exitCode = 1;
   }
 }

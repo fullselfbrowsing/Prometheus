@@ -259,7 +259,7 @@ test('diagnostics are the exact ten closed components', () => {
   ]);
   const components = DIAGNOSTIC_KEYS.map((key, index) => ({
     key,
-    status: index < 8 ? 'ready' : 'not_ready',
+    status: index < 9 ? 'ready' : 'not_ready',
     reason: 'Bounded public status.',
     next_action: 'Use the documented recovery.',
   }));
@@ -364,13 +364,22 @@ test('shell live gate pins the built app, descriptor mode, deadlines, and proces
   assert.match(shell, /--prometheus-agent-endpoint-descriptor=/u);
   assert.match(shell, /--test-type=prometheus-runtime/u);
   assert.match(shell, /--prometheus-runtime-test-provider-config=/u);
+  assert.match(shell, /--prometheus-supervision-test-bootstrap=/u);
   assert.match(shell, /provider-bootstrap\.json/u);
+  assert.match(shell, /supervision-bootstrap\.json/u);
   assert.match(shell, /phase20-smoke-local/u);
   assert.match(shell, /phase20-fixture-model/u);
   assert.match(shell, /PROMETHEUS_MCP_FIXTURE_PROVIDER_DELAY_MS=5000/u);
   assert.match(shell, /kind: 'lm_studio'/u);
   assert.match(shell, /route: 'local'/u);
   assert.match(shell, /fs\.openSync\(bootstrapFile, 'wx', 0o600\)/u);
+  assert.match(shell, /crypto\.randomBytes\(32\)/u);
+  assert.match(shell, /pairing_slots: 2/u);
+  assert.match(
+    shell,
+    /dialog_responses: \['enable_control:accept', 'remote_action:accept'\]/u,
+  );
+  assert.match(shell, /PROMETHEUS_MCP_SMOKE_SUPERVISION_CHALLENGE/u);
   assert.match(shell, /metadata\.isSymbolicLink\(\)/u);
   assert.match(shell, /PROMETHEUS_MCP_ENDPOINT_DESCRIPTOR/u);
   assert.match(shell, /DESCRIPTOR_WAIT_SECONDS=20/u);
@@ -378,4 +387,46 @@ test('shell live gate pins the built app, descriptor mode, deadlines, and proces
   assert.match(shell, /descriptor mode is not 0600/u);
   assert.doesNotMatch(shell, /set_provider_config|prometheus\.runtime/iu);
   assert.doesNotMatch(shell, /claude|cursor|codex|terminal|agent[_ -]?cli/iu);
+});
+
+test('live client freezes handoff order, seven supervision operations, and credential isolation', async () => {
+  const client = await readFile(
+    new URL('./smoke-client.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(client, /\/v1\/test\/supervision-handoff/u);
+  assert.match(client, /requestHandoff\(ownerSessionId, 1\)/u);
+  assert.match(client, /requestHandoff\(ownerSessionId, 2\)/u);
+  assert.match(client, /supervisionChallengeBuffer\.fill\(0\)/u);
+  assert.match(client, /wrongChallengeBuffer\.fill\(0\)/u);
+  assert.match(client, /handoffA\.pairing_code = ''/u);
+  assert.match(client, /handoffB\.pairing_code = ''/u);
+  for (const operation of [
+    'redeem',
+    'baseline',
+    'diff',
+    'ack',
+    'action',
+    'heartbeat',
+  ]) {
+    assert.ok(
+      client.includes(`gatewaySupervision(descriptor, '${operation}'`),
+      `missing direct ${operation} supervision operation`,
+    );
+  }
+  assert.match(client, /operation: 'end'/u);
+  assert.match(client, /endDashboardSession/u);
+  for (const route of [
+    'create_supervision_pairing',
+    'start_supervision_session',
+    'get_supervision_snapshot',
+    'get_supervision_diff',
+    'end_supervision_session',
+  ]) {
+    assert.match(client, new RegExp(`'${route}'`, 'u'));
+  }
+  assert.match(client, /CONTROLLER_CONFLICT/u);
+  assert.match(client, /RESYNC_REQUIRED/u);
+  assert.match(client, /assertCompatibilityHasNoDashboardAuthority/u);
+  assert.match(client, /key\.startsWith\('PROMETHEUS_MCP_SMOKE_'\)/u);
 });

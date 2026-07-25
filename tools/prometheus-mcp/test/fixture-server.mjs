@@ -89,10 +89,19 @@ const PAGE = `<!doctype html>
     <iframe id="fixture-frame" title="same-origin fixture" src="/child"></iframe>
   </main>
   <script>
-    document.querySelector('#fixture-button').addEventListener('click', () => {
-      document.querySelector('#mutation-status').textContent = 'clicked';
-      document.body.dataset.mutated = 'yes';
-    });
+    let mutationCount = 0;
+    const attachMutationButton = (button) => {
+      button.addEventListener('click', () => {
+        mutationCount += 1;
+        document.querySelector('#mutation-status').textContent =
+          mutationCount === 1 ? 'clicked' : \`clicked \${mutationCount}\`;
+        document.body.dataset.mutated = String(mutationCount);
+        const replacement = button.cloneNode(true);
+        attachMutationButton(replacement);
+        button.replaceWith(replacement);
+      });
+    };
+    attachMutationButton(document.querySelector('#fixture-button'));
   </script>
 </body>
 </html>

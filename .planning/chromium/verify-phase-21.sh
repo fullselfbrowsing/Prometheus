@@ -688,6 +688,8 @@ verify_supervision_action_controller_contract() {
     || fail 'supervision action classification is not closed and typed'
   rg -q 'PrometheusSupervisionActionControllerTest' "${test_source}" \
     || fail 'supervision action controller tests are missing'
+  require_literal 'SuccessfulRouteMayAdvanceCaptureBeforeCompletion' \
+    "${test_source}"
   rg -q 'ExecuteDashboardAction' "${profile_source}" \
     || fail 'dashboard actions are not owned by the supervision profile service'
   rg -q 'controller_lease' "${profile_source}" \
@@ -703,6 +705,24 @@ verify_supervision_action_controller_contract() {
     fail 'supervision action controller contains a forbidden authority, DOM, script, or vault bypass'
   fi
   note 'supervision action controller reuses only the closed exact-browser Agent seam'
+}
+
+verify_built_supervision_smoke_contract() {
+  local shell="${ROOT_DIR}/tools/prometheus-mcp/smoke-browser.sh"
+  local client="${ROOT_DIR}/tools/prometheus-mcp/test/smoke-client.mjs"
+  local test_source="${ROOT_DIR}/tools/prometheus-mcp/test/smoke.test.mjs"
+  require_file "${shell}"
+  require_file "${client}"
+  require_file "${test_source}"
+  require_literal '--prometheus-supervision-test-bootstrap=' "${shell}"
+  require_literal 'crypto.randomBytes(32)' "${shell}"
+  require_literal "fs.openSync(bootstrapFile, 'wx', 0o600)" "${shell}"
+  require_literal '/v1/test/supervision-handoff' "${client}"
+  require_literal 'supervision_resync_gap_targets' "${client}"
+  require_literal 'endDashboardSession' "${client}"
+  require_literal "key.startsWith('PROMETHEUS_MCP_SMOKE_')" "${client}"
+  require_literal 'live client freezes handoff order' "${test_source}"
+  note 'built-app supervision smoke, retention-gap, and credential-isolation guards passed'
 }
 
 verify_supervision_dialog_contract() {
@@ -2040,6 +2060,7 @@ else
   verify_agent_supervision_transport_contract
   verify_supervision_action_controller_contract
   verify_supervision_dialog_contract
+  verify_built_supervision_smoke_contract
   verify_supervision_tab_state_contract
   verify_supervision_tab_badge_contract
   verify_side_panel_supervision_runtime_contract
