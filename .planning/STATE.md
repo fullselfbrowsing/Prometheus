@@ -4,16 +4,16 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 24
+current_plan: 25
 status: executing
-stopped_at: Completed 21-23-PLAN.md
-last_updated: "2026-07-25T00:29:08.000Z"
+stopped_at: Completed 21-24-PLAN.md
+last_updated: "2026-07-25T01:38:00.000Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 14
   completed_phases: 10
   total_plans: 92
-  completed_plans: 89
+  completed_plans: 90
   percent: 71
 ---
 
@@ -36,7 +36,7 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
-Plan: 24 of 26
+Plan: 25 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
@@ -46,14 +46,22 @@ Plan: 24 of 26
 **Status:** Ready to execute
 **Progress:** [██████████] 97%
 **Last Activity:** 2026-07-24
-**Last Activity Description:** Completed Plan 21-23 — validated non-official
-two-slot supervision bootstrap, conditional authenticated gateway handoff,
-exact binding continuity, and instrumented secure cleanup.
+**Last Activity Description:** Completed Plan 21-24 — sole browser-composition
+handoff binding, exact gateway-session target/service resolution, normal
+pairing creation, redemption observation, and early fail-closed teardown.
 
-Milestone work is 89 of 92 existing plans complete (97%); cumulative project
-work is 140 of 144 existing plans summarized (97%).
+Milestone work is 90 of 92 existing plans complete (98%); cumulative project
+work is 141 of 144 existing plans summarized (98%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 24: the intended 4-test composition RED, final 25-test
+  bootstrap/composition regression, and post-hardening 4-test composition gate
+  pass with sole post-start binding, ordinary/official/invalid/OTR/
+  persistent/missing-service 404, exact Profile/Browser/tab/origin/document/
+  owner re-resolution, normal pairing creation, exact redemption observation,
+  early unbind/zeroization, stable patch identity/replay, and byte-identical
+  reviewed build artifacts.
 
 - Phase 21 Plan 23: the intended 11-test RED gate, 5-test focused GREEN gate,
   and final 39-test gateway/bootstrap regression pass with exact launch/file/
@@ -400,6 +408,7 @@ work is 140 of 144 existing plans summarized (97%).
 | Phase 21 P21 | 2h04min | 3 tasks | 12 files |
 | Phase 21 P22 | 1h48min | 3 tasks | 6 files |
 | Phase 21 P23 | 50min | 3 tasks | 9 files |
+| Phase 21 P24 | 50min | 2 tasks | 8 files |
 
 ## Blockers and Deferred Items
 
@@ -414,11 +423,11 @@ work is 140 of 144 existing plans summarized (97%).
 
 ## Session
 
-**Last Date:** 2026-07-25T00:29:08.000Z
-**Stopped At:** Completed 21-23-PLAN.md
+**Last Date:** 2026-07-25T01:38:00.000Z
+**Stopped At:** Completed 21-24-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-24-PLAN.md` to install the abstract test handoff from browser
-composition with exact service binding and fail-closed teardown.
+Execute `21-25-PLAN.md` to prove native dialogs and two-viewer/MCP
+supervision in the built app.
