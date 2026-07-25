@@ -1,0 +1,968 @@
+From becc362447e7757246d8287f0dfe37dafb129787 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 19:11:52 -0500
+Subject: [PATCH] feat(21-23): implement conditional supervision handoff
+
+Validate the non-official disposable-profile bootstrap and deliver two exact-bound one-shot pairing codes behind the optional dispatcher.
+
+Apply bounded parsing, constant-time challenge checks, attempt and expiry caps, and secure terminal cleanup.
+---
+ .../prometheus_agent_gateway_contract.cc      | 189 +++++-
+ .../prometheus_supervision_test_bootstrap.cc  | 639 +++++++++++++++++-
+ .../prometheus_supervision_test_bootstrap.h   |   7 +
+ 3 files changed, 805 insertions(+), 30 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc b/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
+index deb5151f36..d203da2621 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
+@@ -6,6 +6,8 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <cctype>
++#include <set>
+ #include <string_view>
+ #include <utility>
+ 
+@@ -22,6 +24,9 @@ namespace {
+ 
+ constexpr size_t kMaxRequestBytes = 1'048'576;
+ constexpr size_t kMaxInflightRequests = 16;
++constexpr size_t kMaxSupervisionTestHandoffBodyBytes = 1024;
++constexpr size_t kSupervisionTestChallengeBytes = 64;
++constexpr size_t kMaxSupervisionTestSessionIdBytes = 128;
+ constexpr std::array<std::string_view, 7> kClosedPaths = {
+     "/v1/session/create", "/v1/session/resume", "/v1/session/touch",
+     "/v1/session/close",  "/v1/agent/command",  "/v1/health",
+@@ -74,6 +79,137 @@ void ClearString(std::string* value) {
+   }
+ }
+ 
++enum class FlatObjectScanResult {
++  kValid,
++  kMalformed,
++  kDuplicateKey,
++};
++
++void SkipWhitespace(std::string_view input, size_t* position) {
++  while (*position < input.size() &&
++         std::isspace(static_cast<unsigned char>(input[*position]))) {
++    ++*position;
++  }
++}
++
++bool SkipJsonString(std::string_view input, size_t* position) {
++  if (*position >= input.size() || input[*position] != '"') {
++    return false;
++  }
++  ++*position;
++  bool escaped = false;
++  while (*position < input.size()) {
++    const char current = input[(*position)++];
++    if (escaped) {
++      escaped = false;
++      continue;
++    }
++    if (current == '\\') {
++      escaped = true;
++      continue;
++    }
++    if (current == '"') {
++      return true;
++    }
++    if (static_cast<unsigned char>(current) < 0x20) {
++      return false;
++    }
++  }
++  return false;
++}
++
++FlatObjectScanResult ScanFlatObjectKeys(std::string_view input) {
++  size_t position = 0;
++  SkipWhitespace(input, &position);
++  if (position >= input.size() || input[position++] != '{') {
++    return FlatObjectScanResult::kMalformed;
++  }
++
++  std::set<std::string> keys;
++  SkipWhitespace(input, &position);
++  if (position < input.size() && input[position] == '}') {
++    ++position;
++    SkipWhitespace(input, &position);
++    return position == input.size() ? FlatObjectScanResult::kValid
++                                    : FlatObjectScanResult::kMalformed;
++  }
++
++  while (position < input.size()) {
++    if (input[position] != '"') {
++      return FlatObjectScanResult::kMalformed;
++    }
++    const size_t key_start = ++position;
++    while (position < input.size() && input[position] != '"') {
++      if (input[position] == '\\' ||
++          static_cast<unsigned char>(input[position]) < 0x20) {
++        return FlatObjectScanResult::kMalformed;
++      }
++      ++position;
++    }
++    if (position >= input.size()) {
++      return FlatObjectScanResult::kMalformed;
++    }
++    if (!keys.insert(std::string(input.substr(key_start, position - key_start)))
++             .second) {
++      return FlatObjectScanResult::kDuplicateKey;
++    }
++    ++position;
++
++    SkipWhitespace(input, &position);
++    if (position >= input.size() || input[position++] != ':') {
++      return FlatObjectScanResult::kMalformed;
++    }
++    SkipWhitespace(input, &position);
++    if (position >= input.size() || input[position] == '{' ||
++        input[position] == '[') {
++      return FlatObjectScanResult::kMalformed;
++    }
++    if (input[position] == '"') {
++      if (!SkipJsonString(input, &position)) {
++        return FlatObjectScanResult::kMalformed;
++      }
++    } else {
++      const size_t value_start = position;
++      while (position < input.size() && input[position] != ',' &&
++             input[position] != '}') {
++        ++position;
++      }
++      size_t value_end = position;
++      while (value_end > value_start &&
++             std::isspace(static_cast<unsigned char>(input[value_end - 1]))) {
++        --value_end;
++      }
++      if (value_start == value_end) {
++        return FlatObjectScanResult::kMalformed;
++      }
++    }
++
++    SkipWhitespace(input, &position);
++    if (position >= input.size()) {
++      return FlatObjectScanResult::kMalformed;
++    }
++    if (input[position] == '}') {
++      ++position;
++      SkipWhitespace(input, &position);
++      return position == input.size() ? FlatObjectScanResult::kValid
++                                      : FlatObjectScanResult::kMalformed;
++    }
++    if (input[position++] != ',') {
++      return FlatObjectScanResult::kMalformed;
++    }
++    SkipWhitespace(input, &position);
++  }
++  return FlatObjectScanResult::kMalformed;
++}
++
++bool IsLowerHexChallenge(std::string_view challenge) {
++  return challenge.size() == kSupervisionTestChallengeBytes &&
++         std::ranges::all_of(challenge, [](char character) {
++           return base::IsAsciiDigit(character) ||
++                  (character >= 'a' && character <= 'f');
++         });
++}
++
+ std::string_view HandoffStatusString(SupervisionTestHandoffStatus status) {
+   switch (status) {
+     case SupervisionTestHandoffStatus::kDelivered:
+@@ -171,7 +307,17 @@ SupervisionTestHandoffRequest::SupervisionTestHandoffRequest(
+     SupervisionTestHandoffRequest&&) = default;
+ 
+ SupervisionTestHandoffRequest& SupervisionTestHandoffRequest::operator=(
+-    SupervisionTestHandoffRequest&&) = default;
++    SupervisionTestHandoffRequest&& other) {
++  if (this != &other) {
++    ClearString(&challenge);
++    ClearString(&session_id);
++    challenge = std::move(other.challenge);
++    session_id = std::move(other.session_id);
++    sequence = other.sequence;
++    other.sequence = 0;
++  }
++  return *this;
++}
+ 
+ SupervisionTestHandoffRequest::~SupervisionTestHandoffRequest() {
+   ClearString(&challenge);
+@@ -182,7 +328,17 @@ SupervisionTestHandoffResult::SupervisionTestHandoffResult() = default;
+ SupervisionTestHandoffResult::SupervisionTestHandoffResult(
+     SupervisionTestHandoffResult&&) = default;
+ SupervisionTestHandoffResult& SupervisionTestHandoffResult::operator=(
+-    SupervisionTestHandoffResult&&) = default;
++    SupervisionTestHandoffResult&& other) {
++  if (this != &other) {
++    ClearString(&pairing_code);
++    status = other.status;
++    sequence = other.sequence;
++    pairing_code = std::move(other.pairing_code);
++    other.status = SupervisionTestHandoffStatus::kInvalidRequest;
++    other.sequence = 0;
++  }
++  return *this;
++}
+ 
+ SupervisionTestHandoffResult::~SupervisionTestHandoffResult() {
+   ClearString(&pairing_code);
+@@ -207,9 +363,32 @@ SupervisionTestHandoffResult SupervisionTestHandoffResult::Failure(
+ 
+ SupervisionTestHandoffParseResult ParseSupervisionTestHandoffRequest(
+     std::string_view body) {
+-  static_cast<void>(body);
+-  return base::unexpected(SupervisionTestHandoffResult::Failure(
+-      SupervisionTestHandoffStatus::kInvalidRequest));
++  const auto invalid = [] {
++    return base::unexpected(SupervisionTestHandoffResult::Failure(
++        SupervisionTestHandoffStatus::kInvalidRequest));
++  };
++  if (body.empty() || body.size() > kMaxSupervisionTestHandoffBodyBytes ||
++      !base::IsStringUTF8(body) ||
++      ScanFlatObjectKeys(body) != FlatObjectScanResult::kValid) {
++    return invalid();
++  }
++  std::optional<base::DictValue> parsed =
++      base::JSONReader::ReadDict(body, base::JSON_PARSE_RFC, 2);
++  if (!parsed || parsed->size() != 3u || !parsed->contains("challenge") ||
++      !parsed->contains("session_id") || !parsed->contains("sequence")) {
++    return invalid();
++  }
++  const std::string* challenge = parsed->FindString("challenge");
++  const std::string* session_id = parsed->FindString("session_id");
++  const std::optional<int> sequence = parsed->FindInt("sequence");
++  if (!challenge || !IsLowerHexChallenge(*challenge) || !session_id ||
++      session_id->empty() ||
++      session_id->size() > kMaxSupervisionTestSessionIdBytes ||
++      !base::IsStringUTF8(*session_id) || !sequence ||
++      (*sequence != 1 && *sequence != 2)) {
++    return invalid();
++  }
++  return SupervisionTestHandoffRequest(*challenge, *session_id, *sequence);
+ }
+ 
+ std::string SerializeSupervisionTestHandoffResult(
+diff --git a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc
+index 57a8f7040c..3161872cee 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc
+@@ -4,12 +4,336 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h"
+ 
++#include <algorithm>
++#include <array>
++#include <cctype>
++#include <set>
++#include <string_view>
+ #include <utility>
+ 
++#include "base/containers/span.h"
++#include "base/files/file.h"
++#include "base/files/file_util.h"
+ #include "base/functional/bind.h"
++#include "base/json/json_reader.h"
++#include "base/memory/raw_ptr.h"
++#include "base/strings/string_util.h"
++#include "build/build_config.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h"
++#include "crypto/secure_util.h"
++#include "url/gurl.h"
++
++#if BUILDFLAG(IS_POSIX)
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
+ 
+ namespace prometheus {
++namespace {
++
++constexpr int kRequiredFilePermissions = 0600;
++constexpr size_t kMaxDocumentIdentityBytes = 256;
++constexpr size_t kMaxPairingCodeBytes = 64;
++constexpr std::array<std::string_view, 5> kSchemaKeys = {
++    "schema_version", "challenge", "expected_origin", "pairing_slots",
++    "dialog_responses"};
++
++enum class ObjectScanResult {
++  kValid,
++  kMalformed,
++  kDuplicateKey,
++};
++
++void SkipWhitespace(std::string_view input, size_t* position) {
++  while (*position < input.size() &&
++         std::isspace(static_cast<unsigned char>(input[*position]))) {
++    ++*position;
++  }
++}
++
++bool SkipJsonString(std::string_view input, size_t* position) {
++  if (*position >= input.size() || input[*position] != '"') {
++    return false;
++  }
++  ++*position;
++  bool escaped = false;
++  while (*position < input.size()) {
++    const char current = input[(*position)++];
++    if (escaped) {
++      escaped = false;
++      continue;
++    }
++    if (current == '\\') {
++      escaped = true;
++      continue;
++    }
++    if (current == '"') {
++      return true;
++    }
++    if (static_cast<unsigned char>(current) < 0x20) {
++      return false;
++    }
++  }
++  return false;
++}
++
++bool SkipJsonValue(std::string_view input, size_t* position, size_t depth) {
++  if (depth > 8u || *position >= input.size()) {
++    return false;
++  }
++  if (input[*position] == '"') {
++    return SkipJsonString(input, position);
++  }
++  if (input[*position] == '[') {
++    ++*position;
++    SkipWhitespace(input, position);
++    if (*position < input.size() && input[*position] == ']') {
++      ++*position;
++      return true;
++    }
++    while (*position < input.size()) {
++      if (!SkipJsonValue(input, position, depth + 1)) {
++        return false;
++      }
++      SkipWhitespace(input, position);
++      if (*position >= input.size()) {
++        return false;
++      }
++      if (input[*position] == ']') {
++        ++*position;
++        return true;
++      }
++      if (input[(*position)++] != ',') {
++        return false;
++      }
++      SkipWhitespace(input, position);
++    }
++    return false;
++  }
++  if (input[*position] == '{') {
++    ++*position;
++    SkipWhitespace(input, position);
++    if (*position < input.size() && input[*position] == '}') {
++      ++*position;
++      return true;
++    }
++    while (*position < input.size()) {
++      if (!SkipJsonString(input, position)) {
++        return false;
++      }
++      SkipWhitespace(input, position);
++      if (*position >= input.size() || input[(*position)++] != ':') {
++        return false;
++      }
++      SkipWhitespace(input, position);
++      if (!SkipJsonValue(input, position, depth + 1)) {
++        return false;
++      }
++      SkipWhitespace(input, position);
++      if (*position >= input.size()) {
++        return false;
++      }
++      if (input[*position] == '}') {
++        ++*position;
++        return true;
++      }
++      if (input[(*position)++] != ',') {
++        return false;
++      }
++      SkipWhitespace(input, position);
++    }
++    return false;
++  }
++
++  const size_t value_start = *position;
++  while (*position < input.size() && input[*position] != ',' &&
++         input[*position] != '}' && input[*position] != ']' &&
++         !std::isspace(static_cast<unsigned char>(input[*position]))) {
++    ++*position;
++  }
++  return *position > value_start;
++}
++
++ObjectScanResult ScanObjectKeys(std::string_view input) {
++  size_t position = 0;
++  SkipWhitespace(input, &position);
++  if (position >= input.size() || input[position++] != '{') {
++    return ObjectScanResult::kMalformed;
++  }
++  std::set<std::string> keys;
++  SkipWhitespace(input, &position);
++  if (position < input.size() && input[position] == '}') {
++    ++position;
++    SkipWhitespace(input, &position);
++    return position == input.size() ? ObjectScanResult::kValid
++                                    : ObjectScanResult::kMalformed;
++  }
++
++  while (position < input.size()) {
++    if (input[position] != '"') {
++      return ObjectScanResult::kMalformed;
++    }
++    const size_t key_start = ++position;
++    while (position < input.size() && input[position] != '"') {
++      if (input[position] == '\\' ||
++          static_cast<unsigned char>(input[position]) < 0x20) {
++        return ObjectScanResult::kMalformed;
++      }
++      ++position;
++    }
++    if (position >= input.size()) {
++      return ObjectScanResult::kMalformed;
++    }
++    if (!keys.insert(std::string(input.substr(key_start, position - key_start)))
++             .second) {
++      return ObjectScanResult::kDuplicateKey;
++    }
++    ++position;
++    SkipWhitespace(input, &position);
++    if (position >= input.size() || input[position++] != ':') {
++      return ObjectScanResult::kMalformed;
++    }
++    SkipWhitespace(input, &position);
++    if (!SkipJsonValue(input, &position, 0)) {
++      return ObjectScanResult::kMalformed;
++    }
++    SkipWhitespace(input, &position);
++    if (position >= input.size()) {
++      return ObjectScanResult::kMalformed;
++    }
++    if (input[position] == '}') {
++      ++position;
++      SkipWhitespace(input, &position);
++      return position == input.size() ? ObjectScanResult::kValid
++                                      : ObjectScanResult::kMalformed;
++    }
++    if (input[position++] != ',') {
++      return ObjectScanResult::kMalformed;
++    }
++    SkipWhitespace(input, &position);
++  }
++  return ObjectScanResult::kMalformed;
++}
++
++bool HasExactSchemaKeys(const base::DictValue& value) {
++  return value.size() == kSchemaKeys.size() &&
++         std::ranges::all_of(kSchemaKeys, [&value](std::string_view key) {
++           return value.contains(key);
++         });
++}
++
++bool IsLowerHexChallenge(std::string_view challenge) {
++  return challenge.size() == kPrometheusSupervisionTestChallengeBytes &&
++         std::ranges::all_of(challenge, [](char character) {
++           return base::IsAsciiDigit(character) ||
++                  (character >= 'a' && character <= 'f');
++         });
++}
++
++bool IsLoopbackHttpOrigin(std::string_view origin) {
++  const GURL url(origin);
++  if (!url.is_valid() || !url.SchemeIs("http") || url.has_username() ||
++      url.has_password() || url.has_query() || url.has_ref() ||
++      (url.path() != "/" && !url.path().empty())) {
++    return false;
++  }
++  const std::string host = base::ToLowerASCII(url.host());
++  if (host != "localhost" && host != "127.0.0.1" && host != "[::1]" &&
++      host != "::1") {
++    return false;
++  }
++  std::string canonical = url.DeprecatedGetOriginAsURL().spec();
++  if (canonical.ends_with('/')) {
++    canonical.pop_back();
++  }
++  return canonical == origin;
++}
++
++bool IsValidInitialBinding(const PrometheusSupervisionTestBindingFacts& binding,
++                           std::string_view expected_origin) {
++  return binding.profile_identity != 0 && binding.browser_identity != 0 &&
++         binding.stable_tab_id > 0 && binding.profile_live &&
++         binding.browser_live && binding.target_live && binding.document_live &&
++         binding.is_regular_profile && !binding.is_off_the_record &&
++         binding.expected_origin == expected_origin &&
++         !binding.document_identity.empty() &&
++         binding.document_identity.size() <= kMaxDocumentIdentityBytes &&
++         base::IsStringUTF8(binding.document_identity) &&
++         !binding.owner_session_id.empty() &&
++         binding.owner_session_id.size() <= 128u &&
++         base::IsStringUTF8(binding.owner_session_id);
++}
++
++class ScopedStringWiper {
++ public:
++  ScopedStringWiper(
++      std::string* value,
++      PrometheusSupervisionTestBootstrap::ZeroizationCallback zeroization)
++      : value_(value), zeroization_(std::move(zeroization)) {}
++  ~ScopedStringWiper() {
++    if (!value_ || value_->empty()) {
++      return;
++    }
++    const size_t bytes = value_->size();
++    crypto::SecureZeroBuffer(base::as_writable_byte_span(*value_));
++    value_->clear();
++    if (zeroization_) {
++      zeroization_.Run("bootstrap_config", bytes);
++    }
++  }
++
++ private:
++  raw_ptr<std::string> value_;
++  PrometheusSupervisionTestBootstrap::ZeroizationCallback zeroization_;
++};
++
++std::optional<PrometheusSupervisionTestBootstrapFileFacts> InspectConfigFile(
++    const base::FilePath& path) {
++#if BUILDFLAG(IS_POSIX)
++  base::stat_wrapper_t information;
++  if (base::File::Lstat(path, &information) != 0) {
++    return std::nullopt;
++  }
++  return PrometheusSupervisionTestBootstrapFileFacts{
++      .is_regular_file = S_ISREG(information.st_mode),
++      .is_symbolic_link = S_ISLNK(information.st_mode),
++      .is_owned_by_current_user = information.st_uid == geteuid(),
++      .posix_permissions = information.st_mode & 0777,
++      .size = information.st_size,
++  };
++#else
++  return std::nullopt;
++#endif
++}
++
++std::optional<std::string> ReadConfigFile(const base::FilePath& path,
++                                          size_t max_bytes) {
++#if BUILDFLAG(IS_POSIX)
++  base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ |
++                            base::File::FLAG_NO_FOLLOW);
++  if (!file.IsValid()) {
++    return std::nullopt;
++  }
++  base::stat_wrapper_t information;
++  if (base::File::Fstat(file.GetPlatformFile(), &information) != 0 ||
++      !S_ISREG(information.st_mode) || information.st_uid != geteuid() ||
++      (information.st_mode & 0777) != kRequiredFilePermissions ||
++      information.st_size <= 0 ||
++      static_cast<uint64_t>(information.st_size) > max_bytes) {
++    return std::nullopt;
++  }
++  std::string contents(static_cast<size_t>(information.st_size), '\0');
++  if (!file.ReadAndCheck(0, base::as_writable_byte_span(contents))) {
++    crypto::SecureZeroBuffer(base::as_writable_byte_span(contents));
++    return std::nullopt;
++  }
++  return contents;
++#else
++  return std::nullopt;
++#endif
++}
++
++}  // namespace
+ 
+ PrometheusSupervisionTestBootstrap::PrometheusSupervisionTestBootstrap() =
+     default;
+@@ -29,59 +353,324 @@ PrometheusSupervisionTestBootstrap::Create(
+     NowCallback now,
+     ZeroizationCallback zeroization,
+     std::unique_ptr<PrometheusSupervisionTestBootstrap>* bootstrap) {
+-  static_cast<void>(command_line);
+-  static_cast<void>(is_official_build);
+-  static_cast<void>(profile_facts);
+-  static_cast<void>(file_access);
+-  static_cast<void>(binding);
+-  static_cast<void>(create_pairing_code);
+-  static_cast<void>(now);
+-  static_cast<void>(zeroization);
+   if (bootstrap) {
+     bootstrap->reset();
+   }
+-  return PrometheusSupervisionTestBootstrapResult::kNotRequested;
++  const bool has_test_type =
++      command_line.HasSwitch(kPrometheusRuntimeTestTypeSwitch);
++  const bool has_config =
++      command_line.HasSwitch(kPrometheusSupervisionTestBootstrapSwitch);
++  if (!has_test_type && !has_config) {
++    return PrometheusSupervisionTestBootstrapResult::kNotRequested;
++  }
++  if (!has_test_type || !has_config ||
++      command_line.GetSwitchValueASCII(kPrometheusRuntimeTestTypeSwitch) !=
++          kPrometheusRuntimeTestType) {
++    return PrometheusSupervisionTestBootstrapResult::kLaunchDenied;
++  }
++#if defined(OFFICIAL_BUILD)
++  return PrometheusSupervisionTestBootstrapResult::kOfficialBuildDenied;
++#endif
++  if (is_official_build) {
++    return PrometheusSupervisionTestBootstrapResult::kOfficialBuildDenied;
++  }
++  if (!profile_facts.is_regular_profile ||
++      !profile_facts.is_disposable_profile || profile_facts.is_off_the_record) {
++    return PrometheusSupervisionTestBootstrapResult::kProfileDenied;
++  }
++  if (!bootstrap || !file_access.inspect || !file_access.read || !binding ||
++      !create_pairing_code || !now) {
++    return PrometheusSupervisionTestBootstrapResult::kFileDenied;
++  }
++
++  const base::FilePath requested_path = command_line.GetSwitchValuePath(
++      kPrometheusSupervisionTestBootstrapSwitch);
++  if (requested_path.empty() || !requested_path.IsAbsolute() ||
++      requested_path.ReferencesParent()) {
++    return PrometheusSupervisionTestBootstrapResult::kPathDenied;
++  }
++  base::FilePath path;
++#if BUILDFLAG(IS_POSIX)
++  const std::optional<base::FilePath> resolved_path =
++      base::MakeAbsoluteFilePathNoResolveSymbolicLinks(requested_path);
++  if (!resolved_path) {
++    return PrometheusSupervisionTestBootstrapResult::kPathDenied;
++  }
++  path = *resolved_path;
++#else
++  return PrometheusSupervisionTestBootstrapResult::kPathDenied;
++#endif
++
++  const std::optional<PrometheusSupervisionTestBootstrapFileFacts> file_facts =
++      file_access.inspect.Run(path);
++  if (!file_facts || !file_facts->is_regular_file ||
++      file_facts->is_symbolic_link || !file_facts->is_owned_by_current_user ||
++      file_facts->posix_permissions != kRequiredFilePermissions ||
++      file_facts->size <= 0 ||
++      static_cast<uint64_t>(file_facts->size) >
++          kMaxPrometheusSupervisionTestBootstrapBytes) {
++    return PrometheusSupervisionTestBootstrapResult::kFileDenied;
++  }
++
++  std::optional<std::string> contents =
++      file_access.read.Run(path, kMaxPrometheusSupervisionTestBootstrapBytes);
++  if (!contents || contents->size() != static_cast<size_t>(file_facts->size)) {
++    return PrometheusSupervisionTestBootstrapResult::kReadDenied;
++  }
++  ScopedStringWiper wipe_contents(&*contents, zeroization);
++  if (!base::IsStringUTF8(*contents)) {
++    return PrometheusSupervisionTestBootstrapResult::kJsonDenied;
++  }
++  const ObjectScanResult scan = ScanObjectKeys(*contents);
++  if (scan == ObjectScanResult::kDuplicateKey) {
++    return PrometheusSupervisionTestBootstrapResult::kSchemaDenied;
++  }
++  if (scan != ObjectScanResult::kValid) {
++    return PrometheusSupervisionTestBootstrapResult::kJsonDenied;
++  }
++
++  std::optional<base::DictValue> parsed =
++      base::JSONReader::ReadDict(*contents, base::JSON_PARSE_RFC, 4);
++  if (!parsed) {
++    return PrometheusSupervisionTestBootstrapResult::kJsonDenied;
++  }
++  if (!HasExactSchemaKeys(*parsed)) {
++    return PrometheusSupervisionTestBootstrapResult::kSchemaDenied;
++  }
++  const std::optional<int> schema_version = parsed->FindInt("schema_version");
++  std::string* challenge = parsed->FindString("challenge");
++  const std::string* expected_origin = parsed->FindString("expected_origin");
++  const std::optional<int> pairing_slots = parsed->FindInt("pairing_slots");
++  const base::ListValue* dialog_responses =
++      parsed->FindList("dialog_responses");
++  if (schema_version != 1 || !challenge || !IsLowerHexChallenge(*challenge) ||
++      !expected_origin ||
++      pairing_slots != kPrometheusSupervisionTestPairingSlots ||
++      !dialog_responses || dialog_responses->size() != 2u ||
++      !(*dialog_responses)[0].is_string() ||
++      (*dialog_responses)[0].GetString() != "enable_control:accept" ||
++      !(*dialog_responses)[1].is_string() ||
++      (*dialog_responses)[1].GetString() != "remote_action:accept") {
++    return PrometheusSupervisionTestBootstrapResult::kSchemaDenied;
++  }
++  if (!IsLoopbackHttpOrigin(*expected_origin)) {
++    return PrometheusSupervisionTestBootstrapResult::kOriginDenied;
++  }
++
++  const std::optional<PrometheusSupervisionTestBindingFacts> initial_binding =
++      binding.Run();
++  if (!initial_binding ||
++      !IsValidInitialBinding(*initial_binding, *expected_origin)) {
++    return PrometheusSupervisionTestBootstrapResult::kBindingDenied;
++  }
++
++  auto state = std::unique_ptr<PrometheusSupervisionTestBootstrap>(
++      new PrometheusSupervisionTestBootstrap());
++  state->binding_ = std::move(binding);
++  state->create_pairing_code_ = std::move(create_pairing_code);
++  state->now_ = std::move(now);
++  state->zeroization_ = std::move(zeroization);
++  state->initial_binding_ = *initial_binding;
++  state->challenge_ = std::move(*challenge);
++  state->pinned_session_id_ = initial_binding->owner_session_id;
++  state->expires_at_ = state->now_.Run() + kPrometheusSupervisionTestHandoffTtl;
++  *bootstrap = std::move(state);
++  return PrometheusSupervisionTestBootstrapResult::kApplied;
+ }
+ 
+ SupervisionTestHandoffDispatcher
+ PrometheusSupervisionTestBootstrap::CreateGatewayDispatcher() {
+-  return {};
++  return {
++      .dispatch =
++          base::BindRepeating(&PrometheusSupervisionTestBootstrap::Dispatch,
++                              weak_ptr_factory_.GetWeakPtr()),
++      .shutdown =
++          base::BindRepeating(&PrometheusSupervisionTestBootstrap::Shutdown,
++                              weak_ptr_factory_.GetWeakPtr()),
++  };
++}
++
++bool PrometheusSupervisionTestBootstrap::HasExactLiveBinding(
++    const PrometheusSupervisionTestBindingFacts& binding) const {
++  return binding.profile_live && binding.browser_live && binding.target_live &&
++         binding.document_live && binding.is_regular_profile &&
++         !binding.is_off_the_record &&
++         binding.profile_identity == initial_binding_.profile_identity &&
++         binding.browser_identity == initial_binding_.browser_identity &&
++         binding.stable_tab_id == initial_binding_.stable_tab_id &&
++         binding.expected_origin == initial_binding_.expected_origin &&
++         binding.document_identity == initial_binding_.document_identity &&
++         binding.owner_session_id == initial_binding_.owner_session_id &&
++         !binding.owner_session_id.empty();
++}
++
++bool PrometheusSupervisionTestBootstrap::CheckLifetimeAndBinding() {
++  if (terminal_) {
++    return false;
++  }
++  if (!now_ || now_.Run() >= expires_at_) {
++    ClearTerminalState(SupervisionTestHandoffStatus::kExpired);
++    return false;
++  }
++  const std::optional<PrometheusSupervisionTestBindingFacts> current =
++      binding_ ? binding_.Run() : std::nullopt;
++  if (!current || !HasExactLiveBinding(*current)) {
++    ClearTerminalState(SupervisionTestHandoffStatus::kTargetLost);
++    return false;
++  }
++  return true;
++}
++
++void PrometheusSupervisionTestBootstrap::Dispatch(
++    SupervisionTestHandoffRequest request,
++    SupervisionTestHandoffDispatcher::ResultCallback callback) {
++  if (terminal_) {
++    std::move(callback).Run(
++        SupervisionTestHandoffResult::Failure(terminal_status_));
++    return;
++  }
++  if (attempts_ >= kMaxPrometheusSupervisionTestHandoffAttempts) {
++    ClearTerminalState(SupervisionTestHandoffStatus::kExhausted);
++    std::move(callback).Run(
++        SupervisionTestHandoffResult::Failure(terminal_status_));
++    return;
++  }
++  ++attempts_;
++  if (!CheckLifetimeAndBinding()) {
++    std::move(callback).Run(
++        SupervisionTestHandoffResult::Failure(terminal_status_));
++    return;
++  }
++
++  const bool challenge_matches =
++      request.challenge.size() == challenge_.size() &&
++      crypto::SecureMemEqual(base::as_byte_span(request.challenge),
++                             base::as_byte_span(challenge_));
++  if (!challenge_matches || request.session_id != pinned_session_id_) {
++    if (attempts_ >= kMaxPrometheusSupervisionTestHandoffAttempts) {
++      ClearTerminalState(SupervisionTestHandoffStatus::kExhausted);
++      std::move(callback).Run(
++          SupervisionTestHandoffResult::Failure(terminal_status_));
++      return;
++    }
++    std::move(callback).Run(SupervisionTestHandoffResult::Failure(
++        SupervisionTestHandoffStatus::kDenied));
++    return;
++  }
++  if (delivered_slots_ >= kPrometheusSupervisionTestPairingSlots) {
++    std::move(callback).Run(SupervisionTestHandoffResult::Failure(
++        SupervisionTestHandoffStatus::kExhausted));
++    return;
++  }
++  if (request.sequence != delivered_slots_ + 1) {
++    std::move(callback).Run(SupervisionTestHandoffResult::Failure(
++        SupervisionTestHandoffStatus::kOutOfOrder));
++    return;
++  }
++  if (request.sequence == 2 && redeemed_slots_ < 1) {
++    std::move(callback).Run(SupervisionTestHandoffResult::Failure(
++        SupervisionTestHandoffStatus::kNotReady));
++    return;
++  }
++
++  const int sequence = request.sequence;
++  ++delivered_slots_;
++  std::optional<std::string> code =
++      create_pairing_code_ ? create_pairing_code_.Run() : std::nullopt;
++  if (!code || code->empty() || code->size() > kMaxPairingCodeBytes ||
++      !base::IsStringUTF8(*code)) {
++    if (code) {
++      ClearSensitiveString("pairing_code", &*code);
++    }
++    ClearTerminalState(SupervisionTestHandoffStatus::kNotReady);
++    std::move(callback).Run(
++        SupervisionTestHandoffResult::Failure(terminal_status_));
++    return;
++  }
++  SupervisionTestHandoffResult result =
++      SupervisionTestHandoffResult::Delivered(sequence, *code);
++  ClearSensitiveString("pairing_code", &*code);
++  std::move(callback).Run(std::move(result));
+ }
+ 
+ bool PrometheusSupervisionTestBootstrap::ObservePairingRedeemed(int sequence) {
+-  static_cast<void>(sequence);
+-  return false;
++  if (!CheckLifetimeAndBinding() || sequence != redeemed_slots_ + 1 ||
++      sequence > delivered_slots_ ||
++      sequence > kPrometheusSupervisionTestPairingSlots) {
++    return false;
++  }
++  ++redeemed_slots_;
++  MaybeComplete();
++  return true;
+ }
+ 
+ std::optional<PrometheusSupervisionTestDialogResponse>
+ PrometheusSupervisionTestBootstrap::ConsumeDialogResponse(
+     PrometheusSupervisionTestDialog dialog) {
+-  static_cast<void>(dialog);
+-  return std::nullopt;
++  if (!CheckLifetimeAndBinding()) {
++    return std::nullopt;
++  }
++  const PrometheusSupervisionTestDialog expected =
++      dialog_responses_consumed_ == 0
++          ? PrometheusSupervisionTestDialog::kEnableControl
++          : PrometheusSupervisionTestDialog::kRemoteAction;
++  if (dialog_responses_consumed_ >= 2 || dialog != expected) {
++    return std::nullopt;
++  }
++  ++dialog_responses_consumed_;
++  return PrometheusSupervisionTestDialogResponse::kAccept;
++}
++
++void PrometheusSupervisionTestBootstrap::MaybeComplete() {
++  if (redeemed_slots_ == kPrometheusSupervisionTestPairingSlots) {
++    ClearTerminalState(SupervisionTestHandoffStatus::kExhausted);
++  }
+ }
+ 
+ void PrometheusSupervisionTestBootstrap::Shutdown() {
+-  terminal_ = true;
+-  weak_ptr_factory_.InvalidateWeakPtrs();
++  if (!terminal_) {
++    ClearTerminalState(SupervisionTestHandoffStatus::kShutdown);
++  }
+ }
+ 
+-void PrometheusSupervisionTestBootstrap::Dispatch(
+-    SupervisionTestHandoffRequest request,
+-    SupervisionTestHandoffDispatcher::ResultCallback callback) {
+-  static_cast<void>(request);
+-  std::move(callback).Run(SupervisionTestHandoffResult::Failure(
+-      SupervisionTestHandoffStatus::kNotReady));
++void PrometheusSupervisionTestBootstrap::ClearSensitiveString(
++    std::string_view buffer_name,
++    std::string* value) {
++  if (!value || value->empty()) {
++    return;
++  }
++  const size_t bytes = value->size();
++  crypto::SecureZeroBuffer(base::as_writable_byte_span(*value));
++  value->clear();
++  if (zeroization_) {
++    zeroization_.Run(buffer_name, bytes);
++  }
+ }
+ 
+ void PrometheusSupervisionTestBootstrap::ClearTerminalState(
+     SupervisionTestHandoffStatus status) {
+-  static_cast<void>(status);
+-  Shutdown();
++  if (terminal_) {
++    return;
++  }
++  terminal_ = true;
++  terminal_status_ = status;
++  ClearSensitiveString("challenge", &challenge_);
++  ClearSensitiveString("session_id", &pinned_session_id_);
++  ClearSensitiveString("document_identity",
++                       &initial_binding_.document_identity);
++  ClearSensitiveString("owner_session_id", &initial_binding_.owner_session_id);
++  initial_binding_.expected_origin.clear();
++  binding_.Reset();
++  create_pairing_code_.Reset();
++  now_.Reset();
+ }
+ 
+ PrometheusSupervisionTestBootstrapFileAccess
+ CreatePrometheusSupervisionTestBootstrapFileAccess() {
+-  return {};
++  return {
++      .inspect = base::BindRepeating(&InspectConfigFile),
++      .read = base::BindRepeating(&ReadConfigFile),
++  };
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h
+index 571400fb4e..aed6b54679 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h
++++ b/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h
+@@ -142,6 +142,11 @@ class PrometheusSupervisionTestBootstrap {
+ 
+   void Dispatch(SupervisionTestHandoffRequest request,
+                 SupervisionTestHandoffDispatcher::ResultCallback callback);
++  bool HasExactLiveBinding(
++      const PrometheusSupervisionTestBindingFacts& binding) const;
++  bool CheckLifetimeAndBinding();
++  void MaybeComplete();
++  void ClearSensitiveString(std::string_view buffer_name, std::string* value);
+   void ClearTerminalState(SupervisionTestHandoffStatus status);
+ 
+   BindingCallback binding_;
+@@ -157,6 +162,8 @@ class PrometheusSupervisionTestBootstrap {
+   int dialog_responses_consumed_ = 0;
+   int attempts_ = 0;
+   bool terminal_ = false;
++  SupervisionTestHandoffStatus terminal_status_ =
++      SupervisionTestHandoffStatus::kShutdown;
+ 
+   base::WeakPtrFactory<PrometheusSupervisionTestBootstrap> weak_ptr_factory_{
+       this};
+-- 
+2.50.1 (Apple Git-155)
+
