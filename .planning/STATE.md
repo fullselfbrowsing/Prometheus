@@ -7,7 +7,7 @@ current_phase_name: Supervision, Pairing, and Remote Control
 current_plan: 26
 status: executing
 stopped_at: Completed 21-25-PLAN.md
-last_updated: "2026-07-25T04:05:23.000Z"
+last_updated: "2026-07-25T04:30:02.000Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 14
@@ -57,7 +57,7 @@ work is 142 of 144 existing plans summarized (99%).
 
 - Phase 21 Plan 25: the intended 3-case dialog RED, 3/3 dialog GREEN,
   1/1 action completion regression, signed built-app two-viewer/MCP smoke,
-  7/7 production-binding/confirmation browser gate, and 21/21 final Node gate
+  8/8 production-binding/confirmation browser gate, and 21/21 final Node gate
   pass with actual native widgets, exact Browser/kind/order, shared capture,
   independent cursors, real actions, conflict/resync, sanitized readiness,
   exact-once pending cancellation, ordered unbind/shutdown, recursive
@@ -418,7 +418,7 @@ work is 142 of 144 existing plans summarized (99%).
 | Phase 21 P22 | 1h48min | 3 tasks | 6 files |
 | Phase 21 P23 | 50min | 3 tasks | 9 files |
 | Phase 21 P24 | 50min | 2 tasks | 8 files |
-| Phase 21 P25 | 2h35min | 3 tasks | 15 files |
+| Phase 21 P25 | 3h | 3 tasks | 15 files |
 
 ## Blockers and Deferred Items
 
@@ -433,7 +433,7 @@ work is 142 of 144 existing plans summarized (99%).
 
 ## Session
 
-**Last Date:** 2026-07-25T04:05:23.000Z
+**Last Date:** 2026-07-25T04:30:02.000Z
 **Stopped At:** Completed 21-25-PLAN.md
 **Resume File:** None
 
