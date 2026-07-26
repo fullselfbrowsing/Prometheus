@@ -1,10 +1,11 @@
 ---
 phase: 21
 slug: supervision-pairing-and-remote-control
-status: draft
+status: passed
 nyquist_compliant: true
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-07-21
+verified: 2026-07-26T04:36:30Z
 ---
 
 # Phase 21 — Validation Strategy
@@ -53,11 +54,11 @@ release activity and cannot replace any Phase 21 gate.
 
 | Requirement | Planned behavior | Threat refs | Minimum automated evidence | Status |
 |-------------|------------------|-------------|----------------------------|--------|
-| SUP-01 | The actual tab strip, selected-tab side panel, Control Panel, and accessible names show browser-proven Agent/viewer/controller/action state without secret or opaque authority material. | T-21-01, T-21-07, T-21-08 | Real-tab Views/browser tests, side-panel exact-tab tests, Control Panel observer tests, accessibility/geometry/theme/OTR/resource gates. | pending |
-| SUP-02 | Each viewer receives one strict APC-derived baseline and ordered bounded structural diffs; renderer dirty/overflow signals trigger browser recapture, deterministic diff, or full resync. | T-21-04, T-21-06 | Projection/redaction units, diff property fixtures, document-observer lifecycle tests, navigation/backpressure/resync browser tests. | pending |
-| SUP-03 | Browser-stamped session/tab/owner/document-epoch/sequence identity rejects unknown, stale, duplicate, out-of-order, gapped, mismatched, or late messages and callbacks. | T-21-02, T-21-05 | Service/codec/gateway units plus navigation, target replacement, queued callback, and two-client mismatch browser/smoke tests. | pending |
-| SUP-04 | One-time local pairing supports visible code/expiry/redeem/revoke/end/audit state, multiple independent viewers, and exactly one controller. | T-21-01, T-21-05, T-21-06, T-21-07 | Digest/TTL/attempt/replacement units, gateway endpoint tests, complete Control Panel lifecycle tests, and built-app multi-client smoke. | pending |
-| SUP-05 | View-only never mutates; control requires local approval and unchanged nonempty Agent ownership; existing internal-surface policy, exact frame/document validation, consequential confirmation, and native vault confirmation remain authoritative. | T-21-02, T-21-03, T-21-05, T-21-08 | Admission/dispatcher/confirmation units and browser tests for owner loss, implicit-claim denial, view-only denial, policy/vault preservation, stop/revoke/expiry, and late action rejection. | pending |
+| SUP-01 | The actual tab strip, selected-tab side panel, Control Panel, and accessible names show browser-proven Agent/viewer/controller/action state without secret or opaque authority material. | T-21-01, T-21-07, T-21-08 | Real-tab Views/browser tests, side-panel exact-tab tests, Control Panel observer tests, accessibility/geometry/theme/OTR/resource gates. | passed |
+| SUP-02 | Each viewer receives one strict APC-derived baseline and ordered bounded structural diffs; renderer dirty/overflow signals trigger browser recapture, deterministic diff, or full resync. | T-21-04, T-21-06 | Projection/redaction units, diff property fixtures, document-observer lifecycle tests, navigation/backpressure/resync browser tests. | passed |
+| SUP-03 | Browser-stamped session/tab/owner/document-epoch/sequence identity rejects unknown, stale, duplicate, out-of-order, gapped, mismatched, or late messages and callbacks. | T-21-02, T-21-05 | Service/codec/gateway units plus navigation, target replacement, queued callback, and two-client mismatch browser/smoke tests. | passed |
+| SUP-04 | One-time local pairing supports visible code/expiry/redeem/revoke/end/audit state, multiple independent viewers, and exactly one controller. | T-21-01, T-21-05, T-21-06, T-21-07 | Digest/TTL/attempt/replacement units, gateway endpoint tests, complete Control Panel lifecycle tests, and built-app multi-client smoke. | passed |
+| SUP-05 | View-only never mutates; control requires local approval and unchanged nonempty Agent ownership; existing internal-surface policy, exact frame/document validation, consequential confirmation, and native vault confirmation remain authoritative. | T-21-02, T-21-03, T-21-05, T-21-08 | Admission/dispatcher/confirmation units and browser tests for owner loss, implicit-claim denial, view-only denial, policy/vault preservation, stop/revoke/expiry, and late action rejection. | passed |
 
 ## Threat References
 
@@ -81,27 +82,27 @@ No independent setup plan is needed. The first task that owns each seam must
 create compileable RED fixtures, list-guard the exact tests, prove the expected
 failure, and then implement GREEN behavior in the same bounded plan.
 
-- [ ] Closed types/codec task — pairing/session/stream/action enums, field
+- [x] Closed types/codec task — pairing/session/stream/action enums, field
   bounds, serialization privacy, legal lifecycle, and exact allowed-key tests.
-- [ ] Profile service task — one-use digest redemption, replacement, attempts,
+- [x] Profile service task — one-use digest redemption, replacement, attempts,
   TTL, independent viewers, sole controller, stop/revoke/end, Agent owner loss,
   tab/Browser/profile shutdown, OTR denial, and exactly-once observers.
-- [ ] Projection/diff task — deterministic strict baseline, insert/remove/
+- [x] Projection/diff task — deterministic strict baseline, insert/remove/
   update/reorder, independent cursors, duplicate/gap/out-of-order/overflow,
   epoch replacement, restricted frames, and password/payment/OTP/unknown
   structural redaction.
-- [ ] Renderer/content task — document-lifetime observer binding, coalesced
+- [x] Renderer/content task — document-lifetime observer binding, coalesced
   dirty signal, bounded overflow, navigation teardown, and stale remote tests.
-- [ ] Gateway/MCP task — closed local endpoint operations, auth/Host/Origin/
+- [x] Gateway/MCP task — closed local endpoint operations, auth/Host/Origin/
   method/content-type/body/inflight bounds, five native empty schemas,
   54/12/22/0/2 counts, secret-free compatibility results, and ten-key health.
-- [ ] Remote action task — view-only/empty-owner/owner-mismatch/controller/
+- [x] Remote action task — view-only/empty-owner/owner-mismatch/controller/
   paused-epoch denials, ordinary allowlist, consequential confirmation, vault
   preservation, and late callback invalidation.
-- [ ] Native/WebUI task — real badge construction/invalidation, selected-tab
+- [x] Native/WebUI task — real badge construction/invalidation, selected-tab
   side strip, one-shot code DOM removal, full state/copy matrix, responsive
   widths, theme/OTR, focus/live-region, malformed-message, and privacy scans.
-- [ ] Closeout task — built-app two-client fixture for multiple viewers,
+- [x] Closeout task — built-app two-client fixture for multiple viewers,
   single-controller conflict, baseline/diff/navigation resync, stop/revoke/
   expiry, late-action denial, complete regressions, and patch identity.
 
@@ -123,35 +124,79 @@ suite or static gate it owns.
 
 ## Final Gate Checklist
 
-- [ ] every new/modified native, renderer, content, Views, and browser object
+- [x] every new/modified native, renderer, content, Views, and browser object
   compiles through exact queried commands; app and focused test binaries link;
   reviewed Ninja metadata remains byte-identical
-- [ ] Phase 21 service/codec/projection/diff/action native suites are non-empty
+- [x] Phase 21 service/codec/projection/diff/action native suites are non-empty
   and green
-- [ ] document-observer/content/renderer suites are non-empty and green across
+- [x] document-observer/content/renderer suites are non-empty and green across
   dirty, overflow, navigation, teardown, and stale callback cases
-- [ ] real badge, selected-tab side panel, Control Panel, confirmation, pairing,
+- [x] real badge, selected-tab side panel, Control Panel, confirmation, pairing,
   stream, and remote-control browser suites pass serially with zero retries
-- [ ] complete Node TAP passes with five native supervision names and exact
+- [x] complete Node TAP passes with five native supervision names and exact
   `54 native / 12 alias / 22 typed stub / 0 later phase / 2 removed` inventory
-- [ ] built-app two-client smoke proves multiple viewers, one controller,
+- [x] built-app two-client smoke proves multiple viewers, one controller,
   view-only denial, navigation resync, conflict, stop, revoke, expiry, and late
   action rejection over the existing authenticated loopback gateway
-- [ ] Phase 17–20 native, browser, transport, WebUI, vault, and Node regression
+- [x] Phase 17–20 native, browser, transport, WebUI, vault, and Node regression
   suites pass
-- [ ] recursive secret/page/authority privacy scans pass with exact sentinels
+- [x] recursive secret/page/authority privacy scans pass with exact sentinels
   absent from all prohibited boundaries and code present only in the one-shot
   intentional UI response
-- [ ] OTR/cross-profile/cross-window, target mismatch, owner loss, tab close,
+- [x] OTR/cross-profile/cross-window, target mismatch, owner loss, tab close,
   Browser/profile shutdown, and callback-race gates fail closed exactly once
-- [ ] responsive 320/480/720/1024, dark/light, keyboard/focus/live-region,
+- [x] responsive 320/480/720/1024, dark/light, keyboard/focus/live-region,
   packaged resource, and no-remote-resource automated checks pass
-- [ ] no LAN/cloud/WebSocket/video/QR/external-package/remote-asset scope enters
+- [x] no LAN/cloud/WebSocket/video/QR/external-package/remote-asset scope enters
   source or resources
-- [ ] preservation, GPL boundary, artifact isolation, stable patch-body
+- [x] preservation, GPL boundary, artifact isolation, stable patch-body
   identity, mutation self-test, root/nested diff, and `git diff --check` pass
-- [ ] human visual UAT is recorded `not_run` and routed to the non-blocking
+- [x] human visual UAT is recorded `not_run` and routed to the non-blocking
   Phase 24 release review without a pass claim
+
+## Executed Closeout Evidence
+
+The sole closeout command is:
+
+    bash .planning/chromium/verify-phase-21.sh
+
+Fresh list-guarded results recorded under
+`.context/chromium/src/out/Default/phase21-closeout/` are:
+
+| Cohort or gate | Result |
+|----------------|--------|
+| Phase 21 native | 189/189 passed; fail 0; skip 0 |
+| Phase 20 native regression | 208/208 passed; fail 0; skip 0 |
+| Phase 17–19 native regression | 84/84 passed; fail 0; skip 0 |
+| Phase 20 content regression | 21/21 passed; fail 0; skip 0 |
+| Phase 21 browser | 50/50 passed serially with retry limit zero |
+| Phase 20 browser regression | 37/37 passed serially with retry limit zero |
+| Phase 17–19 browser regression | 83/83 passed serially with retry limit zero |
+| Phase 21 Blink renderer | 12/12 passed |
+| Phase 19 renderer security regression | 3/3 passed |
+| Complete Node TAP | 81/81 passed; fail/cancelled/skipped/todo all zero |
+| Compatibility catalog | exactly 54 native / 12 alias / 22 typed stub / 0 later phase / 2 removed |
+| Built application smoke | exact `Prometheus MCP live smoke passed.` marker |
+| Patch chain | 71/71 ordered, nonempty, source-only patches with stable identities; valid body mutation rejected |
+| Environment and preservation | environment, GPL, artifact isolation, five packaged WebUI resources, preservation, root/nested diff, and byte-preservation gates passed |
+
+The production secret scan now requires all six browser/Blink source paths and
+treats only ripgrep status 1 as a clean result; status 0 and execution errors
+fail. Isolated probes proved clean-source status, detection of a synthetic
+secret-shaped token, rejection of a missing source, and no false match on the
+ordinary `task-region__heading` identifier. The document gate now reports a
+missing `21-VERIFICATION.md` through `require_file` instead of exiting
+silently. The final integrated run re-executes both gates with this ledger and
+the verification report present.
+
+Reviewed artifact SHA-256 values are unchanged before and after every complete
+or focused execution:
+
+- `.ninja_log`: `eccf79f3dfdc6c8d51af20f56bf1973eb35ff486b1dab9b2b0653cc37b586dce`
+- `.ninja_deps`: `ab1a6ad4639e8db53459384f8636dc53f396397363f3c2751bcdadc0349947c0`
+- `libblink_modules.dylib`: `663af12ba1a986db789c4c05967dda8b3b3615030e6cecb569de0f74ba01ff8e`
+- `libblink_modules.dylib.TOC`: `bdc164a10b8616fa099b089a1f4542c789a584c84212b0f4d92b616701a3ce9b`
+- framework `resources.pak`: `c9c541d780ad9c0054eaec0abd8453703972ebcc3ce3607d06e3c80e5a8f79ff`
 
 ## Manual-Only Verifications
 
@@ -167,10 +212,11 @@ functional, security, accessibility, responsive, or privacy automation.
 - [x] No watch-mode command, external service, live secret, or human action is
   required for acceptance.
 - [x] Sampling continuity prevents three consecutive unverified task commits.
-- [x] `nyquist_compliant: true` is set; `wave_0_complete` remains false until
-  the owning RED fixtures are implemented and green.
+- [x] `nyquist_compliant: true` and `wave_0_complete: true` are set after every
+  owning RED fixture and its retained GREEN gate passed.
 
-**Approval:** strategy ready for plan binding; execution evidence pending
+**Approval:** automated validation passed; subjective human visual UAT remains
+`not_run` and non-blocking Phase 24 work
 
 ---
 *Phase: 21-supervision-pairing-and-remote-control*

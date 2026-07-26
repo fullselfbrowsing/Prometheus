@@ -119,7 +119,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 ### Supervision And Remote Control
 
 - [x] **SUP-01**: Browser shows visible trusted-client, active-agent, and supervised-action state while external clients control the browser.
-- [ ] **SUP-02**: Browser can stream DOM-native snapshots/diffs or equivalent structured supervision data for live supervised sessions.
+- [x] **SUP-02**: Browser can stream DOM-native snapshots/diffs or equivalent structured supervision data for live supervised sessions.
 - [x] **SUP-03**: Supervision messages carry session identity so stale snapshots, diffs, or remote-control actions cannot affect the wrong tab/session.
 - [x] **SUP-04**: Browser supports safe remote-control pairing with visible pairing state, expiration, revocation, audit logs, and target validation.
 - [x] **SUP-05**: Remote control honors tab ownership, internal-surface permissions, vault boundaries, and user-visible confirmation requirements.
@@ -178,7 +178,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 | PAGE-01..PAGE-08 | Phase 18 | Complete |
 | MCP-01..MCP-07 | Phase 19 | Complete |
 | FSB-01..FSB-08 | Phase 20 | Complete |
-| SUP-01..SUP-05 | Phase 21 | Planned |
+| SUP-01..SUP-05 | Phase 21 | Complete |
 | EXT-01..EXT-06 | Phase 22 | Planned |
 | REL-01..REL-07 | Phases 23-24 | Planned |
 
@@ -187,10 +187,10 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 - v2 active requirements: 92 total
 - mapped to phases: 92
 - unmapped: 0
-- complete through Phase 20 so far: 74
+- complete through Phase 21: 79
 - in progress: 0
-- planned in Phases 21-24: 18
+- planned in Phases 22-24: 13
 - planned phases: 14
 
 ---
-*Requirements defined: 2026-06-17; reconciled: 2026-07-20*
+*Requirements defined: 2026-06-17; reconciled: 2026-07-25*

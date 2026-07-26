@@ -2607,9 +2607,18 @@ verify_closeout_static_boundaries() {
     "${ROOT_DIR}/tools/prometheus-mcp/bin"
     "${CHROMIUM_DIR}/chrome/browser/prometheus"
     "${CHROMIUM_DIR}/chrome/browser/resources/prometheus"
-    "${CHROMIUM_DIR}/chrome/renderer/prometheus_supervision_document.cc"
-    "${CHROMIUM_DIR}/chrome/renderer/prometheus_supervision_document.h"
+    "${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc"
+    "${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h"
   )
+  local production_path
+  for production_path in "${production[@]}"; do
+    if [[ -d "${production_path}" ]]; then
+      [[ -r "${production_path}" ]] \
+        || fail "unreadable production scan directory: ${production_path}"
+    else
+      require_file "${production_path}"
+    fi
+  done
   : >"${log}"
 
   require_literal 'net::IPAddress::IPv4Localhost()' "${gateway}"
@@ -2647,11 +2656,18 @@ verify_closeout_static_boundaries() {
       "${CHROMIUM_DIR}/chrome/browser/resources/prometheus" >>"${log}"; then
     fail 'remote Prometheus WebUI resource reference found'
   fi
-  if rg -n --pcre2 --glob '!**/*test*' --glob '!**/*browsertest*' \
-      'Bearer [A-Za-z0-9_-]{12,}|BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY|sk-[A-Za-z0-9_-]{12,}' \
-      "${production[@]}" >>"${log}"; then
-    fail 'literal secret-like material found in production sources'
-  fi
+  local secret_scan_status
+  set +e
+  rg -n --pcre2 --glob '!**/*test*' --glob '!**/*browsertest*' \
+      'Bearer [A-Za-z0-9_-]{12,}|BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY|(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{12,}' \
+      "${production[@]}" >>"${log}" 2>&1
+  secret_scan_status="$?"
+  set -e
+  case "${secret_scan_status}" in
+    0) fail 'literal secret-like material found in production sources' ;;
+    1) ;;
+    *) fail "production secret scan failed with status ${secret_scan_status}" ;;
+  esac
 
   local route_files="${LOG_DIR}/phase21-test-route-files.log"
   rg -l --fixed-strings '/v1/test/supervision-handoff' \
@@ -2669,7 +2685,6 @@ verify_closeout_static_boundaries() {
 
 verify_closeout_documents() {
   local verification="${PHASE_DIR}/21-VERIFICATION.md"
-  [[ -e "${verification}" ]] || return
   require_file "${verification}"
   rg -q '^human_uat: not_run$' "${verification}" \
     || fail 'verification does not record exact human_uat: not_run'
@@ -2684,7 +2699,7 @@ verify_closeout_documents() {
     rg -q "D-${decision}" "${verification}" \
       || fail "verification lacks D-${decision}"
   done
-  for threat in $(seq -w 1 8); do
+  for threat in 01 02 03 04 05 06 07 08; do
     rg -q "T-21-${threat}" "${verification}" \
       || fail "verification lacks T-21-${threat}"
   done
@@ -2693,7 +2708,7 @@ verify_closeout_documents() {
       | tr -d ' '
   )" -eq 26 ]] || fail 'verification closeout requires all 26 plan summaries'
   if rg -n --pcre2 \
-      'Bearer [A-Za-z0-9_-]{12,}|BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY|sk-[A-Za-z0-9_-]{12,}|[A-Z0-9]{4}-[A-Z0-9]{4}' \
+      'Bearer [A-Za-z0-9_-]{12,}|BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY|(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{12,}|(?<![A-Z0-9])[A-Z0-9]{4}-[A-Z0-9]{4}(?![A-Z0-9])' \
       "${verification}" \
       "${ROOT_DIR}/.planning/design/prometheus-browser/README.md" \
       "${ROOT_DIR}/.planning/preservation/FALKON-TO-CHROMIUM-PRESERVATION.md" \

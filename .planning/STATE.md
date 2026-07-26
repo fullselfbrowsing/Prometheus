@@ -5,16 +5,16 @@ milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
 current_plan: 26
-status: executing
-stopped_at: Completed 21-25-PLAN.md
-last_updated: "2026-07-25T04:30:02.000Z"
-last_activity: 2026-07-24
+status: complete
+stopped_at: Completed 21-26-PLAN.md
+last_updated: "2026-07-26T04:36:30.000Z"
+last_activity: 2026-07-25
 progress:
   total_phases: 14
-  completed_phases: 10
+  completed_phases: 11
   total_plans: 92
-  completed_plans: 91
-  percent: 71
+  completed_plans: 92
+  percent: 79
 ---
 
 # Project State
@@ -26,8 +26,9 @@ See: `.planning/PROJECT.md` (updated 2026-07-13)
 **Core value:** Agents get fast, precise, auditable whole-browser control
 through DOM/native structure rather than screenshots or extension injection.
 
-**Current focus:** Execute Phase 21 supervision, pairing, and remote control on
-the verified Chromium-native runtime and session authority model.
+**Current focus:** Phase 21 supervision, pairing, and remote control is
+complete. Preserve its exact closeout evidence while Phase 22 remains planned
+and `not_ready`.
 
 **Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
 external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
@@ -35,25 +36,35 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 
 ## Current Position
 
-Phase: 21 (Supervision, Pairing, and Remote Control) — EXECUTING
+Phase: 21 (Supervision, Pairing, and Remote Control) — COMPLETE
 Plan: 26 of 26
 **Current Phase:** 21
 **Current Phase Name:** Supervision, Pairing, and Remote Control
 **Total Phases:** 14
-**Completed Phases:** 10
-**Current Plan:** 25
+**Completed Phases:** 11
+**Current Plan:** 26
 **Total Plans in Phase:** 26
-**Status:** Ready to execute
-**Progress:** [██████████] 98%
-**Last Activity:** 2026-07-24
-**Last Activity Description:** Completed Plan 21-25 — actual native-dialog
-automation, secure built-app two-viewer/MCP lifecycle, production dispatcher
-readiness, pending cancellation, ordered teardown, and credential privacy.
+**Status:** Complete
+**Progress:** [██████████] 100%
+**Last Activity:** 2026-07-25
+**Last Activity Description:** Completed Plan 21-26 — exact closeout matrix,
+complete regression recovery, 71-patch replay, byte-preservation proof, and
+requirement/threat/UAT evidence.
 
-Milestone work is 91 of 92 existing plans complete (99%); cumulative project
-work is 142 of 144 existing plans summarized (99%).
+Milestone work is 92 of 92 existing plans complete (100%); cumulative project
+work is 143 of 144 existing plans summarized (99%).
 
 ## Latest Evidence
+
+- Phase 21 Plan 26: the no-argument closeout gate selects and passes 189 Phase
+  21 native, 12 Blink renderer, 50 Phase 21 browser, 208 Phase 20 native, 84
+  Phase 17–19 native, 21 Phase 20 content, 3 Phase 19 renderer, 37 Phase 20
+  browser, 83 Phase 17–19 browser, and 81 Node tests with frozen exact counts.
+  The 54/12/22/0/2 catalog, built-app smoke, static security boundaries,
+  environment/GPL/artifact/resource/preservation checks, five byte-identical
+  artifact hashes, clean nested state, and 71/71 ordered source-only stable
+  patch identities with mutation rejection pass. `human_uat: not_run`; Phase
+  22 remains `not_ready`.
 
 - Phase 21 Plan 25: the intended 3-case dialog RED, 3/3 dialog GREEN,
   1/1 action completion regression, signed built-app two-viewer/MCP smoke,
@@ -419,6 +430,7 @@ work is 142 of 144 existing plans summarized (99%).
 | Phase 21 P23 | 50min | 3 tasks | 9 files |
 | Phase 21 P24 | 50min | 2 tasks | 8 files |
 | Phase 21 P25 | 3h | 3 tasks | 15 files |
+| Phase 21 P26 | not recorded | 2 tasks | 9 root closeout files |
 
 ## Blockers and Deferred Items
 
@@ -433,11 +445,12 @@ work is 142 of 144 existing plans summarized (99%).
 
 ## Session
 
-**Last Date:** 2026-07-25T04:30:02.000Z
-**Stopped At:** Completed 21-25-PLAN.md
+**Last Date:** 2026-07-26T04:36:30.000Z
+**Stopped At:** Completed 21-26-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
 
-Execute `21-26-PLAN.md` to run the complete Phase 21 verification matrix and
-publish closeout evidence.
+Phase 22 remains planned and `not_ready`; no Phase 22 implementation has
+started. Begin its specification/planning workflow only when explicitly
+authorized.

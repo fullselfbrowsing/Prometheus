@@ -7,7 +7,7 @@
 
 ## v2.0 Chromium Engine Migration
 
-**Status:** In progress — Phase 20 is complete; Phase 21 Plan 25 is complete and Plan 26 is ready to execute.
+**Status:** In progress — Phase 21 is complete; Phase 22 remains planned and `not_ready`.
 
 ## Milestone Thesis
 
@@ -25,7 +25,7 @@ Prometheus keeps its product, design, and agent-native control thesis, but retir
 - [x] **Phase 18: Page Adapter, DOM Snapshot, and Action Verification** — Rebuild page reads, DOM snapshots, JS execution, action tools, waits, and verification on Chromium WebContents/frame primitives. (completed 2026-07-12)
 - [x] **Phase 19: MCP Bridge and Multi-Agent Runtime Compatibility** — Reconnect existing FSB-style MCP clients to the Chromium-native service with multi-agent policy and typed compatibility errors. (completed 2026-07-13)
 - [x] **Phase 20: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel** — Restore provider-backed tasks, logs, memory/site guides, vault boundaries, diagnostics, and dense operator controls. (completed 2026-07-20)
-- [ ] **Phase 21: Supervision, Pairing, and Remote Control** — Rebuild PhantomStream-style supervision and safe dashboard pairing on Chromium sessions.
+- [x] **Phase 21: Supervision, Pairing, and Remote Control** — Rebuild PhantomStream-style supervision and safe dashboard pairing on Chromium sessions. (completed 2026-07-25)
 - [ ] **Phase 22: Chrome Extension Ecosystem and Policy** — Preserve or enable Chromium extension support while separating extension permissions from Prometheus agent permissions.
 - [ ] **Phase 23: Migration Parity, Security Hardening, and De-Falkon Gate** — Prove v1/FSB parity, complete security review, retire Falkon assumptions, and fail the build on unreviewed legacy dependencies.
 - [ ] **Phase 24: Packaging, Release Validation, and Handoff** — Produce a reproducible macOS validation package with Chromium-based Prometheus identity, legal notices, docs, validation script, and next-milestone handoff.
@@ -355,7 +355,7 @@ Plans:
 
 **Requirements:** SUP-01, SUP-02, SUP-03, SUP-04, SUP-05
 
-**Plans:** 25/26 plans executed
+**Plans:** 26/26 plans complete
 
 Plans:
 **Wave 1**
@@ -460,7 +460,7 @@ Plans:
 
 **Wave 26** *(blocked on Wave 25 completion)*
 
-- [ ] 21-26-PLAN.md — Run exact verification, export ordered patches, and publish closeout evidence.
+- [x] 21-26-PLAN.md — Run exact verification, export ordered patches, and publish closeout evidence.
 
 **Success criteria:**
 
@@ -564,14 +564,13 @@ Plans:
 | 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 8/8 | Complete    | 2026-07-12 |
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 7/7 | Complete    | 2026-07-13 |
 | 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 14/14 | Complete    | 2026-07-20 |
-| 21. Supervision, Pairing, and Remote Control | v2.0 | 25/26 | In Progress|  |
+| 21. Supervision, Pairing, and Remote Control | v2.0 | 26/26 | Complete | 2026-07-25 |
 | 22. Chrome Extension Ecosystem and Policy | v2.0 | 0 | Planned | — |
 | 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
 | 24. Packaging, Release Validation, and Handoff | v2.0 | 0 | Planned | — |
 
-**Totals:** 14 phases, 10 complete; 91 of 92 existing v2.0 plans summarized.
-Phase 20 is complete; Phase 21 is current and in progress, with Plan 21-26 ready
-to execute.
+**Totals:** 14 phases, 11 complete; 92 of 92 existing v2.0 plans summarized.
+Phase 21 is complete. Phase 22 remains planned and `not_ready`.
 
 ## Future Work Beyond Current Milestone
 
