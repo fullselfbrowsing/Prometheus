@@ -1,0 +1,1081 @@
+From 3ea941de9a2b71b261f2bb49846a9e54136e2f49 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sun, 26 Jul 2026 01:48:32 -0500
+Subject: [PATCH 73/73] fix(21): bind destructive confirms to snapshot
+ generation
+
+---
+ .../prometheus_browser_main_extra_parts.cc    |  50 ++-
+ .../resources/prometheus/prometheus_webui.js  |  88 ++++-
+ .../prometheus_side_panel_runtime.cc          |  16 +-
+ .../prometheus_side_panel_runtime.h           |  12 +-
+ .../ui/webui/prometheus/prometheus_web_ui.cc  |  81 +++--
+ .../ui/webui/prometheus/prometheus_web_ui.h   |  12 +-
+ .../prometheus_web_ui_browsertest.cc          | 340 +++++++++++++++++-
+ 7 files changed, 526 insertions(+), 73 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index 15a2f89c3f..7007b0adcd 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -19,6 +19,7 @@
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/timer/timer.h"
++#include "base/unguessable_token.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/profiles/profile_manager.h"
+@@ -1016,7 +1017,7 @@ class NativePrometheusControlPanelRuntime final
+   struct SupervisionTargetRowBinding {
+     base::WeakPtr<tabs::TabInterface> target;
+     tabs::TabHandle handle;
+-    uint64_t generation = 0;
++    std::string snapshot_generation;
+   };
+ 
+   struct SupervisionConnectedRowBinding {
+@@ -1024,7 +1025,7 @@ class NativePrometheusControlPanelRuntime final
+     tabs::TabHandle handle;
+     base::UnguessableToken dashboard_session;
+     uint64_t authority_generation = 0;
+-    uint64_t generation = 0;
++    std::string snapshot_generation;
+   };
+ 
+   struct PairingPresentationBinding {
+@@ -1504,7 +1505,13 @@ class NativePrometheusControlPanelRuntime final
+   }
+ 
+   PrometheusControlSupervisionCreateResult ReplaceSupervisionPairing(
+-      size_t ordinal) override {
++      size_t ordinal,
++      std::string snapshot_generation) override {
++    if (!IsCurrentSupervisionSnapshot(snapshot_generation)) {
++      return {.status = "TARGET_LOST",
++              .accepted = false,
++              .recovery = InvalidSupervisionTarget().recovery};
++    }
+     return CreateOrReplaceSupervisionPairing(ordinal, /*replace=*/true);
+   }
+ 
+@@ -1545,7 +1552,11 @@ class NativePrometheusControlPanelRuntime final
+   }
+ 
+   PrometheusControlSupervisionOperationResult RevokeSupervisionSession(
+-      size_t ordinal) override {
++      size_t ordinal,
++      std::string snapshot_generation) override {
++    if (!IsCurrentSupervisionSnapshot(snapshot_generation)) {
++      return InvalidSupervisionTarget();
++    }
+     const std::optional<SupervisionConnectedRowBinding> row =
+         ResolveSupervisionConnectedRow(ordinal);
+     return row && supervision_service_
+@@ -1556,7 +1567,11 @@ class NativePrometheusControlPanelRuntime final
+   }
+ 
+   PrometheusControlSupervisionOperationResult EndTargetSupervision(
+-      size_t ordinal) override {
++      size_t ordinal,
++      std::string snapshot_generation) override {
++    if (!IsCurrentSupervisionSnapshot(snapshot_generation)) {
++      return InvalidSupervisionTarget();
++    }
+     tabs::TabInterface* const target = ResolveSupervisionTarget(ordinal);
+     return target && supervision_service_ && exact_browser_
+                ? ControlSupervisionOperationResult(
+@@ -1679,6 +1694,12 @@ class NativePrometheusControlPanelRuntime final
+                exact_browser_, target);
+   }
+ 
++  bool IsCurrentSupervisionSnapshot(
++      std::string_view snapshot_generation) const {
++    return !snapshot_generation.empty() &&
++           snapshot_generation == supervision_snapshot_generation_;
++  }
++
+   tabs::TabInterface* ResolveSupervisionTarget(size_t ordinal) const {
+     if (ordinal >= supervision_target_rows_.size()) {
+       return nullptr;
+@@ -1688,7 +1709,8 @@ class NativePrometheusControlPanelRuntime final
+     tabs::TabInterface* const target = row.target.get();
+     TabListInterface* const tab_list =
+         exact_browser_ ? TabListInterface::From(exact_browser_) : nullptr;
+-    if (!target || row.generation != supervision_target_generation_ ||
++    if (!target ||
++        row.snapshot_generation != supervision_snapshot_generation_ ||
+         target->GetHandle() != row.handle || !tab_list ||
+         tab_list->GetIndexOfTab(row.handle) < 0 ||
+         !IsEligibleSupervisionTarget(target)) {
+@@ -1707,7 +1729,8 @@ class NativePrometheusControlPanelRuntime final
+         supervision_connected_rows_[ordinal];
+     tabs::TabInterface* const target = row.target.get();
+     TabListInterface* const tab_list = TabListInterface::From(exact_browser_);
+-    if (!target || row.generation != supervision_target_generation_ ||
++    if (!target ||
++        row.snapshot_generation != supervision_snapshot_generation_ ||
+         target->GetHandle() != row.handle ||
+         selected_supervision_target_ != row.handle || !tab_list ||
+         tab_list->GetIndexOfTab(row.handle) < 0 ||
+@@ -1747,10 +1770,9 @@ class NativePrometheusControlPanelRuntime final
+     PrometheusControlSupervisionSnapshot result;
+     supervision_target_rows_.clear();
+     supervision_connected_rows_.clear();
+-    ++supervision_target_generation_;
+-    if (supervision_target_generation_ == 0) {
+-      ++supervision_target_generation_;
+-    }
++    supervision_snapshot_generation_ =
++        base::UnguessableToken::Create().ToString();
++    result.snapshot_generation = supervision_snapshot_generation_;
+     if (!IsBoundTo(exact_profile_, exact_web_contents_) || !exact_browser_ ||
+         exact_browser_->GetType() != BrowserWindowInterface::TYPE_NORMAL ||
+         !supervision_service_) {
+@@ -1802,7 +1824,7 @@ class NativePrometheusControlPanelRuntime final
+       supervision_target_rows_.push_back({
+           .target = target->GetWeakPtr(),
+           .handle = target->GetHandle(),
+-          .generation = supervision_target_generation_,
++          .snapshot_generation = supervision_snapshot_generation_,
+       });
+     }
+     if (!selected_target) {
+@@ -1885,7 +1907,7 @@ class NativePrometheusControlPanelRuntime final
+                   .handle = selected_target->GetHandle(),
+                   .dashboard_session = authority.dashboard_session,
+                   .authority_generation = authority.authority_generation,
+-                  .generation = supervision_target_generation_,
++                  .snapshot_generation = supervision_snapshot_generation_,
+               },
+       });
+     }
+@@ -2054,7 +2076,7 @@ class NativePrometheusControlPanelRuntime final
+   std::vector<SupervisionConnectedRowBinding> supervision_connected_rows_;
+   std::optional<PairingPresentationBinding> supervision_pairing_presentation_;
+   tabs::TabHandle selected_supervision_target_;
+-  uint64_t supervision_target_generation_ = 0;
++  std::string supervision_snapshot_generation_;
+   bool supervision_selection_initialized_ = false;
+   bool observing_ = false;
+ };
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.js b/chrome/browser/resources/prometheus/prometheus_webui.js
+index 4243118433..252b7fc8d3 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.js
++++ b/chrome/browser/resources/prometheus/prometheus_webui.js
+@@ -1777,11 +1777,18 @@ function controlSupervisionTimestamp(value) {
+   return Number.isSafeInteger(number) && number >= 0 ? number : 0;
+ }
+ 
++function controlSupervisionSnapshotGeneration(value) {
++  return typeof value === 'string' && /^[A-F0-9]{32}$/u.test(value) ?
++      value : '';
++}
++
+ function normalizeControlSupervisionSnapshot(value) {
+   if (!value || typeof value !== 'object') {
+     return null;
+   }
+   const result = {
++    snapshot_generation:
++        controlSupervisionSnapshotGeneration(value.snapshot_generation),
+     available: value.available === true,
+     pairing_state: controlSupervisionText(
+         value.pairing_state, 'target_lost', 32),
+@@ -1923,7 +1930,9 @@ function controlSupervisionStreamState(rows) {
+ 
+ function sendControlSupervisionMessage(message, args) {
+   const safeArgs = Array.isArray(args) ? args.map((value) =>
+-    typeof value === 'boolean' ? value : controlInteger(value)) : [];
++    typeof value === 'boolean' ? value :
++      controlSupervisionSnapshotGeneration(value) || controlInteger(value)) :
++    [];
+   const messages =
+       Array.isArray(window.prometheusSupervisionMessagesForTesting) ?
+       window.prometheusSupervisionMessagesForTesting : [];
+@@ -2151,12 +2160,16 @@ function appendControlSupervisionAction(
+ function requestControlSupervisionRevoke(ordinal, label, trigger) {
+   const dialog =
+       document.querySelector('#control-supervision-revoke-dialog');
+-  if (!dialog || dialog.open || controlSupervisionMutationPending) {
++  const snapshotGeneration =
++      controlSupervisionRows()?.snapshot_generation || '';
++  if (!dialog || !snapshotGeneration || dialog.open ||
++      controlSupervisionMutationPending) {
+     return;
+   }
+   pendingControlSupervisionDialog = {
+     kind: 'revoke',
+     ordinal,
++    snapshotGeneration,
+     trigger,
+   };
+   const copy = document.querySelector('#control-supervision-revoke-copy');
+@@ -2174,12 +2187,16 @@ function requestControlSupervisionRevoke(ordinal, label, trigger) {
+ function requestControlSupervisionEnd(trigger) {
+   const dialog = document.querySelector('#control-supervision-end-dialog');
+   const target = selectedControlSupervisionTarget();
+-  if (!dialog || !target || dialog.open || controlSupervisionMutationPending) {
++  const snapshotGeneration =
++      controlSupervisionRows()?.snapshot_generation || '';
++  if (!dialog || !target || !snapshotGeneration || dialog.open ||
++      controlSupervisionMutationPending) {
+     return;
+   }
+   pendingControlSupervisionDialog = {
+     kind: 'end',
+     ordinal: controlInteger(target.ordinal),
++    snapshotGeneration,
+     trigger,
+   };
+   const copy = document.querySelector('#control-supervision-end-copy');
+@@ -2501,6 +2518,40 @@ function restoreControlFocus(focusKey, supervisionFocusLabel = '') {
+   }
+ }
+ 
++function cancelStaleControlSupervisionDialog(snapshotGeneration) {
++  const pending = pendingControlSupervisionDialog;
++  if (!pending || pending.snapshotGeneration === snapshotGeneration) {
++    return;
++  }
++  pendingControlSupervisionDialog = null;
++  controlSupervisionMutationPending = false;
++  pending.trigger?.setAttribute('aria-expanded', 'false');
++  if (pending.trigger?.isConnected) {
++    pending.trigger.focus({preventScroll: true});
++  }
++  const selector = {
++    replace: '#control-supervision-replace-dialog',
++    revoke: '#control-supervision-revoke-dialog',
++    end: '#control-supervision-end-dialog',
++  }[pending.kind];
++  const dialog = selector ? document.querySelector(selector) : null;
++  if (dialog?.open) {
++    dialog.close();
++  }
++}
++
++function currentControlSupervisionDialog(kind) {
++  const pending = pendingControlSupervisionDialog;
++  const snapshotGeneration =
++      controlSupervisionRows()?.snapshot_generation || '';
++  if (pending?.kind !== kind ||
++      pending.snapshotGeneration !== snapshotGeneration) {
++    cancelStaleControlSupervisionDialog(snapshotGeneration);
++    return null;
++  }
++  return pending;
++}
++
+ function renderControlSnapshot(snapshot) {
+   const focusKey = document.activeElement?.dataset?.controlFocusKey || '';
+   const supervisionFocusLabel =
+@@ -2523,9 +2574,13 @@ function renderControlSnapshot(snapshot) {
+   delete codeFreeCandidate.formatted_code;
+   delete codeFreeCandidate.pairing_code;
+   delete codeFreeCandidate.supervision;
++  const normalizedSupervision =
++      normalizeControlSupervisionSnapshot(candidateSupervision);
++  cancelStaleControlSupervisionDialog(
++      normalizedSupervision?.snapshot_generation || '');
+   controlSnapshot = {
+     ...codeFreeCandidate,
+-    supervision: normalizeControlSupervisionSnapshot(candidateSupervision),
++    supervision: normalizedSupervision,
+   };
+   window.prometheusControlSnapshotForTesting = controlSnapshot;
+   window.prometheusControlObserverCountForTesting++;
+@@ -2892,12 +2947,15 @@ if (surface === 'control-panel') {
+         if (controlPairingCode) {
+           const dialog =
+               document.querySelector('#control-supervision-replace-dialog');
+-          if (!dialog || dialog.open) {
++          const snapshotGeneration =
++              controlSupervisionRows()?.snapshot_generation || '';
++          if (!dialog || !snapshotGeneration || dialog.open) {
+             return;
+           }
+           pendingControlSupervisionDialog = {
+             kind: 'replace',
+             ordinal: controlInteger(target.ordinal),
++            snapshotGeneration,
+             trigger: event.currentTarget,
+           };
+           event.currentTarget.setAttribute('aria-expanded', 'true');
+@@ -2970,41 +3028,41 @@ if (surface === 'control-panel') {
+       });
+   document.querySelector('#control-supervision-replace-confirm')
+       ?.addEventListener('click', () => {
+-        if (pendingControlSupervisionDialog?.kind !== 'replace' ||
+-            controlSupervisionMutationPending) {
++        const pending = currentControlSupervisionDialog('replace');
++        if (!pending || controlSupervisionMutationPending) {
+           return;
+         }
+         controlSupervisionMutationPending = true;
+-        const ordinal = pendingControlSupervisionDialog.ordinal;
+         eraseControlPairingCharacters();
+         controlPairingUiState = 'loading';
+         renderControlPairingPresentation();
+         sendControlSupervisionMessage(
+-            'prometheusControlReplacePairing', [ordinal]);
++            'prometheusControlReplacePairing',
++            [pending.ordinal, pending.snapshotGeneration]);
+         controlSupervisionMutationPending = false;
+       });
+   document.querySelector('#control-supervision-revoke-confirm')
+       ?.addEventListener('click', () => {
+-        if (pendingControlSupervisionDialog?.kind !== 'revoke' ||
+-            controlSupervisionMutationPending) {
++        const pending = currentControlSupervisionDialog('revoke');
++        if (!pending || controlSupervisionMutationPending) {
+           return;
+         }
+         controlSupervisionMutationPending = true;
+         sendControlSupervisionMessage(
+             'prometheusControlRevokeSupervisionSession',
+-            [pendingControlSupervisionDialog.ordinal, true]);
++            [pending.ordinal, pending.snapshotGeneration, true]);
+         controlSupervisionMutationPending = false;
+       });
+   document.querySelector('#control-supervision-end-confirm')
+       ?.addEventListener('click', () => {
+-        if (pendingControlSupervisionDialog?.kind !== 'end' ||
+-            controlSupervisionMutationPending) {
++        const pending = currentControlSupervisionDialog('end');
++        if (!pending || controlSupervisionMutationPending) {
+           return;
+         }
+         controlSupervisionMutationPending = true;
+         sendControlSupervisionMessage(
+             'prometheusControlEndTargetSupervision',
+-            [pendingControlSupervisionDialog.ordinal, true]);
++            [pending.ordinal, pending.snapshotGeneration, true]);
+         controlSupervisionMutationPending = false;
+       });
+   for (const selector of [
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+index 1208e744fc..0c5b37459b 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+@@ -154,6 +154,7 @@ base::DictValue SidePanelSupervisionSnapshotValue(
+ base::DictValue ControlSupervisionSnapshotValue(
+     const PrometheusControlSupervisionSnapshot& snapshot) {
+   base::DictValue value;
++  value.Set("snapshot_generation", snapshot.snapshot_generation);
+   value.Set("available", snapshot.available);
+   value.Set("pairing_state", snapshot.pairing_state);
+   value.Set("safe_target_title", snapshot.safe_target_title);
+@@ -285,7 +286,10 @@ PrometheusControlPanelRuntime::CreateSupervisionPairing(size_t ordinal) {
+ }
+ 
+ PrometheusControlSupervisionCreateResult
+-PrometheusControlPanelRuntime::ReplaceSupervisionPairing(size_t ordinal) {
++PrometheusControlPanelRuntime::ReplaceSupervisionPairing(
++    size_t ordinal,
++    std::string snapshot_generation) {
++  (void)snapshot_generation;
+   return CreateSupervisionPairing(ordinal);
+ }
+ 
+@@ -308,14 +312,20 @@ PrometheusControlPanelRuntime::StopSupervisionControl(size_t ordinal) {
+ }
+ 
+ PrometheusControlSupervisionOperationResult
+-PrometheusControlPanelRuntime::RevokeSupervisionSession(size_t ordinal) {
++PrometheusControlPanelRuntime::RevokeSupervisionSession(
++    size_t ordinal,
++    std::string snapshot_generation) {
+   (void)ordinal;
++  (void)snapshot_generation;
+   return UnavailableControlSupervisionOperation();
+ }
+ 
+ PrometheusControlSupervisionOperationResult
+-PrometheusControlPanelRuntime::EndTargetSupervision(size_t ordinal) {
++PrometheusControlPanelRuntime::EndTargetSupervision(
++    size_t ordinal,
++    std::string snapshot_generation) {
+   (void)ordinal;
++  (void)snapshot_generation;
+   return UnavailableControlSupervisionOperation();
+ }
+ 
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+index 2ca9234633..1f07b99140 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+@@ -204,6 +204,9 @@ struct PrometheusControlSupervisionAuditRow {
+ };
+ 
+ struct PrometheusControlSupervisionSnapshot {
++  // Browser-issued freshness only. It cannot identify or authorize a target
++  // without the native row binding retained by this exact runtime.
++  std::string snapshot_generation;
+   bool available = false;
+   std::string pairing_state;
+   std::string safe_target_title;
+@@ -294,7 +297,8 @@ class PrometheusControlPanelRuntime {
+   virtual PrometheusControlSupervisionCreateResult CreateSupervisionPairing(
+       size_t ordinal);
+   virtual PrometheusControlSupervisionCreateResult ReplaceSupervisionPairing(
+-      size_t ordinal);
++      size_t ordinal,
++      std::string snapshot_generation);
+   virtual PrometheusControlSupervisionOperationResult
+   CancelSupervisionPairingPresentation(size_t ordinal);
+   virtual PrometheusControlSupervisionOperationResult EnableSupervisionControl(
+@@ -302,9 +306,11 @@ class PrometheusControlPanelRuntime {
+   virtual PrometheusControlSupervisionOperationResult StopSupervisionControl(
+       size_t ordinal);
+   virtual PrometheusControlSupervisionOperationResult RevokeSupervisionSession(
+-      size_t ordinal);
++      size_t ordinal,
++      std::string snapshot_generation);
+   virtual PrometheusControlSupervisionOperationResult EndTargetSupervision(
+-      size_t ordinal);
++      size_t ordinal,
++      std::string snapshot_generation);
+   virtual PrometheusControlSupervisionOperationResult RetrySupervisionBaseline(
+       size_t ordinal);
+ };
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index 50db1c5960..31c5855010 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -15,6 +15,7 @@
+ #include "base/functional/bind.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/strings/string_util.h"
++#include "base/unguessable_token.h"
+ #include "base/values.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/prometheus/prometheus_ask_fsb_handoff.h"
+@@ -755,12 +756,16 @@ class PrometheusControlMessageHandler : public content::WebUIMessageHandler {
+     if (!owner_) {
+       return;
+     }
+-    const std::optional<size_t> ordinal = ParseSupervisionOrdinal(args);
+-    if (!ordinal) {
++    const std::optional<BoundSupervisionIntent> intent =
++        ParseBoundSupervisionIntent(
++            args, prometheus::kMaxControlSupervisionTargets,
++            /*requires_confirmation=*/false);
++    if (!intent) {
+       Reject("Refresh the target list before replacing the pairing code");
+       return;
+     }
+-    owner_->HandleControlReplaceSupervisionPairingForWebUI(*ordinal);
++    owner_->HandleControlReplaceSupervisionPairingForWebUI(
++        intent->ordinal, intent->snapshot_generation);
+   }
+ 
+   void HandleCancelSupervisionPairingPresentation(
+@@ -789,18 +794,34 @@ class PrometheusControlMessageHandler : public content::WebUIMessageHandler {
+     return static_cast<size_t>(*ordinal);
+   }
+ 
+-  std::optional<size_t> ParseConfirmedSupervisionOrdinal(
++  struct BoundSupervisionIntent {
++    size_t ordinal = 0;
++    std::string snapshot_generation;
++  };
++
++  std::optional<BoundSupervisionIntent> ParseBoundSupervisionIntent(
+       const base::ListValue& args,
+-      size_t maximum) const {
++      size_t maximum,
++      bool requires_confirmation) const {
++    const size_t expected_size = requires_confirmation ? 3u : 2u;
+     const std::optional<int> ordinal =
+-        args.size() == 2u ? args[0].GetIfInt() : std::nullopt;
++        args.size() == expected_size ? args[0].GetIfInt() : std::nullopt;
++    const std::string* const snapshot_generation =
++        args.size() == expected_size ? args[1].GetIfString() : nullptr;
+     const std::optional<bool> confirmed =
+-        args.size() == 2u ? args[1].GetIfBool() : std::nullopt;
+-    if (!ordinal || !confirmed || !*confirmed || *ordinal < 0 ||
+-        static_cast<size_t>(*ordinal) >= maximum) {
++        requires_confirmation && args.size() == expected_size
++            ? args[2].GetIfBool()
++            : std::optional<bool>(true);
++    if (!ordinal || !snapshot_generation || !confirmed || !*confirmed ||
++        *ordinal < 0 || static_cast<size_t>(*ordinal) >= maximum ||
++        !base::UnguessableToken::DeserializeFromString(
++            *snapshot_generation)) {
+       return std::nullopt;
+     }
+-    return static_cast<size_t>(*ordinal);
++    return BoundSupervisionIntent{
++        .ordinal = static_cast<size_t>(*ordinal),
++        .snapshot_generation = *snapshot_generation,
++    };
+   }
+ 
+   void HandleEnableSupervisionControl(const base::ListValue& args) {
+@@ -836,13 +857,16 @@ class PrometheusControlMessageHandler : public content::WebUIMessageHandler {
+     if (!owner_) {
+       return;
+     }
+-    const std::optional<size_t> ordinal = ParseConfirmedSupervisionOrdinal(
+-        args, prometheus::kMaxControlSupervisionConnectedRows);
+-    if (!ordinal) {
++    const std::optional<BoundSupervisionIntent> intent =
++        ParseBoundSupervisionIntent(
++            args, prometheus::kMaxControlSupervisionConnectedRows,
++            /*requires_confirmation=*/true);
++    if (!intent) {
+       Reject("Confirm access revocation from a fresh dashboard row");
+       return;
+     }
+-    owner_->HandleControlRevokeSupervisionSessionForWebUI(*ordinal);
++    owner_->HandleControlRevokeSupervisionSessionForWebUI(
++        intent->ordinal, intent->snapshot_generation);
+   }
+ 
+   void HandleEndTargetSupervision(const base::ListValue& args) {
+@@ -850,13 +874,16 @@ class PrometheusControlMessageHandler : public content::WebUIMessageHandler {
+     if (!owner_) {
+       return;
+     }
+-    const std::optional<size_t> ordinal = ParseConfirmedSupervisionOrdinal(
+-        args, prometheus::kMaxControlSupervisionTargets);
+-    if (!ordinal) {
++    const std::optional<BoundSupervisionIntent> intent =
++        ParseBoundSupervisionIntent(
++            args, prometheus::kMaxControlSupervisionTargets,
++            /*requires_confirmation=*/true);
++    if (!intent) {
+       Reject("Confirm ending supervision from a fresh target row");
+       return;
+     }
+-    owner_->HandleControlEndTargetSupervisionForWebUI(*ordinal);
++    owner_->HandleControlEndTargetSupervisionForWebUI(
++        intent->ordinal, intent->snapshot_generation);
+   }
+ 
+   void HandleRetrySupervisionBaseline(const base::ListValue& args) {
+@@ -1521,10 +1548,12 @@ void PrometheusControlPanelUI::HandleControlCreateSupervisionPairingForWebUI(
+ }
+ 
+ void PrometheusControlPanelUI::HandleControlReplaceSupervisionPairingForWebUI(
+-    size_t ordinal) {
++    size_t ordinal,
++    std::string snapshot_generation) {
+   SendControlPairingCreateResult(
+       HasExactControlBinding()
+-          ? control_runtime_->ReplaceSupervisionPairing(ordinal)
++          ? control_runtime_->ReplaceSupervisionPairing(
++                ordinal, std::move(snapshot_generation))
+           : prometheus::PrometheusControlSupervisionCreateResult{
+                 .status = "TARGET_LOST",
+                 .accepted = false,
+@@ -1568,22 +1597,26 @@ void PrometheusControlPanelUI::HandleControlStopSupervisionControlForWebUI(
+ }
+ 
+ void PrometheusControlPanelUI::HandleControlRevokeSupervisionSessionForWebUI(
+-    size_t ordinal) {
++    size_t ordinal,
++    std::string snapshot_generation) {
+   SendControlOperation(
+       HasExactControlBinding()
+           ? prometheus::ControlSupervisionOperationValue(
+-                control_runtime_->RevokeSupervisionSession(ordinal))
++                control_runtime_->RevokeSupervisionSession(
++                    ordinal, std::move(snapshot_generation)))
+           : ControlErrorValue("Reload the exact regular-profile control panel",
+                               "TARGET_LOST"));
+   SendFreshControlSnapshot();
+ }
+ 
+ void PrometheusControlPanelUI::HandleControlEndTargetSupervisionForWebUI(
+-    size_t ordinal) {
++    size_t ordinal,
++    std::string snapshot_generation) {
+   SendControlOperation(
+       HasExactControlBinding()
+           ? prometheus::ControlSupervisionOperationValue(
+-                control_runtime_->EndTargetSupervision(ordinal))
++                control_runtime_->EndTargetSupervision(
++                    ordinal, std::move(snapshot_generation)))
+           : ControlErrorValue("Reload the exact regular-profile control panel",
+                               "TARGET_LOST"));
+   SendFreshControlSnapshot();
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+index 9ba7d502fe..681e2e8dd6 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+@@ -163,13 +163,19 @@ class PrometheusControlPanelUI : public content::WebUIController {
+       prometheus::PrometheusControlPolicyMutation mutation);
+   void HandleControlSelectSupervisionTargetForWebUI(size_t ordinal);
+   void HandleControlCreateSupervisionPairingForWebUI(size_t ordinal);
+-  void HandleControlReplaceSupervisionPairingForWebUI(size_t ordinal);
++  void HandleControlReplaceSupervisionPairingForWebUI(
++      size_t ordinal,
++      std::string snapshot_generation);
+   void HandleControlCancelSupervisionPairingPresentationForWebUI(
+       size_t ordinal);
+   void HandleControlEnableSupervisionControlForWebUI(size_t ordinal);
+   void HandleControlStopSupervisionControlForWebUI(size_t ordinal);
+-  void HandleControlRevokeSupervisionSessionForWebUI(size_t ordinal);
+-  void HandleControlEndTargetSupervisionForWebUI(size_t ordinal);
++  void HandleControlRevokeSupervisionSessionForWebUI(
++      size_t ordinal,
++      std::string snapshot_generation);
++  void HandleControlEndTargetSupervisionForWebUI(
++      size_t ordinal,
++      std::string snapshot_generation);
+   void HandleControlRetrySupervisionBaselineForWebUI(size_t ordinal);
+   void HandleInvalidControlMessageForWebUI(std::string recovery);
+ 
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index cc68f8fec8..f5913b0b65 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -355,6 +355,7 @@ IN_PROC_BROWSER_TEST_F(PrometheusWebUIBrowserTest,
+         const supervision =
+             window.prometheusControlSnapshotForTesting?.supervision;
+         return supervision?.available === true &&
++            /^[A-F0-9]{32}$/.test(supervision.snapshot_generation) &&
+             supervision.targets?.length === 1 &&
+             supervision.targets[0].ordinal === 0 &&
+             supervision.targets[0].safe_origin.includes('127.0.0.1');
+@@ -507,7 +508,11 @@ IN_PROC_BROWSER_TEST_F(
+ 
+   ASSERT_TRUE(content::ExecJs(control_contents, R"(
+     window.prometheusControlPairingCreateResultForTesting = undefined;
+-    chrome.send('prometheusControlReplacePairing', [0]);
++    chrome.send('prometheusControlReplacePairing', [
++      0,
++      window.prometheusControlSnapshotForTesting.supervision
++          .snapshot_generation,
++    ]);
+   )"));
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+     return content::EvalJs(control_contents, R"(
+@@ -623,6 +628,211 @@ IN_PROC_BROWSER_TEST_F(
+   EXPECT_EQ(0u, supervision_service()->pending_pairing_count_for_testing());
+ }
+ 
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    SupervisionRuntimeDestructiveActionsRejectStaleSnapshotGeneration) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const GURL target_a_url =
++      embedded_test_server()->GetURL("a.test", "/title1.html");
++  const GURL target_b_url =
++      embedded_test_server()->GetURL("b.test", "/title2.html");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), target_a_url));
++  ASSERT_FALSE(ClaimSelectedTabForAgent("Target A owner").empty());
++  tabs::TabInterface* const target_a = browser()->GetActiveTabInterface();
++  ASSERT_TRUE(target_a);
++
++  ASSERT_TRUE(AddTabAtIndexToBrowser(
++      browser(), 1, target_b_url, ui::PAGE_TRANSITION_TYPED));
++  browser()->tab_strip_model()->ActivateTabAt(1);
++  ASSERT_FALSE(ClaimSelectedTabForAgent("Target B owner").empty());
++  tabs::TabInterface* const target_b = browser()->GetActiveTabInterface();
++  ASSERT_TRUE(target_b);
++
++  auto* const service = supervision_service();
++  ASSERT_TRUE(service);
++  prometheus::SupervisionPairingCreationResult target_a_pairing =
++      service->CreatePairing(browser(), target_a);
++  ASSERT_TRUE(target_a_pairing.ok);
++  prometheus::SupervisionPairingCreationResult alpha_pairing =
++      service->CreatePairing(browser(), target_b);
++  ASSERT_TRUE(alpha_pairing.ok);
++  prometheus::SupervisionRedemptionResult alpha =
++      service->RedeemPairing(alpha_pairing.pairing_code, "Alpha dashboard");
++  ASSERT_TRUE(alpha.ok);
++  prometheus::SupervisionPairingCreationResult beta_pairing =
++      service->CreatePairing(browser(), target_b);
++  ASSERT_TRUE(beta_pairing.ok);
++  prometheus::SupervisionRedemptionResult beta =
++      service->RedeemPairing(beta_pairing.pairing_code, "Beta dashboard");
++  ASSERT_TRUE(beta.ok);
++
++  ASSERT_TRUE(AddTabAtIndexToBrowser(
++      browser(), 2, GURL(chrome::kChromeUIPrometheusControlPanelURL),
++      ui::PAGE_TRANSITION_TYPED));
++  browser()->tab_strip_model()->ActivateTabAt(2);
++  content::WebContents* const control_contents =
++      browser()->tab_strip_model()->GetActiveWebContents();
++  ASSERT_TRUE(control_contents);
++  ASSERT_TRUE(content::WaitForLoadStop(control_contents));
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlReceiveSnapshot = snapshot => {
++      window.prometheusControlSnapshotForTesting = snapshot;
++    };
++    window.prometheusControlReceiveOperation = operation => {
++      window.prometheusControlOperationForTesting = operation;
++    };
++    window.prometheusControlReceivePairingCreateResult = result => {
++      window.prometheusControlPairingCreateResultForTesting = result;
++    };
++    chrome.send('prometheusControlInitialize');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlSnapshotForTesting?.supervision?.targets
++              ?.length === 2 &&
++          window.prometheusControlSnapshotForTesting.supervision.connected
++              ?.map(row => row.display_label).join(',') ===
++              'Alpha dashboard,Beta dashboard'
++    )")
++        .ExtractBool();
++  }));
++
++  const std::string replace_generation =
++      content::EvalJs(control_contents, R"(
++        window.prometheusControlSnapshotForTesting.supervision
++            .snapshot_generation
++      )")
++          .ExtractString();
++  browser()->tab_strip_model()->MoveWebContentsAt(
++      /*index=*/1, /*to_position=*/0, /*select_after_move=*/false);
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlRefresh');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(
++               control_contents,
++               content::JsReplace(R"(
++      window.prometheusControlSnapshotForTesting?.supervision
++              ?.snapshot_generation !== $1 &&
++          window.prometheusControlSnapshotForTesting.supervision
++              ?.targets?.[0]?.safe_origin === $2
++    )",
++                                  replace_generation,
++                                  url::Origin::Create(target_b_url).Serialize()))
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(
++      control_contents,
++      content::JsReplace(R"(
++    window.prometheusControlPairingCreateResultForTesting = undefined;
++    chrome.send('prometheusControlReplacePairing', [0, $1]);
++  )",
++                         replace_generation)));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlPairingCreateResultForTesting?.status ===
++          'TARGET_LOST'
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(service->MatchesPendingPairingForComposition(
++      target_a_pairing.pairing_code));
++
++  prometheus::SupervisionRedemptionResult target_a_viewer =
++      service->RedeemPairing(target_a_pairing.pairing_code,
++                             "Target A dashboard");
++  ASSERT_TRUE(target_a_viewer.ok);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlSnapshotForTesting?.supervision?.connected
++              ?.map(row => row.display_label).join(',') ===
++          'Alpha dashboard,Beta dashboard'
++    )")
++        .ExtractBool();
++  }));
++
++  const std::string revoke_generation =
++      content::EvalJs(control_contents, R"(
++        window.prometheusControlSnapshotForTesting.supervision
++            .snapshot_generation
++      )")
++          .ExtractString();
++  EnableControlAndAccept(beta.dashboard_session);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlSnapshotForTesting?.supervision?.connected
++              ?.map(row => `${row.display_label}:${row.access}`).join(',') ===
++          'Beta dashboard:controller,Alpha dashboard:view_only'
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(
++      control_contents,
++      content::JsReplace(R"(
++    window.prometheusControlOperationForTesting = undefined;
++    chrome.send(
++        'prometheusControlRevokeSupervisionSession', [0, $1, true]);
++  )",
++                         revoke_generation)));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlOperationForTesting?.status === 'TARGET_LOST'
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_EQ(2u, service->viewer_count_for_testing(beta.stable_tab_id));
++  EXPECT_TRUE(service->StopControl(beta.dashboard_session).ok);
++
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->controller_count_for_testing() == 0u &&
++           content::EvalJs(control_contents, R"(
++             window.prometheusControlSnapshotForTesting?.supervision
++                     ?.connected?.[0]?.access === 'view_only'
++           )")
++               .ExtractBool();
++  }));
++  const std::string end_generation =
++      content::EvalJs(control_contents, R"(
++        window.prometheusControlSnapshotForTesting.supervision
++            .snapshot_generation
++      )")
++          .ExtractString();
++  browser()->tab_strip_model()->MoveWebContentsAt(
++      /*index=*/1, /*to_position=*/0, /*select_after_move=*/false);
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlRefresh');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(
++               control_contents,
++               content::JsReplace(R"(
++      window.prometheusControlSnapshotForTesting?.supervision
++              ?.snapshot_generation !== $1 &&
++          window.prometheusControlSnapshotForTesting.supervision
++              ?.targets?.[0]?.safe_origin === $2
++    )",
++                                  end_generation,
++                                  url::Origin::Create(target_a_url).Serialize()))
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(
++      control_contents,
++      content::JsReplace(R"(
++    window.prometheusControlOperationForTesting = undefined;
++    chrome.send('prometheusControlEndTargetSupervision', [0, $1, true]);
++  )",
++                         end_generation)));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlOperationForTesting?.status === 'TARGET_LOST'
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_EQ(1u,
++            service->viewer_count_for_testing(target_a_viewer.stable_tab_id));
++  EXPECT_EQ(2u, service->viewer_count_for_testing(beta.stable_tab_id));
++}
++
+ IN_PROC_BROWSER_TEST_F(
+     PrometheusWebUIBrowserTest,
+     SupervisionRuntimeLifecycleActionsAreExactBoundedAndCodeFree) {
+@@ -673,11 +883,19 @@ IN_PROC_BROWSER_TEST_F(
+   }));
+ 
+   ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    const snapshotGeneration =
++        window.prometheusControlSnapshotForTesting.supervision
++            .snapshot_generation;
+     const malformed = [
+       ['prometheusControlEnableSupervisionControl', [0, 'forged']],
+       ['prometheusControlStopSupervisionControl', []],
+-      ['prometheusControlRevokeSupervisionSession', [0, false]],
+-      ['prometheusControlEndTargetSupervision', [0, false]],
++      ['prometheusControlReplacePairing', [0, 'forged']],
++      ['prometheusControlRevokeSupervisionSession',
++       [0, snapshotGeneration, false]],
++      ['prometheusControlRevokeSupervisionSession', [0, 'forged', true]],
++      ['prometheusControlEndTargetSupervision',
++       [0, snapshotGeneration, false]],
++      ['prometheusControlEndTargetSupervision', [0, 'forged', true]],
+       ['prometheusControlRetrySupervisionBaseline', [0, 7]],
+     ];
+     for (const [message, args] of malformed) {
+@@ -742,7 +960,12 @@ IN_PROC_BROWSER_TEST_F(
+ 
+   ASSERT_TRUE(content::ExecJs(control_contents, R"(
+     window.prometheusControlOperationForTesting = undefined;
+-    chrome.send('prometheusControlRevokeSupervisionSession', [0, true]);
++    chrome.send('prometheusControlRevokeSupervisionSession', [
++      0,
++      window.prometheusControlSnapshotForTesting.supervision
++          .snapshot_generation,
++      true,
++    ]);
+   )"));
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+     return service->viewer_count_for_testing(first.stable_tab_id) == 0u &&
+@@ -771,7 +994,12 @@ IN_PROC_BROWSER_TEST_F(
+   }));
+   ASSERT_TRUE(content::ExecJs(control_contents, R"(
+     window.prometheusControlOperationForTesting = undefined;
+-    chrome.send('prometheusControlEndTargetSupervision', [0, true]);
++    chrome.send('prometheusControlEndTargetSupervision', [
++      0,
++      window.prometheusControlSnapshotForTesting.supervision
++          .snapshot_generation,
++      true,
++    ]);
+   )"));
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+     return service->viewer_count_for_testing(second.stable_tab_id) == 0u &&
+@@ -906,7 +1134,12 @@ IN_PROC_BROWSER_TEST_F(
+   ASSERT_TRUE(stale_delegate);
+   ASSERT_TRUE(content::ExecJs(control_contents, R"(
+     window.prometheusControlLifecycleEventsForTesting = [];
+-    chrome.send('prometheusControlRevokeSupervisionSession', [0, true]);
++    chrome.send('prometheusControlRevokeSupervisionSession', [
++      0,
++      window.prometheusControlSnapshotForTesting.supervision
++          .snapshot_generation,
++      true,
++    ]);
+   )"));
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+     return service->viewer_count_for_testing(alpha.stable_tab_id) == 1u;
+@@ -930,7 +1163,12 @@ IN_PROC_BROWSER_TEST_F(
+ 
+   ASSERT_TRUE(content::ExecJs(control_contents, R"(
+     window.prometheusControlLifecycleEventsForTesting = [];
+-    chrome.send('prometheusControlEndTargetSupervision', [0, true]);
++    chrome.send('prometheusControlEndTargetSupervision', [
++      0,
++      window.prometheusControlSnapshotForTesting.supervision
++          .snapshot_generation,
++      true,
++    ]);
+   )"));
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+     return service->viewer_count_for_testing(beta.stable_tab_id) == 0u;
+@@ -1081,7 +1319,11 @@ IN_PROC_BROWSER_TEST_F(
+   ASSERT_TRUE(
+       content::ExecJs(control_contents, content::JsReplace(R"(
+     window.replacedCodeForTesting = $1;
+-    chrome.send('prometheusControlReplacePairing', [0]);
++    chrome.send('prometheusControlReplacePairing', [
++      0,
++      window.prometheusControlSnapshotForTesting.supervision
++          .snapshot_generation,
++    ]);
+   )",
+                                                            replaced_code)));
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+@@ -5230,6 +5472,7 @@ IN_PROC_BROWSER_TEST_F(
+         agent_active: true,
+       };
+       const supervision = {
++        snapshot_generation: '11111111111111111111111111111111',
+         available: true,
+         pairing_state: 'pending',
+         safe_target_title: 'Quarterly report',
+@@ -5461,6 +5704,7 @@ IN_PROC_BROWSER_TEST_F(
+         expires_at_ms: now + 300000,
+       };
+       const supervision = {
++        snapshot_generation: '11111111111111111111111111111111',
+         available: true,
+         pairing_state: 'redeemed',
+         safe_target_title: 'Quarterly report',
+@@ -5544,7 +5788,8 @@ IN_PROC_BROWSER_TEST_F(
+           window.prometheusSupervisionMessagesForTesting.at(-1);
+       if (revokeMessage?.message !==
+               'prometheusControlRevokeSupervisionSession' ||
+-          JSON.stringify(revokeMessage.args) !== '[1,true]') {
++          JSON.stringify(revokeMessage.args) !==
++              '[1,"11111111111111111111111111111111",true]') {
+         issues.push(`revoke:${JSON.stringify(revokeMessage)}`);
+       }
+ 
+@@ -5564,10 +5809,59 @@ IN_PROC_BROWSER_TEST_F(
+       const endMessage =
+           window.prometheusSupervisionMessagesForTesting.at(-1);
+       if (endMessage?.message !== 'prometheusControlEndTargetSupervision' ||
+-          JSON.stringify(endMessage.args) !== '[0,true]') {
++          JSON.stringify(endMessage.args) !==
++              '[0,"11111111111111111111111111111111",true]') {
+         issues.push(`end:${JSON.stringify(endMessage)}`);
+       }
+ 
++      const destructiveMessageCount =
++          window.prometheusSupervisionMessagesForTesting.length;
++      document.querySelector(
++          '[data-supervision-action="revoke"]' +
++          '[data-supervision-ordinal="1"]')?.click();
++      window.prometheusControlReceiveSnapshot({
++        ...base,
++        supervision: {
++          ...supervision,
++          snapshot_generation: '22222222222222222222222222222222',
++          connected: [viewer, controller],
++        },
++      });
++      if (revokeDialog.open ||
++          window.prometheusSupervisionMessagesForTesting.length !==
++              destructiveMessageCount) {
++        issues.push('stale-revoke-not-cancelled');
++      }
++      document.querySelector('#control-supervision-revoke-confirm')?.click();
++      if (window.prometheusSupervisionMessagesForTesting.length !==
++          destructiveMessageCount) {
++        issues.push('stale-revoke-sent');
++      }
++
++      document.querySelector('#control-supervision-end-all')?.click();
++      window.prometheusControlReceiveSnapshot({
++        ...base,
++        supervision: {
++          ...supervision,
++          snapshot_generation: '33333333333333333333333333333333',
++          targets: [{
++            ordinal: 0,
++            safe_title: 'Another tab',
++            safe_origin: 'https://other.test',
++            selected: false,
++            agent_active: true,
++          }, {...target, ordinal: 1, selected: true}],
++        },
++      });
++      if (endDialog.open) {
++        issues.push('stale-end-not-cancelled');
++      }
++      document.querySelector('#control-supervision-end-confirm')?.click();
++      if (window.prometheusSupervisionMessagesForTesting.length !==
++          destructiveMessageCount) {
++        issues.push('stale-end-sent');
++      }
++
+       window.prometheusControlReceivePairingCreateResult({
+         status: 'OK',
+         accepted: true,
+@@ -5586,7 +5880,31 @@ IN_PROC_BROWSER_TEST_F(
+               'working immediately. Keep current code Replace code') {
+         issues.push('replace-dialog');
+       }
+-      replaceDialog?.close();
++      window.prometheusControlReceiveSnapshot({
++        ...base,
++        supervision: {
++          ...supervision,
++          snapshot_generation: '44444444444444444444444444444444',
++          targets: [
++            target,
++            {
++              ordinal: 1,
++              safe_title: 'Another tab',
++              safe_origin: 'https://other.test',
++              selected: false,
++              agent_active: true,
++            },
++          ],
++        },
++      });
++      if (replaceDialog?.open) {
++        issues.push('stale-replace-not-cancelled');
++      }
++      document.querySelector('#control-supervision-replace-confirm')?.click();
++      if (window.prometheusSupervisionMessagesForTesting.length !==
++          destructiveMessageCount) {
++        issues.push('stale-replace-sent');
++      }
+ 
+       const stopButton = document.querySelector(
+           '[data-supervision-action="stop"]');
+-- 
+2.50.1 (Apple Git-155)
+
