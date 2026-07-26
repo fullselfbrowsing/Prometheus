@@ -1,0 +1,33 @@
+From 92f9dd513a2916aaf3f3f84995656c214a483ecd Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sat, 25 Jul 2026 19:12:50 -0500
+Subject: [PATCH 69/69] test(21-26): synchronize side-panel title fixture
+
+---
+ .../webui/prometheus/prometheus_web_ui_browsertest.cc  | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 920bc940d1..a412ad772c 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -4260,9 +4260,13 @@ IN_PROC_BROWSER_TEST_F(
+   const GURL target_url =
+       embedded_test_server()->GetURL("a.test", "/title1.html");
+   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), target_url));
+-  ASSERT_TRUE(content::ExecJs(
+-      browser()->tab_strip_model()->GetActiveWebContents(),
+-      "document.title = 'Quarterly report';"));
++  content::WebContents* const target_contents =
++      browser()->tab_strip_model()->GetActiveWebContents();
++  ASSERT_TRUE(target_contents);
++  content::TitleWatcher title_watcher(target_contents, u"Quarterly report");
++  ASSERT_TRUE(content::ExecJs(target_contents,
++                              "document.title = 'Quarterly report';"));
++  EXPECT_EQ(u"Quarterly report", title_watcher.WaitAndGetTitle());
+ 
+   PrometheusSidePanelUI* const controller = ShowSidePanel(browser());
+   ASSERT_TRUE(controller);
+-- 
+2.50.1 (Apple Git-155)
+

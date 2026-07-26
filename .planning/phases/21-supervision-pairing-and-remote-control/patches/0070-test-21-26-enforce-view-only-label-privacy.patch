@@ -1,0 +1,25 @@
+From 78f29006479d22867231f61c70b7bfd37fe90639 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sat, 25 Jul 2026 19:34:39 -0500
+Subject: [PATCH 70/70] test(21-26): enforce view-only label privacy
+
+---
+ .../ui/webui/prometheus/prometheus_web_ui_browsertest.cc        | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index a412ad772c..5eff91b0f2 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -4285,7 +4285,7 @@ IN_PROC_BROWSER_TEST_F(
+       const state = window.prometheusRuntimeSnapshotForTesting?.supervision;
+       state?.available === true && state.viewer_count === 1 &&
+           state.controlled === false &&
+-          state.client_label === 'Review console' &&
++          !Object.hasOwn(state, 'client_label') &&
+           state.safe_target_title === 'Quarterly report' &&
+           state.activity === 'viewing';
+     )")
+-- 
+2.50.1 (Apple Git-155)
+

@@ -5,10 +5,16 @@ shopt -s nullglob
 FOCUS_FILTER=''
 FOCUS_KIND=''
 EXPECT_FAILURE=false
+CLOSEOUT_MODE=false
 
 usage() {
-  printf 'Usage: %s (--focus FILTER | --focus-browser FILTER | --focus-blink FILTER | --focus-node PATTERN) [--expect-failure]\n' "$0" >&2
+  printf 'Usage: %s [--focus FILTER | --focus-browser FILTER | --focus-content FILTER | --focus-blink FILTER | --focus-node PATTERN] [--expect-failure]\n' "$0" >&2
 }
+
+if [[ "$#" -eq 0 ]]; then
+  CLOSEOUT_MODE=true
+  FOCUS_KIND='browser-integration'
+fi
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -36,6 +42,19 @@ while [[ "$#" -gt 0 ]]; do
       }
       FOCUS_FILTER="$2"
       FOCUS_KIND='browser-integration'
+      shift 2
+      ;;
+    --focus-content)
+      [[ "$#" -ge 2 ]] || {
+        usage
+        exit 2
+      }
+      [[ -z "${FOCUS_FILTER}" ]] || {
+        usage
+        exit 2
+      }
+      FOCUS_FILTER="$2"
+      FOCUS_KIND='content'
       shift 2
       ;;
     --focus-blink)
@@ -79,7 +98,8 @@ while [[ "$#" -gt 0 ]]; do
   esac
 done
 
-if [[ -z "${FOCUS_FILTER//[[:space:]]/}" ]]; then
+if [[ "${CLOSEOUT_MODE}" == false &&
+      -z "${FOCUS_FILTER//[[:space:]]/}" ]]; then
   printf 'Phase 21 focused verification failed: focus selector must be non-empty\n' >&2
   exit 2
 fi
@@ -88,7 +108,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
 CHROMIUM_DIR="${ROOT_DIR}/.context/chromium/src"
 OUT_DIR="${CHROMIUM_DIR}/out/Default"
-LOG_DIR="${OUT_DIR}/phase21-focused"
+if [[ "${CLOSEOUT_MODE}" == true ]]; then
+  LOG_DIR="${OUT_DIR}/phase21-closeout"
+else
+  LOG_DIR="${OUT_DIR}/phase21-focused"
+fi
+LOG_DIR_RELATIVE="${LOG_DIR#"${OUT_DIR}/"}"
 FOCUSED_BLINK_MODULES_DIR="${LOG_DIR}/blink-modules"
 FOCUSED_BLINK_MODULES="${FOCUSED_BLINK_MODULES_DIR}/libblink_modules.dylib"
 FOCUSED_RESOURCE_DIR="${LOG_DIR}/resources"
@@ -99,9 +124,38 @@ FRAMEWORK_RESOURCES_PAK_BACKUP="${FOCUSED_RESOURCE_DIR}/framework-resources.befo
 SISO="${CHROMIUM_DIR}/third_party/siso/cipd/siso"
 FOCUSED_BINARY="${OUT_DIR}/browser_tests"
 TEMP_FOCUSED_BINARY="${OUT_DIR}/phase21_browser_tests"
+CONTENT_FOCUSED_BINARY="${OUT_DIR}/phase21_content_focused_unittests"
 LIST_LOG="${LOG_DIR}/phase21-focused-list.log"
 TEST_LOG="${LOG_DIR}/phase21-focused-test.log"
 BUILD_LOG="${LOG_DIR}/phase21-focused-build.log"
+PHASE_DIR="${ROOT_DIR}/.planning/phases/21-supervision-pairing-and-remote-control"
+PATCH_DIR="${PHASE_DIR}/patches"
+BASELINE='5632dcef07121bf4c3444cc2da13f222b6a61e91'
+EXPECTED_NINJA_LOG_SHA256='eccf79f3dfdc6c8d51af20f56bf1973eb35ff486b1dab9b2b0653cc37b586dce'
+EXPECTED_NINJA_DEPS_SHA256='ab1a6ad4639e8db53459384f8636dc53f396397363f3c2751bcdadc0349947c0'
+EXPECTED_BLINK_MODULES_SHA256='663af12ba1a986db789c4c05967dda8b3b3615030e6cecb569de0f74ba01ff8e'
+EXPECTED_BLINK_MODULES_TOC_SHA256='bdc164a10b8616fa099b089a1f4542c789a584c84212b0f4d92b616701a3ce9b'
+EXPECTED_FRAMEWORK_RESOURCES_SHA256='c9c541d780ad9c0054eaec0abd8453703972ebcc3ce3607d06e3c80e5a8f79ff'
+EXPECTED_PHASE21_NATIVE_COUNT=189
+EXPECTED_PHASE21_RENDERER_COUNT=12
+EXPECTED_PHASE21_BROWSER_COUNT=50
+EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT=208
+EXPECTED_PHASE17_19_NATIVE_REGRESSION_COUNT=84
+EXPECTED_PHASE20_CONTENT_REGRESSION_COUNT=21
+EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT=3
+EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT=37
+EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT=83
+EXPECTED_NODE_COUNT=81
+EXPECTED_PATCH_COUNT=70
+PHASE21_NATIVE_FILTER='PrometheusSupervisionTypesTest.*:PrometheusSupervisionTransportCodecTest.*:PrometheusSupervisionProjectionTest.*:PrometheusSupervisionDiffTest.*:PrometheusSupervisionProfileServiceTest.*:PrometheusSupervisionCaptureHubTest.*:PrometheusSupervisionActionControllerTest.*:PrometheusSupervisionTestBootstrapTest.*:PrometheusAgentServiceObservationTest.*:PrometheusAgentTransportCodecTest.*:PrometheusAgentProfileServiceTest.*:PrometheusAgentGatewayTest.Supervision*:PrometheusAgentServiceTest.Supervision*:PrometheusTabStateTest.Supervision*'
+PHASE21_RENDERER_FILTER='PrometheusSupervisionDocumentSupplementTest.*'
+PHASE21_BROWSER_FILTER='PrometheusAgentGatewayBrowserTest.Supervision*:PrometheusMcpIntegrationBrowserTest.Supervision*:PrometheusWebUIBrowserTest.*:PrometheusSupervisionCaptureHubBrowserTest.*:PrometheusSupervisionConfirmationBrowserTest.*:PrometheusTabSupervisionBadgeBrowserTest.*'
+PHASE20_NATIVE_REGRESSION_FILTER='PrometheusRuntimeTypesTest.*:PrometheusRuntimeStoreTest.*:PrometheusMemoryStoreTest.*:PrometheusSecretStoreTest.*:PrometheusProviderRegistryTest.*:PrometheusProviderCodecTest.*:PrometheusRuntimeProfileServiceTest.*:PrometheusRuntimeTestBootstrapTest.*:PrometheusRuntimeTransportCodecTest.*:PrometheusVaultServiceTest.*:PrometheusAgentServiceTest.*:PrometheusAgentSessionTest.*:PrometheusAgentGatewayTest.*-*.Supervision*'
+PHASE17_19_NATIVE_REGRESSION_FILTER='PrometheusAgentAuditTest.*:PrometheusAgentRouteTest.*:PrometheusAgentTabDataTest.*:PrometheusAgentTransportTest.*:PrometheusEndpointDescriptorTest.*:PrometheusPageActionDispatcherTest.*:PrometheusPageActionHistoryTest.*:PrometheusPageAdapterTest.*:PrometheusPageErrorTest.*:PrometheusPageJsExecutorTest.*:PrometheusPageSnapshotTest.*:PrometheusWebUIHandoffTest.*:PrometheusWebUIResourceTest.*-*.Supervision*'
+PHASE20_CONTENT_REGRESSION_FILTER='PrometheusProviderTransportTest.*:PrometheusTabStateTest.*:PrometheusTabStateWebContentsTest.*'
+PHASE19_RENDERER_REGRESSION_FILTER='PrometheusActionDispatcherTest.*'
+PHASE20_BROWSER_REGRESSION_FILTER='PrometheusMcpIntegrationBrowserTest.*:PrometheusVaultConfirmationBrowserTest.*:PrometheusControlPanelBrowserTest.*-*.Supervision*'
+PHASE17_19_BROWSER_REGRESSION_FILTER='PrometheusAgentGatewayBrowserTest.*:PrometheusAgentGatewayLifecycleBrowserTest.*:PrometheusAgentProfileServiceBrowserTest.*:PrometheusAgentServiceBrowserTest.*:PrometheusAgentInternalSurfaceBrowserTest.*:PrometheusPageAdapterBrowserTest.*:PrometheusPrerenderedFrameBrowserTest.*:PrometheusFencedFrameBrowserTest.*:PrometheusPageActionBrowserTest.*:PrometheusTabCommandsBrowserTest.*:PrometheusWebUIFoundationBrowserTest.*-*.Supervision*'
 METADATA_CAPTURED=false
 FRAMEWORK_RESOURCES_SWAPPED=false
 NODE_TEST_FILES=(
@@ -144,7 +198,7 @@ if [[ "${FOCUS_KIND}" == 'blink' ]]; then
 fi
 
 fail() {
-  printf 'Phase 21 focused verification failed: %s\n' "$1" >&2
+  printf 'Phase 21 verification failed: %s\n' "$1" >&2
   exit 1
 }
 
@@ -993,11 +1047,22 @@ capture_build_metadata() {
   NINJA_DEPS_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/.ninja_deps")"
   BLINK_MODULES_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/libblink_modules.dylib")"
   BLINK_MODULES_TOC_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/libblink_modules.dylib.TOC")"
+  [[ "${NINJA_LOG_SHA256_BEFORE}" == "${EXPECTED_NINJA_LOG_SHA256}" ]] \
+    || fail 'the restored .ninja_log does not match the reviewed Phase 21 metadata'
+  [[ "${NINJA_DEPS_SHA256_BEFORE}" == "${EXPECTED_NINJA_DEPS_SHA256}" ]] \
+    || fail 'the restored .ninja_deps does not match the reviewed Phase 21 metadata'
+  [[ "${BLINK_MODULES_SHA256_BEFORE}" == "${EXPECTED_BLINK_MODULES_SHA256}" ]] \
+    || fail 'the reviewed Blink modules library does not match its frozen hash'
+  [[ "${BLINK_MODULES_TOC_SHA256_BEFORE}" == "${EXPECTED_BLINK_MODULES_TOC_SHA256}" ]] \
+    || fail 'the reviewed Blink modules TOC does not match its frozen hash'
   if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
     require_file "${FRAMEWORK_RESOURCES_PAK}"
     FRAMEWORK_RESOURCES_SHA256_BEFORE="$(
       sha256_file "${FRAMEWORK_RESOURCES_PAK}"
     )"
+    [[ "${FRAMEWORK_RESOURCES_SHA256_BEFORE}" == \
+       "${EXPECTED_FRAMEWORK_RESOURCES_SHA256}" ]] \
+      || fail 'the reviewed framework resources do not match their frozen hash'
   fi
   METADATA_CAPTURED=true
 }
@@ -1146,9 +1211,9 @@ build_and_install_focused_resources() {
     cd "${OUT_DIR}"
     python3 ../../tools/grit/grit.py \
       -i ../../chrome/browser/resources/prometheus/prometheus_resources.grd \
-      build -o phase21-focused/resources/prometheus \
+      build -o "${LOG_DIR_RELATIVE}/resources/prometheus" \
       --depdir . \
-      --depfile phase21-focused/resources/prometheus/prometheus_resources_grit.d \
+      --depfile "${LOG_DIR_RELATIVE}/resources/prometheus/prometheus_resources_grit.d" \
       --write-only-new=1 \
       -D DEVTOOLS_GRD_PATH=gen/third_party/devtools-frontend/src/front_end/devtools_resources \
       -D SHARED_INTERMEDIATE_DIR=gen \
@@ -1183,9 +1248,9 @@ build_and_install_focused_resources() {
   [[ -n "${repack_command}" ]] \
     || fail 'framework resource repack command not found'
   local original_output='repack gen/repack/resources.pak'
-  local focused_output='repack phase21-focused/resources/framework-resources.pak'
+  local focused_output="repack ${LOG_DIR_RELATIVE}/resources/framework-resources.pak"
   local original_prometheus=' gen/chrome/prometheus_resources.pak '
-  local focused_prometheus=' phase21-focused/resources/prometheus/prometheus_resources.pak '
+  local focused_prometheus=" ${LOG_DIR_RELATIVE}/resources/prometheus/prometheus_resources.pak "
   [[ "${repack_command}" == *"${original_output}"* &&
      "${repack_command}" == *"${original_prometheus}"* ]] \
     || fail 'framework resource repack command lacks expected Prometheus input'
@@ -1272,11 +1337,11 @@ write_link_response() {
 
 generate_blink_mojo_bindings() {
   local mojom='../../third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom'
-  local parser_rsp='phase21-focused/prometheus-supervision-parser.rsp'
-  local blink_rsp='phase21-focused/prometheus-supervision-blink.rsp'
-  local shared_rsp='phase21-focused/prometheus-supervision-shared.rsp'
-  local message_ids_rsp='phase21-focused/prometheus-supervision-message-ids.rsp'
-  local browser_rsp='phase21-focused/prometheus-supervision-browser.rsp'
+  local parser_rsp="${LOG_DIR_RELATIVE}/prometheus-supervision-parser.rsp"
+  local blink_rsp="${LOG_DIR_RELATIVE}/prometheus-supervision-blink.rsp"
+  local shared_rsp="${LOG_DIR_RELATIVE}/prometheus-supervision-shared.rsp"
+  local message_ids_rsp="${LOG_DIR_RELATIVE}/prometheus-supervision-message-ids.rsp"
+  local browser_rsp="${LOG_DIR_RELATIVE}/prometheus-supervision-browser.rsp"
   printf '%s\n' "${mojom}" >"${OUT_DIR}/${parser_rsp}"
   printf '%s\n' "${mojom}" >"${OUT_DIR}/${blink_rsp}"
   printf '%s\n' "${mojom}" >"${OUT_DIR}/${shared_rsp}"
@@ -1412,9 +1477,9 @@ build_browser_focused_blink_modules() {
   local shared_object='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/prometheus_supervision_document.mojom-shared.o'
   local modules_initializer_object='obj/third_party/blink/renderer/modules/modules/modules_initializer.o'
   local target_ninja='obj/third_party/blink/renderer/modules/modules.ninja'
-  local response_file='phase21-focused/libblink_modules.dylib.rsp'
-  local focused_output='./phase21-focused/blink-modules/libblink_modules.dylib'
-  local focused_toc='./phase21-focused/blink-modules/libblink_modules.dylib.TOC'
+  local response_file="${LOG_DIR_RELATIVE}/libblink_modules.dylib.rsp"
+  local focused_output="./${LOG_DIR_RELATIVE}/blink-modules/libblink_modules.dylib"
+  local focused_toc="./${LOG_DIR_RELATIVE}/blink-modules/libblink_modules.dylib.TOC"
   local original_output='-o "./libblink_modules.dylib"'
   local focused_output_argument="-o \"${focused_output}\""
   local original_toc='-Wcrl,tocname,"./libblink_modules.dylib.TOC"'
@@ -1491,6 +1556,11 @@ verify_side_panel_supervision_runtime_contract() {
   require_literal '"prometheusOpenSupervisionManagement"' "${webui_source}"
   require_literal 'SidePanelSupervisionRuntimeStateIsSanitizedAndBounded' "${browser_test}"
   require_literal 'SidePanelSupervisionRuntimeActionsRequireZeroArguments' "${browser_test}"
+  require_literal \
+    'content::TitleWatcher title_watcher(target_contents, u"Quarterly report")' \
+    "${browser_test}"
+  require_literal 'title_watcher.WaitAndGetTitle()' "${browser_test}"
+  require_literal "!Object.hasOwn(state, 'client_label')" "${browser_test}"
   require_literal 'EndSelectedTabSupervision' "${supervision_service}"
   require_literal 'EndSelectedTabSupervision() override' "${browser_extra_parts}"
   require_literal 'SidePanelSupervisionRuntimeEndIsZeroArgumentBulkExactAndTeardownSafe' "${browser_test}"
@@ -1679,6 +1749,7 @@ build_focused_binary() {
   local agent_codec_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc"
   local agent_transport_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_transport_unittest.o'
   local agent_session_object='obj/chrome/browser/prometheus/prometheus_agent_session/prometheus_agent_session.o'
+  local agent_session_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_session_unittest.o'
   local agent_service_object='obj/chrome/browser/prometheus/prometheus_agent_service/prometheus_agent_service.o'
   local agent_service_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_service_unittest.o'
   local agent_tab_data_object='obj/chrome/browser/prometheus/prometheus_agent_tab_data/prometheus_agent_tab_data.o'
@@ -1697,6 +1768,8 @@ build_focused_binary() {
   local supervision_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_types_unittest.cc"
   local runtime_codec_object='obj/chrome/browser/prometheus/prometheus_runtime_transport_codec/prometheus_runtime_transport_codec.o'
   local runtime_codec_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_runtime_transport_codec_unittest.o'
+  local provider_transport_object='obj/chrome/browser/prometheus/prometheus_provider_transport/prometheus_provider_transport.o'
+  local provider_transport_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_provider_transport_unittest.o'
   local supervision_codec_object='obj/chrome/browser/prometheus/prometheus_supervision_transport_codec/prometheus_supervision_transport_codec.o'
   local supervision_codec_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_transport_codec_unittest.o'
   local supervision_codec_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_transport_codec.cc"
@@ -1728,6 +1801,12 @@ build_focused_binary() {
   local supervision_confirmation_browser_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc"
   local supervision_badge_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_tab_supervision_badge_browsertest.o'
   local supervision_badge_browser_source="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc"
+  local page_action_dispatcher_object='obj/chrome/browser/prometheus/prometheus_page_adapter/prometheus_page_action_dispatcher.o'
+  local page_action_dispatcher_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_page_action_dispatcher_unittest.o'
+  local page_adapter_object='obj/chrome/browser/prometheus/prometheus_page_adapter/prometheus_page_adapter.o'
+  local page_adapter_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_page_adapter_unittest.o'
+  local page_js_executor_object='obj/chrome/browser/prometheus/prometheus_page_adapter/prometheus_page_js_executor.o'
+  local page_js_executor_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_page_js_executor_unittest.o'
   local tab_view_object='obj/chrome/browser/ui/ui/tab.o'
   local tab_badge_object='obj/chrome/browser/ui/ui/prometheus_tab_status_badge.o'
   local supervision_action_object='obj/chrome/browser/prometheus/prometheus_supervision_action_controller/prometheus_supervision_action_controller.o'
@@ -1765,6 +1844,7 @@ build_focused_binary() {
     compile_exact_object "${agent_codec_object}"
     compile_exact_object "${agent_transport_test_object}"
     compile_exact_object "${agent_session_object}"
+    compile_exact_object "${agent_session_test_object}"
     compile_exact_object "${agent_tab_data_object}"
     compile_exact_object "${agent_tab_data_test_object}"
     compile_exact_object "${tab_state_object}"
@@ -1773,6 +1853,16 @@ build_focused_binary() {
     compile_exact_object "${agent_service_test_object}"
     compile_exact_object "${agent_profile_object}"
     compile_exact_object "${agent_profile_factory_object}"
+    compile_exact_object "${runtime_profile_object}"
+    compile_exact_object "${runtime_profile_test_object}"
+    compile_exact_object "${provider_transport_object}"
+    compile_exact_object "${provider_transport_test_object}"
+    compile_exact_object "${page_action_dispatcher_object}"
+    compile_exact_object "${page_action_dispatcher_test_object}"
+    compile_exact_object "${page_adapter_object}"
+    compile_exact_object "${page_adapter_test_object}"
+    compile_exact_object "${page_js_executor_object}"
+    compile_exact_object "${page_js_executor_test_object}"
     compile_exact_object "${gateway_contract_object}"
     compile_exact_object "${gateway_object}"
     compile_exact_object "${browser_composition_object}"
@@ -2013,6 +2103,636 @@ build_focused_binary() {
   require_file "${FOCUSED_BINARY}"
 }
 
+build_content_focused_binary() {
+  local target_ninja='obj/chrome/renderer/prometheus_action_dispatcher_unittests.ninja'
+  local response_file="${LOG_DIR_RELATIVE}/phase21-content-unittests.rsp"
+  local focused_output='./phase21_content_focused_unittests'
+  local original_output='-o "./prometheus_action_dispatcher_unittests"'
+  local focused_output_argument="-o \"${focused_output}\""
+  local original_response='@./prometheus_action_dispatcher_unittests.rsp'
+  local focused_response="@./${response_file}"
+  local extras=(
+    obj/chrome/browser/prometheus/prometheus_unittests/prometheus_provider_transport_unittest.o
+    obj/chrome/browser/prometheus/prometheus_unittests/prometheus_tab_state_unittest.o
+    obj/chrome/browser/prometheus/prometheus_provider_transport/prometheus_provider_transport.o
+    obj/chrome/browser/prometheus/prometheus_provider_registry/prometheus_provider_registry.o
+    obj/chrome/browser/prometheus/prometheus_provider_codec/prometheus_provider_codec.o
+    obj/chrome/browser/prometheus/prometheus_secret_store/prometheus_secret_store.o
+    obj/chrome/browser/prometheus/prometheus_runtime_prefs/prometheus_runtime_prefs.o
+    obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o
+    obj/chrome/browser/prometheus/prometheus_runtime_types/prometheus_runtime_types.o
+    obj/chrome/browser/prometheus/prometheus_supervision_types/prometheus_supervision_types.o
+    obj/chrome/browser/prometheus/prometheus_tab_state/prometheus_tab_state.o
+    obj/chrome/browser/prometheus/prometheus_agent_tab_data/prometheus_agent_tab_data.o
+    obj/chrome/browser/prometheus/prometheus_agent_route/prometheus_agent_route.o
+    obj/components/tabs/test_support/mock_tab_interface.o
+    obj/components/tabs/impl/tab_interface.o
+    obj/components/tabs/impl/supports_handles.o
+    obj/components/tabs/impl/tab_handle_factory.o
+    obj/components/sync_preferences/features/features.o
+    obj/components/sync_preferences/libtest_support.a
+    obj/components/sync_preferences/libsync_preferences.a
+    ./libui_base_unowned_user_data.dylib
+  )
+
+  local extra
+  for extra in "${extras[@]}"; do
+    require_file "${OUT_DIR}/${extra#./}"
+  done
+  write_link_response "${target_ninja}" \
+    ./prometheus_action_dispatcher_unittests "${response_file}" \
+    "${extras[@]}"
+
+  local link_command
+  link_command="$(query_blink_link_command)"
+  [[ -n "${link_command}" ]] \
+    || fail 'content-capable direct link command not found'
+  link_command="${link_command/${original_output}/${focused_output_argument}}"
+  link_command="${link_command/${original_response}/${focused_response}}"
+  [[ "${link_command}" == *"${focused_output_argument}"* ]] \
+    || fail 'focused content output argument was not replaced'
+  [[ "${link_command}" == *"${focused_response}"* ]] \
+    || fail 'focused content response file was not replaced'
+
+  rm -f "${CONTENT_FOCUSED_BINARY}"
+  if ! (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${link_command}"
+    codesign --force --sign - "${focused_output}"
+    codesign --verify --strict "${focused_output}"
+  ) >>"${BUILD_LOG}" 2>&1; then
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused content unit-test link failed'
+  fi
+  require_file "${CONTENT_FOCUSED_BINARY}"
+  note 'content-focused binary uses the Mojo-initializing renderer unit-test harness'
+}
+
+run_logged() {
+  local log_name="$1"
+  shift
+  note "running ${log_name}"
+  "$@" >"${LOG_DIR}/${log_name}.log" 2>&1 || {
+    tail -n 100 "${LOG_DIR}/${log_name}.log" >&2 || true
+    fail "${log_name} (see ${LOG_DIR}/${log_name}.log)"
+  }
+}
+
+count_listed_gtests() {
+  LC_ALL=C awk '
+    /^  [^ ]/ && $0 !~ /DISABLED_/ { count += 1 }
+    END { print count + 0 }
+  ' "$1"
+}
+
+count_listed_suite_tests() {
+  local suite="$1"
+  local log="$2"
+  LC_ALL=C awk -v suite="${suite}." '
+    $0 == suite { active = 1; next }
+    /^[^ ]/ { active = 0 }
+    active && /^  [^ ]/ && $0 !~ /DISABLED_/ { count += 1 }
+    END { print count + 0 }
+  ' "${log}"
+}
+
+verify_gtest_cohort() {
+  local binary="$1"
+  local filter="$2"
+  local log_name="$3"
+  local expected_count="$4"
+  local launcher="$5"
+  local list_log="${LOG_DIR}/${log_name}-list.log"
+  local test_log="${LOG_DIR}/${log_name}.log"
+  local actual_count
+
+  require_file "${binary}"
+  if ! "${binary}" --gtest_list_tests --gtest_filter="${filter}" \
+      >"${list_log}" 2>&1; then
+    tail -n 80 "${list_log}" >&2 || true
+    fail "${log_name} discovery failed"
+  fi
+  actual_count="$(count_listed_gtests "${list_log}")"
+  [[ "${actual_count}" -gt 0 ]] \
+    || fail "${log_name} selected zero runnable tests"
+  [[ "${actual_count}" -eq "${expected_count}" ]] \
+    || fail "${log_name} expected ${expected_count} tests, found ${actual_count}"
+
+  local status
+  set +e
+  if [[ "${launcher}" == true ]]; then
+    "${binary}" --gtest_filter="${filter}" --test-launcher-jobs=1 \
+      --test-launcher-retry-limit=0 >"${test_log}" 2>&1
+  else
+    "${binary}" --gtest_filter="${filter}" >"${test_log}" 2>&1
+  fi
+  status="$?"
+  set -e
+  if [[ "${status}" -ne 0 ]]; then
+    tail -n 100 "${test_log}" >&2 || true
+    fail "${log_name} failed with status ${status}"
+  fi
+  if rg -q '^\[  FAILED  \]' "${test_log}"; then
+    tail -n 100 "${test_log}" >&2 || true
+    fail "${log_name} reported a failed test"
+  fi
+  if rg -q '^\[  SKIPPED \] [1-9][0-9]* test' "${test_log}"; then
+    tail -n 100 "${test_log}" >&2 || true
+    fail "${log_name} reported a skipped test"
+  fi
+  if [[ "${launcher}" == true ]]; then
+    rg -q 'SUCCESS: all tests passed\.' "${test_log}" \
+      || fail "${log_name} lacks the browser-test success marker"
+    rg -q "\\[${expected_count}/${expected_count}\\]" "${test_log}" \
+      || fail "${log_name} did not pass exactly ${expected_count}/${expected_count}"
+  else
+    rg -q "^\\[  PASSED  \\] ${expected_count} test" "${test_log}" \
+      || fail "${log_name} did not pass exactly ${expected_count} tests"
+  fi
+  note "${log_name}: PASS ${expected_count}/${expected_count}, fail=0, skip=0"
+}
+
+verify_renderer_closeout() {
+  local combined_filter="${PHASE21_RENDERER_FILTER}:${PHASE19_RENDERER_REGRESSION_FILTER}"
+  local focused_log_dir="${OUT_DIR}/phase21-focused"
+  local focused_list="${focused_log_dir}/phase21-focused-list.log"
+  local focused_test="${focused_log_dir}/phase21-focused-test.log"
+  local phase21_count phase19_count total_count
+
+  run_logged phase21-renderer-build-and-test \
+    bash "${ROOT_DIR}/.planning/chromium/verify-phase-21.sh" \
+      --focus-blink "${combined_filter}"
+  require_file "${focused_list}"
+  require_file "${focused_test}"
+  cp -p "${focused_list}" "${LOG_DIR}/phase21-renderer-list.log"
+  cp -p "${focused_test}" "${LOG_DIR}/phase21-renderer.log"
+  phase21_count="$(
+    count_listed_suite_tests PrometheusSupervisionDocumentSupplementTest \
+      "${LOG_DIR}/phase21-renderer-list.log"
+  )"
+  phase19_count="$(
+    count_listed_suite_tests PrometheusActionDispatcherTest \
+      "${LOG_DIR}/phase21-renderer-list.log"
+  )"
+  total_count="$(count_listed_gtests "${LOG_DIR}/phase21-renderer-list.log")"
+  [[ "${phase21_count}" -eq "${EXPECTED_PHASE21_RENDERER_COUNT}" ]] \
+    || fail "Phase 21 renderer expected ${EXPECTED_PHASE21_RENDERER_COUNT}, found ${phase21_count}"
+  [[ "${phase19_count}" -eq "${EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT}" ]] \
+    || fail "Phase 19 renderer regression expected ${EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT}, found ${phase19_count}"
+  [[ "${total_count}" -eq \
+      "$((EXPECTED_PHASE21_RENDERER_COUNT + EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT))" ]] \
+    || fail "renderer closeout selected an unexpected total of ${total_count}"
+  rg -q "^\\[  PASSED  \\] ${total_count} test" \
+    "${LOG_DIR}/phase21-renderer.log" \
+    || fail "renderer closeout did not pass exactly ${total_count} tests"
+  if rg -q '^\[  FAILED  \]|^\[  SKIPPED \] [1-9][0-9]* test' \
+      "${LOG_DIR}/phase21-renderer.log"; then
+    fail 'renderer closeout reported a failure or skip'
+  fi
+  note "phase21-renderer: PASS ${phase21_count}/${phase21_count}, fail=0, skip=0"
+  note "phase19-renderer-regression: PASS ${phase19_count}/${phase19_count}, fail=0, skip=0"
+}
+
+verify_node_closeout() {
+  local discovery_log="${LOG_DIR}/phase21-node-list.log"
+  local test_log="${LOG_DIR}/phase21-node-tap.log"
+  local node_files=()
+  local file discovered_count
+
+  while IFS= read -r file; do
+    node_files+=("${file}")
+  done < <(find "${ROOT_DIR}/tools/prometheus-mcp/test" -maxdepth 1 \
+    -type f -name '*.test.mjs' | LC_ALL=C sort)
+  [[ "${#node_files[@]}" -eq 8 ]] \
+    || fail "expected 8 Node test files, found ${#node_files[@]}"
+  for file in "${node_files[@]}"; do
+    node --check "${file}" >>"${LOG_DIR}/phase21-node-syntax.log" 2>&1 \
+      || fail "Node syntax check failed: ${file}"
+  done
+
+  if ! node --input-type=module - "${node_files[@]}" >"${discovery_log}" <<'NODE_DISCOVERY'
+import { readFileSync } from 'node:fs';
+
+const names = [];
+const declaration = /^\s*test\(\s*(['"])([^'"\n]+)\1\s*,/gmu;
+for (const file of process.argv.slice(2)) {
+  const source = readFileSync(file, 'utf8');
+  for (const match of source.matchAll(declaration)) names.push(match[2]);
+}
+names.sort((left, right) => left.localeCompare(right));
+if (names.length === 0 || new Set(names).size !== names.length) process.exit(1);
+process.stdout.write(`${names.join('\n')}\n`);
+NODE_DISCOVERY
+  then
+    fail 'Node discovery found zero or duplicate named tests'
+  fi
+  discovered_count="$(awk 'NF { count += 1 } END { print count + 0 }' \
+    "${discovery_log}")"
+  [[ "${discovered_count}" -eq "${EXPECTED_NODE_COUNT}" ]] \
+    || fail "expected ${EXPECTED_NODE_COUNT} Node tests, found ${discovered_count}"
+
+  set +e
+  node --test "${node_files[@]}" >"${test_log}" 2>&1
+  local status="$?"
+  set -e
+  if [[ "${status}" -ne 0 ]]; then
+    tail -n 100 "${test_log}" >&2 || true
+    fail "Node closeout failed with status ${status}"
+  fi
+  rg -q "^(#|ℹ) tests ${EXPECTED_NODE_COUNT}$" "${test_log}" \
+    || fail "Node closeout did not report exactly ${EXPECTED_NODE_COUNT} tests"
+  for field in fail cancelled skipped todo; do
+    rg -q "^(#|ℹ) ${field} 0$" "${test_log}" \
+      || fail "Node closeout ${field} count is not zero"
+  done
+  note "phase21-node: PASS ${EXPECTED_NODE_COUNT}/${EXPECTED_NODE_COUNT}, fail=0, skip=0"
+}
+
+verify_catalog_closeout() {
+  local log="${LOG_DIR}/phase21-catalog.log"
+  if ! node --input-type=module - \
+      "${ROOT_DIR}/tools/prometheus-mcp/src/catalog.mjs" >"${log}" <<'NODE_CATALOG'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const { COMPATIBILITY_CATALOG } = await import(pathToFileURL(process.argv[2]).href);
+const counts = Object.fromEntries(
+  ['native', 'alias', 'typed_stub', 'later_phase', 'removed'].map((disposition) => [
+    disposition,
+    COMPATIBILITY_CATALOG.filter((entry) => entry.disposition === disposition).length,
+  ]),
+);
+assert.deepEqual(counts, {
+  native: 54,
+  alias: 12,
+  typed_stub: 22,
+  later_phase: 0,
+  removed: 2,
+});
+const forbiddenAuthorityFields = new Set([
+  'bearer', 'challenge', 'controller_lease', 'document_epoch',
+  'owner_session_id', 'pairing_code', 'session_id',
+]);
+for (const entry of COMPATIBILITY_CATALOG) {
+  const visit = (value) => {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      assert.equal(forbiddenAuthorityFields.has(key), false, `${entry.name}:${key}`);
+      visit(child);
+    }
+  };
+  visit(entry.inputSchema);
+}
+console.log(JSON.stringify(counts));
+NODE_CATALOG
+  then
+    tail -n 80 "${log}" >&2 || true
+    fail 'catalog partition or authority-field guard failed'
+  fi
+  rg -q --fixed-strings \
+    '{"native":54,"alias":12,"typed_stub":22,"later_phase":0,"removed":2}' \
+    "${log}" || fail 'catalog closeout did not print the frozen partition'
+  note 'catalog: PASS 54/12/22/0/2'
+}
+
+extract_single_stable_patch_id() {
+  local output="$1"
+  local patch_id
+  patch_id="$(printf '%s\n' "${output}" | LC_ALL=C awk '
+    NF != 2 { invalid = 1 }
+    NF == 2 { count += 1; patch_id = $1 }
+    END {
+      if (invalid || count != 1) exit 1
+      print patch_id
+    }
+  ')" || return 1
+  [[ "${patch_id}" =~ ^[0-9a-f]{40}$ ]] || return 1
+  printf '%s\n' "${patch_id}"
+}
+
+stable_patch_id_for_file() {
+  local output
+  output="$(git patch-id --stable <"$1")" || return 1
+  extract_single_stable_patch_id "${output}"
+}
+
+stable_patch_id_for_commit() {
+  local output
+  output="$(git -C "${CHROMIUM_DIR}" show --pretty=format: --binary "$1" \
+    | git patch-id --stable)" || return 1
+  extract_single_stable_patch_id "${output}"
+}
+
+stable_patch_identity_matches() {
+  local patch_id commit_patch_id
+  patch_id="$(stable_patch_id_for_file "$1")" || return 1
+  commit_patch_id="$(stable_patch_id_for_commit "$2")" || return 1
+  [[ "${patch_id}" == "${commit_patch_id}" ]]
+}
+
+verify_patch_identity_self_test() {
+  local source_patch="$1"
+  local commit="$2"
+  local mutated_patch="${LOG_DIR}/phase21-patch-identity-mutated.patch"
+  local test_index="${LOG_DIR}/phase21-patch-identity-self-test.index"
+  local log="${LOG_DIR}/phase21-patch-identity-self-test.log"
+  local mutated_patch_id commit_patch_id
+
+  rm -f "${mutated_patch}" "${test_index}"
+  if ! LC_ALL=C awk '
+    !mutated && substr($0, 1, 1) == "+" && substr($0, 1, 3) != "+++" {
+      if ($0 == "+") {
+        print "+PHASE21_MUTATED_PATCH_BODY"
+      } else {
+        print $0 "PHASE21_MUTATED_PATCH_BODY"
+      }
+      mutated = 1
+      next
+    }
+    { print }
+    END { if (!mutated) exit 1 }
+  ' "${source_patch}" >"${mutated_patch}"; then
+    fail 'patch identity self-test could not create a deterministic mutation'
+  fi
+  require_file "${mutated_patch}"
+  git -C "${CHROMIUM_DIR}" apply --stat "${mutated_patch}" >"${log}" 2>&1 \
+    || fail 'patch identity self-test mutation is not a valid patch'
+  GIT_INDEX_FILE="${test_index}" git -C "${CHROMIUM_DIR}" \
+    read-tree "${commit}^" \
+    || fail 'patch identity self-test could not load the commit parent'
+  GIT_INDEX_FILE="${test_index}" git -C "${CHROMIUM_DIR}" \
+    apply --check --cached "${mutated_patch}" >>"${log}" 2>&1 \
+    || fail 'patch identity self-test mutation did not apply to the commit parent'
+  mutated_patch_id="$(stable_patch_id_for_file "${mutated_patch}")" \
+    || fail 'patch identity self-test mutation had no stable patch ID'
+  commit_patch_id="$(stable_patch_id_for_commit "${commit}")" \
+    || fail 'patch identity self-test commit had no stable patch ID'
+  [[ "${mutated_patch_id}" != "${commit_patch_id}" ]] \
+    || fail 'patch identity self-test mutation preserved the original identity'
+  if stable_patch_identity_matches "${mutated_patch}" "${commit}"; then
+    fail 'patch identity verifier accepted a valid but mutated patch body'
+  fi
+  printf 'PASS valid mutation rejected: %s != %s\n' \
+    "${mutated_patch_id}" "${commit_patch_id}" >>"${log}"
+  rm -f "${mutated_patch}" "${test_index}"
+}
+
+verify_patches_closeout() {
+  local log="${LOG_DIR}/phase21-patches.log"
+  local replay_log="${LOG_DIR}/phase21-patch-replay.log"
+  local replay_index="${LOG_DIR}/phase21-patch-replay.index"
+  local commits=()
+  local patches=()
+  local commit patch changed_files patch_id commit_patch_id patch_sha
+  local index expected_prefix root_relative
+
+  while IFS= read -r commit; do
+    commits+=("${commit}")
+  done < <(git -C "${CHROMIUM_DIR}" rev-list --reverse "${BASELINE}..HEAD")
+  while IFS= read -r patch; do
+    patches+=("${patch}")
+  done < <(find "${PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' \
+    | LC_ALL=C sort)
+  [[ "${#commits[@]}" -eq "${EXPECTED_PATCH_COUNT}" ]] \
+    || fail "expected ${EXPECTED_PATCH_COUNT} nested commits, found ${#commits[@]}"
+  [[ "${#patches[@]}" -eq "${EXPECTED_PATCH_COUNT}" ]] \
+    || fail "expected ${EXPECTED_PATCH_COUNT} patches, found ${#patches[@]}"
+
+  : >"${log}"
+  : >"${replay_log}"
+  rm -f "${replay_index}"
+  GIT_INDEX_FILE="${replay_index}" git -C "${CHROMIUM_DIR}" \
+    read-tree "${BASELINE}" \
+    || fail 'ordered patch replay could not load the fixed baseline'
+  for index in "${!commits[@]}"; do
+    commit="${commits[$index]}"
+    patch="${patches[$index]}"
+    printf -v expected_prefix '%04d-' "$((index + 1))"
+    [[ "$(basename "${patch}")" == "${expected_prefix}"* ]] \
+      || fail "out-of-order patch: ${patch}"
+    require_file "${patch}"
+    [[ "$(head -n 1 "${patch}")" == "From ${commit} "* ]] \
+      || fail "patch $(basename "${patch}") does not export ${commit}"
+    root_relative="${patch#"${ROOT_DIR}/"}"
+    git -C "${ROOT_DIR}" ls-files --error-unmatch "${root_relative}" \
+      >/dev/null \
+      || fail "patch is not tracked by the root repository: ${root_relative}"
+
+    changed_files="$(
+      git -C "${CHROMIUM_DIR}" diff-tree --no-commit-id --name-only -r "${commit}"
+    )"
+    [[ -n "${changed_files}" ]] || fail "nested commit ${commit} is empty"
+    if printf '%s\n' "${changed_files}" | rg -q \
+        '(^|/)(out|gen)(/|$)|(^|/)\.ninja|[.](o|dylib|a|rsp|runtime_deps)$'; then
+      fail "nested commit ${commit} contains a generated build artifact"
+    fi
+    if rg -q '^diff --git a/((out|gen)/|\.ninja|.*[.](o|dylib|a|rsp|runtime_deps)( |$))' \
+        "${patch}"; then
+      fail "patch $(basename "${patch}") contains a generated build artifact"
+    fi
+    git -C "${CHROMIUM_DIR}" apply --stat "${patch}" >>"${log}" \
+      || fail "patch $(basename "${patch}") is malformed"
+    patch_id="$(stable_patch_id_for_file "${patch}")" \
+      || fail "could not derive one stable patch ID from $(basename "${patch}")"
+    commit_patch_id="$(stable_patch_id_for_commit "${commit}")" \
+      || fail "could not derive one stable patch ID from ${commit}"
+    [[ "${patch_id}" == "${commit_patch_id}" ]] \
+      || fail "patch body $(basename "${patch}") does not match ${commit}"
+    patch_sha="$(sha256_file "${patch}")"
+    printf '%s %s %s %s\n' "${commit}" "${patch_id}" "${patch_sha}" \
+      "$(basename "${patch}")" >>"${log}"
+
+    GIT_INDEX_FILE="${replay_index}" git -C "${CHROMIUM_DIR}" \
+      apply --check --cached "${patch}" >>"${replay_log}" 2>&1 \
+      || fail "ordered patch $(basename "${patch}") does not apply"
+    GIT_INDEX_FILE="${replay_index}" git -C "${CHROMIUM_DIR}" \
+      apply --cached "${patch}" >>"${replay_log}" 2>&1 \
+      || fail "ordered patch $(basename "${patch}") could not be replayed"
+  done
+
+  local replay_tree head_tree last_index
+  replay_tree="$(
+    GIT_INDEX_FILE="${replay_index}" git -C "${CHROMIUM_DIR}" write-tree
+  )"
+  head_tree="$(git -C "${CHROMIUM_DIR}" rev-parse 'HEAD^{tree}')"
+  [[ "${replay_tree}" == "${head_tree}" ]] \
+    || fail "ordered patch replay tree ${replay_tree} does not match HEAD ${head_tree}"
+  last_index="$((${#commits[@]} - 1))"
+  verify_patch_identity_self_test "${patches[$last_index]}" \
+    "${commits[$last_index]}"
+  rm -f "${replay_index}"
+  note "patches: PASS ${EXPECTED_PATCH_COUNT}/${EXPECTED_PATCH_COUNT}, ordered source-only identities and mutation rejection"
+}
+
+verify_closeout_static_boundaries() {
+  local log="${LOG_DIR}/phase21-closeout-static.log"
+  local gateway="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway.cc"
+  local gateway_contract="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc"
+  local bootstrap="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc"
+  local bootstrap_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h"
+  local main_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
+  local agent_sources=(
+    "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_service.cc"
+    "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_service.h"
+    "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_profile_service.cc"
+    "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_profile_service.h"
+    "${gateway}"
+    "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway.h"
+  )
+  local production=(
+    "${ROOT_DIR}/tools/prometheus-mcp/src"
+    "${ROOT_DIR}/tools/prometheus-mcp/bin"
+    "${CHROMIUM_DIR}/chrome/browser/prometheus"
+    "${CHROMIUM_DIR}/chrome/browser/resources/prometheus"
+    "${CHROMIUM_DIR}/chrome/renderer/prometheus_supervision_document.cc"
+    "${CHROMIUM_DIR}/chrome/renderer/prometheus_supervision_document.h"
+  )
+  : >"${log}"
+
+  require_literal 'net::IPAddress::IPv4Localhost()' "${gateway}"
+  require_literal 'PrometheusAgentRequestRejection::kMethodNotAllowed' "${gateway}"
+  require_literal 'void OnWebSocketRequest' "${gateway}"
+  require_literal 'base::File::FLAG_NO_FOLLOW' "${bootstrap}"
+  require_literal 'constexpr int kRequiredFilePermissions = 0600;' "${bootstrap}"
+  require_literal '#if defined(OFFICIAL_BUILD)' "${bootstrap}"
+  require_literal 'kPrometheusRuntimeTestTypeSwitch' "${bootstrap}"
+  require_literal 'kPrometheusSupervisionTestBootstrapSwitch' "${bootstrap}"
+  require_literal 'kPrometheusSupervisionTestPairingSlots = 2' "${bootstrap_header}"
+  require_literal 'crypto::SecureZeroBuffer' "${bootstrap}"
+  require_literal 'binding.profile_identity != 0 && binding.browser_identity != 0' \
+    "${bootstrap}"
+  require_literal '!binding.owner_session_id.empty()' "${bootstrap}"
+  require_literal 'binding.expected_origin == expected_origin' "${bootstrap}"
+  require_literal 'PrometheusSupervisionTestComposition::Create' "${main_parts}"
+  require_literal 'supervision_test_composition_->Shutdown();' "${main_parts}"
+  require_literal 'SetSupervisionTestHandoffDispatcher' "${main_parts}"
+  require_literal 'ConsumeDialogResponse' "${main_parts}"
+
+  if rg -n '#include .*prometheus_(supervision_profile_service|supervision_capture_hub|supervision_action_controller|supervision_document)' \
+      "${agent_sources[@]}" >>"${log}"; then
+    fail 'Agent service/profile/gateway gained a concrete supervision dependency'
+  fi
+  if rg -n --glob '!**/*test*' 'ClaimIfUnowned' \
+      "${CHROMIUM_DIR}"/chrome/browser/prometheus/prometheus_supervision_*.cc \
+      "${CHROMIUM_DIR}"/chrome/browser/prometheus/prometheus_supervision_*.h \
+      >>"${log}"; then
+    fail 'supervision production code can implicitly claim an unowned Agent tab'
+  fi
+  if rg -n --pcre2 \
+      '@import\b|<[^>]+\b(?:src|href)=[\x22\x27]https?://|url\(\s*[\x22\x27]?https?://|fetch\(\s*[\x22\x27]?https?://' \
+      "${CHROMIUM_DIR}/chrome/browser/resources/prometheus" >>"${log}"; then
+    fail 'remote Prometheus WebUI resource reference found'
+  fi
+  if rg -n --pcre2 --glob '!**/*test*' --glob '!**/*browsertest*' \
+      'Bearer [A-Za-z0-9_-]{12,}|BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY|sk-[A-Za-z0-9_-]{12,}' \
+      "${production[@]}" >>"${log}"; then
+    fail 'literal secret-like material found in production sources'
+  fi
+
+  local route_files="${LOG_DIR}/phase21-test-route-files.log"
+  rg -l --fixed-strings '/v1/test/supervision-handoff' \
+    "${CHROMIUM_DIR}/chrome/browser/prometheus" \
+    --glob '!**/*test*' --glob '!**/*browsertest*' \
+    | LC_ALL=C sort >"${route_files}"
+  local expected_route_files="${LOG_DIR}/phase21-test-route-files.expected"
+  printf '%s\n' "${gateway}" "${gateway_contract}" | LC_ALL=C sort \
+    >"${expected_route_files}"
+  if ! diff -u "${expected_route_files}" "${route_files}" >>"${log}"; then
+    fail 'test-only supervision route escaped its conditional gateway contract'
+  fi
+  note 'closeout security, dependency, loopback, offline-resource, and test-seam guards passed'
+}
+
+verify_closeout_documents() {
+  local verification="${PHASE_DIR}/21-VERIFICATION.md"
+  [[ -e "${verification}" ]] || return
+  require_file "${verification}"
+  rg -q '^human_uat: not_run$' "${verification}" \
+    || fail 'verification does not record exact human_uat: not_run'
+  rg -q 'Phase 22.*not_ready|Phase 22 `not_ready`' "${verification}" \
+    || fail 'verification does not preserve Phase 22 not_ready'
+  for requirement in SUP-01 SUP-02 SUP-03 SUP-04 SUP-05; do
+    rg -q "${requirement}" "${verification}" \
+      || fail "verification lacks ${requirement}"
+  done
+  local decision threat
+  for decision in $(seq -w 1 23); do
+    rg -q "D-${decision}" "${verification}" \
+      || fail "verification lacks D-${decision}"
+  done
+  for threat in $(seq -w 1 8); do
+    rg -q "T-21-${threat}" "${verification}" \
+      || fail "verification lacks T-21-${threat}"
+  done
+  [[ "$(
+    find "${PHASE_DIR}" -maxdepth 1 -type f -name '21-*-SUMMARY.md' | wc -l \
+      | tr -d ' '
+  )" -eq 26 ]] || fail 'verification closeout requires all 26 plan summaries'
+  if rg -n --pcre2 \
+      'Bearer [A-Za-z0-9_-]{12,}|BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY|sk-[A-Za-z0-9_-]{12,}|[A-Z0-9]{4}-[A-Z0-9]{4}' \
+      "${verification}" \
+      "${ROOT_DIR}/.planning/design/prometheus-browser/README.md" \
+      "${ROOT_DIR}/.planning/preservation/FALKON-TO-CHROMIUM-PRESERVATION.md" \
+      >"${LOG_DIR}/phase21-document-secret-guard.log"; then
+    fail 'closeout documentation contains secret-like material'
+  fi
+  note 'verification requirement/decision/threat/plan and documentation privacy guards passed'
+}
+
+verify_closeout() {
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE21_NATIVE_FILTER}" \
+    phase21-native "${EXPECTED_PHASE21_NATIVE_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE20_NATIVE_REGRESSION_FILTER}" \
+    phase20-native-regression "${EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE17_19_NATIVE_REGRESSION_FILTER}" \
+    phase17-19-native-regression "${EXPECTED_PHASE17_19_NATIVE_REGRESSION_COUNT}" true
+  verify_gtest_cohort "${CONTENT_FOCUSED_BINARY}" \
+    "${PHASE20_CONTENT_REGRESSION_FILTER}" \
+    phase20-content-regression "${EXPECTED_PHASE20_CONTENT_REGRESSION_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE21_BROWSER_FILTER}" \
+    phase21-browser "${EXPECTED_PHASE21_BROWSER_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE20_BROWSER_REGRESSION_FILTER}" \
+    phase20-browser-regression "${EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE17_19_BROWSER_REGRESSION_FILTER}" \
+    phase17-19-browser-regression "${EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT}" true
+  verify_renderer_closeout
+  verify_node_closeout
+  verify_catalog_closeout
+  verify_closeout_static_boundaries
+
+  run_logged phase21-built-smoke \
+    bash "${ROOT_DIR}/tools/prometheus-mcp/smoke-browser.sh"
+  rg -q --fixed-strings 'Prometheus MCP live smoke passed.' \
+    "${LOG_DIR}/phase21-built-smoke.log" \
+    || fail 'built-app smoke lacks its exact success marker'
+  run_logged phase21-environment \
+    bash "${ROOT_DIR}/.planning/chromium/check-chromium-env.sh"
+  run_logged phase21-gpl-guard \
+    bash "${ROOT_DIR}/.planning/chromium/check-falkon-gpl-guard.sh"
+  run_logged phase21-artifact-isolation \
+    bash "${ROOT_DIR}/.planning/chromium/verify-artifact-isolation.sh"
+  run_logged phase21-webui-resources \
+    bash "${ROOT_DIR}/.planning/chromium/verify-prometheus-webui-resources.sh"
+  run_logged phase21-preservation \
+    bash "${ROOT_DIR}/.planning/preservation/verify-preservation.sh"
+
+  verify_patches_closeout
+  verify_closeout_documents
+  git -C "${ROOT_DIR}" diff --check \
+    >"${LOG_DIR}/phase21-root-diff-check.log" \
+    || fail 'root diff check failed'
+  git -C "${CHROMIUM_DIR}" diff --check \
+    >"${LOG_DIR}/phase21-nested-diff-check.log" \
+    || fail 'nested diff check failed'
+  [[ -z "$(git -C "${CHROMIUM_DIR}" status --porcelain)" ]] \
+    || fail 'nested Chromium worktree is not clean after closeout'
+  note 'built smoke, environment, GPL, artifact, WebUI, preservation, and diff gates passed'
+  note "exact closeout counts: native=${EXPECTED_PHASE21_NATIVE_COUNT}, renderer=${EXPECTED_PHASE21_RENDERER_COUNT}, browser=${EXPECTED_PHASE21_BROWSER_COUNT}, node=${EXPECTED_NODE_COUNT}"
+  note "exact regression counts: phase20-native=${EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT}, phase17-19-native=${EXPECTED_PHASE17_19_NATIVE_REGRESSION_COUNT}, phase20-content=${EXPECTED_PHASE20_CONTENT_REGRESSION_COUNT}, phase19-renderer=${EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT}, phase20-browser=${EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT}, phase17-19-browser=${EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT}"
+  note "exact catalog=54/12/22/0/2; patches=${EXPECTED_PATCH_COUNT}"
+  printf 'Phase 21 verification passed. Logs: %s\n' "${LOG_DIR}"
+}
+
 list_selected_tests() {
   if ! "${FOCUSED_BINARY}" --gtest_list_tests \
       --gtest_filter="${FOCUS_FILTER}" >"${LIST_LOG}" 2>&1; then
@@ -2030,8 +2750,14 @@ list_selected_tests() {
 run_selected_tests() {
   local test_status
   set +e
-  "${FOCUSED_BINARY}" --gtest_filter="${FOCUS_FILTER}" \
-    >"${TEST_LOG}" 2>&1
+  if [[ "${FOCUS_KIND}" == 'content' ]]; then
+    "${FOCUSED_BINARY}" --gtest_filter="${FOCUS_FILTER}" \
+      --test-launcher-jobs=1 --test-launcher-retry-limit=0 \
+      >"${TEST_LOG}" 2>&1
+  else
+    "${FOCUSED_BINARY}" --gtest_filter="${FOCUS_FILTER}" \
+      >"${TEST_LOG}" 2>&1
+  fi
   test_status="$?"
   set -e
 
@@ -2086,6 +2812,14 @@ run_selected_tests() {
   fi
   rg -q '^\[  PASSED  \] [1-9][0-9]* test' "${TEST_LOG}" \
     || fail 'selected suite produced no passing GTest summary'
+  if [[ "${FOCUS_KIND}" == 'content' ]]; then
+    local selected_count
+    selected_count="$(count_listed_gtests "${LIST_LOG}")"
+    rg -q "SUCCESS: all tests passed\\." "${TEST_LOG}" \
+      || fail 'focused content suite lacks the launcher success marker'
+    rg -q "\\[${selected_count}/${selected_count}\\]" "${TEST_LOG}" \
+      || fail "focused content suite did not pass exactly ${selected_count}/${selected_count}"
+  fi
   note 'selected suite passed'
 }
 
@@ -2122,9 +2856,19 @@ else
     verify_capture_hub_contract
   fi
   build_focused_binary
+  if [[ "${CLOSEOUT_MODE}" == true || "${FOCUS_KIND}" == 'content' ]]; then
+    build_content_focused_binary
+  fi
   if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
     build_and_install_focused_resources
   fi
+fi
+if [[ "${FOCUS_KIND}" == 'content' ]]; then
+  FOCUSED_BINARY="${CONTENT_FOCUSED_BINARY}"
+fi
+if [[ "${CLOSEOUT_MODE}" == true ]]; then
+  verify_closeout
+  exit 0
 fi
 list_selected_tests
 run_selected_tests
