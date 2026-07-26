@@ -2302,9 +2302,11 @@ verify_renderer_closeout() {
   [[ "${total_count}" -eq \
       "$((EXPECTED_PHASE21_RENDERER_COUNT + EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT))" ]] \
     || fail "renderer closeout selected an unexpected total of ${total_count}"
-  rg -q "^\\[  PASSED  \\] ${total_count} test" \
+  rg -q "\\[${total_count}/${total_count}\\]" \
     "${LOG_DIR}/phase21-renderer.log" \
-    || fail "renderer closeout did not pass exactly ${total_count} tests"
+    || fail "renderer closeout did not pass exactly ${total_count}/${total_count}"
+  rg -q 'SUCCESS: all tests passed\.' "${LOG_DIR}/phase21-renderer.log" \
+    || fail 'renderer closeout lacks the launcher success marker'
   if rg -q '^\[  FAILED  \]|^\[  SKIPPED \] [1-9][0-9]* test' \
       "${LOG_DIR}/phase21-renderer.log"; then
     fail 'renderer closeout reported a failure or skip'
