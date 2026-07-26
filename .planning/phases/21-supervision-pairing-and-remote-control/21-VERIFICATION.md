@@ -1,12 +1,12 @@
 ---
 phase: 21-supervision-pairing-and-remote-control
-verified: 2026-07-26T04:36:30Z
+verified: 2026-07-26T07:13:07Z
 status: passed
 score: "5/5 requirements; 26/26 plans verified"
 human_uat: not_run
-evidence_root_parent: 47387294c527e2665a1d34e0c3bd545404d1c5c2
-nested_source_head: 2c93cf8831c961f0a7d0c35909f0da89d02a0b59
-nested_source_tree: c7eac93a51c4c5199efb8efaf3415f751573e0f0
+evidence_root_parent: 252a5ed815a5b554403b169cb5b90e812143efe8
+nested_source_head: de937473bd1b5e99aec391ea003545ecd205e367
+nested_source_tree: 97c4043b11ef760f3f03705a279641d4421ddf2f
 deferred:
   - truth: "Subjective desktop hierarchy, motion, and polish review remains unperformed."
     addressed_in: "Phase 24"
@@ -29,12 +29,12 @@ zero, exercises the built Prometheus application, audits the production/test
 boundary, replays the complete patch chain, checks reviewed artifact hashes,
 and validates this report.
 
-The implementation evidence parent is root
-`47387294c527e2665a1d34e0c3bd545404d1c5c2`. The atomic evidence commit adds
-this report and the closeout ledgers without changing Chromium product source.
-Nested Chromium is clean at
-`2c93cf8831c961f0a7d0c35909f0da89d02a0b59`, tree
-`c7eac93a51c4c5199efb8efaf3415f751573e0f0`, based on fixed pre-Phase-21
+The reviewed implementation evidence parent is root
+`252a5ed815a5b554403b169cb5b90e812143efe8`. It tracks the three
+post-review blocker fixes, patches 0072–0074, and their frozen verifier
+expectations. Nested Chromium is clean at
+`de937473bd1b5e99aec391ea003545ecd205e367`, tree
+`97c4043b11ef760f3f03705a279641d4421ddf2f`, based on fixed pre-Phase-21
 commit `5632dcef07121bf4c3444cc2da13f222b6a61e91`.
 
 Phase 22 remains `not_ready`; extension policy was neither implemented nor
@@ -45,9 +45,9 @@ open.
 
 | Requirement | Status | Direct evidence |
 |-------------|--------|-----------------|
-| SUP-01 | SATISFIED | Native tab-badge, selected-tab side-panel, Control Panel, dialog, accessibility, exact-window, OTR, responsive, and resource fixtures are included in the 50/50 Phase 21 browser cohort. Display DTO and static privacy gates exclude authority fields. |
-| SUP-02 | SATISFIED | Projection/diff/capture-hub native fixtures, 12 Blink supplement fixtures, browser navigation/resync fixtures, and built-app multi-consumer smoke cover bounded baselines, ordered diffs, independent cursors, dirty/overflow recapture, and full resync. |
-| SUP-03 | SATISFIED | Service, codec, gateway, capture-hub, and browser fixtures reject stale or mismatched session, tab, owner, document epoch, sequence, target, and late callback state. |
+| SUP-01 | SATISFIED | Native tab-badge, selected-tab side-panel, Control Panel, dialog, accessibility, exact-window, OTR, responsive, and resource fixtures are included in the 52/52 Phase 21 browser cohort. Display DTO and static privacy gates exclude authority fields. |
+| SUP-02 | SATISFIED | Projection/diff/capture-hub native fixtures, 14 Blink supplement fixtures, live root-replacement recapture, browser navigation/resync fixtures, and built-app multi-consumer smoke cover bounded baselines, ordered diffs, independent cursors, dirty/overflow recapture, and full resync. |
+| SUP-03 | SATISFIED | Service, codec, gateway, capture-hub, and browser fixtures reject stale or mismatched session, tab, owner, document epoch, sequence, snapshot generation, target, and late callback state. |
 | SUP-04 | SATISFIED | Profile-service, gateway, Control Panel, and built-app fixtures cover one-use short-lived pairing, replacement, expiry, independent viewers, a sole controller, revoke, end, conflict, and metadata-only audit state. |
 | SUP-05 | SATISFIED | Admission, Agent dispatch, native confirmation, owner-loss, view-only, internal-surface, consequential-action, vault-preservation, stop/revoke/expiry, and late-callback tests retain the existing Agent/page/vault authority boundaries. Production supervision code has no implicit ownership claim path. |
 
@@ -60,21 +60,21 @@ The authoritative logs are under
 
 | Cohort or gate | Exact result |
 |----------------|--------------|
-| Phase 21 native | 189/189 passed; fail 0; skip 0 |
+| Phase 21 native | 190/190 passed; fail 0; skip 0 |
 | Phase 20 native regression | 208/208 passed; fail 0; skip 0 |
 | Phase 17–19 native regression | 84/84 passed; fail 0; skip 0 |
 | Phase 20 content regression | 21/21 passed; fail 0; skip 0 |
-| Phase 21 browser | 50/50 passed; fail 0; skip 0; jobs 1; retries 0 |
+| Phase 21 browser | 52/52 passed; fail 0; skip 0; jobs 1; retries 0 |
 | Phase 20 browser regression | 37/37 passed; fail 0; skip 0; jobs 1; retries 0 |
 | Phase 17–19 browser regression | 83/83 passed; fail 0; skip 0; jobs 1; retries 0 |
-| Phase 21 Blink renderer | 12/12 passed |
+| Phase 21 Blink renderer | 14/14 passed |
 | Phase 19 renderer security regression | 3/3 passed |
 | Complete Node TAP | 81/81 passed; fail 0; cancelled 0; skipped 0; todo 0 |
 | Compatibility catalog | exactly 54 native / 12 alias / 22 typed stub / 0 later phase / 2 removed |
 | Built application | exact `Prometheus MCP live smoke passed.` marker |
 | Packaged WebUI | exact resource gate passed for 5 files |
 | Environment and boundaries | Chromium environment, GPL guard, artifact isolation, static security, preservation, root/nested diff, and worktree checks passed |
-| Patch series | 71/71 ordered, tracked, nonempty, source-only identities passed; valid body mutation rejected |
+| Patch series | 74/74 ordered, tracked, nonempty, source-only identities passed; valid body mutation rejected |
 
 The Phase 19 renderer regression is an explicit security-focused trio:
 `ElementReadDistinguishesEmptyAndAbsent`,
@@ -83,6 +83,16 @@ The Phase 19 renderer regression is an explicit security-focused trio:
 exact-document isolation, and bounded reads. The older broad dispatcher filter
 contains seven tests; this closeout does not misreport that broad filter as the
 frozen trio.
+
+The review-remediation tail adds three independent fail-closed proofs. An
+in-flight dirty signal now queues a forced follow-up APC capture before
+compatibility waiters are notified. Destructive Control Panel confirms carry
+the browser-issued generation of the rendered snapshot, cancel when that
+generation changes, and are rejected natively before ordinal resolution if
+stale. The Blink supplement observes the `Document` subtree so root creation,
+root replacement, and later mutations below the replacement all emit dirty
+signals; the live capture-hub browser case proves those signals start new
+browser captures and deliver updated diffs.
 
 ## Built-App and Test-Boundary Evidence
 
@@ -139,7 +149,7 @@ verification report.
 | D-17 | Live state reaches native tab chrome and the persistent side-panel strip with immediate stop/end/manage intents. |
 | D-18 | The existing Control Panel section owns target, pairing, viewer/controller, stream, audit, revoke, end, error, and recovery lifecycle UI. |
 | D-19 | Pairing characters exist only in the one-shot intentional Control Panel result and private transient DOM state, then are erased. |
-| D-20 | WebUI consumes fresh closed browser snapshots and sends zero-identity intents; it cannot choose native authority. |
+| D-20 | WebUI consumes fresh closed browser snapshots; destructive confirms add only a browser-issued freshness generation to their ordinal, while native row bindings remain the sole target authority. |
 | D-21 | Exactly five supervision names are native, argument-free compatibility routes; catalog totals remain 54/12/22/0/2. |
 | D-22 | Supervision readiness comes from the live exact-window native binding; extension diagnostics stay Phase 22 `not_ready`. |
 | D-23 | Retained native, Blink, browser, Node, and built-app cohorts cover lifecycle, concurrency, identity, privacy, confirmation, UI, and transport behavior. |
@@ -188,7 +198,7 @@ All 26 plan files have matching summaries after this closeout.
 | 21-23 | Gated two-slot test bootstrap and conditional contract path |
 | 21-24 | Sole exact-browser test-handoff composition binding |
 | 21-25 | Real-dialog built-app two-viewer/MCP smoke and teardown |
-| 21-26 | Exact closeout matrix, regression recovery, 71-patch replay, and evidence |
+| 21-26 | Exact closeout matrix, regression recovery, 74-patch replay, and evidence |
 
 ## Artifact and Key-Link Audit
 
@@ -198,7 +208,7 @@ All 26 plan files have matching summaries after this closeout.
 | Capture hub | APC projection/diff history | One exact-document tree/history owner with independent consumer cursors and resync. |
 | Profile service | Agent-owned tab observation | Immutable captured owner, exact-target teardown, and no implicit claim. |
 | Gateway and Agent routes | top-level browser composition | Dependency-neutral callback seams; concrete regular-profile services resolve only in main extra parts. |
-| Side panel and Control Panel | browser-owned snapshots/intents | Closed field allowlists, exact-window handlers, ordinal/zero-argument intents, and fresh post-mutation reads. |
+| Side panel and Control Panel | browser-owned snapshots/intents | Closed field allowlists, exact-window handlers, zero-argument side-panel intents, generation-bound destructive Control Panel confirms, and fresh post-mutation reads. |
 | Action controller | existing Agent dispatcher and native dialogs | Exact browser/tab/frame/document/owner/controller checks before and after approval. |
 | `verify-phase-21.sh` | `tools/prometheus-mcp/smoke-browser.sh` | Built application plus separate client process is a mandatory exact-marker gate. |
 | This report | `verify-phase-21.sh` | Requirement, D-01 through D-23, T-21-01 through T-21-08, summary-count, and documentation-privacy guards. |
@@ -208,9 +218,9 @@ No declared Phase 21 implementation artifact or key link was found missing.
 ## Patch and Artifact Integrity
 
 The patch directory contains exactly the contiguous sequence `0001` through
-`0071`. It exports every and only nested commit after
+`0074`. It exports every and only nested commit after
 `5632dcef07121bf4c3444cc2da13f222b6a61e91`, replays to tree
-`c7eac93a51c4c5199efb8efaf3415f751573e0f0`, contains no generated build
+`97c4043b11ef760f3f03705a279641d4421ddf2f`, contains no generated build
 artifact, and has a stable patch identity matching its source commit.
 
 The closeout recovery tail is:
@@ -220,8 +230,11 @@ The closeout recovery tail is:
 | 0069 | `92f9dd513a2916aaf3f3f84995656c214a483ecd` | `cf5655face8d49eedb87ae679da3d3e0f2348576` | Synchronize the real side-panel title fixture |
 | 0070 | `78f29006479d22867231f61c70b7bfd37fe90639` | `5f5afc4946bdb7c13ce4d3355e6b490b2b417338` | Assert view-only client-label privacy |
 | 0071 | `2c93cf8831c961f0a7d0c35909f0da89d02a0b59` | `299bfd27a00247b1c77e48c22bb60b2d46c791f0` | Return a Boolean from the Control Panel content-boundary predicate |
+| 0072 | `0c8599e1ab77d3e501175b4bc8375db3acdd3a22` | `e9549479c7d3bc00d9e2962fc9b1ab2bc4d8719d` | Queue a forced follow-up capture for dirty signals received during APC capture |
+| 0073 | `3ea941de9a2b71b261f2bb49846a9e54136e2f49` | `a5c8723fc5b8f9d7b5fae9541f1a1d5fb1286c64` | Bind destructive confirmations to the rendered snapshot generation |
+| 0074 | `de937473bd1b5e99aec391ea003545ecd205e367` | `1b8a9f7232d815cdf0f38094751a935d92cce604` | Observe document root creation/replacement and prove live recapture |
 
-A syntactically valid mutation of patch 0071 produced a different stable
+A syntactically valid mutation of patch 0074 produced a different stable
 identity and was rejected. The nested worktree is clean.
 
 Reviewed artifacts remain byte-identical:
@@ -236,10 +249,14 @@ Reviewed artifacts remain byte-identical:
 
 ## Recovery and Disconfirmation
 
-- Three nested closeout corrections changed tests only: side-panel title
+- The original three closeout corrections changed tests only: side-panel title
   synchronization, structural omission of `client_label` for view-only state,
-  and Boolean extraction for a content-boundary predicate. No Phase 21 product
-  source changed during closeout recovery.
+  and Boolean extraction for a content-boundary predicate.
+- Post-review patches 0072–0074 intentionally changed product source and
+  regression coverage. They close the in-flight recapture race, stale
+  destructive-row confirmation race, and document-root lifecycle observation
+  gap without widening renderer identity, WebUI authority, or capture
+  ownership.
 - Stale Phase 20 vault and Phase 17–19 browser fixture objects caused process
   crashes against newer owners. The verifier now exact-compiles their owning
   fixture objects; the complete 37/37 and 83/83 cohorts pass.
@@ -265,4 +282,4 @@ remain Phases 23 and 24.
 
 ---
 
-_Verified: 2026-07-26T04:36:30Z_
+_Verified: 2026-07-26T07:13:07Z_

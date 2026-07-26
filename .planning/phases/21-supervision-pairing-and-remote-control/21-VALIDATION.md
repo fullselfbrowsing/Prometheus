@@ -5,7 +5,7 @@ status: passed
 nyquist_compliant: true
 wave_0_complete: true
 created: 2026-07-21
-verified: 2026-07-26T04:36:30Z
+verified: 2026-07-26T07:13:07Z
 ---
 
 # Phase 21 — Validation Strategy
@@ -165,20 +165,31 @@ Fresh list-guarded results recorded under
 
 | Cohort or gate | Result |
 |----------------|--------|
-| Phase 21 native | 189/189 passed; fail 0; skip 0 |
+| Phase 21 native | 190/190 passed; fail 0; skip 0 |
 | Phase 20 native regression | 208/208 passed; fail 0; skip 0 |
 | Phase 17–19 native regression | 84/84 passed; fail 0; skip 0 |
 | Phase 20 content regression | 21/21 passed; fail 0; skip 0 |
-| Phase 21 browser | 50/50 passed serially with retry limit zero |
+| Phase 21 browser | 52/52 passed serially with retry limit zero |
 | Phase 20 browser regression | 37/37 passed serially with retry limit zero |
 | Phase 17–19 browser regression | 83/83 passed serially with retry limit zero |
-| Phase 21 Blink renderer | 12/12 passed |
+| Phase 21 Blink renderer | 14/14 passed |
 | Phase 19 renderer security regression | 3/3 passed |
 | Complete Node TAP | 81/81 passed; fail/cancelled/skipped/todo all zero |
 | Compatibility catalog | exactly 54 native / 12 alias / 22 typed stub / 0 later phase / 2 removed |
 | Built application smoke | exact `Prometheus MCP live smoke passed.` marker |
-| Patch chain | 71/71 ordered, nonempty, source-only patches with stable identities; valid body mutation rejected |
+| Patch chain | 74/74 ordered, nonempty, source-only patches with stable identities; valid body mutation rejected |
 | Environment and preservation | environment, GPL, artifact isolation, five packaged WebUI resources, preservation, root/nested diff, and byte-preservation gates passed |
+
+Post-review blocker coverage is retained in those exact cohorts:
+`DirtyAfterSnapshotStartsQueuesFollowUpCapture` proves an in-flight dirty
+signal forces a follow-up APC capture before compatibility waiters can receive
+`kNoChange`; `SupervisionRuntimeDestructiveActionsRejectStaleSnapshotGeneration`
+and the extended Control Panel dialog fixture prove reordered rows/tabs cannot
+redirect replace, revoke, or end confirmations; the two document-root
+supplement fixtures plus
+`DocumentElementReplacementKeepsRealCaptureLive` prove enable-before-root,
+full root replacement, and later replacement-root mutations continue through
+to a real browser capture.
 
 The production secret scan now requires all six browser/Blink source paths and
 treats only ripgrep status 1 as a clean result; status 0 and execution errors

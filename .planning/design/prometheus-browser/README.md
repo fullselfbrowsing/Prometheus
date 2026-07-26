@@ -27,13 +27,16 @@ three product surfaces:
 
 All state comes from browser-owned sanitized snapshots. WebUI retains no
 profile, Browser, tab, owner, session, controller, document, sequence, or
-pairing authority. Pairing presentation is confined to one intentional
-transient result and erased on terminal, clear, and reload boundaries.
+pairing authority. Destructive Control Panel confirms carry only the
+browser-issued freshness generation of the rendered snapshot; native row
+bindings remain the sole target authority. Pairing presentation is confined to
+one intentional transient result and erased on terminal, clear, and reload
+boundaries.
 Resources remain packaged locally; no remote fonts, icons, styles, scripts, or
 component packages were added.
 
-Automated Phase 21 evidence includes 50/50 browser fixtures, 12/12 Blink
-fixtures, 189/189 native fixtures, 81/81 Node fixtures, packaged-resource
+Automated Phase 21 evidence includes 52/52 browser fixtures, 14/14 Blink
+fixtures, 190/190 native fixtures, 81/81 Node fixtures, packaged-resource
 checks, and built-app multi-viewer/MCP smoke. Responsive and interaction
 fixtures cover 320/480/720/1024 widths, 200-percent zoom, dark/light themes,
 keyboard focus, live regions, and accessible copy. Subjective desktop visual

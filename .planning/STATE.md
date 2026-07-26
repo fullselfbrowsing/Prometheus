@@ -6,9 +6,9 @@ current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
 current_plan: 26
 status: complete
-stopped_at: Completed 21-26-PLAN.md
-last_updated: "2026-07-26T04:36:30.000Z"
-last_activity: 2026-07-25
+stopped_at: Phase 21 review blockers remediated and reverified
+last_updated: "2026-07-26T07:13:07.000Z"
+last_activity: 2026-07-26
 progress:
   total_phases: 14
   completed_phases: 11
@@ -46,25 +46,28 @@ Plan: 26 of 26
 **Total Plans in Phase:** 26
 **Status:** Complete
 **Progress:** [██████████] 100%
-**Last Activity:** 2026-07-25
-**Last Activity Description:** Completed Plan 21-26 — exact closeout matrix,
-complete regression recovery, 71-patch replay, byte-preservation proof, and
-requirement/threat/UAT evidence.
+**Last Activity:** 2026-07-26
+**Last Activity Description:** Remediated all three Phase 21 review blockers,
+refreshed the exact closeout matrix, completed 74-patch replay and
+byte-preservation proof, and retained requirement/threat/UAT evidence.
 
 Milestone work is 92 of 92 existing plans complete (100%); cumulative project
 work is 143 of 144 existing plans summarized (99%).
 
 ## Latest Evidence
 
-- Phase 21 Plan 26: the no-argument closeout gate selects and passes 189 Phase
-  21 native, 12 Blink renderer, 50 Phase 21 browser, 208 Phase 20 native, 84
+- Phase 21 review remediation and Plan 26: the no-argument closeout gate
+  selects and passes 190 Phase 21 native, 14 Blink renderer, 52 Phase 21
+  browser, 208 Phase 20 native, 84
   Phase 17–19 native, 21 Phase 20 content, 3 Phase 19 renderer, 37 Phase 20
   browser, 83 Phase 17–19 browser, and 81 Node tests with frozen exact counts.
   The 54/12/22/0/2 catalog, built-app smoke, static security boundaries,
   environment/GPL/artifact/resource/preservation checks, five byte-identical
-  artifact hashes, clean nested state, and 71/71 ordered source-only stable
-  patch identities with mutation rejection pass. `human_uat: not_run`; Phase
-  22 remains `not_ready`.
+  artifact hashes, clean nested state, and 74/74 ordered source-only stable
+  patch identities with mutation rejection pass. Retained blocker regressions
+  prove queued in-flight dirty recapture, snapshot-generation rejection after
+  destructive row/tab reorder, and real browser recapture across document-root
+  replacement. `human_uat: not_run`; Phase 22 remains `not_ready`.
 
 - Phase 21 Plan 25: the intended 3-case dialog RED, 3/3 dialog GREEN,
   1/1 action completion regression, signed built-app two-viewer/MCP smoke,
@@ -92,10 +95,10 @@ work is 143 of 144 existing plans summarized (99%).
 
 - Phase 21 Plan 22: the intended 4-test RED gate, 3-test intermediate GREEN
   gate, final 4-test supervision browser gate, and 4-test packaged-asset gate
-  pass with private code lifetime, exact copy cadence, ordinal-only actions,
-  safe focus, closed DTO privacy, OTR closure, 320/480/720/1024 widths,
-  200-percent zoom, stable patch identity/replay, and byte-identical reviewed
-  build artifacts.
+  pass with private code lifetime, exact copy cadence, ordinal-scoped actions
+  plus generation-bound destructive confirms, safe focus, closed DTO privacy,
+  OTR closure, 320/480/720/1024 widths, 200-percent zoom, stable patch
+  identity/replay, and byte-identical reviewed build artifacts.
 
 - Phase 21 Plan 21: the intended 3-test RED gate, 3-test lifecycle/dialog
   GREEN gate, final 3-test lifecycle browser gate, and 11-test service gate
@@ -334,7 +337,7 @@ work is 143 of 144 existing plans summarized (99%).
 - [Phase 21]: Keep PrometheusAgentService as the sole creator, registrar, owner, detach observer, and destroyer of tab authority data; supervision receives only a coalesced move-only observation lease. — One lifetime owner avoids duplicate registration, observer-list violations, and use-after-free across detach and shutdown.
 - [Phase 21]: Retain only salted pairing-code digests and expose only bounded newest-first metadata through supervision snapshots and audit. — Raw credentials and browser authority remain memory-only and structurally absent from routine surfaces.
 - [Phase 21]: Compose supervision only through the exact regular profile Agent keyed service and inject a weak observation callback. — Explicit factory dependency and fail-closed null, OTR, missing, and mismatched checks preserve one tab-data owner across teardown.
-- [Phase 21]: Emit only kDirty or kOverflow from a document-scoped Blink Supplement while browser code retains capture, identity, sequence, and fan-out authority. — Content-free invalidation wakes APC recapture without creating a renderer serializer or second authority owner.
+- [Phase 21]: Emit only kDirty or kOverflow from a document-scoped Blink Supplement that observes the Document subtree across root creation and replacement, while browser code retains capture, identity, sequence, and fan-out authority. — Content-free invalidation wakes APC recapture without creating a renderer serializer or second authority owner, even when the document element changes.
 - [Phase 21]: Reduce MutationObserver delivery only through a fixed record-count ceiling and one 50 ms timer, with every Mojo and document teardown path converging on Disable. — Bounded coalescing and idempotent cleanup prevent content inspection, callback amplification, and late cross-document signals.
 - [Phase 21]: Make one WebContents-scoped capture hub the sole owner of renderer Mojo endpoints, APC calls, safe trees, document epochs, and retained batches; downstream dashboard and Agent-compatible consumers receive only opaque IDs and stamped safe values. — One browser authority prevents duplicate observers, capture amplification, and renderer handles from leaking into delivery surfaces.
 - [Phase 21]: Retain one bounded baseline/diff history per document while keeping cursor, ack, expiry, revoke, lag, and resync state consumer-local. — Consumers can progress independently without duplicating trees or allowing one slow or invalid consumer to advance another.
@@ -357,7 +360,7 @@ work is 143 of 144 existing plans summarized (99%).
 - [Phase 21]: Leave compatibility semantics typed not-ready until Plan 21-12. — Plan 21-11 proves exact dispatch and ownership without inventing pairing or stream success.
 - [Phase 21]: Attach MCP compatibility only as `kAgentCompatibility` on the exact dashboard capture hub. — One renderer/APC/tree/history authority serves both consumers while their tokens, cursors, waits, and end state remain independent.
 - [Phase 21]: Treat successful closed-codec serialization as the Agent cursor commit boundary. — Rejected baseline or diff output remains unacknowledged and readable for safe resynchronization.
-- [Phase 21]: Return Agent no-change only after a fresh validated read sees no batch and the shared hub is settled. — Compatibility cannot manufacture an empty result while capture work or a baseline is pending.
+- [Phase 21]: Queue a forced follow-up whenever document dirtiness arrives during an APC snapshot, start it before notifying retained waiters, and return Agent no-change only after a fresh validated read sees no batch and the shared hub is settled. — Compatibility cannot manufacture an empty result while capture work, a queued recapture, or a baseline is pending.
 - [Phase 21]: End composition-owned dashboard sessions after cancelling waits and before clearing Agent dispatch. — Ordered dual unbind releases dashboard resources, completes pending transport exactly once, and makes later paths fail safely.
 - [Phase 21]: Keep the 90-name MCP union fixed while promoting exactly five supervision dispositions to native. — Public tool identity remains stable while only browser-backed availability changes.
 - [Phase 21]: Forward supervision through the existing empty native command envelope and keep target, stream, code, cursor, and controller authority browser-owned. — The authenticated Agent binding already pins exact scope, so Node must not synthesize a second authority surface.
@@ -385,7 +388,7 @@ work is 143 of 144 existing plans summarized (99%).
 - [Phase 21]: Keep lifecycle row authority and pairing presentation browser-only, revalidate exact targets before every action, retry only the selected capture consumer, and erase terminal pairing state before observer delivery. — This prevents renderer authority, sibling cursor mutation, stale control resurrection, and post-terminal pairing recovery.
 - [Phase 21]: Keep the formatted pairing code only in closure-private module state and one intentional sensitive text node, and erase both on every terminal, clear, or reload boundary. — One-shot presentation remains copyable only after explicit user action and unrecoverable after lifecycle loss.
 - [Phase 21]: Normalize every fresh native supervision snapshot through an explicit closed renderer whitelist before retaining it. — Unknown, credential-bearing, and authority-shaped injected fields are discarded rather than merely hidden during rendering.
-- [Phase 21]: Send only fresh row ordinals in lifecycle messages and retain only bounded sanitized labels in a WeakMap for focus continuity. — Renderer state cannot become session, lease, owner, epoch, or stale-row authority.
+- [Phase 21]: Send row ordinals in lifecycle messages and bind destructive confirms to the browser-issued generation of the rendered snapshot; cancel the dialog on generation change and reject stale generations natively before ordinal resolution. — The freshness token cannot authorize a target without the native row binding, so renderer state cannot become session, lease, owner, epoch, or stale-row authority.
 - [Phase 21]: Use a 60/40 Control Panel split at 1024 CSS pixels and above and preserve the same semantic one-pane order below it. — Real 320/480/720/1024 widths and 200-percent zoom share one accessible reading and keyboard order.
 - [Phase 21]: Recognize `/v1/test/supervision-handoff` only from the boolean fact that a complete abstract validated dispatcher is installed, after the unchanged gateway perimeter. — Ordinary and official launches remain 404 before body parsing or native dispatch, and the gateway gains no concrete bootstrap/profile dependency.
 - [Phase 21]: Create handoff state only for the exact non-official runtime-test switches, disposable regular non-OTR profile, 0600 no-follow closed-schema file, canonical loopback HTTP origin, and initial live exact binding. — The test-only seam cannot activate from ordinary launch, unsafe metadata, remote origin, or an ambiguous target.
@@ -445,8 +448,8 @@ work is 143 of 144 existing plans summarized (99%).
 
 ## Session
 
-**Last Date:** 2026-07-26T04:36:30.000Z
-**Stopped At:** Completed 21-26-PLAN.md
+**Last Date:** 2026-07-26T07:13:07.000Z
+**Stopped At:** Phase 21 review blockers remediated and reverified
 **Resume File:** None
 
 ## Operator Next Step
