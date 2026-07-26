@@ -1837,8 +1837,11 @@ build_focused_binary() {
   local vault_confirmation_browser_test_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_vault_confirmation_browsertest.o'
   local gateway_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_gateway_unittest.o'
   local gateway_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_agent_gateway_browsertest.o'
+  local agent_profile_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_agent_profile_service_browsertest.o'
+  local agent_service_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_agent_service_browsertest.o'
   local mcp_integration_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_mcp_integration_browsertest.o'
   local browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_page_adapter_browsertest.o'
+  local tab_commands_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_tab_commands_browsertest.o'
   local views_browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_compact_chrome_browsertest.o'
   local runtime_dialogs='obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o'
   local mojom_template='obj/third_party/blink/public/mojom/mojom_platform/frame_metadata_observer_registry.mojom.o'
@@ -1887,7 +1890,11 @@ build_focused_binary() {
     if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
       compile_exact_object "${views_browser_test_template}"
       compile_exact_object "${gateway_browser_object}"
+      compile_exact_object "${agent_profile_browser_object}"
+      compile_exact_object "${agent_service_browser_object}"
       compile_exact_object "${mcp_integration_browser_object}"
+      compile_exact_object "${browser_test_template}"
+      compile_exact_object "${tab_commands_browser_object}"
       compile_exact_object "${side_panel_browser_test_object}"
       compile_exact_object "${vault_confirmation_browser_test_object}"
     fi
