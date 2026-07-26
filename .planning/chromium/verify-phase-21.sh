@@ -146,7 +146,7 @@ EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT=3
 EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT=37
 EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT=83
 EXPECTED_NODE_COUNT=81
-EXPECTED_PATCH_COUNT=70
+EXPECTED_PATCH_COUNT=71
 PHASE21_NATIVE_FILTER='PrometheusSupervisionTypesTest.*:PrometheusSupervisionTransportCodecTest.*:PrometheusSupervisionProjectionTest.*:PrometheusSupervisionDiffTest.*:PrometheusSupervisionProfileServiceTest.*:PrometheusSupervisionCaptureHubTest.*:PrometheusSupervisionActionControllerTest.*:PrometheusSupervisionTestBootstrapTest.*:PrometheusAgentServiceObservationTest.*:PrometheusAgentTransportCodecTest.*:PrometheusAgentProfileServiceTest.*:PrometheusAgentGatewayTest.Supervision*:PrometheusAgentServiceTest.Supervision*:PrometheusTabStateTest.Supervision*'
 PHASE21_RENDERER_FILTER='PrometheusSupervisionDocumentSupplementTest.*'
 PHASE21_BROWSER_FILTER='PrometheusAgentGatewayBrowserTest.Supervision*:PrometheusMcpIntegrationBrowserTest.Supervision*:PrometheusWebUIBrowserTest.*:PrometheusSupervisionCaptureHubBrowserTest.*:PrometheusSupervisionConfirmationBrowserTest.*:PrometheusTabSupervisionBadgeBrowserTest.*'
@@ -1534,6 +1534,7 @@ build_browser_focused_blink_modules() {
 }
 
 verify_side_panel_supervision_runtime_contract() {
+  local pairing_code_boolean_predicate=$'!!supervision.querySelector(\n              \'[data-prometheus-sensitive="pairing-code"]\')'
   local runtime_header="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
   local runtime_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc"
   local webui_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc"
@@ -1561,6 +1562,16 @@ verify_side_panel_supervision_runtime_contract() {
     "${browser_test}"
   require_literal 'title_watcher.WaitAndGetTitle()' "${browser_test}"
   require_literal "!Object.hasOwn(state, 'client_label')" "${browser_test}"
+  require_literal \
+    "!!supervision.querySelector('#control-supervision-target')" \
+    "${browser_test}"
+  require_literal \
+    "!!supervision.querySelector('#control-supervision-create')" \
+    "${browser_test}"
+  if ! rg -Uq --fixed-strings -- \
+      "${pairing_code_boolean_predicate}" "${browser_test}"; then
+    fail 'pairing-code presence predicate is not explicitly Boolean'
+  fi
   require_literal 'EndSelectedTabSupervision' "${supervision_service}"
   require_literal 'EndSelectedTabSupervision() override' "${browser_extra_parts}"
   require_literal 'SidePanelSupervisionRuntimeEndIsZeroArgumentBulkExactAndTeardownSafe' "${browser_test}"
@@ -1823,6 +1834,7 @@ build_focused_binary() {
   local side_panel_runtime_object='obj/chrome/browser/ui/webui/prometheus/side_panel_ui/prometheus_side_panel_runtime.o'
   local side_panel_webui_object='obj/chrome/browser/ui/webui/prometheus/side_panel_ui/prometheus_web_ui.o'
   local side_panel_browser_test_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_web_ui_browsertest.o'
+  local vault_confirmation_browser_test_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_vault_confirmation_browsertest.o'
   local gateway_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_gateway_unittest.o'
   local gateway_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_agent_gateway_browsertest.o'
   local mcp_integration_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_mcp_integration_browsertest.o'
@@ -1877,6 +1889,7 @@ build_focused_binary() {
       compile_exact_object "${gateway_browser_object}"
       compile_exact_object "${mcp_integration_browser_object}"
       compile_exact_object "${side_panel_browser_test_object}"
+      compile_exact_object "${vault_confirmation_browser_test_object}"
     fi
   )
 
@@ -2751,6 +2764,10 @@ run_selected_tests() {
   local test_status
   set +e
   if [[ "${FOCUS_KIND}" == 'content' ]]; then
+    "${FOCUSED_BINARY}" --gtest_filter="${FOCUS_FILTER}" \
+      --test-launcher-jobs=1 --test-launcher-retry-limit=0 \
+      >"${TEST_LOG}" 2>&1
+  elif [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
     "${FOCUSED_BINARY}" --gtest_filter="${FOCUS_FILTER}" \
       --test-launcher-jobs=1 --test-launcher-retry-limit=0 \
       >"${TEST_LOG}" 2>&1
