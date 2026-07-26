@@ -136,7 +136,7 @@ EXPECTED_NINJA_DEPS_SHA256='ab1a6ad4639e8db53459384f8636dc53f396397363f3c2751bcd
 EXPECTED_BLINK_MODULES_SHA256='663af12ba1a986db789c4c05967dda8b3b3615030e6cecb569de0f74ba01ff8e'
 EXPECTED_BLINK_MODULES_TOC_SHA256='bdc164a10b8616fa099b089a1f4542c789a584c84212b0f4d92b616701a3ce9b'
 EXPECTED_FRAMEWORK_RESOURCES_SHA256='c9c541d780ad9c0054eaec0abd8453703972ebcc3ce3607d06e3c80e5a8f79ff'
-EXPECTED_PHASE21_NATIVE_COUNT=189
+EXPECTED_PHASE21_NATIVE_COUNT=190
 EXPECTED_PHASE21_RENDERER_COUNT=12
 EXPECTED_PHASE21_BROWSER_COUNT=50
 EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT=208
@@ -146,7 +146,7 @@ EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT=3
 EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT=37
 EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT=83
 EXPECTED_NODE_COUNT=81
-EXPECTED_PATCH_COUNT=71
+EXPECTED_PATCH_COUNT=72
 PHASE21_NATIVE_FILTER='PrometheusSupervisionTypesTest.*:PrometheusSupervisionTransportCodecTest.*:PrometheusSupervisionProjectionTest.*:PrometheusSupervisionDiffTest.*:PrometheusSupervisionProfileServiceTest.*:PrometheusSupervisionCaptureHubTest.*:PrometheusSupervisionActionControllerTest.*:PrometheusSupervisionTestBootstrapTest.*:PrometheusAgentServiceObservationTest.*:PrometheusAgentTransportCodecTest.*:PrometheusAgentProfileServiceTest.*:PrometheusAgentGatewayTest.Supervision*:PrometheusAgentServiceTest.Supervision*:PrometheusTabStateTest.Supervision*'
 PHASE21_RENDERER_FILTER='PrometheusSupervisionDocumentSupplementTest.*'
 PHASE21_BROWSER_FILTER='PrometheusAgentGatewayBrowserTest.Supervision*:PrometheusMcpIntegrationBrowserTest.Supervision*:PrometheusWebUIBrowserTest.*:PrometheusSupervisionCaptureHubBrowserTest.*:PrometheusSupervisionConfirmationBrowserTest.*:PrometheusTabSupervisionBadgeBrowserTest.*'
@@ -466,6 +466,8 @@ verify_capture_hub_contract() {
   require_literal 'WaitForNextDiff' "${hub_header}"
   require_literal 'CancelDiffWait' "${hub_header}"
   require_literal 'DashboardLongPoll' "${hub_test}"
+  require_literal 'capture_requested_while_in_flight_' "${hub_header}"
+  require_literal 'DirtyAfterSnapshotStartsQueuesFollowUpCapture' "${hub_test}"
   require_literal 'mojo::Remote<blink::mojom::PrometheusSupervisionDocument>' "${hub_source}"
   require_literal 'mojo::Receiver<blink::mojom::PrometheusSupervisionDocumentHost>' "${hub_source}"
   require_literal 'content::WeakDocumentPtr requested_document' "${hub_source}"

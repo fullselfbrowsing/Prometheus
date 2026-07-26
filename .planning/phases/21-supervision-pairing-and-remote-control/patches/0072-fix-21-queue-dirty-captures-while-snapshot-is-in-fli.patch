@@ -1,0 +1,140 @@
+From 0c8599e1ab77d3e501175b4bc8375db3acdd3a22 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sun, 26 Jul 2026 01:08:33 -0500
+Subject: [PATCH 72/72] fix(21): queue dirty captures while snapshot is in
+ flight
+
+---
+ .../prometheus_supervision_capture_hub.cc     | 16 ++++++--
+ .../prometheus_supervision_capture_hub.h      |  1 +
+ ...etheus_supervision_capture_hub_unittest.cc | 39 +++++++++++++++++++
+ 3 files changed, 53 insertions(+), 3 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc b/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
+index 4e55bab914..233f64d88b 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
+@@ -671,6 +671,7 @@ void PrometheusSupervisionCaptureHub::StopObservation() {
+     weak_factory_.InvalidateWeakPtrs();
+   }
+   capture_in_flight_ = false;
++  capture_requested_while_in_flight_ = false;
+   force_baseline_after_capture_ = false;
+ 
+   UnbindCurrentFrames();
+@@ -700,6 +701,7 @@ void PrometheusSupervisionCaptureHub::StartNewDocumentEpoch() {
+     weak_factory_.InvalidateWeakPtrs();
+   }
+   capture_in_flight_ = false;
++  capture_requested_while_in_flight_ = false;
+   force_baseline_after_capture_ = false;
+ 
+   UnbindCurrentFrames();
+@@ -831,8 +833,9 @@ void PrometheusSupervisionCaptureHub::RequestCapture(bool force_baseline) {
+   if (!observing_ || destroyed_ || consumers_.empty()) {
+     return;
+   }
+-  force_baseline_after_capture_ |= force_baseline;
+   if (capture_in_flight_) {
++    capture_requested_while_in_flight_ = true;
++    force_baseline_after_capture_ |= force_baseline;
+     return;
+   }
+ 
+@@ -844,7 +847,8 @@ void PrometheusSupervisionCaptureHub::RequestCapture(bool force_baseline) {
+   }
+   capture_generation_ = *next_generation;
+   const uint64_t requested_generation = capture_generation_;
+-  const bool requested_force_baseline = force_baseline_after_capture_;
++  const bool requested_force_baseline = force_baseline;
++  capture_requested_while_in_flight_ = false;
+   force_baseline_after_capture_ = false;
+   capture_in_flight_ = true;
+   ++capture_count_;
+@@ -951,7 +955,10 @@ void PrometheusSupervisionCaptureHub::OnCapturedForTesting(
+     return;
+   }
+   capture_in_flight_ = false;
+-  force_baseline |= force_baseline_after_capture_;
++  const bool capture_requested_while_in_flight =
++      capture_requested_while_in_flight_;
++  const bool force_baseline_after_capture = force_baseline_after_capture_;
++  capture_requested_while_in_flight_ = false;
+   force_baseline_after_capture_ = false;
+ 
+   if (!IsUsableBaseline(baseline)) {
+@@ -1016,6 +1023,9 @@ void PrometheusSupervisionCaptureHub::OnCapturedForTesting(
+       }
+     }
+   }
++  if (capture_requested_while_in_flight) {
++    RequestCapture(force_baseline_after_capture);
++  }
+   NotifyReadyDiffWaiters();
+ }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub.h b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+index 655f34a7cd..cfbc527b81 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+@@ -205,6 +205,7 @@ class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
+   SupervisionCaptureConsumerId next_consumer_id_ = 0;
+   bool observing_ = false;
+   bool capture_in_flight_ = false;
++  bool capture_requested_while_in_flight_ = false;
+   bool force_baseline_after_capture_ = false;
+   bool destroyed_ = false;
+   size_t enable_count_ = 0;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc
+index 9bed0fbe3a..6abdd8e50b 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc
+@@ -145,6 +145,45 @@ TEST_F(PrometheusSupervisionCaptureHubTest,
+   EXPECT_EQ(second_diff->stamp.sequence, hub->ReadNext(second)->stamp.sequence);
+ }
+ 
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       DirtyAfterSnapshotStartsQueuesFollowUpCapture) {
++  auto hub = CreateHub();
++  const auto [first, second] = AttachTwo(*hub);
++  CompleteAndAckBaseline(*hub, first, second);
++
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  ASSERT_EQ(1u, capture_source_.pending_count());
++  std::optional<SupervisionCaptureWaitReason> second_reason;
++  ASSERT_TRUE(hub->WaitForNextDiff(
++      second,
++      base::BindLambdaForTesting([&](SupervisionCaptureWaitReason reason) {
++        second_reason = reason;
++      })));
++
++  // This notification represents a mutation after the asynchronous snapshot
++  // was collected but before its callback delivered that pre-mutation result.
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  capture_source_.CompleteNext(MakeBaseline("initial"));
++
++  EXPECT_EQ(3u, hub->capture_count_for_testing());
++  EXPECT_EQ(1u, capture_source_.pending_count());
++  EXPECT_FALSE(hub->CanReturnNoChange(first));
++  EXPECT_FALSE(hub->ReadNext(first).has_value());
++  EXPECT_FALSE(hub->ReadNext(second).has_value());
++  task_environment_.RunUntilIdle();
++  EXPECT_FALSE(second_reason.has_value());
++
++  capture_source_.CompleteNext(MakeBaseline("queued mutation"));
++  task_environment_.RunUntilIdle();
++  EXPECT_EQ(SupervisionCaptureWaitReason::kDataAvailable, second_reason);
++  const auto first_diff = hub->ReadNext(first);
++  const auto second_diff = hub->ReadNext(second);
++  ASSERT_TRUE(first_diff.has_value());
++  ASSERT_TRUE(second_diff.has_value());
++  EXPECT_EQ(first_diff->stamp.sequence, second_diff->stamp.sequence);
++  EXPECT_EQ(first_diff->diff, second_diff->diff);
++}
++
+ TEST_F(PrometheusSupervisionCaptureHubTest,
+        ExpiryRevokeAndDetachRemainConsumerLocal) {
+   auto hub = CreateHub();
+-- 
+2.50.1 (Apple Git-155)
+
