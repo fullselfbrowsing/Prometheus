@@ -2593,6 +2593,7 @@ verify_closeout_static_boundaries() {
   local bootstrap="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc"
   local bootstrap_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h"
   local main_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
+  local supervision_profile_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc"
   local agent_sources=(
     "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_service.cc"
     "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_service.h"
@@ -2629,14 +2630,15 @@ verify_closeout_static_boundaries() {
   require_literal 'supervision_test_composition_->Shutdown();' "${main_parts}"
   require_literal 'SetSupervisionTestHandoffDispatcher' "${main_parts}"
   require_literal 'ConsumeDialogResponse' "${main_parts}"
+  require_literal 'ClaimIfUnowned' "${supervision_profile_test}"
 
   if rg -n '#include .*prometheus_(supervision_profile_service|supervision_capture_hub|supervision_action_controller|supervision_document)' \
       "${agent_sources[@]}" >>"${log}"; then
     fail 'Agent service/profile/gateway gained a concrete supervision dependency'
   fi
-  if rg -n --glob '!**/*test*' 'ClaimIfUnowned' \
-      "${CHROMIUM_DIR}"/chrome/browser/prometheus/prometheus_supervision_*.cc \
-      "${CHROMIUM_DIR}"/chrome/browser/prometheus/prometheus_supervision_*.h \
+  if rg -n --glob 'prometheus_supervision_*.cc' \
+      --glob 'prometheus_supervision_*.h' --glob '!**/*test*' \
+      'ClaimIfUnowned' "${CHROMIUM_DIR}/chrome/browser/prometheus" \
       >>"${log}"; then
     fail 'supervision production code can implicitly claim an unowned Agent tab'
   fi
