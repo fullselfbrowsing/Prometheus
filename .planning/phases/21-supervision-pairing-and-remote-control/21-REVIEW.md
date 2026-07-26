@@ -1,159 +1,150 @@
 ---
 phase: "21-supervision-pairing-and-remote-control"
-status: "issues_found"
+status: "clean"
 depth: "standard"
-reviewed_at: "2026-07-26"
+reviewed_at: "2026-07-26T10:59:55-05:00"
 files_reviewed: 88
 counts:
-  blocker: 3
+  blocker: 0
   critical: 0
   warning: 0
   info: 0
-  total: 3
+  total: 0
 ---
 
 # Phase 21 Code Review
 
-Phase 21 has three release-blocking correctness defects. Two can cause an
-authorized supervision operation to use stale or incorrect state, and one can
-leave the renderer-to-browser capture stream stale indefinitely.
+The bounded iteration-2 re-review is clean. All three iteration-1 blockers are
+resolved in current source, their fixes preserve the surrounding authority and
+lifecycle invariants, and the standard-depth pass found no new concrete
+correctness, security, or code-quality issue in the authoritative 88-file
+scope.
 
-## Narrative Findings (AI reviewer)
+## Prior Finding Resolution
 
-### CR-01 — Dirty notifications are lost while a capture is in flight (Blocker)
+### CR-01 — Resolved: dirty captures are queued while a snapshot is in flight
 
-**Evidence**
+- `PrometheusSupervisionCaptureHub::RequestCapture()` records both queued work
+  and any queued forced-baseline requirement when a capture is already in
+  flight.
+- Capture completion snapshots and clears that queued state, processes the
+  completed result, and starts the queued follow-up capture before evaluating
+  diff waiters. Because the follow-up is already marked in flight,
+  compatibility consumers cannot receive a false `kNoChange` result between
+  the pre-mutation result and the queued capture.
+- Intermediate authoritative diffs remain available in sequence, while
+  dashboard and compatibility consumers retain independent cursors. Overflow
+  state is ORed across coalesced requests and transferred only to the queued
+  capture.
+- Stop and document-epoch transitions clear both queue flags, so an obsolete
+  capture cannot leak work into a replacement document.
+- `DirtyAfterSnapshotStartsQueuesFollowUpCapture` models the original race
+  directly: the first callback returns the pre-mutation baseline, both
+  consumers remain blocked from a false no-change result, and the queued
+  callback delivers the later mutation to both independent cursors.
 
-- `prometheus_supervision_document_supplement.cc:140-175` forwards renderer
-  mutation notifications to the browser capture hub.
-- `prometheus_supervision_capture_hub.cc:778-789` handles a dirty frame by
-  calling `RequestCapture(overflow)`.
-- `prometheus_supervision_capture_hub.cc:830-857` sets
-  `force_baseline_after_capture_ |= force_baseline`, then returns immediately
-  when `capture_in_flight_` is true. An ordinary dirty notification passes
-  `false`, so it leaves no record that another capture is required. Even the
-  overflow bit is folded into the already-running capture rather than queued
-  for a subsequent snapshot.
-- `prometheus_supervision_capture_hub.cc:945-1020` clears the in-flight state
-  and processes the completed result, but never starts a follow-up capture for
-  mutations received after the completed snapshot was taken.
-- `prometheus_supervision_capture_hub_unittest.cc:124-146` sends two dirty
-  notifications while one capture is pending, but completes that pending
-  capture with a synthetic already-changed baseline. It does not model the
-  production race in which the second mutation occurs after the asynchronous
-  snapshot has already been taken.
+### CR-02 — Resolved: destructive confirmations are generation-bound
 
-**Impact**
+- Every native control snapshot receives a fresh opaque
+  `base::UnguessableToken` generation. Target and connected-row bindings retain
+  that exact generation together with their weak tab, stable handle, dashboard
+  session, and authority generation.
+- Replace-pairing, revoke-session, and end-target messages carry the displayed
+  snapshot generation. The WebUI accepts only the bounded 32-hex token shape,
+  stores it with the pending dialog, and cancels the dialog without submitting
+  when a newly rendered snapshot changes the generation.
+- The browser message parser independently deserializes the token and enforces
+  exact arity, ordinal bounds, and the required confirmation boolean.
+- The concrete native runtime rejects an empty, forged, or stale generation
+  before resolving an ordinal. Resolution then rechecks the bound generation,
+  weak tab, stable handle, live tab membership, target eligibility, selected
+  target, and dashboard authority freshness as applicable.
+- Sending the operation result also builds a fresh snapshot, rotating the
+  generation after an accepted or rejected attempt.
+- `SupervisionRuntimeDestructiveActionsRejectStaleSnapshotGeneration`
+  exercises tab and connected-row reordering for replace, revoke, and end, and
+  proves each stale operation fails closed without affecting either the
+  originally displayed row or the row newly occupying that ordinal.
+  `ControlSupervisionActionsFocusAndStatePreservation` covers dialog
+  cancellation and suppression of stale submissions for all three actions.
 
-A DOM mutation that occurs after snapshot collection begins but before its
-callback completes can be omitted from both the supervision stream and action
-authority. If no later mutation occurs, the session remains stale
-indefinitely.
+### CR-03 — Resolved: observation follows document-root lifecycle changes
 
-**Required remediation**
+- The Blink supplement now observes the `Document` node with child-list,
+  attribute, character-data, and subtree coverage. Root insertion, root
+  replacement, and later descendant mutations therefore remain within the
+  same document-scoped observer.
+- The renderer still sends only the bounded dirty/overflow enum over Mojo; no
+  mutation content crosses the renderer boundary.
+- Existing disable, disconnect, context-destruction, debounce, and overflow
+  cleanup remains intact.
+- `EnableBeforeDocumentElementCreationObservesLaterRoot` and
+  `DocumentElementReplacementObservesNewRootMutations` cover both lifecycle
+  edges in Blink. `DocumentElementReplacementKeepsRealCaptureLive` proves the
+  replacement and a later descendant mutation each drive a real browser
+  capture and deliver updated diffs.
 
-Record a separate `capture_requested_while_in_flight_`/dirty flag. After the
-current callback finishes, immediately request another capture when that flag
-is set, carrying overflow/forced-baseline state into the new capture. Add a
-test whose first result represents the pre-mutation snapshot and whose queued
-follow-up result contains the mutation.
+## Standard-Depth Re-review
 
-### CR-02 — Destructive confirmations can execute against a different row (Blocker)
+The exact scope contains 63,352 lines across the 88 requested files, with no
+missing path. Sixteen scoped files changed after the iteration-1 review; those
+changes are limited to the three remediations and the deterministic live-smoke
+ordering/isolation updates. The remaining 72 files are unchanged from the
+iteration-1 reviewed baseline and were rechecked for their interactions with
+the new state.
 
-**Evidence**
+The pass covered:
 
-- `prometheus_webui.js:2151-2166` stores a pending revoke as
-  `{kind: 'revoke', ordinal, trigger}` while showing the current row label.
-- `prometheus_webui.js:2174-2189` likewise stores only the selected target
-  ordinal for end-supervision confirmation while showing the current target
-  title.
-- `prometheus_webui.js:2971-3008` submits the stored ordinal when the user
-  confirms replace, revoke, or end.
-- `prometheus_webui.js:2504-2529` rerenders the control snapshot whenever a new
-  snapshot arrives, but does not cancel the open dialog or rebind it to an
-  immutable identity.
-- `prometheus_browser_main_extra_parts.cc:1081-1110` rebuilds the sanitized
-  snapshot for each request.
-- `prometheus_browser_main_extra_parts.cc:1746-1753` clears both ordinal-binding
-  vectors and increments the generation on every rebuild.
-- Target bindings are rebuilt from current tab order at
-  `prometheus_browser_main_extra_parts.cc:1765-1806`. Connected rows and their
-  bindings are reordered after sorting at
-  `prometheus_browser_main_extra_parts.cc:1892-1903`.
-- `prometheus_browser_main_extra_parts.cc:1682-1720` resolves only the submitted
-  ordinal against the current vectors. Freshness checks therefore validate
-  whichever row currently occupies that position, not the row named in the
-  confirmation dialog. The destructive handlers use that current binding at
-  `prometheus_browser_main_extra_parts.cc:1486-1576`.
-- `prometheus_web_ui_browsertest.cc:5528-5589` exercises confirmation dialogs
-  without injecting a snapshot reorder while a dialog is open.
+- supervision DTO validation, bounds, enum conversion, transport codecs,
+  projection, diff generation, retained-history behavior, and per-consumer
+  cursor ownership;
+- profile-service lifecycle, viewer/controller authority, capture-hub
+  ownership, long-poll completion, shutdown, and remote-action revalidation;
+- gateway contracts, loopback request parsing, route dispatch, compatibility
+  aliases, error sanitization, and MCP closed schemas;
+- native control-row construction, tab identity/freshness checks, browser
+  message parsing, WebUI normalization, dialog state, and focus preservation;
+- renderer binding, document-scoped Mojo lifetime, mutation debounce/overflow,
+  root lifecycle handling, and browser capture integration;
+- runtime dialogs, tab supervision state/badge presentation, resource wiring,
+  build targets, bootstrap boundaries, and live-smoke sequencing.
 
-**Impact**
+No evidence-backed issue remained after those checks.
 
-For example, a user can open “Revoke Review console” for ordinal 1, receive a
-snapshot that moves another session into ordinal 1, and then revoke the other
-session by confirming the unchanged dialog. A tab reorder creates the same
-failure mode for end-supervision and can terminate control of the wrong tab.
+## Validation
 
-**Required remediation**
+- Fresh `git diff --check` passed for all 16 in-scope files changed since the
+  iteration-1 baseline.
+- Fresh syntax checks passed for `prometheus_webui.js`, all scoped MCP
+  JavaScript modules/tests, and `smoke-browser.sh`.
+- Fresh Node TAP:
+  `node --test tools/prometheus-mcp/test/catalog.test.mjs
+  tools/prometheus-mcp/test/errors.test.mjs
+  tools/prometheus-mcp/test/smoke.test.mjs` — 31/31 passed.
+- Fresh focused content binary — 28/28 action-dispatcher, provider-transport,
+  and supervision tab-state tests passed.
+- Fresh direct browser execution passed
+  `SupervisionRuntimeDestructiveActionsRejectStaleSnapshotGeneration` and
+  `DocumentElementReplacementKeepsRealCaptureLive`.
+- The current-source focused browser evidence records
+  `ControlSupervisionActionsFocusAndStatePreservation` passing, including all
+  stale-dialog assertions. A raw direct invocation selected the intentionally
+  restored framework resource pack rather than the focused current-source
+  pack and failed its precondition because that older pack lacked the callback;
+  it did not exercise the reviewed JavaScript and is not a source failure. No
+  resource was modified during this review.
+- Existing full-verifier evidence was inspected only as corroboration: it
+  records the new queued-capture unit test, both new Blink lifecycle tests,
+  the stale-generation browser test, the stale-dialog browser test, and the
+  real root-replacement capture test passing in their current-source cohorts.
 
-Bind confirmation to immutable browser-side identity. At minimum, submit the
-snapshot generation with the ordinal and reject confirmation after any
-generation change. Prefer an opaque, one-use native confirmation binding to
-the exact dashboard session or tab handle. Cancel or visibly refresh open
-dialogs when their bound identity becomes invalid. Add browser tests that
-reorder connected rows and tabs between opening and confirming each destructive
-dialog.
+## Findings
 
-### CR-03 — The renderer stops observing after root creation or replacement (Blocker)
+None.
 
-**Evidence**
+## Review Scope
 
-- `prometheus_supervision_document_supplement.cc:102-113` calls
-  `ObserveDocument()` once when supervision is enabled.
-- `prometheus_supervision_document_supplement.cc:124-137` returns when
-  `documentElement()` is absent; otherwise it observes only that current root
-  element. There is no lifecycle retry and no reattachment path for a later
-  root.
-- `prometheus_supervision_document_supplement_unittest.cc:52-55` creates an
-  HTML/body root before enabling supervision. The supplement tests mutate
-  inside that root and do not cover root creation or replacement.
-- `prometheus_supervision_capture_hub.cc:687-722` starts a document epoch,
-  binds current frames, and requests the initial capture;
-  `prometheus_supervision_capture_hub.cc:735-775` performs frame binding; and
-  the frame entry calls renderer `Enable()` at
-  `prometheus_supervision_capture_hub.cc:155-172`.
-
-**Impact**
-
-If `Enable()` reaches a slowly constructed committed document before its root
-exists, no observer is installed. If script later replaces
-`document.documentElement`, the replacement occurs outside the old root and
-subsequent mutations happen below an unobserved node. In either case, no dirty
-notification requests a new capture, so an empty or obsolete capture can
-remain authoritative indefinitely.
-
-**Required remediation**
-
-Observe the `Document` for root insertion/replacement, or use a document
-lifecycle hook that reliably retries and reattaches to the current root. Add
-tests for enable-before-root-creation and full `documentElement` replacement,
-including proof that later mutations trigger a new browser capture.
-
-## Validation performed
-
-- `node --test tools/prometheus-mcp/test/catalog.test.mjs tools/prometheus-mcp/test/errors.test.mjs tools/prometheus-mcp/test/smoke.test.mjs`
-  — 31/31 tests passed.
-- `node --check` passed for `catalog.mjs`, `tool-handler.mjs`,
-  `fixture-server.mjs`, `smoke-client.mjs`, and `smoke.test.mjs`.
-- `bash -n tools/prometheus-mcp/smoke-browser.sh` passed.
-- `git diff --check b0fc..HEAD` passed for the requested Phase 21 paths.
-- A Chromium build and live browser smoke run were not performed during this
-  standard-depth review.
-
-## Review scope
-
-The review was limited to the 88 explicitly requested files:
+The re-review was limited to these 88 authoritative files:
 
 1. `.context/chromium/src/chrome/browser/prometheus/prometheus_supervision_types.h`
 2. `.context/chromium/src/chrome/browser/prometheus/prometheus_supervision_types.cc`
