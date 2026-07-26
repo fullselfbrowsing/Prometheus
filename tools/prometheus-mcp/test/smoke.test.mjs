@@ -361,6 +361,8 @@ test('shell live gate pins the built app, descriptor mode, deadlines, and proces
   assert.match(shell, /--user-data-dir=/u);
   assert.match(shell, /--no-first-run/u);
   assert.match(shell, /--no-default-browser-check/u);
+  assert.equal(shell.match(/--disable-background-networking/gu)?.length, 1);
+  assert.equal(shell.match(/--disable-component-update/gu)?.length, 1);
   assert.match(shell, /--prometheus-agent-endpoint-descriptor=/u);
   assert.match(shell, /--test-type=prometheus-runtime/u);
   assert.match(shell, /--prometheus-runtime-test-provider-config=/u);

@@ -783,6 +783,8 @@ verify_built_supervision_smoke_contract() {
   require_file "${client}"
   require_file "${test_source}"
   require_literal '--prometheus-supervision-test-bootstrap=' "${shell}"
+  require_literal '--disable-background-networking' "${shell}"
+  require_literal '--disable-component-update' "${shell}"
   require_literal 'crypto.randomBytes(32)' "${shell}"
   require_literal "fs.openSync(bootstrapFile, 'wx', 0o600)" "${shell}"
   require_literal '/v1/test/supervision-handoff' "${client}"

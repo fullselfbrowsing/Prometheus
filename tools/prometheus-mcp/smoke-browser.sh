@@ -235,6 +235,10 @@ BROWSER_ARGS=(
   "--prometheus-supervision-test-bootstrap=${SUPERVISION_BOOTSTRAP_FILE}"
   --no-first-run
   --no-default-browser-check
+  # Keep the disposable smoke profile isolated from unrelated browser
+  # component downloads and background network services.
+  --disable-background-networking
+  --disable-component-update
   --no-proxy-server
   # Match Chromium's macOS test launcher for a fresh disposable profile:
   # chrome/test/base/test_launcher_utils.cc initializes OS crypt this way.
