@@ -153,7 +153,7 @@ PHASE21_BROWSER_FILTER='PrometheusAgentGatewayBrowserTest.Supervision*:Prometheu
 PHASE20_NATIVE_REGRESSION_FILTER='PrometheusRuntimeTypesTest.*:PrometheusRuntimeStoreTest.*:PrometheusMemoryStoreTest.*:PrometheusSecretStoreTest.*:PrometheusProviderRegistryTest.*:PrometheusProviderCodecTest.*:PrometheusRuntimeProfileServiceTest.*:PrometheusRuntimeTestBootstrapTest.*:PrometheusRuntimeTransportCodecTest.*:PrometheusVaultServiceTest.*:PrometheusAgentServiceTest.*:PrometheusAgentSessionTest.*:PrometheusAgentGatewayTest.*-*.Supervision*'
 PHASE17_19_NATIVE_REGRESSION_FILTER='PrometheusAgentAuditTest.*:PrometheusAgentRouteTest.*:PrometheusAgentTabDataTest.*:PrometheusAgentTransportTest.*:PrometheusEndpointDescriptorTest.*:PrometheusPageActionDispatcherTest.*:PrometheusPageActionHistoryTest.*:PrometheusPageAdapterTest.*:PrometheusPageErrorTest.*:PrometheusPageJsExecutorTest.*:PrometheusPageSnapshotTest.*:PrometheusWebUIHandoffTest.*:PrometheusWebUIResourceTest.*-*.Supervision*'
 PHASE20_CONTENT_REGRESSION_FILTER='PrometheusProviderTransportTest.*:PrometheusTabStateTest.*:PrometheusTabStateWebContentsTest.*'
-PHASE19_RENDERER_REGRESSION_FILTER='PrometheusActionDispatcherTest.*'
+PHASE19_RENDERER_REGRESSION_FILTER='PrometheusActionDispatcherTest.ElementReadDistinguishesEmptyAndAbsent:PrometheusActionDispatcherTest.ElementReadRejectsInvalidDisconnectedOrOtherDocumentReference:PrometheusActionDispatcherTest.ElementReadRejectsOversizedValue'
 PHASE20_BROWSER_REGRESSION_FILTER='PrometheusMcpIntegrationBrowserTest.*:PrometheusVaultConfirmationBrowserTest.*:PrometheusControlPanelBrowserTest.*-*.Supervision*'
 PHASE17_19_BROWSER_REGRESSION_FILTER='PrometheusAgentGatewayBrowserTest.*:PrometheusAgentGatewayLifecycleBrowserTest.*:PrometheusAgentProfileServiceBrowserTest.*:PrometheusAgentServiceBrowserTest.*:PrometheusAgentInternalSurfaceBrowserTest.*:PrometheusPageAdapterBrowserTest.*:PrometheusPrerenderedFrameBrowserTest.*:PrometheusFencedFrameBrowserTest.*:PrometheusPageActionBrowserTest.*:PrometheusTabCommandsBrowserTest.*:PrometheusWebUIFoundationBrowserTest.*-*.Supervision*'
 METADATA_CAPTURED=false
@@ -2775,6 +2775,10 @@ run_selected_tests() {
       --test-launcher-jobs=1 --test-launcher-retry-limit=0 \
       >"${TEST_LOG}" 2>&1
   elif [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+    "${FOCUSED_BINARY}" --gtest_filter="${FOCUS_FILTER}" \
+      --test-launcher-jobs=1 --test-launcher-retry-limit=0 \
+      >"${TEST_LOG}" 2>&1
+  elif [[ "${FOCUS_KIND}" == 'blink' ]]; then
     "${FOCUSED_BINARY}" --gtest_filter="${FOCUS_FILTER}" \
       --test-launcher-jobs=1 --test-launcher-retry-limit=0 \
       >"${TEST_LOG}" 2>&1
