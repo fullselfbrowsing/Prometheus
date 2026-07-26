@@ -431,4 +431,41 @@ test('live client freezes handoff order, seven supervision operations, and crede
   assert.match(client, /RESYNC_REQUIRED/u);
   assert.match(client, /assertCompatibilityHasNoDashboardAuthority/u);
   assert.match(client, /key\.startsWith\('PROMETHEUS_MCP_SMOKE_'\)/u);
+  const gapLoopStart = client.indexOf(
+    'for (let index = 0; index < 35; index += 1)',
+  );
+  const gapClickStage = client.indexOf(
+    'supervision_resync_gap_click_',
+    gapLoopStart,
+  );
+  const gapCompatibilityStage = client.indexOf(
+    'supervision_resync_gap_compatibility_',
+    gapLoopStart,
+  );
+  const gapSnapshotStage = client.indexOf(
+    'supervision_resync_gap_snapshot_',
+    gapLoopStart,
+  );
+  const resyncViewerStage = client.indexOf(
+    "liveSmokeStage = 'supervision_resync_viewer_a'",
+    gapLoopStart,
+  );
+  assert.ok(
+    gapLoopStart >= 0
+      && gapLoopStart < gapClickStage
+      && gapClickStage < gapCompatibilityStage
+      && gapCompatibilityStage < gapSnapshotStage
+      && gapSnapshotStage < resyncViewerStage,
+    'retention-gap smoke must await the compatibility diff between each click and snapshot',
+  );
+  const gapLoop = client.slice(gapLoopStart, resyncViewerStage);
+  assert.match(
+    gapLoop,
+    /compatibilityTool\(\s*primary,\s*'get_supervision_diff',\s*\)/u,
+  );
+  assert.match(
+    gapLoop,
+    /Compatibility consumer did not observe the gap mutation/u,
+  );
+  assert.doesNotMatch(gapLoop, /gatewaySupervision\(descriptor, 'ack'/u);
 });

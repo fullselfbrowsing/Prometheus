@@ -789,6 +789,7 @@ verify_built_supervision_smoke_contract() {
   require_literal "fs.openSync(bootstrapFile, 'wx', 0o600)" "${shell}"
   require_literal '/v1/test/supervision-handoff' "${client}"
   require_literal 'supervision_resync_gap_targets' "${client}"
+  require_literal 'supervision_resync_gap_compatibility_' "${client}"
   require_literal 'endDashboardSession' "${client}"
   require_literal "key.startsWith('PROMETHEUS_MCP_SMOKE_')" "${client}"
   require_literal 'live client freezes handoff order' "${test_source}"

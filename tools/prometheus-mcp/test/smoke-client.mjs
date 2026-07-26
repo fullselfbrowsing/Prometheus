@@ -1284,6 +1284,15 @@ const runLiveSmoke = async () => {
         gapMutation.page?.verification_succeeded === true,
         'Gap mutation was not verified by the MCP consumer.',
       );
+      liveSmokeStage = `supervision_resync_gap_compatibility_${index}`;
+      const gapCompatibilityDiff = await compatibilityTool(
+        primary,
+        'get_supervision_diff',
+      );
+      requireCondition(
+        JSON.stringify(gapCompatibilityDiff).includes('"kind":"diff"'),
+        'Compatibility consumer did not observe the gap mutation.',
+      );
       liveSmokeStage = `supervision_resync_gap_snapshot_${index}`;
       supervisedTargets = parseSnapshotTargets(
         await expectToolSuccess(primary, 'get_dom_snapshot', {
