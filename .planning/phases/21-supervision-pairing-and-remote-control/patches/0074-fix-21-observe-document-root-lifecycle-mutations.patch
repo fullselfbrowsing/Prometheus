@@ -1,0 +1,246 @@
+From de937473bd1b5e99aec391ea003545ecd205e367 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sun, 26 Jul 2026 02:09:58 -0500
+Subject: [PATCH 74/74] fix(21): observe document root lifecycle mutations
+
+---
+ ...eus_supervision_capture_hub_browsertest.cc | 96 ++++++++++++++++++-
+ ...metheus_supervision_document_supplement.cc |  8 +-
+ ...upervision_document_supplement_unittest.cc | 53 ++++++++++
+ 3 files changed, 147 insertions(+), 10 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc b/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc
+index 281ea6984b..a96883094a 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc
+@@ -42,6 +42,8 @@ namespace {
+ constexpr char kHubPagePath[] = "/prometheus-supervision-hub.html";
+ constexpr char kCompatibilityHubPagePath[] =
+     "/prometheus-supervision-compatibility-hub.html";
++constexpr char kRootReplacementHubPagePath[] =
++    "/prometheus-supervision-root-replacement-hub.html";
+ constexpr char kFramePagePath[] = "/prometheus-supervision-frame.html";
+ constexpr char kReleasePath[] = "/prometheus-supervision-release";
+ constexpr char kSecondReleasePath[] = "/prometheus-supervision-second-release";
+@@ -145,6 +147,38 @@ fetch('/prometheus-supervision-release')
+ </script>
+ )HTML";
+ 
++constexpr char kRootReplacementHubPage[] = R"HTML(
++<!doctype html>
++<meta charset="utf-8">
++<title>Supervision root replacement capture hub</title>
++<main>
++  <h1>Initial root state</h1>
++</main>
++<script>
++fetch('/prometheus-supervision-release')
++  .then(response => response.text())
++  .then(message => {
++    const replacement = document.createElement('html');
++    const head = document.createElement('head');
++    const title = document.createElement('title');
++    title.textContent = 'Replacement root';
++    head.append(title);
++    const body = document.createElement('body');
++    const main = document.createElement('main');
++    main.id = 'replacement-root';
++    main.textContent = message;
++    body.append(main);
++    replacement.append(head, body);
++    document.replaceChild(replacement, document.documentElement);
++    return fetch('/prometheus-supervision-second-release');
++  })
++  .then(response => response.text())
++  .then(message => {
++    document.querySelector('#replacement-root').textContent = message;
++  });
++</script>
++)HTML";
++
+ constexpr char kFramePage[] = R"HTML(
+ <!doctype html>
+ <meta charset="utf-8">
+@@ -191,10 +225,15 @@ class PrometheusSupervisionCaptureHubBrowserTest : public InProcessBrowserTest {
+     const bool compatibility_case =
+         test_info && std::string_view(test_info->name())
+                          .starts_with("DashboardAndAgentConsumers");
++    const bool root_replacement_case =
++        test_info && std::string_view(test_info->name()) ==
++                         "DocumentElementReplacementKeepsRealCaptureLive";
++    const char* const page_path = compatibility_case ? kCompatibilityHubPagePath
++                                  : root_replacement_case
++                                      ? kRootReplacementHubPagePath
++                                      : kHubPagePath;
+     ASSERT_TRUE(ui_test_utils::NavigateToURL(
+-        browser(),
+-        embedded_test_server()->GetURL(
+-            compatibility_case ? kCompatibilityHubPagePath : kHubPagePath)));
++        browser(), embedded_test_server()->GetURL(page_path)));
+     now_ = base::Time::Now();
+     SupervisionLimits limits;
+     limits.viewer_ttl_ms = base::Minutes(2).InMilliseconds();
+@@ -383,6 +422,8 @@ class PrometheusSupervisionCaptureHubBrowserTest : public InProcessBrowserTest {
+       content = kHubPage;
+     } else if (request.relative_url == kCompatibilityHubPagePath) {
+       content = kCompatibilityHubPage;
++    } else if (request.relative_url == kRootReplacementHubPagePath) {
++      content = kRootReplacementHubPage;
+     } else if (request.relative_url == kFramePagePath) {
+       content = kFramePage;
+     } else {
+@@ -590,6 +631,55 @@ IN_PROC_BROWSER_TEST_F(
+   EXPECT_EQ(0u, supervision_service().capture_hub_count_for_testing());
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
++                       DocumentElementReplacementKeepsRealCaptureLive) {
++  SupervisionRedemptionResult viewer = RedeemDashboard("Root observer");
++  ASSERT_TRUE(viewer.ok);
++  PrometheusSupervisionCaptureHub* const hub =
++      supervision_service().capture_hub_for_testing(viewer.stable_tab_id);
++  ASSERT_TRUE(hub);
++
++  SupervisionDashboardBaselineResult baseline =
++      WaitForDashboardBaseline(viewer.dashboard_session);
++  ASSERT_TRUE(baseline.delivery.has_value());
++  ASSERT_TRUE(
++      supervision_service()
++          .AckDashboard(viewer.dashboard_session, baseline.delivery->stamp)
++          .ok);
++
++  const size_t captures_before_replacement = hub->capture_count_for_testing();
++  release_response().WaitForRequest();
++  release_response().Send(net::HTTP_OK, "text/plain", kMutationMarker);
++  release_response().Done();
++
++  SupervisionDashboardDiffResult replacement_diff =
++      WaitForDashboardDiff(viewer.dashboard_session);
++  ASSERT_TRUE(replacement_diff.delivery.has_value());
++  EXPECT_NE(
++      std::string::npos,
++      replacement_diff.delivery->diff.serialized_json.find(kMutationMarker));
++  EXPECT_EQ(captures_before_replacement + 1u, hub->capture_count_for_testing());
++  ASSERT_TRUE(supervision_service()
++                  .AckDashboard(viewer.dashboard_session,
++                                replacement_diff.delivery->stamp)
++                  .ok);
++
++  const size_t captures_before_later_mutation =
++      hub->capture_count_for_testing();
++  second_release_response().WaitForRequest();
++  second_release_response().Send(net::HTTP_OK, "text/plain",
++                                 kSecondMutationMarker);
++  second_release_response().Done();
++
++  SupervisionDashboardDiffResult later_diff =
++      WaitForDashboardDiff(viewer.dashboard_session);
++  ASSERT_TRUE(later_diff.delivery.has_value());
++  EXPECT_NE(std::string::npos, later_diff.delivery->diff.serialized_json.find(
++                                   kSecondMutationMarker));
++  EXPECT_EQ(captures_before_later_mutation + 1u,
++            hub->capture_count_for_testing());
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
+                        TwoConsumersUseOneRendererEnableAndApcCapture) {
+   ASSERT_TRUE(contents());
+diff --git a/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc
+index 85dedb9a86..e978470d76 100644
+--- a/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc
++++ b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc
+@@ -6,7 +6,6 @@
+ 
+ #include "third_party/blink/renderer/bindings/core/v8/v8_mutation_observer_init.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
+-#include "third_party/blink/renderer/core/dom/element.h"
+ #include "third_party/blink/renderer/core/dom/mutation_observer.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+@@ -122,18 +121,13 @@ void PrometheusSupervisionDocumentSupplement::Disable() {
+ }
+ 
+ void PrometheusSupervisionDocumentSupplement::ObserveDocument() {
+-  Element* document_element = GetSupplementable()->documentElement();
+-  if (!document_element) {
+-    return;
+-  }
+-
+   MutationObserverInit* init = MutationObserverInit::Create();
+   init->setChildList(true);
+   init->setAttributes(true);
+   init->setCharacterData(true);
+   init->setSubtree(true);
+   DummyExceptionStateForTesting exception_state;
+-  mutation_observer_->observe(document_element, init, exception_state);
++  mutation_observer_->observe(GetSupplementable(), init, exception_state);
+   DCHECK(!exception_state.HadException());
+ }
+ 
+diff --git a/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc
+index 966cd8c208..76077ffbfd 100644
+--- a/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc
++++ b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc
+@@ -148,6 +148,59 @@ TEST_F(PrometheusSupervisionDocumentSupplementTest, DirtyForCharacterData) {
+   EXPECT_EQ(host.signals()[0], DirtySignal::kDirty);
+ }
+ 
++TEST_F(PrometheusSupervisionDocumentSupplementTest,
++       EnableBeforeDocumentElementCreationObservesLaterRoot) {
++  Element* const old_root = GetDocument().documentElement();
++  ASSERT_TRUE(old_root);
++  old_root->remove();
++  test::RunPendingTasks();
++  ASSERT_FALSE(GetDocument().documentElement());
++
++  RecordingHost host;
++  Enable(host);
++
++  Element* const new_root =
++      GetDocument().CreateRawElement(html_names::kHTMLTag);
++  GetDocument().AppendChild(new_root);
++  test::RunPendingTasks();
++  AdvanceDebounce();
++
++  ASSERT_EQ(host.signals().size(), 1u);
++  EXPECT_EQ(host.signals()[0], DirtySignal::kDirty);
++
++  new_root->setAttribute(html_names::kClassAttr, AtomicString("after-create"));
++  test::RunPendingTasks();
++  AdvanceDebounce();
++
++  ASSERT_EQ(host.signals().size(), 2u);
++  EXPECT_EQ(host.signals()[1], DirtySignal::kDirty);
++}
++
++TEST_F(PrometheusSupervisionDocumentSupplementTest,
++       DocumentElementReplacementObservesNewRootMutations) {
++  RecordingHost host;
++  Enable(host);
++
++  Element* const old_root = GetDocument().documentElement();
++  ASSERT_TRUE(old_root);
++  Element* const new_root =
++      GetDocument().CreateRawElement(html_names::kHTMLTag);
++  GetDocument().ReplaceChild(new_root, old_root);
++  test::RunPendingTasks();
++  AdvanceDebounce();
++
++  ASSERT_EQ(GetDocument().documentElement(), new_root);
++  ASSERT_EQ(host.signals().size(), 1u);
++  EXPECT_EQ(host.signals()[0], DirtySignal::kDirty);
++
++  new_root->setAttribute(html_names::kClassAttr, AtomicString("replacement"));
++  test::RunPendingTasks();
++  AdvanceDebounce();
++
++  ASSERT_EQ(host.signals().size(), 2u);
++  EXPECT_EQ(host.signals()[1], DirtySignal::kDirty);
++}
++
+ TEST_F(PrometheusSupervisionDocumentSupplementTest, OverflowCollapsesBurst) {
+   RecordingHost host;
+   Enable(host);
+-- 
+2.50.1 (Apple Git-155)
+

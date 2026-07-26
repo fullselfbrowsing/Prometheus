@@ -137,8 +137,8 @@ EXPECTED_BLINK_MODULES_SHA256='663af12ba1a986db789c4c05967dda8b3b3615030e6cecb56
 EXPECTED_BLINK_MODULES_TOC_SHA256='bdc164a10b8616fa099b089a1f4542c789a584c84212b0f4d92b616701a3ce9b'
 EXPECTED_FRAMEWORK_RESOURCES_SHA256='c9c541d780ad9c0054eaec0abd8453703972ebcc3ce3607d06e3c80e5a8f79ff'
 EXPECTED_PHASE21_NATIVE_COUNT=190
-EXPECTED_PHASE21_RENDERER_COUNT=12
-EXPECTED_PHASE21_BROWSER_COUNT=51
+EXPECTED_PHASE21_RENDERER_COUNT=14
+EXPECTED_PHASE21_BROWSER_COUNT=52
 EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT=208
 EXPECTED_PHASE17_19_NATIVE_REGRESSION_COUNT=84
 EXPECTED_PHASE20_CONTENT_REGRESSION_COUNT=21
@@ -146,7 +146,7 @@ EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT=3
 EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT=37
 EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT=83
 EXPECTED_NODE_COUNT=81
-EXPECTED_PATCH_COUNT=73
+EXPECTED_PATCH_COUNT=74
 PHASE21_NATIVE_FILTER='PrometheusSupervisionTypesTest.*:PrometheusSupervisionTransportCodecTest.*:PrometheusSupervisionProjectionTest.*:PrometheusSupervisionDiffTest.*:PrometheusSupervisionProfileServiceTest.*:PrometheusSupervisionCaptureHubTest.*:PrometheusSupervisionActionControllerTest.*:PrometheusSupervisionTestBootstrapTest.*:PrometheusAgentServiceObservationTest.*:PrometheusAgentTransportCodecTest.*:PrometheusAgentProfileServiceTest.*:PrometheusAgentGatewayTest.Supervision*:PrometheusAgentServiceTest.Supervision*:PrometheusTabStateTest.Supervision*'
 PHASE21_RENDERER_FILTER='PrometheusSupervisionDocumentSupplementTest.*'
 PHASE21_BROWSER_FILTER='PrometheusAgentGatewayBrowserTest.Supervision*:PrometheusMcpIntegrationBrowserTest.Supervision*:PrometheusWebUIBrowserTest.*:PrometheusSupervisionCaptureHubBrowserTest.*:PrometheusSupervisionConfirmationBrowserTest.*:PrometheusTabSupervisionBadgeBrowserTest.*'
@@ -420,6 +420,16 @@ verify_blink_contract() {
   require_literal 'init->setAttributes(true);' "${supplement_source}"
   require_literal 'init->setCharacterData(true);' "${supplement_source}"
   require_literal 'init->setSubtree(true);' "${supplement_source}"
+  require_literal 'mutation_observer_->observe(GetSupplementable()' \
+    "${supplement_source}"
+  require_literal 'EnableBeforeDocumentElementCreationObservesLaterRoot' \
+    "${supplement_test}"
+  require_literal 'DocumentElementReplacementObservesNewRootMutations' \
+    "${supplement_test}"
+  reject_pattern \
+    'documentElement\(' \
+    'Blink supervision observation regressed to one document root' \
+    "${supplement_source}"
   reject_pattern \
     '(record|records)[[:space:]]*(\[|->)|addedNodes|removedNodes|attributeName|oldValue|newValue|target\(' \
     'Blink supervision inspected MutationRecord content' \
@@ -482,6 +492,8 @@ verify_capture_hub_contract() {
   require_literal 'TwoConsumersUseOneRendererEnableAndApcCapture' "${hub_browser_test}"
   require_literal 'TwoDashboardConsumersShareRealMutationsAndDetachIndependently' "${hub_browser_test}"
   require_literal 'TwoDashboardConsumersNavigationRequiresIndependentBaselines' "${hub_browser_test}"
+  require_literal 'DocumentElementReplacementKeepsRealCaptureLive' \
+    "${hub_browser_test}"
   require_literal 'kSecondReleasePath' "${hub_browser_test}"
   require_literal 'kMutationMarker' "${hub_browser_test}"
   require_literal '"prometheus_supervision_capture_hub.cc"' "${browser_build}"
