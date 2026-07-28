@@ -565,7 +565,7 @@ Plans:
 | 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 7/7 | Complete    | 2026-07-13 |
 | 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 14/14 | Complete    | 2026-07-20 |
 | 21. Supervision, Pairing, and Remote Control | v2.0 | 26/26 | Complete | 2026-07-25 |
-| 22. Chrome Extension Ecosystem and Policy | v2.0 | 0 | Planned | — |
+| 22. Chrome Extension Ecosystem and Policy | v2.0 | 1/5 | In Progress|  |
 | 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
 | 24. Packaging, Release Validation, and Handoff | v2.0 | 0 | Planned | — |
 

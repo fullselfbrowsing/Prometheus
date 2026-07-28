@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Chromium Engine Migration
-current_phase: 21
-current_phase_name: Supervision, Pairing, and Remote Control
-current_plan: 26
+current_phase: 22
+current_phase_name: chrome-extension-ecosystem-and-policy
+current_plan: 2
 status: executing
-stopped_at: Phase 22 UI-SPEC approved
-last_updated: "2026-07-28T21:55:30.880Z"
+stopped_at: Completed 22-01-PLAN.md
+last_updated: "2026-07-28T23:07:18.388Z"
 last_activity: 2026-07-28
 progress:
   total_phases: 14
   completed_phases: 11
   total_plans: 97
-  completed_plans: 92
-  percent: 79
+  completed_plans: 93
+  percent: 96
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: `.planning/PROJECT.md` (updated 2026-07-13)
 **Core value:** Agents get fast, precise, auditable whole-browser control
 through DOM/native structure rather than screenshots or extension injection.
 
-**Current focus:** Phase 21 supervision, pairing, and remote control is
-complete. Preserve its exact closeout evidence while Phase 22 remains planned
-and `not_ready`.
+**Current focus:** Phase 22 extension policy execution. Plan 22-01 is complete;
+Plan 22-02 is next to add fail-closed Agent transport for visible extension
+popup and side-panel surfaces.
 
 **Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
 external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
@@ -36,23 +36,22 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 
 ## Current Position
 
-Phase: 21 (Supervision, Pairing, and Remote Control) — COMPLETE
-Plan: 26 of 26
-**Current Phase:** 21
-**Current Phase Name:** Supervision, Pairing, and Remote Control
+Phase: 22 (chrome-extension-ecosystem-and-policy) — EXECUTING
+Plan: 2 of 5
+**Current Phase:** 22
+**Current Phase Name:** chrome-extension-ecosystem-and-policy
 **Total Phases:** 14
 **Completed Phases:** 11
-**Current Plan:** 26
+**Current Plan:** 2
 **Total Plans in Phase:** 5
 **Status:** Ready to execute
-**Progress:** [██████████] 100%
+**Progress:** [██████████] 96%
 **Last Activity:** 2026-07-28
-**Last Activity Description:** Phase 22 planning complete — 5 plans ready
-refreshed the exact closeout matrix, completed 74-patch replay and
-byte-preservation proof, and retained requirement/threat/UAT evidence.
+**Last Activity Description:** Plan 22-01 completed the browser-owned extension
+policy foundation; 21/21 focused and 6/6 lifecycle tests pass with preserved
+Ninja metadata and four stable nested patches.
 
-Milestone work is 92 of 92 existing plans complete (100%); cumulative project
-work is 143 of 144 existing plans summarized (99%).
+Milestone work is 93 of 97 current plans complete (96%).
 
 ## Latest Evidence
 
@@ -393,6 +392,7 @@ work is 143 of 144 existing plans summarized (99%).
 - [Phase 21]: Recognize `/v1/test/supervision-handoff` only from the boolean fact that a complete abstract validated dispatcher is installed, after the unchanged gateway perimeter. — Ordinary and official launches remain 404 before body parsing or native dispatch, and the gateway gains no concrete bootstrap/profile dependency.
 - [Phase 21]: Create handoff state only for the exact non-official runtime-test switches, disposable regular non-OTR profile, 0600 no-follow closed-schema file, canonical loopback HTTP origin, and initial live exact binding. — The test-only seam cannot activate from ordinary launch, unsafe metadata, remote origin, or an ambiguous target.
 - [Phase 21]: Consume two pairing slots before return, require slot-one redemption before slot two, preserve exact profile/browser/tab/origin/document/current-owner continuity, and wipe request authority before callback reentrancy. — Replay, owner/target loss, timeout, unbind, shutdown, exhaustion, and code failure return no credential and converge on idempotent cleanup.
+- [Phase 22]: Persist only bounded requested extension grant choices and derive effective access from fresh Chromium registry truth, with Private access separately requested and capped by regular access. — This preserves Chromium as lifecycle and installed-identity authority, prevents persisted runtime authority, and makes OTR, uninstall, replacement, eligibility loss, and stale-generation behavior fail closed.
 
 ## Performance Metrics
 
@@ -434,6 +434,7 @@ work is 143 of 144 existing plans summarized (99%).
 | Phase 21 P24 | 50min | 2 tasks | 8 files |
 | Phase 21 P25 | 3h | 3 tasks | 15 files |
 | Phase 21 P26 | not recorded | 2 tasks | 9 root closeout files |
+| Phase 22 P01 | 47 min | 3 tasks | 16 files |
 
 ## Blockers and Deferred Items
 
@@ -448,9 +449,9 @@ work is 143 of 144 existing plans summarized (99%).
 
 ## Session
 
-**Last Date:** 2026-07-28T20:15:08.784Z
-**Stopped At:** Phase 22 UI-SPEC approved
-**Resume File:** .planning/phases/22-chrome-extension-ecosystem-and-policy/22-UI-SPEC.md
+**Last Date:** 2026-07-28T23:07:18.383Z
+**Stopped At:** Completed 22-01-PLAN.md
+**Resume File:** None
 
 ## Operator Next Step
 
