@@ -24,6 +24,13 @@ const targetProperties = {
   },
 };
 
+const extensionSurfaceProperty = {
+  extension_surface: {
+    type: 'string',
+    enum: ['popup', 'side_panel'],
+  },
+};
+
 const visualProperties = {
   visual_reason: utf8String(256, 1),
   client: utf8String(80, 1),
@@ -46,6 +53,16 @@ const targetedSchema = (properties = {}, required = [], visual = false) =>
     },
     required,
   );
+
+const extensionTargetedSchema = (
+  properties = {},
+  required = [],
+  visual = false,
+) => targetedSchema(
+  { ...extensionSurfaceProperty, ...properties },
+  required,
+  visual,
+);
 
 const emptySchema = objectSchema();
 const visualTargetSchema = targetedSchema({}, [], true);
@@ -223,15 +240,15 @@ const nativeSchemas = {
   go_back: visualTargetSchema,
   go_forward: visualTargetSchema,
   close_tab: visualTargetSchema,
-  read_page: targetedSchema(readLimitProperties),
-  get_text: targetedSchema(elementProperties),
-  get_attribute: targetedSchema(
+  read_page: extensionTargetedSchema(readLimitProperties),
+  get_text: extensionTargetedSchema(elementProperties),
+  get_attribute: extensionTargetedSchema(
     { ...elementProperties, attribute: utf8String(128, 1) },
     ['attribute'],
   ),
-  get_dom_snapshot: targetedSchema(readLimitProperties),
-  get_page_snapshot: targetedSchema(readLimitProperties),
-  execute_js: targetedSchema(
+  get_dom_snapshot: extensionTargetedSchema(readLimitProperties),
+  get_page_snapshot: extensionTargetedSchema(readLimitProperties),
+  execute_js: extensionTargetedSchema(
     {
       javascript: utf8String(20_000, 1),
       javascript_permission_granted: { type: 'boolean' },
@@ -240,18 +257,18 @@ const nativeSchemas = {
     ['javascript'],
     true,
   ),
-  click: targetedSchema(elementProperties, [], true),
-  type_text: targetedSchema(
+  click: extensionTargetedSchema(elementProperties, [], true),
+  type_text: extensionTargetedSchema(
     { ...elementProperties, text: utf8String(20_000) },
     ['text'],
     true,
   ),
-  press_key: targetedSchema(
+  press_key: extensionTargetedSchema(
     { ...elementProperties, key: utf8String(128, 1) },
     ['key'],
     true,
   ),
-  scroll: targetedSchema(
+  scroll: extensionTargetedSchema(
     {
       ...elementProperties,
       delta_x: { type: 'integer', minimum: -2_147_483_648, maximum: MAX_TARGET_ID },
@@ -260,13 +277,13 @@ const nativeSchemas = {
     [],
     true,
   ),
-  hover: targetedSchema(elementProperties, [], true),
-  select_option: targetedSchema(
+  hover: extensionTargetedSchema(elementProperties, [], true),
+  select_option: extensionTargetedSchema(
     { ...elementProperties, option_value: utf8String(4096) },
     ['option_value'],
     true,
   ),
-  clear: targetedSchema(elementProperties, [], true),
+  clear: extensionTargetedSchema(elementProperties, [], true),
   diagnostics: emptySchema,
   open_internal_surface: objectSchema(
     {

@@ -15,6 +15,7 @@ import {
 } from '../src/protocol.mjs';
 import { createStdioServer } from '../src/server.mjs';
 import { BrowserSession } from '../src/session.mjs';
+import { createToolHandler } from '../src/tool-handler.mjs';
 
 const request = (id, method, params = {}) => ({
   jsonrpc: '2.0',
@@ -174,6 +175,52 @@ test('initialized gates ping and tool operations', async () => {
   await protocol.handle(request(5, 'tools/call', { name: 'list_tabs', arguments: {} }), emit);
   assert.equal(output.pop().result.isError, false);
   assert.deepEqual(calls, [{ name: 'list_tabs', arguments: {} }]);
+});
+
+test('extension surface selector crosses JSON-RPC only as a closed target field', async () => {
+  const nativeCalls = [];
+  const handler = createToolHandler({
+    session: {
+      command: async (route, envelope) => {
+        nativeCalls.push({ route, envelope });
+        return { ok: true, error_code: 'NONE' };
+      },
+    },
+  });
+  const output = [];
+  const protocol = new McpProtocol({
+    listTools: handler.listTools,
+    callTool: handler.callTool,
+  });
+  const emit = (message) => output.push(message);
+  await initializeProtocol(protocol, emit);
+  output.length = 0;
+
+  await protocol.handle(request(20, 'tools/call', {
+    name: 'read_page',
+    arguments: {
+      tab_id: 23,
+      extension_surface: 'side_panel',
+      max_chars: 64,
+    },
+  }), emit);
+
+  assert.equal(output.pop().result.isError, false);
+  assert.deepEqual(nativeCalls, [{
+    route: 'read_page',
+    envelope: {
+      target: { tab_id: 23, extension_surface: 'side_panel' },
+      params: { max_chars: 64 },
+      visual: {},
+    },
+  }]);
+
+  await protocol.handle(request(21, 'tools/call', {
+    name: 'read_page',
+    arguments: { tabIndex: 0, extension_surface: 'popup' },
+  }), emit);
+  assert.equal(output.pop().result.isError, true);
+  assert.equal(nativeCalls.length, 1);
 });
 
 test('malformed JSON-RPC and unknown protocol methods use JSON-RPC errors', async () => {

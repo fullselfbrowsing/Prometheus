@@ -354,6 +354,40 @@ test('native validation normalizes declared numbers and rejects unknown fields',
   assert.equal(calls.length, 1);
 });
 
+test('extension surface selectors reach only the native target envelope', async () => {
+  const { calls, handler } = makeHarness();
+  for (const extension_surface of ['popup', 'side_panel']) {
+    const result = await handler.callTool({
+      name: 'read_page',
+      arguments: { tab_id: 17, extension_surface, max_chars: 200 },
+    });
+    assertParity(result, false);
+    assert.deepEqual(calls.at(-1).envelope, {
+      target: { tab_id: 17, extension_surface },
+      params: { max_chars: 200 },
+      visual: {},
+    });
+  }
+  for (const arguments_ of [
+    { extension_surface: 'popup' },
+    { tabIndex: 0, extension_surface: 'popup' },
+    { tabId: 17, extension_surface: 'side_panel' },
+    { tab_id: 17, extension_surface: 'background' },
+    { tab_id: 17, extension_surface: ['popup', 'side_panel'] },
+    { tab_id: 17, extension_surface: 'popup', extension_id: 'chosen' },
+  ]) {
+    const result = await handler.callTool({
+      name: 'read_page',
+      arguments: arguments_,
+    });
+    assertParity(result, true);
+    assert.ok(['INVALID_ARGUMENT', 'INVALID_TARGET'].includes(
+      result.structuredContent.error.code,
+    ));
+  }
+  assert.equal(calls.length, 2);
+});
+
 test('open_internal_surface forwards only its closed three-value enum', async () => {
   const { calls, handler } = makeHarness();
   for (const surface of ['new_tab', 'side_panel', 'control_panel']) {

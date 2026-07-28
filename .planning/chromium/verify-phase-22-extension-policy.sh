@@ -4,9 +4,10 @@ shopt -s nullglob
 
 FOCUSED=false
 EXPECT_FAILURE=false
+FOCUS=''
 
 usage() {
-  printf 'Usage: %s [--focused] [--expect-failure]\n' "$0" >&2
+  printf 'Usage: %s [--focused] [--focus GTEST_FILTER] [--expect-failure]\n' "$0" >&2
 }
 
 while [[ "$#" -gt 0 ]]; do
@@ -18,6 +19,14 @@ while [[ "$#" -gt 0 ]]; do
       }
       FOCUSED=true
       shift
+      ;;
+    --focus)
+      [[ -z "${FOCUS}" && "$#" -ge 2 && -n "$2" ]] || {
+        usage
+        exit 2
+      }
+      FOCUS="$2"
+      shift 2
       ;;
     --expect-failure)
       [[ "${EXPECT_FAILURE}" == false ]] || {
@@ -48,7 +57,7 @@ BINARY="${OUT_DIR}/prometheus_unittests"
 FILTER='PrometheusExtensionPolicy*'
 REGISTRY_FILTER='PrometheusExtensionPolicy*Registry*:*Lifecycle*'
 METADATA_CAPTURED=false
-RED_FAILURES=(
+POLICY_RED_FAILURES=(
   'PrometheusExtensionPolicyLifecycleTest.NativePrivateEligibilityLossBlocksBeforeObserverNotification'
   'PrometheusExtensionPolicyLifecycleTest.ObserverReentrancyAdvancesGenerationBeforeEveryNotification'
   'PrometheusExtensionPolicyLifecycleTest.ProfileShutdownMakesLateCallbacksHarmless'
@@ -56,6 +65,47 @@ RED_FAILURES=(
   'PrometheusExtensionPolicyRegistryTest.ReplacementAndReorderRejectStaleOrdinalGeneration'
   'PrometheusExtensionPolicyRegistryTest.UninstallErasesPersistedChoiceBeforeNotification'
 )
+SURFACE_RED_FAILURES=(
+  'PrometheusExtensionSurfaceBrowserTest.ActiveSidePanelContractIsBrowserOwned'
+  'PrometheusExtensionSurfaceBrowserTest.HiddenContextsRemainDenied'
+  'PrometheusExtensionSurfaceBrowserTest.ShownPopupContractIsBrowserOwned'
+  'PrometheusExtensionSurfaceBrowserTest.VisibleTabContractIsBrowserOwned'
+  'PrometheusExtensionSurfaceResolverTest.AcceptsCommittedVisibleOptionsPage'
+  'PrometheusExtensionSurfaceResolverTest.AcceptsCommittedVisibleTopLevelExtensionTab'
+  'PrometheusExtensionSurfaceResolverTest.AcceptsExactlyOneActiveSidePanelOwnedByAnchorTab'
+  'PrometheusExtensionSurfaceResolverTest.AcceptsExactlyOneShownPopupOwnedByAnchorBrowser'
+  'PrometheusExtensionSurfaceResolverTest.AcceptsPositivelyOwnedPrimaryOptionsGuest'
+  'PrometheusExtensionSurfaceResolverTest.RegistryMembershipAndSystemReadinessDoNotAuthorizeVisibility'
+  'PrometheusExtensionSurfaceResolverTest.RejectsAmbiguousOptionsGuest'
+  'PrometheusExtensionSurfaceResolverTest.RejectsBackgroundContents'
+  'PrometheusExtensionSurfaceResolverTest.RejectsBackgroundPage'
+  'PrometheusExtensionSurfaceResolverTest.RejectsDeveloperTools'
+  'PrometheusExtensionSurfaceResolverTest.RejectsDisabledExtension'
+  'PrometheusExtensionSurfaceResolverTest.RejectsHiddenHost'
+  'PrometheusExtensionSurfaceResolverTest.RejectsLifecycleTeardown'
+  'PrometheusExtensionSurfaceResolverTest.RejectsMismatchedCommittedOrigin'
+  'PrometheusExtensionSurfaceResolverTest.RejectsMultipleSelectorMatches'
+  'PrometheusExtensionSurfaceResolverTest.RejectsNonExtensionOrigin'
+  'PrometheusExtensionSurfaceResolverTest.RejectsNonPrimaryOptionsGuest'
+  'PrometheusExtensionSurfaceResolverTest.RejectsOffscreenDocument'
+  'PrometheusExtensionSurfaceResolverTest.RejectsPopupSelectedAsSidePanel'
+  'PrometheusExtensionSurfaceResolverTest.RejectsSharedRegistryWrongOffTheRecordContext'
+  'PrometheusExtensionSurfaceResolverTest.RejectsStalePolicyGeneration'
+  'PrometheusExtensionSurfaceResolverTest.RejectsTerminatedExtension'
+  'PrometheusExtensionSurfaceResolverTest.RejectsUncommittedPrimaryFrame'
+  'PrometheusExtensionSurfaceResolverTest.RejectsUninstalledExtension'
+  'PrometheusExtensionSurfaceResolverTest.RejectsUnknownFutureViewKind'
+  'PrometheusExtensionSurfaceResolverTest.RejectsWrongBrowser'
+  'PrometheusExtensionSurfaceResolverTest.RejectsWrongProfile'
+  'PrometheusExtensionSurfaceResolverTest.RejectsZeroSelectorMatches'
+)
+RED_FAILURES=("${POLICY_RED_FAILURES[@]}")
+if [[ -n "${FOCUS}" ]]; then
+  FILTER="${FOCUS}"
+fi
+if [[ "${FILTER}" == 'PrometheusExtensionSurface*' ]]; then
+  RED_FAILURES=("${SURFACE_RED_FAILURES[@]}")
+fi
 
 fail() {
   printf 'Phase 22 extension-policy verification failed: %s\n' "$1" >&2
@@ -184,6 +234,14 @@ build_focused_binary() {
   local policy_service='obj/chrome/browser/prometheus/prometheus_extension_policy_service/prometheus_extension_policy_service.o'
   local policy_factory='obj/chrome/browser/prometheus/prometheus_extension_policy_service/prometheus_extension_policy_service_factory.o'
   local policy_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_extension_policy_service_unittest.o'
+  local route='obj/chrome/browser/prometheus/prometheus_agent_route/prometheus_agent_route.o'
+  local route_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_route_unittest.o'
+  local codec='obj/chrome/browser/prometheus/prometheus_agent_transport_codec/prometheus_agent_transport_codec.o'
+  local codec_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_transport_codec_unittest.o'
+  local surface_resolver='obj/chrome/browser/prometheus/prometheus_extension_surface_resolver/prometheus_extension_surface_resolver.o'
+  local surface_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_extension_surface_resolver_unittest.o'
+  local browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_page_adapter_browsertest.o'
+  local surface_browser_test='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_extension_surface_browsertest.o'
   local browser_prefs='obj/chrome/browser/prefs/impl/browser_prefs.o'
   local extras=(
     obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o
@@ -203,6 +261,11 @@ build_focused_binary() {
     "${policy_service}"
     "${policy_factory}"
     "${policy_test}"
+    "${route_test}"
+    "${codec_test}"
+    "${surface_resolver}"
+    "${surface_test}"
+    "${surface_browser_test}"
   )
 
   : >"${BUILD_LOG}"
@@ -217,6 +280,20 @@ build_focused_binary() {
   compile_synthesized_object "${runtime_test}" "${policy_test}" \
     prometheus_runtime_profile_service_unittest \
     prometheus_extension_policy_service_unittest
+  compile_exact_object "${route}"
+  compile_exact_object "${codec}"
+  compile_exact_object "${route_test}"
+  compile_synthesized_object "${route_test}" "${codec_test}" \
+    prometheus_agent_route_unittest \
+    prometheus_agent_transport_codec_unittest
+  compile_synthesized_object "${runtime_service}" "${surface_resolver}" \
+    prometheus_runtime_profile_service prometheus_extension_surface_resolver
+  compile_synthesized_object "${runtime_test}" "${surface_test}" \
+    prometheus_runtime_profile_service_unittest \
+    prometheus_extension_surface_resolver_unittest
+  compile_synthesized_object "${browser_test_template}" \
+    "${surface_browser_test}" prometheus_page_adapter_browsertest \
+    prometheus_extension_surface_browsertest
   compile_exact_object "${browser_prefs}"
 
   local extra
@@ -262,11 +339,11 @@ list_selected_tests() {
   local count
   count="$(awk '/^  [^ ]/ && $0 !~ /DISABLED_/ { count += 1 }
                 END { print count + 0 }' "${LIST_LOG}")"
-  [[ "${count}" -gt 0 ]] || fail 'PrometheusExtensionPolicy* selected zero tests'
+  [[ "${count}" -gt 0 ]] || fail "${FILTER} selected zero tests"
   if rg -q 'DISABLED_' "${LIST_LOG}"; then
     fail 'focused policy list contains a disabled test'
   fi
-  note "selected ${count} runnable policy test(s)"
+  note "selected ${count} runnable test(s) for ${FILTER}"
 }
 
 run_selected_tests() {
@@ -321,7 +398,8 @@ build_focused_binary
 list_selected_tests
 run_selected_tests
 
-if [[ "${FOCUSED}" == false && "${EXPECT_FAILURE}" == false ]]; then
+if [[ "${FOCUSED}" == false && "${EXPECT_FAILURE}" == false &&
+      -z "${FOCUS}" ]]; then
   "${BINARY}" --gtest_list_tests --gtest_filter="${REGISTRY_FILTER}" \
     >"${LOG_DIR}/registry-list.log" 2>&1
   if ! awk '/^  [^ ]/ && $0 !~ /DISABLED_/ { found = 1 }

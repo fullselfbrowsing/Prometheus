@@ -252,7 +252,7 @@ const normalizeTarget = (normalized) => {
   const supplied = ['tab_id', 'tabId', 'tabIndex'].filter(
     (field) => normalized[field] !== undefined,
   );
-  if (supplied.length === 0) {
+  if (supplied.length === 0 && normalized.extension_surface === undefined) {
     return;
   }
   if (
@@ -268,13 +268,30 @@ const normalizeTarget = (normalized) => {
   ) {
     reject('INVALID_TARGET', 'Conflicting tab target fields were supplied.', 'target');
   }
+  if (
+    normalized.extension_surface !== undefined &&
+    (normalized.tab_id === undefined || normalized.tabId !== undefined
+      || normalized.tabIndex !== undefined)
+  ) {
+    reject(
+      'INVALID_TARGET',
+      'An extension surface requires one positive stable tab_id.',
+      'target',
+    );
+  }
   const stable = normalized.tab_id ?? normalized.tabId;
   normalized.target = stable === undefined
     ? { tab_index: normalized.tabIndex }
-    : { tab_id: stable };
+    : {
+      tab_id: stable,
+      ...(normalized.extension_surface === undefined
+        ? {}
+        : { extension_surface: normalized.extension_surface }),
+    };
   delete normalized.tab_id;
   delete normalized.tabId;
   delete normalized.tabIndex;
+  delete normalized.extension_surface;
 };
 
 export const normalizeToolArguments = (definition, raw = {}) => {

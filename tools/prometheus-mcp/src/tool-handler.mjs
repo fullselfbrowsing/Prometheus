@@ -164,6 +164,9 @@ const toNativeEnvelope = (normalized) => {
     if (key === 'target') {
       if (value.tab_id !== undefined) target.tab_id = value.tab_id;
       if (value.tab_index !== undefined) target.tabIndex = value.tab_index;
+      if (value.extension_surface !== undefined) {
+        target.extension_surface = value.extension_surface;
+      }
     } else if (VISUAL_FIELDS.has(key)) {
       visual[key] = value;
     } else if (key === 'ref') {

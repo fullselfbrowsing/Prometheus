@@ -462,6 +462,54 @@ test('native schemas enforce surface, field, and numeric boundaries', () => {
   );
 });
 
+test('extension surface selectors are closed and require exact stable tab ids', () => {
+  const read = getToolDefinition('read_page');
+  for (const extension_surface of ['popup', 'side_panel']) {
+    assert.deepEqual(
+      normalizeToolArguments(read, { tab_id: 7, extension_surface }),
+      { target: { tab_id: 7, extension_surface } },
+    );
+  }
+  for (const arguments_ of [
+    { extension_surface: 'popup' },
+    { tabIndex: 0, extension_surface: 'popup' },
+    { tabId: 7, extension_surface: 'side_panel' },
+    { tab_id: 7, tabId: 7, extension_surface: 'popup' },
+    { tab_id: 7, extension_surface: 'background' },
+    { tab_id: 7, extension_surface: ['popup', 'side_panel'] },
+  ]) {
+    assert.throws(
+      () => normalizeToolArguments(read, arguments_),
+      ({ code }) => ['INVALID_ARGUMENT', 'INVALID_TARGET'].includes(code),
+    );
+  }
+  for (const [field, value] of [
+    ['extension_id', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+    ['url', 'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/popup.html'],
+    ['frame_id', 1],
+    ['renderer_id', 2],
+    ['ordinal', 0],
+    ['web_contents', 3],
+  ]) {
+    assert.throws(
+      () => normalizeToolArguments(read, {
+        tab_id: 7,
+        extension_surface: 'popup',
+        [field]: value,
+      }),
+      ({ code }) => code === 'INVALID_ARGUMENT',
+      field,
+    );
+  }
+  assert.equal(
+    Object.hasOwn(
+      getToolDefinition('navigate').inputSchema.properties,
+      'extension_surface',
+    ),
+    false,
+  );
+});
+
 test('removed, coordinate, mutation, and unsafe tools never claim native success', () => {
   const later21 = COMPATIBILITY_CATALOG.filter(({ ownerPhase }) => ownerPhase === 21);
   assert.equal(later21.length, 0);
