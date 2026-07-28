@@ -242,6 +242,9 @@ build_focused_binary() {
   local surface_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_extension_surface_resolver_unittest.o'
   local browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_page_adapter_browsertest.o'
   local surface_browser_test='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_extension_surface_browsertest.o'
+  local extension_popup='obj/chrome/browser/ui/ui/extension_popup.o'
+  local side_panel_coordinator='obj/chrome/browser/ui/views/side_panel/side_panel/extension_side_panel_coordinator.o'
+  local side_panel_manager='obj/chrome/browser/ui/views/side_panel/side_panel/extension_side_panel_manager.o'
   local browser_prefs='obj/chrome/browser/prefs/impl/browser_prefs.o'
   local extras=(
     obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o
@@ -294,6 +297,9 @@ build_focused_binary() {
   compile_synthesized_object "${browser_test_template}" \
     "${surface_browser_test}" prometheus_page_adapter_browsertest \
     prometheus_extension_surface_browsertest
+  compile_exact_object "${extension_popup}"
+  compile_exact_object "${side_panel_coordinator}"
+  compile_exact_object "${side_panel_manager}"
   compile_exact_object "${browser_prefs}"
 
   local extra

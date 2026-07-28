@@ -1,0 +1,547 @@
+From d7b3b47b25d9519f4e2e02b611854d646cbba074 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 28 Jul 2026 18:43:40 -0500
+Subject: [PATCH] feat(22-02): resolve browser-owned extension surfaces
+
+---
+ .../prometheus_extension_surface_resolver.cc  | 324 +++++++++++++++++-
+ .../ui/views/extensions/extension_popup.cc    |  24 ++
+ .../ui/views/extensions/extension_popup.h     |   6 +
+ .../extension_side_panel_coordinator.cc       |   7 +-
+ .../extension_side_panel_coordinator.h        |   3 +
+ .../extension_side_panel_manager.cc           |   8 +-
+ .../extensions/extension_side_panel_manager.h |   2 +
+ 7 files changed, 363 insertions(+), 11 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_extension_surface_resolver.cc b/chrome/browser/prometheus/prometheus_extension_surface_resolver.cc
+index e11754ba65..08f73a0a01 100644
+--- a/chrome/browser/prometheus/prometheus_extension_surface_resolver.cc
++++ b/chrome/browser/prometheus/prometheus_extension_surface_resolver.cc
+@@ -4,11 +4,52 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_extension_surface_resolver.h"
+ 
++#include <string>
+ #include <utility>
++#include <vector>
++
++#include "chrome/browser/prometheus/prometheus_extension_policy_service.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
++#include "chrome/browser/ui/side_panel/side_panel_entry.h"
++#include "chrome/browser/ui/side_panel/side_panel_registry.h"
++#include "chrome/browser/ui/side_panel/side_panel_ui.h"
++#include "chrome/browser/ui/tabs/public/tab_features.h"
++#include "chrome/browser/ui/views/extensions/extension_popup.h"
++#include "chrome/browser/ui/views/side_panel/extensions/extension_side_panel_coordinator.h"
++#include "chrome/browser/ui/views/side_panel/extensions/extension_side_panel_manager.h"
++#include "components/crx_file/id_util.h"
++#include "components/guest_view/browser/guest_view_base.h"
++#include "components/tabs/public/tab_interface.h"
++#include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/visibility.h"
++#include "content/public/browser/web_contents.h"
++#include "extensions/browser/extension_host.h"
++#include "extensions/browser/extension_host_registry.h"
++#include "extensions/browser/extension_registry.h"
++#include "extensions/browser/extension_system.h"
++#include "extensions/browser/guest_view/extension_options/extension_options_guest.h"
++#include "extensions/browser/view_type_utils.h"
++#include "extensions/common/constants.h"
++#include "extensions/common/extension.h"
++#include "extensions/common/manifest_handlers/options_page_info.h"
++#include "extensions/common/mojom/view_type.mojom.h"
++#include "url/origin.h"
+ 
+ namespace prometheus {
+ namespace {
+ 
++struct BrowserOwnedCandidate {
++  raw_ptr<content::WebContents> web_contents = nullptr;
++  std::string ui_extension_id;
++  PrometheusExtensionObservedContext observed_context =
++      PrometheusExtensionObservedContext::kUnknown;
++  bool visible = false;
++  bool exact_browser = true;
++  bool ui_owned = false;
++};
++
+ PrometheusExtensionSurfaceClassification Deny(
+     PrometheusExtensionSurfaceDenial denial,
+     AgentErrorCode error_code) {
+@@ -24,6 +65,140 @@ PrometheusExtensionSurfaceClassification Accept(
+           .error_code = AgentErrorCode::kNone};
+ }
+ 
++AgentRouteResult SurfaceFailure(
++    const PrometheusExtensionSurfaceClassification& classification) {
++  if (classification.error_code == AgentErrorCode::kStaleTarget) {
++    return AgentRouteResult::Failure(
++        AgentErrorCode::kStaleTarget,
++        "The selected extension surface changed before it could be used",
++        "Reopen the extension surface and retry with its stable tab id");
++  }
++  return AgentRouteResult::Failure(
++      AgentErrorCode::kInvalidTarget,
++      "The selected extension surface is not a current visible browser view",
++      "Show the extension tab, popup, or side panel and retry");
++}
++
++PrometheusExtensionObservedContext ObservedContextForViewType(
++    extensions::mojom::ViewType view_type) {
++  switch (view_type) {
++    case extensions::mojom::ViewType::kTabContents:
++      return PrometheusExtensionObservedContext::kTabContents;
++    case extensions::mojom::ViewType::kExtensionPopup:
++      return PrometheusExtensionObservedContext::kPopup;
++    case extensions::mojom::ViewType::kExtensionSidePanel:
++      return PrometheusExtensionObservedContext::kSidePanel;
++    case extensions::mojom::ViewType::kExtensionGuest:
++      return PrometheusExtensionObservedContext::kOptionsGuest;
++    case extensions::mojom::ViewType::kExtensionBackgroundPage:
++      return PrometheusExtensionObservedContext::kBackgroundPage;
++    case extensions::mojom::ViewType::kBackgroundContents:
++      return PrometheusExtensionObservedContext::kBackgroundContents;
++    case extensions::mojom::ViewType::kOffscreenDocument:
++      return PrometheusExtensionObservedContext::kOffscreenDocument;
++    case extensions::mojom::ViewType::kDeveloperTools:
++      return PrometheusExtensionObservedContext::kDeveloperTools;
++    case extensions::mojom::ViewType::kInvalid:
++    case extensions::mojom::ViewType::kAppWindow:
++    case extensions::mojom::ViewType::kComponent:
++      return PrometheusExtensionObservedContext::kUnknown;
++  }
++}
++
++void AddShownSidePanelCandidate(
++    SidePanelRegistry* registry,
++    extensions::ExtensionSidePanelManager* manager,
++    SidePanelUI* side_panel_ui,
++    bool for_tab,
++    std::vector<BrowserOwnedCandidate>* candidates) {
++  if (!registry || !manager || !side_panel_ui) {
++    return;
++  }
++  std::optional<SidePanelEntry*> active = registry->GetActiveEntry();
++  if (!active.has_value() || !*active ||
++      (*active)->key().id() != SidePanelEntry::Id::kExtension ||
++      !(*active)->key().extension_id().has_value() ||
++      !side_panel_ui->IsSidePanelEntryShowing((*active)->key(), for_tab)) {
++    return;
++  }
++  const extensions::ExtensionId extension_id =
++      *(*active)->key().extension_id();
++  extensions::ExtensionSidePanelCoordinator* coordinator =
++      manager->GetExtensionCoordinator(extension_id);
++  if (!coordinator) {
++    return;
++  }
++  content::WebContents* contents = coordinator->GetHostWebContents();
++  if (!contents) {
++    return;
++  }
++  candidates->push_back(
++      {.web_contents = contents,
++       .ui_extension_id = extension_id,
++       .observed_context =
++           PrometheusExtensionObservedContext::kSidePanel,
++       .visible = true,
++       .exact_browser = true,
++       .ui_owned = true});
++}
++
++std::vector<BrowserOwnedCandidate> SelectCandidates(
++    Browser* browser,
++    tabs::TabInterface* anchor_tab,
++    std::optional<AgentExtensionSurfaceSelector> selector) {
++  std::vector<BrowserOwnedCandidate> candidates;
++  if (!selector.has_value()) {
++    content::WebContents* contents = anchor_tab->GetContents();
++    if (contents) {
++      candidates.push_back(
++          {.web_contents = contents,
++           .observed_context = ObservedContextForViewType(
++               extensions::GetViewType(contents->GetPrimaryMainFrame())),
++           .visible =
++               anchor_tab->IsActivated() &&
++               contents->GetVisibility() == content::Visibility::VISIBLE,
++           .exact_browser =
++               anchor_tab->GetBrowserWindowInterface() == browser,
++           .ui_owned = anchor_tab->IsActivated()});
++    }
++    return candidates;
++  }
++
++  if (!anchor_tab->IsActivated() ||
++      anchor_tab->GetBrowserWindowInterface() != browser) {
++    return candidates;
++  }
++
++  if (*selector == AgentExtensionSurfaceSelector::kPopup) {
++    for (ExtensionPopup* popup :
++         ExtensionPopup::GetVisiblePopupsForBrowser(browser)) {
++      extensions::ExtensionViewHost* host = popup->host();
++      if (!host || !host->host_contents()) {
++        continue;
++      }
++      candidates.push_back(
++          {.web_contents = host->host_contents(),
++           .ui_extension_id = host->extension_id(),
++           .observed_context = PrometheusExtensionObservedContext::kPopup,
++           .visible = true,
++           .exact_browser = true,
++           .ui_owned = true});
++    }
++    return candidates;
++  }
++
++  SidePanelUI* side_panel_ui = browser->GetFeatures().side_panel_ui();
++  AddShownSidePanelCandidate(
++      SidePanelRegistry::From(browser),
++      browser->GetFeatures().extension_side_panel_manager(), side_panel_ui,
++      /*for_tab=*/false, &candidates);
++  AddShownSidePanelCandidate(
++      SidePanelRegistry::From(anchor_tab),
++      anchor_tab->GetTabFeatures()->extension_side_panel_manager(),
++      side_panel_ui, /*for_tab=*/true, &candidates);
++  return candidates;
++}
++
+ }  // namespace
+ 
+ PrometheusExtensionSurfaceResolver::PrometheusExtensionSurfaceResolver(
+@@ -39,14 +214,145 @@ PrometheusExtensionSurfaceResolver::Resolve(
+     tabs::TabInterface* anchor_tab,
+     std::optional<AgentExtensionSurfaceSelector> selector,
+     std::optional<uint64_t> expected_policy_generation) const {
+-  static_cast<void>(browser);
+-  static_cast<void>(anchor_tab);
+-  static_cast<void>(selector);
+-  static_cast<void>(expected_policy_generation);
+-  return base::unexpected(AgentRouteResult::Failure(
+-      AgentErrorCode::kInvalidTarget,
+-      "The selected extension surface is not available",
+-      "Show the extension surface in the selected tab and retry"));
++  if (!browser || !anchor_tab || !policy_service_) {
++    return base::unexpected(AgentRouteResult::Failure(
++        AgentErrorCode::kInvalidTarget,
++        "The extension surface has no current browser owner",
++        "Choose a visible extension surface in the selected browser"));
++  }
++
++  Profile* profile = browser->profile();
++  PrometheusExtensionSurfaceEvidence evidence;
++  evidence.selector = selector;
++  evidence.expected_policy_generation = expected_policy_generation;
++  evidence.exact_browser =
++      anchor_tab->GetBrowserWindowInterface() == browser;
++  evidence.exact_browser_context =
++      anchor_tab->GetProfile() == profile;
++
++  std::vector<BrowserOwnedCandidate> candidates =
++      SelectCandidates(browser, anchor_tab, selector);
++  evidence.selector_match_count = candidates.size();
++  if (selector.has_value() && candidates.size() != 1u) {
++    const auto classification = ClassifyEvidenceForTesting(evidence);
++    return base::unexpected(SurfaceFailure(classification));
++  }
++  if (candidates.size() != 1u || !candidates.front().web_contents) {
++    return base::unexpected(AgentRouteResult::Failure(
++        AgentErrorCode::kInvalidTarget,
++        "The extension target does not identify one current browser view",
++        "Choose one visible extension tab, popup, or side panel"));
++  }
++
++  const BrowserOwnedCandidate& candidate = candidates.front();
++  content::WebContents* web_contents = candidate.web_contents;
++  content::RenderFrameHost* primary_frame =
++      web_contents->GetPrimaryMainFrame();
++  evidence.observed_context = candidate.observed_context;
++  evidence.exact_browser =
++      evidence.exact_browser && candidate.exact_browser;
++  evidence.exact_browser_context =
++      evidence.exact_browser_context &&
++      web_contents->GetBrowserContext() == profile;
++  evidence.visible =
++      candidate.visible &&
++      web_contents->GetVisibility() == content::Visibility::VISIBLE;
++  evidence.browser_ui_owned = candidate.ui_owned;
++  evidence.primary_frame_committed =
++      primary_frame && primary_frame->IsRenderFrameLive() &&
++      !primary_frame->GetLastCommittedOrigin().opaque();
++
++  std::string extension_id;
++  if (evidence.primary_frame_committed) {
++    const url::Origin& committed_origin =
++        primary_frame->GetLastCommittedOrigin();
++    evidence.extension_origin =
++        committed_origin.scheme() == extensions::kExtensionScheme;
++    extension_id = committed_origin.host();
++    evidence.origin_matches_browser_identity =
++        evidence.extension_origin &&
++        crx_file::id_util::IdIsValid(extension_id) &&
++        (candidate.ui_extension_id.empty() ||
++         candidate.ui_extension_id == extension_id);
++  } else {
++    evidence.extension_origin = false;
++    evidence.origin_matches_browser_identity = false;
++  }
++
++  extensions::ExtensionSystem* extension_system =
++      extensions::ExtensionSystem::Get(profile);
++  evidence.extension_system_ready =
++      extension_system && extension_system->is_ready();
++  extensions::ExtensionRegistry* registry =
++      extensions::ExtensionRegistry::Get(profile);
++  const extensions::Extension* installed_extension =
++      registry && !extension_id.empty()
++          ? registry->GetInstalledExtension(extension_id)
++          : nullptr;
++  const extensions::Extension* enabled_extension =
++      registry && !extension_id.empty()
++          ? registry->enabled_extensions().GetByID(extension_id)
++          : nullptr;
++  evidence.lifecycle_alive = installed_extension != nullptr;
++  evidence.extension_enabled =
++      enabled_extension &&
++      registry->ready_extensions().GetByID(extension_id);
++  evidence.extension_terminated =
++      registry && registry->terminated_extensions().GetByID(extension_id);
++
++  if (primary_frame && selector.has_value()) {
++    extensions::ExtensionHostRegistry* host_registry =
++        extensions::ExtensionHostRegistry::Get(profile);
++    extensions::ExtensionHost* host =
++        host_registry
++            ? host_registry->GetExtensionHostForPrimaryMainFrame(primary_frame)
++            : nullptr;
++    evidence.browser_ui_owned =
++        evidence.browser_ui_owned && host &&
++        host->host_contents() == web_contents &&
++        host->browser_context() == profile &&
++        host->extension_id() == extension_id;
++  }
++
++  if (primary_frame &&
++      evidence.observed_context ==
++          PrometheusExtensionObservedContext::kOptionsGuest) {
++    guest_view::GuestViewBase* guest =
++        guest_view::GuestViewBase::FromRenderFrameHost(primary_frame);
++    evidence.options_guest_primary_frame =
++        primary_frame == web_contents->GetPrimaryMainFrame();
++    evidence.options_guest_ambiguous =
++        !guest ||
++        guest->GetViewType() != extensions::ExtensionOptionsGuest::Type;
++    evidence.browser_ui_owned =
++        evidence.browser_ui_owned && guest && guest->attached() &&
++        guest->owner_web_contents() == anchor_tab->GetContents();
++  }
++
++  if (enabled_extension &&
++      evidence.observed_context ==
++          PrometheusExtensionObservedContext::kTabContents) {
++    evidence.options_page =
++        extensions::OptionsPageInfo::GetOptionsPage(enabled_extension) ==
++        web_contents->GetLastCommittedURL();
++  }
++
++  const ExtensionPolicySnapshot snapshot = policy_service_->GetSnapshot();
++  evidence.policy_generation = snapshot.generation;
++  const auto classification = ClassifyEvidenceForTesting(evidence);
++  if (!classification.accepted()) {
++    return base::unexpected(SurfaceFailure(classification));
++  }
++
++  PrometheusResolvedExtensionSurface resolved;
++  resolved.extension_id = std::move(extension_id);
++  resolved.kind = *classification.kind;
++  resolved.policy_generation = snapshot.generation;
++  resolved.private_mode = profile->IsOffTheRecord();
++  resolved.anchor_tab = anchor_tab->GetWeakPtr();
++  resolved.web_contents = web_contents->GetWeakPtr();
++  resolved.primary_frame_id = primary_frame->GetGlobalId();
++  return resolved;
+ }
+ 
+ // static
+@@ -146,7 +452,7 @@ PrometheusExtensionSurfaceResolver::ClassifyEvidenceForTesting(
+ }
+ 
+ bool ExtensionSurfaceResolutionContractImplementedForTesting() {
+-  return false;
++  return true;
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/ui/views/extensions/extension_popup.cc b/chrome/browser/ui/views/extensions/extension_popup.cc
+index 03f23d539a..c6f24a8ffb 100644
+--- a/chrome/browser/ui/views/extensions/extension_popup.cc
++++ b/chrome/browser/ui/views/extensions/extension_popup.cc
+@@ -5,8 +5,10 @@
+ #include "chrome/browser/ui/views/extensions/extension_popup.h"
+ 
+ #include "base/check.h"
++#include "base/containers/flat_set.h"
+ #include "base/functional/bind.h"
+ #include "base/memory/raw_ptr.h"
++#include "base/no_destructor.h"
+ #include "chrome/browser/devtools/devtools_window.h"
+ #include "chrome/browser/extensions/extension_view_host.h"
+ #include "chrome/browser/ui/browser.h"
+@@ -48,6 +50,11 @@ constexpr gfx::Size ExtensionPopup::kMaxSize;
+ // The most recently constructed popup; used for testing purposes.
+ ExtensionPopup* g_last_popup_for_testing = nullptr;
+ 
++base::flat_set<ExtensionPopup*>& LiveExtensionPopups() {
++  static base::NoDestructor<base::flat_set<ExtensionPopup*>> popups;
++  return *popups;
++}
++
+ // A helper class to scope the observation of DevToolsAgentHosts. We can't just
+ // use base::ScopedObservation here because that requires a specific source
+ // object, where as DevToolsAgentHostObservers are added to a singleton list.
+@@ -79,6 +86,19 @@ ExtensionPopup* ExtensionPopup::last_popup_for_testing() {
+   return g_last_popup_for_testing;
+ }
+ 
++// static
++std::vector<ExtensionPopup*> ExtensionPopup::GetVisiblePopupsForBrowser(
++    BrowserWindowInterface* browser) {
++  std::vector<ExtensionPopup*> visible;
++  for (ExtensionPopup* popup : LiveExtensionPopups()) {
++    if (popup->browser_ == browser && popup->host_ && popup->GetWidget() &&
++        popup->GetWidget()->IsVisible()) {
++      visible.push_back(popup);
++    }
++  }
++  return visible;
++}
++
+ // static
+ void ExtensionPopup::ShowPopup(
+     BrowserWindowInterface* browser,
+@@ -105,6 +125,8 @@ void ExtensionPopup::ShowPopup(
+ }
+ 
+ ExtensionPopup::~ExtensionPopup() {
++  LiveExtensionPopups().erase(this);
++
+   // The ExtensionPopup may close before it was ever shown. If so, indicate such
+   // through the callback.
+   if (shown_callback_) {
+@@ -141,6 +163,7 @@ void ExtensionPopup::AddedToWidget() {
+ 
+ void ExtensionPopup::OnWidgetDestroying(views::Widget* widget) {
+   BubbleDialogDelegateView::OnWidgetDestroying(widget);
++  LiveExtensionPopups().erase(this);
+   scoped_devtools_observation_.reset();
+   anchor_widget_observation_.Reset();
+   extension_registry_observation_.Reset();
+@@ -269,6 +292,7 @@ ExtensionPopup::ExtensionPopup(
+       show_action_(show_action),
+       shown_callback_(std::move(callback)),
+       deferred_close_weak_ptr_factory_(this) {
++  LiveExtensionPopups().insert(this);
+   g_last_popup_for_testing = this;
+   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
+   set_use_round_corners(false);
+diff --git a/chrome/browser/ui/views/extensions/extension_popup.h b/chrome/browser/ui/views/extensions/extension_popup.h
+index 3764e3e426..792787d047 100644
+--- a/chrome/browser/ui/views/extensions/extension_popup.h
++++ b/chrome/browser/ui/views/extensions/extension_popup.h
+@@ -5,6 +5,8 @@
+ #ifndef CHROME_BROWSER_UI_VIEWS_EXTENSIONS_EXTENSION_POPUP_H_
+ #define CHROME_BROWSER_UI_VIEWS_EXTENSIONS_EXTENSION_POPUP_H_
+ 
++#include <vector>
++
+ #include "base/functional/callback.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/scoped_observation.h"
+@@ -73,6 +75,10 @@ class ExtensionPopup : public views::BubbleDialogDelegateView,
+ 
+   extensions::ExtensionViewHost* host() const { return host_.get(); }
+ 
++  // Returns every currently shown popup owned by `browser`.
++  static std::vector<ExtensionPopup*> GetVisiblePopupsForBrowser(
++      BrowserWindowInterface* browser);
++
+   // views::BubbleDialogDelegateView:
+   gfx::Size CalculatePreferredSize(
+       const views::SizeBounds& available_size) const override;
+diff --git a/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_coordinator.cc b/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_coordinator.cc
+index 54dde3aa59..fde0507456 100644
+--- a/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_coordinator.cc
++++ b/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_coordinator.cc
+@@ -117,10 +117,15 @@ SidePanelType ExtensionSidePanelCoordinator::GetPanelType() {
+   return SidePanelType::kContent;
+ }
+ 
++content::WebContents*
++ExtensionSidePanelCoordinator::GetHostWebContents() const {
++  return host_ ? host_->host_contents() : nullptr;
++}
++
+ content::WebContents*
+ ExtensionSidePanelCoordinator::GetHostWebContentsForTesting() const {
+   DCHECK(host_);
+-  return host_->host_contents();
++  return GetHostWebContents();
+ }
+ 
+ SidePanelEntry::Key ExtensionSidePanelCoordinator::GetEntryKey() const {
+diff --git a/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_coordinator.h b/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_coordinator.h
+index d4a952e56a..fac2977f3c 100644
+--- a/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_coordinator.h
++++ b/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_coordinator.h
+@@ -60,6 +60,9 @@ class ExtensionSidePanelCoordinator : public ExtensionViewViews::Observer,
+ 
+   static SidePanelType GetPanelType();
+ 
++  // Returns the WebContents currently hosted for a shown extension entry.
++  content::WebContents* GetHostWebContents() const;
++
+   // Returns the WebContents managed by `host_`.
+   content::WebContents* GetHostWebContentsForTesting() const;
+ 
+diff --git a/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_manager.cc b/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_manager.cc
+index eb57e9daa3..45befb5bf5 100644
+--- a/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_manager.cc
++++ b/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_manager.cc
+@@ -57,12 +57,18 @@ ExtensionSidePanelManager::ExtensionSidePanelManager(
+ ExtensionSidePanelManager::~ExtensionSidePanelManager() = default;
+ 
+ ExtensionSidePanelCoordinator*
+-ExtensionSidePanelManager::GetExtensionCoordinatorForTesting(
++ExtensionSidePanelManager::GetExtensionCoordinator(
+     const ExtensionId& extension_id) {
+   auto it = coordinators_.find(extension_id);
+   return (it == coordinators_.end()) ? nullptr : it->second.get();
+ }
+ 
++ExtensionSidePanelCoordinator*
++ExtensionSidePanelManager::GetExtensionCoordinatorForTesting(
++    const ExtensionId& extension_id) {
++  return GetExtensionCoordinator(extension_id);
++}
++
+ void ExtensionSidePanelManager::RegisterExtensionEntries() {
+   ExtensionRegistry* extension_registry = ExtensionRegistry::Get(profile_);
+   extension_registry_observation_.Observe(extension_registry);
+diff --git a/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_manager.h b/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_manager.h
+index a4cf0b643f..7acf979ac0 100644
+--- a/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_manager.h
++++ b/chrome/browser/ui/views/side_panel/extensions/extension_side_panel_manager.h
+@@ -47,6 +47,8 @@ class ExtensionSidePanelManager : public ExtensionRegistryObserver {
+       delete;
+   ~ExtensionSidePanelManager() override;
+ 
++  ExtensionSidePanelCoordinator* GetExtensionCoordinator(
++      const ExtensionId& extension_id);
+   ExtensionSidePanelCoordinator* GetExtensionCoordinatorForTesting(
+       const ExtensionId& extension_id);
+ 
+-- 
+2.50.1 (Apple Git-155)
+
