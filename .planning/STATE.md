@@ -5,9 +5,9 @@ milestone_name: Chromium Engine Migration
 current_phase: 21
 current_phase_name: Supervision, Pairing, and Remote Control
 current_plan: 26
-status: complete
-stopped_at: Phase 21 review blockers remediated and reverified
-last_updated: "2026-07-26T07:13:07.000Z"
+status: completed
+stopped_at: Phase 22 UI-SPEC approved
+last_updated: "2026-07-28T20:15:08.789Z"
 last_activity: 2026-07-26
 progress:
   total_phases: 14
@@ -448,9 +448,9 @@ work is 143 of 144 existing plans summarized (99%).
 
 ## Session
 
-**Last Date:** 2026-07-26T07:13:07.000Z
-**Stopped At:** Phase 21 review blockers remediated and reverified
-**Resume File:** None
+**Last Date:** 2026-07-28T20:15:08.784Z
+**Stopped At:** Phase 22 UI-SPEC approved
+**Resume File:** .planning/phases/22-chrome-extension-ecosystem-and-policy/22-UI-SPEC.md
 
 ## Operator Next Step
 
