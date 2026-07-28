@@ -112,11 +112,12 @@ but must preserve every row and bind each final task to an automated command.
 | 22-01-02 | 01 | 1 | EXT-01, EXT-03 | T-22-01, T-22-08 | Registry removal/reload/disable transitions revoke or block effective access without stale pointers | unit | `out/Default/prometheus_unittests --gtest_filter='PrometheusExtensionPolicy*Registry*:*Lifecycle*'` | ❌ W0 | ⬜ pending |
 | 22-02-01 | 02 | 2 | EXT-04 | T-22-01, T-22-03, T-22-04, T-22-08 | Exact frame/registry/profile/visibility resolver accepts only user-visible contexts | unit/browser | `out/Default/browser_tests --gtest_filter='PrometheusExtensionSurface*' --test-launcher-jobs=1 --test-launcher-retry-limit=0` | ❌ W0 | ⬜ pending |
 | 22-02-02 | 02 | 2 | EXT-03, EXT-04 | T-22-02, T-22-05, T-22-09 | Read/Interact matrix is enforced; scripts/hidden contexts/reverse authority are denied | unit/browser/static | `.planning/chromium/verify-phase-22-extension-policy.sh --focused` | ❌ W0 | ⬜ pending |
-| 22-03-01 | 03 | 2 | EXT-02, EXT-03 | T-22-01, T-22-04, T-22-06 | Local policy rows and native confirmation use safe DTOs, fresh generations, safe default focus, and truthful Private state | browser/WebUI | `out/Default/browser_tests --gtest_filter='PrometheusWebUI*ExtensionPolicy*:*PrometheusExtensionConfirmation*' --test-launcher-jobs=1 --test-launcher-retry-limit=0` | ❌ W0 | ⬜ pending |
-| 22-03-02 | 03 | 2 | EXT-01, EXT-06 | T-22-06, T-22-07, T-22-10 | Live health retains ten bounded external keys and local UI/docs show exact recovery without inventory | unit/browser/Node | `.planning/chromium/verify-phase-22-mcp.sh --focused && .planning/chromium/verify-phase-22-webui.sh --focused` | ❌ W0 | ⬜ pending |
-| 22-04-01 | 04 | 3 | EXT-05 | T-22-02, T-22-03, T-22-05, T-22-09 | Five owned MV3 categories prove positive behavior and category-specific isolation | browser fixtures | `.planning/chromium/verify-phase-22-extension-fixtures.sh --focused` | ❌ W0 | ⬜ pending |
-| 22-04-02 | 04 | 3 | EXT-02, EXT-05, EXT-06 | T-22-07, T-22-10 | Lifecycle/MV2 truth and exact evidence matrix never overclaim compatibility | browser/docs | `.planning/chromium/verify-phase-22-extension-fixtures.sh` | ❌ W0 | ⬜ pending |
-| 22-05-01 | 05 | 4 | EXT-01..EXT-06 | T-22-01..T-22-10 | Built app and closeout prove native lifecycle, policy, isolation, fixtures, truthful Store state, regressions, and patch preservation | built-app/full | `bash .planning/chromium/verify-phase-22.sh` | ❌ W0 | ⬜ pending |
+| 22-03-01 | 03 | 3 | EXT-02, EXT-03 | T-22-01, T-22-04, T-22-06 | Local policy rows and native confirmation use safe DTOs, fresh generations, safe default focus, and truthful Private state | browser/WebUI | `out/Default/browser_tests --gtest_filter='PrometheusWebUI*ExtensionPolicy*:*PrometheusExtensionConfirmation*' --test-launcher-jobs=1 --test-launcher-retry-limit=0` | ❌ W0 | ⬜ pending |
+| 22-03-02 | 03 | 3 | EXT-01, EXT-06 | T-22-06, T-22-07, T-22-10 | Live health retains ten bounded external keys and local UI/docs show exact recovery without inventory | unit/browser/Node | `.planning/chromium/verify-phase-22-mcp.sh --focused && .planning/chromium/verify-phase-22-webui.sh --focused` | ❌ W0 | ⬜ pending |
+| 22-04-01 | 04 | 4 | EXT-05 | T-22-02, T-22-03, T-22-05, T-22-09 | Five owned MV3 categories prove positive behavior and category-specific isolation | browser fixtures | `.planning/chromium/verify-phase-22-extension-fixtures.sh --focused` | ❌ W0 | ⬜ pending |
+| 22-04-02 | 04 | 4 | EXT-02, EXT-05, EXT-06 | T-22-07, T-22-10 | Lifecycle/MV2 truth and exact evidence matrix never overclaim compatibility | browser/docs | `.planning/chromium/verify-phase-22-extension-fixtures.sh` | ❌ W0 | ⬜ pending |
+| 22-05-00 | 05 | 5 | EXT-02 | T-22-01, T-22-02, T-22-06, T-22-07, T-22-08, T-22-10 | Non-official disposable-profile smoke uses the real manager, verified caller, one-shot exact chooser, and ordinary installer with mismatch/replay/teardown denial | unit/browser/static | `.planning/chromium/verify-phase-22-extension-smoke.sh --focused --expect-failure` | ❌ W0 | ⬜ pending |
+| 22-05-01 | 05 | 5 | EXT-01..EXT-06 | T-22-01..T-22-10 | Built app and closeout prove native lifecycle, policy, isolation, fixtures, truthful Store state, regressions, and patch preservation | built-app/full | `bash .planning/chromium/verify-phase-22.sh` | ❌ W0 | ⬜ pending |
 
 ---
 
@@ -139,6 +140,15 @@ failure, then retain the same test as GREEN evidence.
   ten keys, no inventory/content/authority.
 - [ ] five owned MV3 fixture directories — password-manager-like, ad blocking,
   productivity content script, side-panel/tooling, and developer workflow.
+- [ ] one separately classified ephemeral MV2 observation fixture and exact
+  browser test — run under pinned policy with no MV2 enabler or verification
+  bypass; emit machine-readable `accepted|rejected` evidence and never count as
+  a sixth MV3 compatibility row.
+- [ ] non-official extension smoke bootstrap/controller fixtures — validate the
+  disposable-profile 0600 launch boundary, real `chrome://extensions` DOM
+  sequence, one-shot exact directory chooser callback, ordinary
+  `UnpackedInstaller` path, Prometheus.app identity, mismatch/replay denial, and
+  complete teardown without direct registry mutation.
 - [ ] `.planning/chromium/verify-phase-22*.sh` — focused and final list guards,
   direct compile/link, built-app, preservation, patch replay, and claim-evidence
   gates.
