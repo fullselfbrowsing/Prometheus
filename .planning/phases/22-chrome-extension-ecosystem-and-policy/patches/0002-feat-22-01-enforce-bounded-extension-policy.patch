@@ -1,0 +1,1164 @@
+From 7ff294f8112fb46e72a493e72cf225ba4bff6186 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 28 Jul 2026 17:33:04 -0500
+Subject: [PATCH 2/2] feat(22-01): enforce bounded extension policy
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   2 +
+ .../prometheus_extension_policy_prefs.cc      | 103 +++++-
+ .../prometheus_extension_policy_service.cc    | 318 ++++++++++++++++--
+ .../prometheus_extension_policy_service.h     |  36 +-
+ ...theus_extension_policy_service_unittest.cc | 222 ++++++++++--
+ .../prometheus_extension_policy_types.cc      | 137 +++++++-
+ .../prometheus_extension_policy_types.h       |   4 +-
+ 7 files changed, 733 insertions(+), 89 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index c7b92e068b..9a30fbcd0a 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -286,6 +286,7 @@ source_set("prometheus_extension_policy_prefs") {
+   deps = [
+     ":prometheus_extension_policy_types",
+     "//base",
++    "//components/crx_file",
+     "//components/pref_registry",
+     "//components/prefs",
+   ]
+@@ -309,6 +310,7 @@ source_set("prometheus_extension_policy_service") {
+     "//components/prefs",
+     "//content/public/browser",
+     "//extensions/browser",
++    "//extensions/common",
+   ]
+ }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_extension_policy_prefs.cc b/chrome/browser/prometheus/prometheus_extension_policy_prefs.cc
+index 5c0be0269d..8233520144 100644
+--- a/chrome/browser/prometheus/prometheus_extension_policy_prefs.cc
++++ b/chrome/browser/prometheus/prometheus_extension_policy_prefs.cc
+@@ -4,7 +4,11 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_extension_policy_prefs.h"
+ 
++#include <iterator>
++#include <utility>
++
+ #include "base/values.h"
++#include "components/crx_file/id_util.h"
+ #include "components/pref_registry/pref_registry_syncable.h"
+ #include "components/prefs/pref_service.h"
+ 
+@@ -12,13 +16,29 @@ namespace prometheus {
+ 
+ namespace {
+ 
++constexpr char kSchemaVersionKey[] = "schema_version";
++constexpr char kGrantsKey[] = "grants";
++constexpr char kRegularKey[] = "regular";
++constexpr char kPrivateKey[] = "private";
++
+ base::DictValue MakeDefaultExtensionPolicyData() {
+   base::DictValue root;
+-  root.Set("schema_version", kPrometheusExtensionPolicySchemaVersion);
+-  root.Set("grants", base::DictValue());
++  root.Set(kSchemaVersionKey, kPrometheusExtensionPolicySchemaVersion);
++  root.Set(kGrantsKey, base::DictValue());
+   return root;
+ }
+ 
++bool HasOnlyChoiceKeys(const base::DictValue& value) {
++  return value.size() == 2u && value.Find(kRegularKey) &&
++         value.Find(kPrivateKey);
++}
++
++void RetainLexicographicallyFirstChoices(ExtensionPolicyChoices* choices) {
++  while (choices->size() > kMaxExtensionPolicyEntries) {
++    choices->erase(std::prev(choices->end()));
++  }
++}
++
+ }  // namespace
+ 
+ void RegisterPrometheusExtensionPolicyProfilePrefs(
+@@ -29,16 +49,89 @@ void RegisterPrometheusExtensionPolicyProfilePrefs(
+ 
+ ExtensionPolicyChoices ReadPrometheusExtensionPolicyChoices(
+     const PrefService& prefs) {
+-  return {};
++  const base::DictValue& root =
++      prefs.GetDict(kPrometheusExtensionPolicyProfileData);
++  if (root.size() != 2u || root.FindInt(kSchemaVersionKey) !=
++                               kPrometheusExtensionPolicySchemaVersion) {
++    return {};
++  }
++
++  const base::DictValue* grants = root.FindDict(kGrantsKey);
++  if (!grants) {
++    return {};
++  }
++
++  ExtensionPolicyChoices choices;
++  for (const auto [extension_id, stored_value] : *grants) {
++    if (!stored_value.is_dict()) {
++      return {};
++    }
++    const base::DictValue& stored_choice = stored_value.GetDict();
++    if (!HasOnlyChoiceKeys(stored_choice)) {
++      return {};
++    }
++    const std::string* regular_value = stored_choice.FindString(kRegularKey);
++    const std::string* private_value = stored_choice.FindString(kPrivateKey);
++    if (!regular_value || !private_value) {
++      return {};
++    }
++    const std::optional<ExtensionAgentGrant> regular =
++        ExtensionAgentGrantFromString(*regular_value);
++    const std::optional<ExtensionAgentGrant> private_mode =
++        ExtensionAgentGrantFromString(*private_value);
++    if (!regular || !private_mode) {
++      return {};
++    }
++    if (!crx_file::id_util::IdIsValid(extension_id)) {
++      continue;
++    }
++
++    choices.emplace(extension_id, ExtensionPolicyChoice{
++                                      *regular, ClampPrivateExtensionGrant(
++                                                    *regular, *private_mode)});
++    RetainLexicographicallyFirstChoices(&choices);
++  }
++  return choices;
+ }
+ 
+ void WritePrometheusExtensionPolicyChoices(
+     PrefService& prefs,
+-    const ExtensionPolicyChoices& choices) {}
++    const ExtensionPolicyChoices& choices) {
++  base::DictValue grants;
++  size_t stored_count = 0;
++  for (const auto& [extension_id, choice] : choices) {
++    if (stored_count == kMaxExtensionPolicyEntries) {
++      break;
++    }
++    if (!crx_file::id_util::IdIsValid(extension_id)) {
++      continue;
++    }
++    const ExtensionAgentGrant private_mode =
++        ClampPrivateExtensionGrant(choice.regular, choice.private_mode);
++    grants.Set(
++        extension_id,
++        base::DictValue()
++            .Set(kRegularKey, ExtensionAgentGrantToString(choice.regular))
++            .Set(kPrivateKey, ExtensionAgentGrantToString(private_mode)));
++    ++stored_count;
++  }
++
++  base::DictValue root;
++  root.Set(kSchemaVersionKey, kPrometheusExtensionPolicySchemaVersion);
++  root.Set(kGrantsKey, std::move(grants));
++  prefs.SetDict(kPrometheusExtensionPolicyProfileData, std::move(root));
++}
+ 
+ bool RemovePrometheusExtensionPolicyChoice(PrefService& prefs,
+                                            std::string_view extension_id) {
+-  return false;
++  ExtensionPolicyChoices choices = ReadPrometheusExtensionPolicyChoices(prefs);
++  const auto choice_it = choices.find(extension_id);
++  if (choice_it == choices.end()) {
++    return false;
++  }
++  choices.erase(choice_it);
++  WritePrometheusExtensionPolicyChoices(prefs, choices);
++  return true;
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_policy_service.cc b/chrome/browser/prometheus/prometheus_extension_policy_service.cc
+index 43677218b8..8930d902ba 100644
+--- a/chrome/browser/prometheus/prometheus_extension_policy_service.cc
++++ b/chrome/browser/prometheus/prometheus_extension_policy_service.cc
+@@ -4,40 +4,194 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_extension_policy_service.h"
+ 
++#include <algorithm>
++#include <utility>
++
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_prefs.h"
++#include "components/prefs/pref_service.h"
++#include "content/public/browser/browser_context.h"
++#include "extensions/browser/extension_registry.h"
++#include "extensions/browser/extension_system.h"
++#include "extensions/browser/extension_util.h"
++#include "extensions/common/extension.h"
++#include "extensions/common/manifest.h"
++
+ namespace prometheus {
+ 
++namespace {
++
++ExtensionPolicySource PolicySourceForExtension(
++    const extensions::Extension& extension) {
++  if (extensions::Manifest::IsComponentLocation(extension.location())) {
++    return ExtensionPolicySource::kComponent;
++  }
++  if (extensions::Manifest::IsPolicyLocation(extension.location())) {
++    return ExtensionPolicySource::kPolicy;
++  }
++  if (extensions::Manifest::IsUnpackedLocation(extension.location())) {
++    return ExtensionPolicySource::kUnpacked;
++  }
++  if (extension.location() == extensions::mojom::ManifestLocation::kInternal) {
++    return ExtensionPolicySource::kWebStore;
++  }
++  return ExtensionPolicySource::kOther;
++}
++
++bool InventoryOrder(const ExtensionPolicyInventoryEntry& left,
++                    const ExtensionPolicyInventoryEntry& right) {
++  return left.extension_id < right.extension_id;
++}
++
++}  // namespace
++
+ PrometheusExtensionPolicyService::PrometheusExtensionPolicyService(
+     content::BrowserContext* regular_context,
+     PrefService* prefs,
+     extensions::ExtensionRegistry* registry)
+-    : regular_context_(regular_context), prefs_(prefs), registry_(registry) {}
++    : regular_context_(regular_context), prefs_(prefs), registry_(registry) {
++  if (registry_) {
++    registry_->AddObserver(this);
++  }
++}
+ 
+-PrometheusExtensionPolicyService::~PrometheusExtensionPolicyService() = default;
++PrometheusExtensionPolicyService::~PrometheusExtensionPolicyService() {
++  Shutdown();
++}
+ 
+ ExtensionPolicySnapshot PrometheusExtensionPolicyService::GetSnapshot() const {
+   ExtensionPolicySnapshot snapshot;
+   snapshot.generation = generation_;
++  if (shutdown_ || !prefs_) {
++    return snapshot;
++  }
++
++  const bool system_ready = IsSystemReady();
++  const ExtensionPolicyChoices choices =
++      ReadPrometheusExtensionPolicyChoices(*prefs_);
++  std::vector<ExtensionPolicyInventoryEntry> inventory = BuildInventory();
++  if (inventory.size() > kMaxExtensionPolicySnapshotRows) {
++    inventory.resize(kMaxExtensionPolicySnapshotRows);
++  }
++
++  snapshot.rows.reserve(inventory.size());
++  for (const ExtensionPolicyInventoryEntry& entry : inventory) {
++    const auto choice_it = choices.find(entry.extension_id);
++    const ExtensionPolicyChoice choice = choice_it == choices.end()
++                                             ? ExtensionPolicyChoice()
++                                             : choice_it->second;
++    const bool active = system_ready && entry.enabled && entry.ready &&
++                        entry.browser_context == regular_context_;
++
++    ExtensionPolicyRow row;
++    row.name = SanitizeExtensionPolicyName(entry.name);
++    row.id_suffix = ExtensionPolicyIdSuffix(entry.extension_id);
++    row.source = entry.source;
++    row.enabled = entry.enabled;
++    row.manifest_version = std::max(0, entry.manifest_version);
++    row.native_private_eligible = entry.native_private_eligible;
++    row.requested_regular = choice.regular;
++    row.requested_private =
++        ClampPrivateExtensionGrant(choice.regular, choice.private_mode);
++    row.effective_regular =
++        active ? choice.regular : ExtensionAgentGrant::kBlocked;
++    row.effective_private =
++        active && entry.native_private_eligible
++            ? ClampPrivateExtensionGrant(choice.regular, choice.private_mode)
++            : ExtensionAgentGrant::kBlocked;
++    row.ordinal = snapshot.rows.size();
++    row.generation = snapshot.generation;
++    snapshot.rows.push_back(std::move(row));
++  }
+   return snapshot;
+ }
+ 
+ ExtensionPolicyHealth PrometheusExtensionPolicyService::GetHealth() const {
+-  return {};
++  if (shutdown_ || !prefs_ || (!registry_ && !inventory_for_testing_)) {
++    return {};
++  }
++  if (!IsSystemReady()) {
++    return ExtensionPolicyHealth{
++        ExtensionPolicyHealthStatus::kDegraded,
++        "extension_system_not_ready",
++        "Wait for extension startup and try again.",
++    };
++  }
++  return ExtensionPolicyHealth{
++      ExtensionPolicyHealthStatus::kReady,
++      "extension_policy_ready",
++      "No recovery action is required.",
++  };
+ }
+ 
+ ExtensionAgentGrant PrometheusExtensionPolicyService::GetEffectiveGrant(
+     std::string_view extension_id,
+     content::BrowserContext* current_context,
+     bool private_mode) const {
+-  return ExtensionAgentGrant::kBlocked;
++  if (shutdown_ || !prefs_ || !IsSystemReady() ||
++      !IsAllowedContext(current_context, private_mode)) {
++    return ExtensionAgentGrant::kBlocked;
++  }
++
++  const std::vector<ExtensionPolicyInventoryEntry> inventory = BuildInventory();
++  const auto entry_it = std::ranges::find(
++      inventory, extension_id, &ExtensionPolicyInventoryEntry::extension_id);
++  if (entry_it == inventory.end() || !entry_it->enabled || !entry_it->ready ||
++      entry_it->browser_context != regular_context_) {
++    return ExtensionAgentGrant::kBlocked;
++  }
++
++  const ExtensionPolicyChoices choices =
++      ReadPrometheusExtensionPolicyChoices(*prefs_);
++  const auto choice_it = choices.find(extension_id);
++  if (choice_it == choices.end()) {
++    return ExtensionAgentGrant::kBlocked;
++  }
++  if (!private_mode) {
++    return choice_it->second.regular;
++  }
++  if (!entry_it->native_private_eligible) {
++    return ExtensionAgentGrant::kBlocked;
++  }
++  return ClampPrivateExtensionGrant(choice_it->second.regular,
++                                    choice_it->second.private_mode);
+ }
+ 
+ ExtensionPolicyMutationResult
+-PrometheusExtensionPolicyService::SetRequestedGrant(
+-    size_t ordinal,
+-    uint64_t generation,
+-    bool private_mode,
+-    ExtensionAgentGrant grant) {
+-  return ExtensionPolicyMutationResult::kUnavailable;
++PrometheusExtensionPolicyService::SetRequestedGrant(size_t ordinal,
++                                                    uint64_t generation,
++                                                    bool private_mode,
++                                                    ExtensionAgentGrant grant) {
++  if (shutdown_ || !prefs_) {
++    return ExtensionPolicyMutationResult::kUnavailable;
++  }
++  if (generation != generation_) {
++    return ExtensionPolicyMutationResult::kStaleGeneration;
++  }
++
++  const std::vector<ExtensionPolicyInventoryEntry> inventory = BuildInventory();
++  if (ordinal >= inventory.size() ||
++      ordinal >= kMaxExtensionPolicySnapshotRows) {
++    return ExtensionPolicyMutationResult::kMissingExtension;
++  }
++
++  ExtensionPolicyChoices choices =
++      ReadPrometheusExtensionPolicyChoices(*prefs_);
++  ExtensionPolicyChoice& choice = choices[inventory[ordinal].extension_id];
++  if (private_mode) {
++    if (!inventory[ordinal].native_private_eligible ||
++        ClampPrivateExtensionGrant(choice.regular, grant) != grant) {
++      return ExtensionPolicyMutationResult::kInvalidPrivateGrant;
++    }
++    choice.private_mode = grant;
++  } else {
++    choice.regular = grant;
++    choice.private_mode =
++        ClampPrivateExtensionGrant(choice.regular, choice.private_mode);
++  }
++  WritePrometheusExtensionPolicyChoices(*prefs_, choices);
++  ReconcileAndNotify();
++  return ExtensionPolicyMutationResult::kApplied;
+ }
+ 
+ void PrometheusExtensionPolicyService::AddObserver(
+@@ -52,6 +206,10 @@ void PrometheusExtensionPolicyService::RemoveObserver(
+ 
+ void PrometheusExtensionPolicyService::SetInventoryForTesting(
+     std::vector<ExtensionPolicyInventoryEntry> inventory) {
++  std::ranges::sort(inventory, InventoryOrder);
++  if (inventory.size() > kMaxExtensionPolicySnapshotRows) {
++    inventory.resize(kMaxExtensionPolicySnapshotRows);
++  }
+   inventory_for_testing_ = std::move(inventory);
+ }
+ 
+@@ -59,41 +217,163 @@ void PrometheusExtensionPolicyService::SetSystemReadyForTesting(bool ready) {
+   system_ready_for_testing_ = ready;
+ }
+ 
+-void PrometheusExtensionPolicyService::ReconcileForTesting() {}
++void PrometheusExtensionPolicyService::ReconcileForTesting() {
++  ReconcileAndNotify();
++}
+ 
+-size_t
+-PrometheusExtensionPolicyService::registry_lookup_count_for_testing() const {
++size_t PrometheusExtensionPolicyService::registry_lookup_count_for_testing()
++    const {
+   return registry_lookup_count_for_testing_;
+ }
+ 
+ void PrometheusExtensionPolicyService::Shutdown() {
++  if (shutdown_) {
++    return;
++  }
+   shutdown_ = true;
++  if (registry_) {
++    registry_->RemoveObserver(this);
++    registry_ = nullptr;
++  }
++  AdvanceGeneration();
+ }
+ 
+ void PrometheusExtensionPolicyService::OnExtensionLoaded(
+     content::BrowserContext* browser_context,
+-    const extensions::Extension* extension) {}
++    const extensions::Extension* extension) {
++  ReconcileAndNotify();
++}
+ 
+ void PrometheusExtensionPolicyService::OnExtensionReady(
+     content::BrowserContext* browser_context,
+-    const extensions::Extension* extension) {}
++    const extensions::Extension* extension) {
++  ReconcileAndNotify();
++}
+ 
+ void PrometheusExtensionPolicyService::OnExtensionUnloaded(
+     content::BrowserContext* browser_context,
+     const extensions::Extension* extension,
+-    extensions::UnloadedExtensionReason reason) {}
++    extensions::UnloadedExtensionReason reason) {
++  ReconcileAndNotify();
++}
+ 
+ void PrometheusExtensionPolicyService::OnExtensionInstalled(
+     content::BrowserContext* browser_context,
+     const extensions::Extension* extension,
+-    bool is_update) {}
++    bool is_update) {
++  ReconcileAndNotify();
++}
+ 
+ void PrometheusExtensionPolicyService::OnExtensionUninstalled(
+     content::BrowserContext* browser_context,
+     const extensions::Extension* extension,
+-    extensions::UninstallReason reason) {}
++    extensions::UninstallReason reason) {
++  if (!shutdown_ && prefs_ && extension) {
++    RemovePrometheusExtensionPolicyChoice(*prefs_, extension->id());
++  }
++  ReconcileAndNotify();
++}
+ 
+ void PrometheusExtensionPolicyService::OnShutdown(
+-    extensions::ExtensionRegistry* registry) {}
++    extensions::ExtensionRegistry* registry) {
++  if (registry_ != registry) {
++    return;
++  }
++  registry_->RemoveObserver(this);
++  registry_ = nullptr;
++  ReconcileAndNotify();
++}
++
++std::vector<ExtensionPolicyInventoryEntry>
++PrometheusExtensionPolicyService::BuildInventory() const {
++  ++registry_lookup_count_for_testing_;
++  if (inventory_for_testing_) {
++    return *inventory_for_testing_;
++  }
++  std::vector<ExtensionPolicyInventoryEntry> inventory;
++  if (shutdown_ || !registry_) {
++    return inventory;
++  }
++
++  extensions::ExtensionSet installed =
++      registry_->GenerateInstalledExtensionsSet();
++  inventory.reserve(
++      std::min(installed.size(), kMaxExtensionPolicySnapshotRows));
++  for (const scoped_refptr<const extensions::Extension>& extension :
++       installed) {
++    if (inventory.size() == kMaxExtensionPolicySnapshotRows) {
++      break;
++    }
++    ExtensionPolicyInventoryEntry entry;
++    entry.extension_id = extension->id();
++    entry.name = extension->name();
++    entry.source = PolicySourceForExtension(*extension);
++    entry.enabled = registry_->enabled_extensions().Contains(extension->id());
++    entry.ready = registry_->ready_extensions().Contains(extension->id());
++    entry.manifest_version = extension->manifest_version();
++    entry.native_private_eligible =
++        extensions::util::IsIncognitoEnabled(extension->id(), regular_context_);
++    entry.browser_context = regular_context_;
++    inventory.push_back(std::move(entry));
++  }
++  std::ranges::sort(inventory, InventoryOrder);
++  if (inventory.size() > kMaxExtensionPolicySnapshotRows) {
++    inventory.resize(kMaxExtensionPolicySnapshotRows);
++  }
++  return inventory;
++}
++
++bool PrometheusExtensionPolicyService::IsSystemReady() const {
++  if (system_ready_for_testing_) {
++    return *system_ready_for_testing_;
++  }
++  if (!regular_context_) {
++    return false;
++  }
++  extensions::ExtensionSystem* const system =
++      extensions::ExtensionSystem::Get(regular_context_);
++  return system && system->is_ready();
++}
++
++bool PrometheusExtensionPolicyService::IsAllowedContext(
++    content::BrowserContext* current_context,
++    bool private_mode) const {
++  if (inventory_for_testing_) {
++    return current_context == regular_context_;
++  }
++  if (!regular_context_ || !current_context) {
++    return false;
++  }
++  if (!private_mode) {
++    return current_context == regular_context_ &&
++           !current_context->IsOffTheRecord();
++  }
++  if (!current_context->IsOffTheRecord()) {
++    return false;
++  }
++  Profile* const regular_profile =
++      Profile::FromBrowserContext(regular_context_);
++  Profile* const current_profile = Profile::FromBrowserContext(current_context);
++  return regular_profile && current_profile &&
++         current_profile->GetOriginalProfile() == regular_profile;
++}
++
++void PrometheusExtensionPolicyService::AdvanceGeneration() {
++  ++generation_;
++  if (generation_ == 0u) {
++    generation_ = 1u;
++  }
++}
++
++void PrometheusExtensionPolicyService::ReconcileAndNotify() {
++  if (shutdown_) {
++    return;
++  }
++  AdvanceGeneration();
++  const ExtensionPolicySnapshot snapshot = GetSnapshot();
++  for (PrometheusExtensionPolicyServiceObserver& observer : observers_) {
++    observer.OnPrometheusExtensionPolicyChanged(snapshot);
++  }
++}
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_policy_service.h b/chrome/browser/prometheus/prometheus_extension_policy_service.h
+index dbbc2178f7..1202dfca6b 100644
+--- a/chrome/browser/prometheus/prometheus_extension_policy_service.h
++++ b/chrome/browser/prometheus/prometheus_extension_policy_service.h
+@@ -27,7 +27,7 @@ namespace extensions {
+ class Extension;
+ class ExtensionRegistry;
+ enum class UnloadedExtensionReason;
+-}
++}  // namespace extensions
+ 
+ namespace prometheus {
+ 
+@@ -49,12 +49,11 @@ class PrometheusExtensionPolicyService
+     : public KeyedService,
+       public extensions::ExtensionRegistryObserver {
+  public:
+-  PrometheusExtensionPolicyService(
+-      content::BrowserContext* regular_context,
+-      PrefService* prefs,
+-      extensions::ExtensionRegistry* registry);
+-  PrometheusExtensionPolicyService(
+-      const PrometheusExtensionPolicyService&) = delete;
++  PrometheusExtensionPolicyService(content::BrowserContext* regular_context,
++                                   PrefService* prefs,
++                                   extensions::ExtensionRegistry* registry);
++  PrometheusExtensionPolicyService(const PrometheusExtensionPolicyService&) =
++      delete;
+   PrometheusExtensionPolicyService& operator=(
+       const PrometheusExtensionPolicyService&) = delete;
+   ~PrometheusExtensionPolicyService() override;
+@@ -65,11 +64,10 @@ class PrometheusExtensionPolicyService
+       std::string_view extension_id,
+       content::BrowserContext* current_context,
+       bool private_mode) const;
+-  ExtensionPolicyMutationResult SetRequestedGrant(
+-      size_t ordinal,
+-      uint64_t generation,
+-      bool private_mode,
+-      ExtensionAgentGrant grant);
++  ExtensionPolicyMutationResult SetRequestedGrant(size_t ordinal,
++                                                  uint64_t generation,
++                                                  bool private_mode,
++                                                  ExtensionAgentGrant grant);
+ 
+   void AddObserver(PrometheusExtensionPolicyServiceObserver* observer);
+   void RemoveObserver(PrometheusExtensionPolicyServiceObserver* observer);
+@@ -88,10 +86,9 @@ class PrometheusExtensionPolicyService
+                          const extensions::Extension* extension) override;
+   void OnExtensionReady(content::BrowserContext* browser_context,
+                         const extensions::Extension* extension) override;
+-  void OnExtensionUnloaded(
+-      content::BrowserContext* browser_context,
+-      const extensions::Extension* extension,
+-      extensions::UnloadedExtensionReason reason) override;
++  void OnExtensionUnloaded(content::BrowserContext* browser_context,
++                           const extensions::Extension* extension,
++                           extensions::UnloadedExtensionReason reason) override;
+   void OnExtensionInstalled(content::BrowserContext* browser_context,
+                             const extensions::Extension* extension,
+                             bool is_update) override;
+@@ -101,6 +98,13 @@ class PrometheusExtensionPolicyService
+   void OnShutdown(extensions::ExtensionRegistry* registry) override;
+ 
+  private:
++  std::vector<ExtensionPolicyInventoryEntry> BuildInventory() const;
++  bool IsSystemReady() const;
++  bool IsAllowedContext(content::BrowserContext* current_context,
++                        bool private_mode) const;
++  void AdvanceGeneration();
++  void ReconcileAndNotify();
++
+   raw_ptr<content::BrowserContext> regular_context_;
+   raw_ptr<PrefService> prefs_;
+   raw_ptr<extensions::ExtensionRegistry> registry_;
+diff --git a/chrome/browser/prometheus/prometheus_extension_policy_service_unittest.cc b/chrome/browser/prometheus/prometheus_extension_policy_service_unittest.cc
+index 1fdfe7b41a..49cc5364d8 100644
+--- a/chrome/browser/prometheus/prometheus_extension_policy_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_extension_policy_service_unittest.cc
+@@ -4,7 +4,10 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_extension_policy_service.h"
+ 
++#include <memory>
+ #include <string>
++#include <utility>
++#include <vector>
+ 
+ #include "base/strings/string_util.h"
+ #include "chrome/browser/prometheus/prometheus_extension_policy_prefs.h"
+@@ -19,6 +22,21 @@ namespace {
+ constexpr char kFirstExtensionId[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+ constexpr char kSecondExtensionId[] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+ 
++ExtensionPolicyInventoryEntry MakeInventoryEntry(
++    std::string extension_id,
++    std::string name = "Synthetic extension",
++    bool native_private_eligible = true) {
++  ExtensionPolicyInventoryEntry entry;
++  entry.extension_id = std::move(extension_id);
++  entry.name = std::move(name);
++  entry.source = ExtensionPolicySource::kWebStore;
++  entry.enabled = true;
++  entry.ready = true;
++  entry.manifest_version = 3;
++  entry.native_private_eligible = native_private_eligible;
++  return entry;
++}
++
+ void RequireGreenContract() {
+   ASSERT_TRUE(ExtensionPolicyContractImplementedForTesting())
+       << "retained RED: bounded extension policy behavior is not implemented";
+@@ -66,8 +84,7 @@ TEST(PrometheusExtensionPolicyBoundsTest, NamesAtAndOverLimitAreUtf8Bounded) {
+   EXPECT_EQ(at_limit, SanitizeExtensionPolicyName(at_limit));
+   EXPECT_EQ(kMaxExtensionPolicyNameBytes,
+             SanitizeExtensionPolicyName(over_limit).size());
+-  EXPECT_EQ(kExtensionPolicyNameFallback,
+-            SanitizeExtensionPolicyName("\xff"));
++  EXPECT_EQ(kExtensionPolicyNameFallback, SanitizeExtensionPolicyName("\xff"));
+ }
+ 
+ TEST(PrometheusExtensionPolicyBoundsTest,
+@@ -76,6 +93,7 @@ TEST(PrometheusExtensionPolicyBoundsTest,
+   EXPECT_EQ("aaaaaa", ExtensionPolicyIdSuffix(kFirstExtensionId));
+   EXPECT_EQ(kExtensionPolicyIdSuffixBytes,
+             ExtensionPolicyIdSuffix(kFirstExtensionId).size());
++  EXPECT_TRUE(ExtensionPolicyIdSuffix("aaaaaa").empty());
+   EXPECT_TRUE(ExtensionPolicyIdSuffix("short").empty());
+   EXPECT_NE(kFirstExtensionId, ExtensionPolicyIdSuffix(kFirstExtensionId));
+ }
+@@ -91,8 +109,7 @@ TEST(PrometheusExtensionPolicyBoundsTest, ReasonsAtAndOverLimitAreBounded) {
+             SanitizeExtensionPolicyReason("installed extension id"));
+ }
+ 
+-TEST(PrometheusExtensionPolicyBoundsTest,
+-     RecoveryTextAtAndOverLimitIsBounded) {
++TEST(PrometheusExtensionPolicyBoundsTest, RecoveryTextAtAndOverLimitIsBounded) {
+   RequireGreenContract();
+   const std::string at_limit(kMaxExtensionPolicyRecoveryBytes, 'r');
+   const std::string over_limit(kMaxExtensionPolicyRecoveryBytes + 1, 'r');
+@@ -110,10 +127,10 @@ TEST(PrometheusExtensionPolicyPrefsTest,
+   RegisterPrometheusExtensionPolicyProfilePrefs(prefs.registry());
+   ExtensionPolicyChoices choices;
+   for (size_t index = 0; index < kMaxExtensionPolicyEntries + 1; ++index) {
+-    choices.emplace(crx_file::id_util::GenerateId("entry-" +
+-                                                  std::to_string(index)),
+-                    ExtensionPolicyChoice{ExtensionAgentGrant::kInteract,
+-                                          ExtensionAgentGrant::kReadOnly});
++    choices.emplace(
++        crx_file::id_util::GenerateId("entry-" + std::to_string(index)),
++        ExtensionPolicyChoice{ExtensionAgentGrant::kInteract,
++                              ExtensionAgentGrant::kReadOnly});
+   }
+   WritePrometheusExtensionPolicyChoices(prefs, choices);
+   const ExtensionPolicyChoices stored =
+@@ -122,53 +139,182 @@ TEST(PrometheusExtensionPolicyPrefsTest,
+   EXPECT_EQ(choices.begin()->first, stored.begin()->first);
+ }
+ 
+-TEST(PrometheusExtensionPolicyPrefsTest,
+-     RejectsUnknownSchemaEnumsAndKeys) {
++TEST(PrometheusExtensionPolicyPrefsTest, RejectsUnknownSchemaEnumsAndKeys) {
+   RequireGreenContract();
+   sync_preferences::TestingPrefServiceSyncable prefs;
+   RegisterPrometheusExtensionPolicyProfilePrefs(prefs.registry());
+-  base::DictValue grants;
+-  grants.Set(kFirstExtensionId,
+-             base::DictValue()
+-                 .Set("regular", "Interact")
+-                 .Set("private", "Blocked")
+-                 .Set("authority", "unexpected"));
+   base::DictValue root;
+   root.Set("schema_version", kPrometheusExtensionPolicySchemaVersion + 1);
+-  root.Set("grants", std::move(grants));
++  root.Set("grants", base::DictValue().Set(kFirstExtensionId,
++                                           base::DictValue()
++                                               .Set("regular", "Interact")
++                                               .Set("private", "Blocked")));
+   prefs.SetUserPref(kPrometheusExtensionPolicyProfileData, std::move(root));
+   EXPECT_TRUE(ReadPrometheusExtensionPolicyChoices(prefs).empty());
+ 
++  root = base::DictValue();
+   root.Set("schema_version", kPrometheusExtensionPolicySchemaVersion);
+   root.Set("unknown", true);
++  root.Set(
++      "grants",
++      base::DictValue().Set(
++          kSecondExtensionId,
++          base::DictValue().Set("regular", "Owner").Set("private", "Blocked")));
++  prefs.SetUserPref(kPrometheusExtensionPolicyProfileData, std::move(root));
++  EXPECT_TRUE(ReadPrometheusExtensionPolicyChoices(prefs).empty());
++
++  root = base::DictValue();
++  root.Set("schema_version", kPrometheusExtensionPolicySchemaVersion);
+   root.Set("grants",
+-           base::DictValue().Set(
+-               kSecondExtensionId,
+-               base::DictValue()
+-                   .Set("regular", "Owner")
+-                   .Set("private", "Blocked")));
++           base::DictValue().Set(kFirstExtensionId,
++                                 base::DictValue()
++                                     .Set("regular", "Interact")
++                                     .Set("private", "Blocked")
++                                     .Set("authority", "unexpected")));
++  prefs.SetUserPref(kPrometheusExtensionPolicyProfileData, std::move(root));
++  EXPECT_TRUE(ReadPrometheusExtensionPolicyChoices(prefs).empty());
++
++  root = base::DictValue();
++  root.Set("schema_version", kPrometheusExtensionPolicySchemaVersion);
++  root.Set(
++      "grants",
++      base::DictValue().Set(
++          kFirstExtensionId,
++          base::DictValue().Set("regular", "Owner").Set("private", "Blocked")));
+   prefs.SetUserPref(kPrometheusExtensionPolicyProfileData, std::move(root));
+   EXPECT_TRUE(ReadPrometheusExtensionPolicyChoices(prefs).empty());
+ }
+ 
++TEST(PrometheusExtensionPolicyPrefsTest,
++     RoundTripStoresOnlyValidBoundedGrantChoices) {
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusExtensionPolicyProfilePrefs(prefs.registry());
++  ExtensionPolicyChoices choices;
++  choices.emplace(kFirstExtensionId,
++                  ExtensionPolicyChoice{ExtensionAgentGrant::kReadOnly,
++                                        ExtensionAgentGrant::kInteract});
++  choices.emplace("invalid-id",
++                  ExtensionPolicyChoice{ExtensionAgentGrant::kInteract,
++                                        ExtensionAgentGrant::kInteract});
++  WritePrometheusExtensionPolicyChoices(prefs, choices);
++
++  const ExtensionPolicyChoices stored =
++      ReadPrometheusExtensionPolicyChoices(prefs);
++  ASSERT_EQ(1u, stored.size());
++  EXPECT_EQ(ExtensionAgentGrant::kReadOnly,
++            stored.at(kFirstExtensionId).regular);
++  EXPECT_EQ(ExtensionAgentGrant::kReadOnly,
++            stored.at(kFirstExtensionId).private_mode);
++
++  const base::DictValue& root =
++      prefs.GetDict(kPrometheusExtensionPolicyProfileData);
++  ASSERT_EQ(2u, root.size());
++  const base::DictValue* grants = root.FindDict("grants");
++  ASSERT_NE(nullptr, grants);
++  const base::DictValue* choice = grants->FindDict(kFirstExtensionId);
++  ASSERT_NE(nullptr, choice);
++  EXPECT_EQ(2u, choice->size());
++  EXPECT_EQ(nullptr, choice->Find("name"));
++  EXPECT_EQ(nullptr, choice->Find("permissions"));
++  EXPECT_EQ(nullptr, choice->Find("authority"));
++}
++
+ TEST(PrometheusExtensionPolicySnapshotTest,
+      SnapshotRowsAtAndOverLimitAreOrdinalAndGenerationBound) {
+   RequireGreenContract();
+-  ExtensionPolicySnapshot snapshot;
+-  snapshot.generation = 7;
+-  for (size_t index = 0; index < kMaxExtensionPolicySnapshotRows; ++index) {
+-    ExtensionPolicyRow row;
+-    row.name = "Extension";
+-    row.id_suffix = "aaaaaa";
+-    row.ordinal = index;
+-    row.generation = snapshot.generation;
+-    snapshot.rows.push_back(std::move(row));
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusExtensionPolicyProfilePrefs(prefs.registry());
++  PrometheusExtensionPolicyService service(nullptr, &prefs, nullptr);
++  service.SetSystemReadyForTesting(true);
++
++  std::vector<ExtensionPolicyInventoryEntry> inventory;
++  for (size_t index = 0; index < kMaxExtensionPolicySnapshotRows + 1; ++index) {
++    inventory.push_back(MakeInventoryEntry(
++        crx_file::id_util::GenerateId("snapshot-" + std::to_string(index)),
++        std::string(kMaxExtensionPolicyNameBytes + 1, 'n')));
+   }
++  service.SetInventoryForTesting(std::move(inventory));
++  const ExtensionPolicySnapshot snapshot = service.GetSnapshot();
++
+   EXPECT_EQ(kMaxExtensionPolicySnapshotRows, snapshot.rows.size());
+   EXPECT_EQ(0u, snapshot.rows.front().ordinal);
+-  EXPECT_EQ(kMaxExtensionPolicySnapshotRows - 1,
+-            snapshot.rows.back().ordinal);
+-  EXPECT_EQ(7u, snapshot.rows.back().generation);
++  EXPECT_EQ(kMaxExtensionPolicySnapshotRows - 1, snapshot.rows.back().ordinal);
++  EXPECT_EQ(snapshot.generation, snapshot.rows.back().generation);
++  EXPECT_EQ(kMaxExtensionPolicyNameBytes, snapshot.rows.front().name.size());
++  EXPECT_EQ(kExtensionPolicyIdSuffixBytes,
++            snapshot.rows.front().id_suffix.size());
++}
++
++TEST(PrometheusExtensionPolicyServiceTest,
++     SeparatePrivateGrantRequiresEligibilityAndNeverExceedsRegular) {
++  RequireGreenContract();
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusExtensionPolicyProfilePrefs(prefs.registry());
++  PrometheusExtensionPolicyService service(nullptr, &prefs, nullptr);
++  service.SetInventoryForTesting({MakeInventoryEntry(kFirstExtensionId)});
++  service.SetSystemReadyForTesting(true);
++
++  ExtensionPolicySnapshot snapshot = service.GetSnapshot();
++  EXPECT_EQ(
++      ExtensionPolicyMutationResult::kInvalidPrivateGrant,
++      service.SetRequestedGrant(0, snapshot.generation, /*private_mode=*/true,
++                                ExtensionAgentGrant::kReadOnly));
++  EXPECT_EQ(
++      ExtensionPolicyMutationResult::kApplied,
++      service.SetRequestedGrant(0, snapshot.generation, /*private_mode=*/false,
++                                ExtensionAgentGrant::kInteract));
++  snapshot = service.GetSnapshot();
++  EXPECT_EQ(
++      ExtensionPolicyMutationResult::kApplied,
++      service.SetRequestedGrant(0, snapshot.generation, /*private_mode=*/true,
++                                ExtensionAgentGrant::kReadOnly));
++
++  EXPECT_EQ(ExtensionAgentGrant::kInteract,
++            service.GetEffectiveGrant(kFirstExtensionId, nullptr,
++                                      /*private_mode=*/false));
++  EXPECT_EQ(ExtensionAgentGrant::kReadOnly,
++            service.GetEffectiveGrant(kFirstExtensionId, nullptr,
++                                      /*private_mode=*/true));
++
++  service.SetInventoryForTesting(
++      {MakeInventoryEntry(kFirstExtensionId, "Synthetic extension",
++                          /*native_private_eligible=*/false)});
++  service.ReconcileForTesting();
++  EXPECT_EQ(ExtensionAgentGrant::kInteract,
++            service.GetEffectiveGrant(kFirstExtensionId, nullptr,
++                                      /*private_mode=*/false));
++  EXPECT_EQ(ExtensionAgentGrant::kBlocked,
++            service.GetEffectiveGrant(kFirstExtensionId, nullptr,
++                                      /*private_mode=*/true));
++}
++
++TEST(PrometheusExtensionPolicyServiceTest,
++     ReadinessAndFreshGenerationFailClosed) {
++  RequireGreenContract();
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusExtensionPolicyProfilePrefs(prefs.registry());
++  PrometheusExtensionPolicyService service(nullptr, &prefs, nullptr);
++  service.SetInventoryForTesting({MakeInventoryEntry(kFirstExtensionId)});
++  service.SetSystemReadyForTesting(true);
++
++  const ExtensionPolicySnapshot initial = service.GetSnapshot();
++  EXPECT_EQ(
++      ExtensionPolicyMutationResult::kApplied,
++      service.SetRequestedGrant(0, initial.generation, /*private_mode=*/false,
++                                ExtensionAgentGrant::kInteract));
++  EXPECT_EQ(
++      ExtensionPolicyMutationResult::kStaleGeneration,
++      service.SetRequestedGrant(0, initial.generation, /*private_mode=*/false,
++                                ExtensionAgentGrant::kBlocked));
++
++  service.SetSystemReadyForTesting(false);
++  EXPECT_EQ(ExtensionAgentGrant::kBlocked,
++            service.GetEffectiveGrant(kFirstExtensionId, nullptr,
++                                      /*private_mode=*/false));
++  const ExtensionPolicyHealth health = service.GetHealth();
++  EXPECT_EQ(ExtensionPolicyHealthStatus::kDegraded, health.status);
++  EXPECT_LE(health.reason.size(), kMaxExtensionPolicyReasonBytes);
++  EXPECT_LE(health.recovery.size(), kMaxExtensionPolicyRecoveryBytes);
+ }
+ 
+ TEST(PrometheusExtensionPolicySnapshotTest,
+@@ -185,8 +331,7 @@ TEST(PrometheusExtensionPolicySnapshotTest,
+   row.effective_regular = ExtensionAgentGrant::kInteract;
+   row.ordinal = 3;
+   row.generation = 9;
+-  const std::optional<base::DictValue> value =
+-      ExtensionPolicyRowToValue(row);
++  const std::optional<base::DictValue> value = ExtensionPolicyRowToValue(row);
+   ASSERT_TRUE(value);
+   EXPECT_EQ(nullptr, value->Find("extension_id"));
+   EXPECT_EQ(nullptr, value->Find("permissions"));
+@@ -195,6 +340,11 @@ TEST(PrometheusExtensionPolicySnapshotTest,
+   EXPECT_EQ(nullptr, value->Find("authority"));
+   ASSERT_NE(nullptr, value->FindString("id_suffix"));
+   EXPECT_EQ("aaaaaa", *value->FindString("id_suffix"));
++
++  row.ordinal = kMaxExtensionPolicySnapshotRows - 1;
++  EXPECT_TRUE(ExtensionPolicyRowToValue(row));
++  row.ordinal = kMaxExtensionPolicySnapshotRows;
++  EXPECT_FALSE(ExtensionPolicyRowToValue(row));
+ }
+ 
+ TEST(PrometheusExtensionPolicyHealthTest,
+diff --git a/chrome/browser/prometheus/prometheus_extension_policy_types.cc b/chrome/browser/prometheus/prometheus_extension_policy_types.cc
+index 4794a4c877..fa07b7ba5f 100644
+--- a/chrome/browser/prometheus/prometheus_extension_policy_types.cc
++++ b/chrome/browser/prometheus/prometheus_extension_policy_types.cc
+@@ -4,60 +4,175 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_extension_policy_types.h"
+ 
++#include <algorithm>
++#include <array>
++#include <string>
++
++#include "base/numerics/safe_conversions.h"
++#include "base/strings/string_util.h"
++
+ namespace prometheus {
+ 
++namespace {
++
++std::string SanitizeBoundedText(std::string_view value,
++                                size_t max_bytes,
++                                std::string_view fallback,
++                                bool reject_sensitive_markers) {
++  if (!base::IsStringUTF8(value)) {
++    return std::string(fallback);
++  }
++
++  std::string sanitized = base::CollapseWhitespaceASCII(value, true);
++  if (sanitized.empty() ||
++      std::ranges::any_of(sanitized, [](unsigned char character) {
++        return character < 0x20 || character == 0x7f;
++      })) {
++    return std::string(fallback);
++  }
++
++  if (reject_sensitive_markers) {
++    constexpr std::array<std::string_view, 8> kSensitiveMarkers = {
++        "extension id", "permission", "origin", "page content",
++        "profile path", "authority",  "bearer", "token",
++    };
++    const std::string lowered = base::ToLowerASCII(sanitized);
++    if (std::ranges::any_of(kSensitiveMarkers,
++                            [&lowered](std::string_view marker) {
++                              return lowered.find(marker) != std::string::npos;
++                            })) {
++      return std::string(fallback);
++    }
++  }
++
++  sanitized = base::TruncateUTF8ToByteSize(sanitized, max_bytes);
++  return sanitized.empty() ? std::string(fallback) : sanitized;
++}
++
++}  // namespace
++
+ std::string_view ExtensionAgentGrantToString(ExtensionAgentGrant grant) {
+-  return "Blocked";
++  switch (grant) {
++    case ExtensionAgentGrant::kBlocked:
++      return "Blocked";
++    case ExtensionAgentGrant::kReadOnly:
++      return "Read only";
++    case ExtensionAgentGrant::kInteract:
++      return "Interact";
++  }
+ }
+ 
+ std::optional<ExtensionAgentGrant> ExtensionAgentGrantFromString(
+     std::string_view value) {
++  if (value == "Blocked") {
++    return ExtensionAgentGrant::kBlocked;
++  }
++  if (value == "Read only") {
++    return ExtensionAgentGrant::kReadOnly;
++  }
++  if (value == "Interact") {
++    return ExtensionAgentGrant::kInteract;
++  }
+   return std::nullopt;
+ }
+ 
+ std::string_view ExtensionPolicySourceToString(ExtensionPolicySource source) {
+-  return "Other";
++  switch (source) {
++    case ExtensionPolicySource::kComponent:
++      return "Component";
++    case ExtensionPolicySource::kPolicy:
++      return "Policy";
++    case ExtensionPolicySource::kWebStore:
++      return "Chrome Web Store";
++    case ExtensionPolicySource::kUnpacked:
++      return "Unpacked";
++    case ExtensionPolicySource::kOther:
++      return "Other";
++  }
+ }
+ 
+ std::string_view ExtensionPolicyHealthStatusToString(
+     ExtensionPolicyHealthStatus status) {
+-  return "unavailable";
++  switch (status) {
++    case ExtensionPolicyHealthStatus::kReady:
++      return "ready";
++    case ExtensionPolicyHealthStatus::kDegraded:
++      return "degraded";
++    case ExtensionPolicyHealthStatus::kUnavailable:
++      return "unavailable";
++  }
+ }
+ 
+ ExtensionAgentGrant ClampPrivateExtensionGrant(
+     ExtensionAgentGrant regular,
+     ExtensionAgentGrant private_mode) {
+-  return ExtensionAgentGrant::kBlocked;
++  return std::min(regular, private_mode);
+ }
+ 
+ std::string SanitizeExtensionPolicyName(std::string_view name) {
+-  return kExtensionPolicyNameFallback;
++  return SanitizeBoundedText(name, kMaxExtensionPolicyNameBytes,
++                             kExtensionPolicyNameFallback,
++                             /*reject_sensitive_markers=*/false);
+ }
+ 
+ std::string ExtensionPolicyIdSuffix(std::string_view extension_id) {
+-  return std::string();
++  if (extension_id.size() <= kExtensionPolicyIdSuffixBytes) {
++    return std::string();
++  }
++  return std::string(
++      extension_id.substr(extension_id.size() - kExtensionPolicyIdSuffixBytes));
+ }
+ 
+ std::string SanitizeExtensionPolicyReason(std::string_view reason) {
+-  return kExtensionPolicyReasonFallback;
++  return SanitizeBoundedText(reason, kMaxExtensionPolicyReasonBytes,
++                             kExtensionPolicyReasonFallback,
++                             /*reject_sensitive_markers=*/true);
+ }
+ 
+ std::string SanitizeExtensionPolicyRecovery(std::string_view recovery) {
+-  return kExtensionPolicyRecoveryFallback;
++  return SanitizeBoundedText(recovery, kMaxExtensionPolicyRecoveryBytes,
++                             kExtensionPolicyRecoveryFallback,
++                             /*reject_sensitive_markers=*/true);
+ }
+ 
+ std::optional<base::DictValue> ExtensionPolicyRowToValue(
+     const ExtensionPolicyRow& row) {
+-  return std::nullopt;
++  if (row.ordinal >= kMaxExtensionPolicySnapshotRows || row.generation == 0u) {
++    return std::nullopt;
++  }
++  base::DictValue value;
++  value.Set("name", SanitizeExtensionPolicyName(row.name));
++  value.Set("id_suffix", row.id_suffix.size() == kExtensionPolicyIdSuffixBytes
++                             ? row.id_suffix
++                             : std::string());
++  value.Set("source", ExtensionPolicySourceToString(row.source));
++  value.Set("enabled", row.enabled);
++  value.Set("manifest_version", std::max(0, row.manifest_version));
++  value.Set("private_eligible", row.native_private_eligible);
++  value.Set("requested_regular",
++            ExtensionAgentGrantToString(row.requested_regular));
++  value.Set("requested_private",
++            ExtensionAgentGrantToString(row.requested_private));
++  value.Set("effective_regular",
++            ExtensionAgentGrantToString(row.effective_regular));
++  value.Set("effective_private",
++            ExtensionAgentGrantToString(row.effective_private));
++  value.Set("ordinal", base::checked_cast<int>(row.ordinal));
++  value.Set("generation", static_cast<double>(row.generation));
++  return value;
+ }
+ 
+ std::optional<base::DictValue> ExtensionPolicyHealthToValue(
+     const ExtensionPolicyHealth& health) {
+-  return std::nullopt;
++  base::DictValue value;
++  value.Set("status", ExtensionPolicyHealthStatusToString(health.status));
++  value.Set("reason", SanitizeExtensionPolicyReason(health.reason));
++  value.Set("recovery", SanitizeExtensionPolicyRecovery(health.recovery));
++  return value;
+ }
+ 
+ bool ExtensionPolicyContractImplementedForTesting() {
+-  return false;
++  return true;
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_policy_types.h b/chrome/browser/prometheus/prometheus_extension_policy_types.h
+index 2698341248..9f3e2bddc6 100644
+--- a/chrome/browser/prometheus/prometheus_extension_policy_types.h
++++ b/chrome/browser/prometheus/prometheus_extension_policy_types.h
+@@ -126,8 +126,8 @@ std::optional<base::DictValue> ExtensionPolicyRowToValue(
+ std::optional<base::DictValue> ExtensionPolicyHealthToValue(
+     const ExtensionPolicyHealth& health);
+ 
+-// Retained RED fixture seam. It is false until the bounded policy behavior is
+-// implemented, so the contract compiles and fails only by named assertions.
++// Retained contract seam used to distinguish compileable RED from implemented
++// bounded policy behavior.
+ bool ExtensionPolicyContractImplementedForTesting();
+ 
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+
