@@ -43,6 +43,7 @@ LOG_DIR="${OUT_DIR}/phase22-extension-policy"
 BUILD_LOG="${LOG_DIR}/build.log"
 LIST_LOG="${LOG_DIR}/list.log"
 TEST_LOG="${LOG_DIR}/test.log"
+FOCUSED_RESPONSE="${LOG_DIR}/focused-browser-tests.rsp"
 BINARY="${OUT_DIR}/prometheus_unittests"
 FILTER='PrometheusExtensionPolicy*'
 REGISTRY_FILTER='PrometheusExtensionPolicy*Registry*:*Lifecycle*'
@@ -153,6 +154,25 @@ query_browser_link_command() {
        END { print command }'
 }
 
+build_focused_response() {
+  require_file "${OUT_DIR}/browser_tests.rsp"
+  LC_ALL=C awk '
+    BEGIN { RS = "[[:space:]]+" }
+    NF {
+      is_test_object = $0 ~ /\.o$/ &&
+          ($0 ~ /\/browser_tests\// ||
+           $0 ~ /\/interactive_ui_tests\// ||
+           $0 ~ /\/unit_tests\// ||
+           $0 ~ /\/integration_tests\// ||
+           $0 ~ /(_browsertest|_unittest|_apitest|_uitest)\.o$/)
+      if (!is_test_object) {
+        print
+      }
+    }
+  ' "${OUT_DIR}/browser_tests.rsp" >"${FOCUSED_RESPONSE}"
+  require_file "${FOCUSED_RESPONSE}"
+}
+
 build_focused_binary() {
   local runtime_types='obj/chrome/browser/prometheus/prometheus_runtime_types/prometheus_runtime_types.o'
   local runtime_prefs='obj/chrome/browser/prometheus/prometheus_runtime_prefs/prometheus_runtime_prefs.o'
@@ -204,13 +224,21 @@ build_focused_binary() {
     require_file "${OUT_DIR}/${extra}"
   done
 
+  build_focused_response
   local link_command
   link_command="$(query_browser_link_command)"
-  [[ -n "${link_command}" ]] || fail 'browser_tests direct link command not found'
-  link_command="$(
-    printf '%s\n' "${link_command}" |
-      sed 's|-o "./browser_tests"|-o "./prometheus_unittests"|'
-  )"
+  [[ -n "${link_command}" ]] \
+    || fail 'browser_tests direct link command not found'
+  local original_output='-o "./browser_tests"'
+  local focused_output='-o "./prometheus_unittests"'
+  local original_response='@./browser_tests.rsp'
+  local focused_response='@./phase22-extension-policy/focused-browser-tests.rsp'
+  [[ "${link_command}" == *"${original_output}"* ]] \
+    || fail 'browser_tests output argument was not found'
+  [[ "${link_command}" == *"${original_response}"* ]] \
+    || fail 'browser_tests response argument was not found'
+  link_command="${link_command/${original_output}/${focused_output}}"
+  link_command="${link_command/${original_response}/${focused_response}}"
   [[ "${link_command}" == *'-o "./prometheus_unittests"'* ]] \
     || fail 'focused output argument was not replaced'
   link_command="${link_command} ${extras[*]}"

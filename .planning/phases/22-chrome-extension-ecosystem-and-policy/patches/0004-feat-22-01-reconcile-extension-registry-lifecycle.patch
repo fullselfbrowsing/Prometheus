@@ -1,0 +1,253 @@
+From f3cdfca50e067a596ca3e619866372231c094219 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 28 Jul 2026 17:58:33 -0500
+Subject: [PATCH 4/4] feat(22-01): reconcile extension registry lifecycle
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  1 +
+ .../prometheus_extension_policy_service.cc    | 82 ++++++++++++++++---
+ .../prometheus_extension_policy_service.h     |  5 ++
+ ...theus_extension_policy_service_unittest.cc | 11 ++-
+ 4 files changed, 86 insertions(+), 13 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 14de6a7e65..86a24e67e1 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -817,6 +817,7 @@ test("prometheus_unittests") {
+     "//components/tabs:test_support",
+     "//content/test:run_all_unittests",
+     "//content/test:test_support",
++    "//extensions/browser",
+     "//extensions:test_support",
+     "//services/network:test_support",
+     "//skia",
+diff --git a/chrome/browser/prometheus/prometheus_extension_policy_service.cc b/chrome/browser/prometheus/prometheus_extension_policy_service.cc
+index f9c5df34d7..af0818f7fc 100644
+--- a/chrome/browser/prometheus/prometheus_extension_policy_service.cc
++++ b/chrome/browser/prometheus/prometheus_extension_policy_service.cc
+@@ -231,6 +231,7 @@ void PrometheusExtensionPolicyService::Shutdown() {
+     return;
+   }
+   shutdown_ = true;
++  reconcile_pending_ = false;
+   if (registry_) {
+     registry_->RemoveObserver(this);
+     registry_ = nullptr;
+@@ -241,12 +242,18 @@ void PrometheusExtensionPolicyService::Shutdown() {
+ void PrometheusExtensionPolicyService::OnExtensionLoaded(
+     content::BrowserContext* browser_context,
+     const extensions::Extension* extension) {
++  if (!IsExpectedRegistryEvent(browser_context, extension)) {
++    return;
++  }
+   ReconcileAndNotify();
+ }
+ 
+ void PrometheusExtensionPolicyService::OnExtensionReady(
+     content::BrowserContext* browser_context,
+     const extensions::Extension* extension) {
++  if (!IsExpectedRegistryEvent(browser_context, extension)) {
++    return;
++  }
+   ReconcileAndNotify();
+ }
+ 
+@@ -254,6 +261,9 @@ void PrometheusExtensionPolicyService::OnExtensionUnloaded(
+     content::BrowserContext* browser_context,
+     const extensions::Extension* extension,
+     extensions::UnloadedExtensionReason reason) {
++  if (!IsExpectedRegistryEvent(browser_context, extension)) {
++    return;
++  }
+   ReconcileAndNotify();
+ }
+ 
+@@ -261,6 +271,9 @@ void PrometheusExtensionPolicyService::OnExtensionInstalled(
+     content::BrowserContext* browser_context,
+     const extensions::Extension* extension,
+     bool is_update) {
++  if (!IsExpectedRegistryEvent(browser_context, extension)) {
++    return;
++  }
+   ReconcileAndNotify();
+ }
+ 
+@@ -268,20 +281,22 @@ void PrometheusExtensionPolicyService::OnExtensionUninstalled(
+     content::BrowserContext* browser_context,
+     const extensions::Extension* extension,
+     extensions::UninstallReason reason) {
+-  if (!shutdown_ && prefs_ && extension) {
+-    RemovePrometheusExtensionPolicyChoice(*prefs_, extension->id());
++  if (!IsExpectedRegistryEvent(browser_context, extension)) {
++    return;
++  }
++  const std::string extension_id = extension->id();
++  if (prefs_) {
++    RemovePrometheusExtensionPolicyChoice(*prefs_, extension_id);
+   }
+   ReconcileAndNotify();
+ }
+ 
+ void PrometheusExtensionPolicyService::OnShutdown(
+     extensions::ExtensionRegistry* registry) {
+-  if (registry_ != registry) {
++  if (shutdown_ || !registry || registry_ != registry) {
+     return;
+   }
+-  registry_->RemoveObserver(this);
+-  registry_ = nullptr;
+-  ReconcileAndNotify();
++  Shutdown();
+ }
+ 
+ std::vector<ExtensionPolicyInventoryEntry>
+@@ -358,6 +373,37 @@ bool PrometheusExtensionPolicyService::IsAllowedContext(
+          current_profile->GetOriginalProfile() == regular_profile;
+ }
+ 
++bool PrometheusExtensionPolicyService::IsExpectedRegistryEvent(
++    content::BrowserContext* browser_context,
++    const extensions::Extension* extension) const {
++  return !shutdown_ && extension && browser_context == regular_context_;
++}
++
++void PrometheusExtensionPolicyService::CollapseIneligiblePrivateChoices() {
++  if (!prefs_) {
++    return;
++  }
++  const std::vector<ExtensionPolicyInventoryEntry> inventory = BuildInventory();
++  ExtensionPolicyChoices choices =
++      ReadPrometheusExtensionPolicyChoices(*prefs_);
++  bool changed = false;
++  for (const ExtensionPolicyInventoryEntry& entry : inventory) {
++    if (entry.native_private_eligible) {
++      continue;
++    }
++    const auto choice_it = choices.find(entry.extension_id);
++    if (choice_it == choices.end() ||
++        choice_it->second.private_mode == ExtensionAgentGrant::kBlocked) {
++      continue;
++    }
++    choice_it->second.private_mode = ExtensionAgentGrant::kBlocked;
++    changed = true;
++  }
++  if (changed) {
++    WritePrometheusExtensionPolicyChoices(*prefs_, choices);
++  }
++}
++
+ void PrometheusExtensionPolicyService::AdvanceGeneration() {
+   ++generation_;
+   if (generation_ == 0u) {
+@@ -369,15 +415,29 @@ void PrometheusExtensionPolicyService::ReconcileAndNotify() {
+   if (shutdown_) {
+     return;
+   }
+-  AdvanceGeneration();
+-  const ExtensionPolicySnapshot snapshot = GetSnapshot();
+-  for (PrometheusExtensionPolicyServiceObserver& observer : observers_) {
+-    observer.OnPrometheusExtensionPolicyChanged(snapshot);
++  if (notifying_observers_) {
++    reconcile_pending_ = true;
++    return;
+   }
++
++  do {
++    reconcile_pending_ = false;
++    CollapseIneligiblePrivateChoices();
++    AdvanceGeneration();
++    const ExtensionPolicySnapshot snapshot = GetSnapshot();
++    notifying_observers_ = true;
++    for (PrometheusExtensionPolicyServiceObserver& observer : observers_) {
++      observer.OnPrometheusExtensionPolicyChanged(snapshot);
++      if (shutdown_) {
++        break;
++      }
++    }
++    notifying_observers_ = false;
++  } while (reconcile_pending_ && !shutdown_);
+ }
+ 
+ bool ExtensionPolicyLifecycleImplementedForTesting() {
+-  return false;
++  return true;
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_policy_service.h b/chrome/browser/prometheus/prometheus_extension_policy_service.h
+index 230d72c743..113deb16ef 100644
+--- a/chrome/browser/prometheus/prometheus_extension_policy_service.h
++++ b/chrome/browser/prometheus/prometheus_extension_policy_service.h
+@@ -102,6 +102,9 @@ class PrometheusExtensionPolicyService
+   bool IsSystemReady() const;
+   bool IsAllowedContext(content::BrowserContext* current_context,
+                         bool private_mode) const;
++  bool IsExpectedRegistryEvent(content::BrowserContext* browser_context,
++                               const extensions::Extension* extension) const;
++  void CollapseIneligiblePrivateChoices();
+   void AdvanceGeneration();
+   void ReconcileAndNotify();
+ 
+@@ -110,6 +113,8 @@ class PrometheusExtensionPolicyService
+   raw_ptr<extensions::ExtensionRegistry> registry_;
+   uint64_t generation_ = 1;
+   bool shutdown_ = false;
++  bool notifying_observers_ = false;
++  bool reconcile_pending_ = false;
+   std::optional<bool> system_ready_for_testing_;
+   std::optional<std::vector<ExtensionPolicyInventoryEntry>>
+       inventory_for_testing_;
+diff --git a/chrome/browser/prometheus/prometheus_extension_policy_service_unittest.cc b/chrome/browser/prometheus/prometheus_extension_policy_service_unittest.cc
+index 788c3debae..29f65b2724 100644
+--- a/chrome/browser/prometheus/prometheus_extension_policy_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_extension_policy_service_unittest.cc
+@@ -9,13 +9,17 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "base/no_destructor.h"
+ #include "base/strings/string_util.h"
+ #include "chrome/browser/prometheus/prometheus_extension_policy_prefs.h"
+ #include "chrome/browser/prometheus/prometheus_extension_policy_service_factory.h"
+ #include "components/crx_file/id_util.h"
+ #include "components/sync_preferences/testing_pref_service_syncable.h"
++#include "extensions/browser/extension_registry.h"
+ #include "extensions/browser/unloaded_extension_reason.h"
+ #include "extensions/common/extension_builder.h"
++#include "extensions/common/extensions_client.h"
++#include "extensions/test/test_extensions_client.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ 
+ namespace prometheus {
+@@ -42,6 +46,8 @@ ExtensionPolicyInventoryEntry MakeInventoryEntry(
+ scoped_refptr<const extensions::Extension> MakeExtension(
+     std::string name,
+     std::string extension_id) {
++  static base::NoDestructor<extensions::TestExtensionsClient> extensions_client;
++  extensions::ExtensionsClient::Set(extensions_client.get());
+   return extensions::ExtensionBuilder(std::move(name))
+       .SetID(std::move(extension_id))
+       .Build();
+@@ -624,7 +630,8 @@ TEST(PrometheusExtensionPolicyLifecycleTest,
+       << "retained RED: registry lifecycle reconciliation is not implemented";
+   sync_preferences::TestingPrefServiceSyncable prefs;
+   RegisterPrometheusExtensionPolicyProfilePrefs(prefs.registry());
+-  PrometheusExtensionPolicyService service(nullptr, &prefs, nullptr);
++  extensions::ExtensionRegistry registry(nullptr);
++  PrometheusExtensionPolicyService service(nullptr, &prefs, &registry);
+   service.SetSystemReadyForTesting(true);
+   service.SetInventoryForTesting({MakeInventoryEntry(kFirstExtensionId)});
+   scoped_refptr<const extensions::Extension> extension =
+@@ -632,7 +639,7 @@ TEST(PrometheusExtensionPolicyLifecycleTest,
+   RecordingPolicyObserver observer(&service);
+ 
+   const ExtensionPolicySnapshot snapshot = service.GetSnapshot();
+-  service.Shutdown();
++  registry.Shutdown();
+   service.OnExtensionLoaded(nullptr, extension.get());
+   service.OnExtensionReady(nullptr, extension.get());
+   service.OnExtensionUnloaded(nullptr, extension.get(),
+-- 
+2.50.1 (Apple Git-155)
+
