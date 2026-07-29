@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 22
 current_phase_name: chrome-extension-ecosystem-and-policy
-current_plan: 2
+current_plan: 3
 status: executing
-stopped_at: Completed 22-01-PLAN.md
-last_updated: "2026-07-28T23:07:18.388Z"
-last_activity: 2026-07-28
+stopped_at: Completed 22-02-PLAN.md
+last_updated: "2026-07-29T11:09:32.433Z"
+last_activity: 2026-07-29
 progress:
   total_phases: 14
   completed_phases: 11
   total_plans: 97
-  completed_plans: 93
-  percent: 96
+  completed_plans: 94
+  percent: 97
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: `.planning/PROJECT.md` (updated 2026-07-13)
 **Core value:** Agents get fast, precise, auditable whole-browser control
 through DOM/native structure rather than screenshots or extension injection.
 
-**Current focus:** Phase 22 extension policy execution. Plan 22-01 is complete;
-Plan 22-02 is next to add fail-closed Agent transport for visible extension
-popup and side-panel surfaces.
+**Current focus:** Phase 22 extension policy execution. Plans 22-01 and 22-02
+are complete; Plan 22-03 is next to expose bounded local policy controls,
+native confirmation, and truthful extension health.
 
 **Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
 external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
@@ -37,21 +37,21 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 22 (chrome-extension-ecosystem-and-policy) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
 **Current Phase:** 22
 **Current Phase Name:** chrome-extension-ecosystem-and-policy
 **Total Phases:** 14
 **Completed Phases:** 11
-**Current Plan:** 2
+**Current Plan:** 3
 **Total Plans in Phase:** 5
 **Status:** Ready to execute
-**Progress:** [██████████] 96%
-**Last Activity:** 2026-07-28
-**Last Activity Description:** Plan 22-01 completed the browser-owned extension
-policy foundation; 21/21 focused and 6/6 lifecycle tests pass with preserved
-Ninja metadata and four stable nested patches.
+**Progress:** [██████████] 97%
+**Last Activity:** 2026-07-29
+**Last Activity Description:** Plan 22-02 completed exact visible extension
+surface routing and policy-gated Agent/MCP dispatch; 67/67 focused, 54/54
+native regression, and 44/44 Node tests pass with preserved Ninja metadata.
 
-Milestone work is 93 of 97 current plans complete (96%).
+Milestone work is 94 of 97 current plans complete (97%).
 
 ## Latest Evidence
 
@@ -393,6 +393,7 @@ Milestone work is 93 of 97 current plans complete (96%).
 - [Phase 21]: Create handoff state only for the exact non-official runtime-test switches, disposable regular non-OTR profile, 0600 no-follow closed-schema file, canonical loopback HTTP origin, and initial live exact binding. — The test-only seam cannot activate from ordinary launch, unsafe metadata, remote origin, or an ambiguous target.
 - [Phase 21]: Consume two pairing slots before return, require slot-one redemption before slot two, preserve exact profile/browser/tab/origin/document/current-owner continuity, and wipe request authority before callback reentrancy. — Replay, owner/target loss, timeout, unbind, shutdown, exhaustion, and code failure return no credential and converge on idempotent cleanup.
 - [Phase 22]: Persist only bounded requested extension grant choices and derive effective access from fresh Chromium registry truth, with Private access separately requested and capped by regular access. — This preserves Chromium as lifecycle and installed-identity authority, prevents persisted runtime authority, and makes OTR, uninstall, replacement, eligibility loss, and stale-generation behavior fail closed.
+- [Phase 22]: Treat extension_surface as a closed popup or side_panel routing hint anchored to a positive stable tab; reconstruct extension identity only from current browser-owned visible WebContents and revalidate policy immediately before dispatch. — This prevents caller-supplied extension, URL, frame, renderer, script, or reverse-authority identities from widening the Agent route while preserving ordinary HTTP(S) page behavior.
 
 ## Performance Metrics
 
@@ -435,6 +436,7 @@ Milestone work is 93 of 97 current plans complete (96%).
 | Phase 21 P25 | 3h | 3 tasks | 15 files |
 | Phase 21 P26 | not recorded | 2 tasks | 9 root closeout files |
 | Phase 22 P01 | 47 min | 3 tasks | 16 files |
+| Phase 22 P02 | 11h 34m | 3 tasks | 44 files |
 
 ## Blockers and Deferred Items
 
@@ -449,8 +451,8 @@ Milestone work is 93 of 97 current plans complete (96%).
 
 ## Session
 
-**Last Date:** 2026-07-28T23:07:18.383Z
-**Stopped At:** Completed 22-01-PLAN.md
+**Last Date:** 2026-07-29T11:09:32.428Z
+**Stopped At:** Completed 22-02-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step
