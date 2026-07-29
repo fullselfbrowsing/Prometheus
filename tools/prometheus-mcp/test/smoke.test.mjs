@@ -257,16 +257,32 @@ test('diagnostics are the exact ten closed components', () => {
     'supervision',
     'extensions',
   ]);
-  const components = DIAGNOSTIC_KEYS.map((key, index) => ({
-    key,
-    status: index < 9 ? 'ready' : 'not_ready',
-    reason: 'Bounded public status.',
-    next_action: 'Use the documented recovery.',
-  }));
+  const components = DIAGNOSTIC_KEYS.map((key) => key === 'extensions'
+    ? {
+      key,
+      status: 'unavailable',
+      reason: 'extension_policy_unavailable',
+      next_action: 'Open Extension policy and try again.',
+    }
+    : {
+      key,
+      status: 'ready',
+      reason: 'Bounded public status.',
+      next_action: 'Use the documented recovery.',
+    });
   assert.doesNotThrow(() => assertDiagnosticInventory({ ok: true, components }));
   assert.throws(
     () => assertDiagnosticInventory({ ok: true, components: components.slice(1) }),
     /ten/u,
+  );
+  assert.throws(
+    () => assertDiagnosticInventory({
+      ok: true,
+      components: components.map((component) => component.key === 'extensions'
+        ? { ...component, status: 'not_ready' }
+        : component),
+    }),
+    /live bounded policy health/u,
   );
   assert.equal(RPC_TIMEOUT_MS, 30_000);
 });

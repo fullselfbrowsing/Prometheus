@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { Buffer } from 'node:buffer';
 import { spawn } from 'node:child_process';
 import {
   chmod,
@@ -32,7 +33,12 @@ const MAX_STDERR_BYTES = 1024 * 1024;
 const SESSION_GRACE_MS = 10_000;
 const DEFAULT_EXPIRY_WAIT_MS = 11_000;
 const STATUS_VALUES = new Set(['ready', 'degraded', 'not_ready', 'unavailable']);
-const LATER_DIAGNOSTICS = new Set(['extensions']);
+const LIVE_EXTENSION_STATUSES = new Set(['ready', 'degraded', 'unavailable']);
+const EXTENSION_REASON_BY_STATUS = Object.freeze({
+  ready: 'extension_policy_ready',
+  degraded: 'extension_system_not_ready',
+  unavailable: 'extension_policy_unavailable',
+});
 const PHASE20_PROVIDER_ID = 'phase20-smoke-local';
 const PHASE20_MODEL_ID = 'phase20-fixture-model';
 const MAX_SAFE_TITLE_BYTES = 256;
@@ -398,14 +404,15 @@ export const assertDiagnosticInventory = (result) => {
       && component.next_action.length > 0),
     'Diagnostics did not match the closed ten-component schema.',
   );
-  for (const component of result.components) {
-    if (LATER_DIAGNOSTICS.has(component.key)) {
-      requireCondition(
-        component.status === 'not_ready',
-        `${component.key} must remain not_ready until its owning phase.`,
-      );
-    }
-  }
+  const extension = result.components.at(-1);
+  requireCondition(
+    extension.key === 'extensions'
+      && LIVE_EXTENSION_STATUSES.has(extension.status)
+      && extension.reason === EXTENSION_REASON_BY_STATUS[extension.status]
+      && Buffer.byteLength(extension.reason, 'utf8') <= 48
+      && Buffer.byteLength(extension.next_action, 'utf8') <= 160,
+    'Extension diagnostics must expose only live bounded policy health.',
+  );
 };
 
 export const assertRemovedToolResult = (result) => {

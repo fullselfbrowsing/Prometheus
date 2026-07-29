@@ -75,7 +75,7 @@
       { "key": "vault", "status": "not_ready" },
       { "key": "provider", "status": "not_ready" },
       { "key": "supervision", "status": "not_ready" },
-      { "key": "extensions", "status": "not_ready" }
+      { "key": "extensions", "status": "unavailable" }
     ]
   }
 }

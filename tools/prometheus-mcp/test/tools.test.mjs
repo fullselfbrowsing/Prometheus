@@ -84,8 +84,17 @@ const makeHarness = (health, options = {}) => {
         { key: 'vault', status: 'not_ready' },
         { key: 'provider', status: 'not_ready' },
         { key: 'supervision', status: 'not_ready' },
-        { key: 'extensions', status: 'not_ready' },
-      ],
+        {
+          key: 'extensions',
+          status: 'unavailable',
+          reason: 'extension_policy_unavailable',
+          next_action: 'Open Extension policy and try again.',
+        },
+      ].map((component) => ({
+        reason: 'Bounded native reason.',
+        next_action: 'Use the documented recovery.',
+        ...component,
+      })),
     },
   };
   return {

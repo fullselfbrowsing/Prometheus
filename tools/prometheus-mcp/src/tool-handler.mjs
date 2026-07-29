@@ -1,3 +1,5 @@
+import { Buffer } from 'node:buffer';
+
 import {
   getToolDefinition,
   listToolDefinitions,
@@ -69,9 +71,26 @@ const DIAGNOSTIC_STATUSES = new Set([
   'not_ready',
   'unavailable',
 ]);
-const LATER_DIAGNOSTICS = new Set([
-  'extensions',
+const LIVE_EXTENSION_STATUSES = new Set([
+  'ready',
+  'degraded',
+  'unavailable',
 ]);
+const EXTENSION_REASON_BY_STATUS = Object.freeze({
+  ready: 'extension_policy_ready',
+  degraded: 'extension_system_not_ready',
+  unavailable: 'extension_policy_unavailable',
+});
+const DIAGNOSTIC_COMPONENT_FIELDS = new Set([
+  'key',
+  'status',
+  'reason',
+  'next_action',
+]);
+const MAX_EXTENSION_REASON_BYTES = 48;
+const MAX_EXTENSION_RECOVERY_BYTES = 160;
+const DENIED_EXTENSION_DIAGNOSTIC_TEXT =
+  /authorization|bearer|api[_ -]?key|secret|token|session|extension[_ -]?id|permission|origin|page[_ -]?content|form[_ -]?value|script|profile[_ -]?path|\/Users\//iu;
 const RUNTIME_ROUTE_SET = new Set(RUNTIME_NATIVE_ROUTES);
 const SUPERVISION_NATIVE_ROUTES = new Set([
   'create_supervision_pairing',
@@ -91,11 +110,18 @@ const diagnosticCopy = Object.freeze({
   vault: ['Profile-owned native vault status reported by Prometheus.', 'Use the local control panel when vault recovery is required.'],
   provider: ['Provider runtime status reported by Prometheus.', 'Use the local control panel when provider recovery is required.'],
   supervision: ['Native supervision status reported by Prometheus.', 'Use the local control panel if supervision recovery is required.'],
-  extensions: ['Extension policy is not ready in this phase.', 'Retry after Phase 22 extension support is ready.'],
 });
 
 const isRecord = (value) =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const isBoundedExtensionDiagnosticText = (value, maxBytes) =>
+  typeof value === 'string'
+  && value.length > 0
+  && value === value.trim()
+  && Buffer.byteLength(value, 'utf8') <= maxBytes
+  && !/[\u0000-\u001f\u007f]/u.test(value)
+  && !DENIED_EXTENSION_DIAGNOSTIC_TEXT.test(value);
 
 const localFailure = (code, recovery) => ({
   ok: false,
@@ -202,16 +228,36 @@ const safeDiagnostics = (nativeResult) => {
     );
   }
   const byKey = new Map();
-  for (const component of nativeResult.diagnostics) {
+  for (const [index, component] of nativeResult.diagnostics.entries()) {
     if (!isRecord(component) || !DIAGNOSTIC_KEYS.includes(component.key)
         || !DIAGNOSTIC_STATUSES.has(component.status)
-        || byKey.has(component.key)) {
+        || component.key !== DIAGNOSTIC_KEYS[index]
+        || byKey.has(component.key)
+        || Object.keys(component).some(
+          (field) => !DIAGNOSTIC_COMPONENT_FIELDS.has(field),
+        )) {
       return localFailure(
         'DIAGNOSTICS_INVALID',
         'Restart Prometheus and retry diagnostics.',
       );
     }
-    byKey.set(component.key, component.status);
+    if (component.key === 'extensions'
+        && (!LIVE_EXTENSION_STATUSES.has(component.status)
+          || component.reason !== EXTENSION_REASON_BY_STATUS[component.status]
+          || !isBoundedExtensionDiagnosticText(
+            component.reason,
+            MAX_EXTENSION_REASON_BYTES,
+          )
+          || !isBoundedExtensionDiagnosticText(
+            component.next_action,
+            MAX_EXTENSION_RECOVERY_BYTES,
+          ))) {
+      return localFailure(
+        'DIAGNOSTICS_INVALID',
+        'Restart Prometheus and retry diagnostics.',
+      );
+    }
+    byKey.set(component.key, component);
   }
   if (byKey.size !== DIAGNOSTIC_KEYS.length) {
     return localFailure(
@@ -222,12 +268,21 @@ const safeDiagnostics = (nativeResult) => {
   return {
     ok: true,
     components: DIAGNOSTIC_KEYS.map((key) => {
+      const nativeComponent = byKey.get(key);
+      if (key === 'extensions') {
+        return {
+          key,
+          status: nativeComponent.status,
+          reason: nativeComponent.reason,
+          next_action: nativeComponent.next_action,
+        };
+      }
       const [reason, nextAction] = diagnosticCopy[key];
       return {
         key,
         status: key === 'bridge'
           ? 'ready'
-          : LATER_DIAGNOSTICS.has(key) ? 'not_ready' : byKey.get(key),
+          : nativeComponent.status,
         reason,
         next_action: nextAction,
       };
