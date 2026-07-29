@@ -264,6 +264,15 @@ build_focused_binary() {
   local surface_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_extension_surface_resolver_unittest.o'
   local extension_adapter='obj/chrome/browser/prometheus/prometheus_extension_page_adapter/prometheus_extension_page_adapter.o'
   local extension_adapter_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_extension_page_adapter_unittest.o'
+  local agent_service='obj/chrome/browser/prometheus/prometheus_agent_service/prometheus_agent_service.o'
+  local agent_session='obj/chrome/browser/prometheus/prometheus_agent_session/prometheus_agent_session.o'
+  local agent_profile_service='obj/chrome/browser/prometheus/prometheus_agent_profile_service/prometheus_agent_profile_service.o'
+  local agent_profile_factory='obj/chrome/browser/prometheus/prometheus_agent_profile_service/prometheus_agent_profile_service_factory.o'
+  local supervision_profile_factory='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_supervision_profile_service_factory.o'
+  local agent_audit='obj/chrome/browser/prometheus/prometheus_agent_audit/prometheus_agent_audit.o'
+  local page_adapter='obj/chrome/browser/prometheus/prometheus_page_adapter/prometheus_page_adapter.o'
+  local page_action_dispatcher='obj/chrome/browser/prometheus/prometheus_page_adapter/prometheus_page_action_dispatcher.o'
+  local page_element_reader='obj/chrome/browser/prometheus/prometheus_page_adapter/prometheus_page_element_reader.o'
   local agent_audit_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_audit_unittest.o'
   local agent_service_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_service_unittest.o'
   local browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_page_adapter_browsertest.o'
@@ -331,6 +340,20 @@ build_focused_binary() {
   compile_synthesized_object "${runtime_test}" "${extension_adapter_test}" \
     prometheus_runtime_profile_service_unittest \
     prometheus_extension_page_adapter_unittest
+  compile_exact_object "${agent_service}"
+  compile_exact_object "${agent_session}"
+  # AgentProfileService embeds PrometheusAgentService by value. Recompile both
+  # composition objects whenever the Agent service layout changes so profile
+  # teardown uses the same owning-sequence WeakPtrFactory layout.
+  compile_exact_object "${agent_profile_service}"
+  compile_exact_object "${agent_profile_factory}"
+  compile_synthesized_object "${runtime_factory}" \
+    "${supervision_profile_factory}" prometheus_runtime_profile_service_factory \
+    prometheus_supervision_profile_service_factory
+  compile_exact_object "${agent_audit}"
+  compile_exact_object "${page_adapter}"
+  compile_exact_object "${page_action_dispatcher}"
+  compile_exact_object "${page_element_reader}"
   compile_exact_object "${agent_audit_test}"
   compile_exact_object "${agent_service_test}"
   compile_synthesized_object "${browser_test_template}" \
@@ -437,6 +460,50 @@ run_selected_tests() {
   note 'focused policy suite passed'
 }
 
+verify_extension_dispatch_static_contract() {
+  local adapter="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_extension_page_adapter.cc"
+  local service="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_service.cc"
+  local page_adapter="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_page_adapter.cc"
+  local action_dispatcher="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_page_action_dispatcher.cc"
+  local element_reader="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_page_element_reader.cc"
+
+  rg -q 'SchemeIsHTTPOrHTTPS\\(\\)' "${page_adapter}" \
+    || fail 'ordinary page adapter no longer has an HTTP(S)-only boundary'
+  rg -q 'GetEffectiveGrant' "${adapter}" \
+    || fail 'extension adapter does not re-read the effective grant'
+  rg -q 'resolver\\.Resolve' "${adapter}" \
+    || fail 'extension adapter does not re-resolve browser-owned state'
+  rg -q 'DispatchValidationCallback' "${action_dispatcher}" \
+    || fail 'extension actions lack an immediate pre-mutation validator'
+  rg -q 'DispatchValidationCallback' "${element_reader}" \
+    || fail 'extension element reads lack an immediate dispatch validator'
+  rg -q 'OnExtensionPageRouteComplete' "${service}" \
+    || fail 'Agent service does not retain a distinct extension completion'
+  rg -q 'RecordExtensionAudit' "${service}" \
+    || fail 'Agent service does not emit the bounded extension audit'
+
+  if rg -qi \
+      'prometheus_page_js_executor|prometheus_agent_gateway|prometheus_vault_service|SetRequestedGrant|native_messaging' \
+      "${adapter}"; then
+    fail 'extension adapter references a forbidden script or reverse-authority path'
+  fi
+
+  local recovery_copy
+  for recovery_copy in \
+    'Extension no longer available.' \
+    'Extension surface blocked.' \
+    'Read access is blocked for this extension.' \
+    'Interaction is blocked for this extension.' \
+    'This extension context is not available to Agents.' \
+    'Scripts are blocked on extension surfaces.' \
+    'Extension policy changed before the action ran.' \
+    'Agent access is blocked for this extension in Private mode.'; do
+    rg -Fq "${recovery_copy}" "${adapter}" \
+      || fail "missing extension recovery copy: ${recovery_copy}"
+  done
+  note 'extension dispatch static contract passed'
+}
+
 mkdir -p "${LOG_DIR}"
 [[ -x "${SISO}" ]] || fail "Siso not found at ${SISO}"
 require_file "${OUT_DIR}/build.ninja"
@@ -445,6 +512,9 @@ trap verify_metadata_on_exit EXIT
 build_focused_binary
 list_selected_tests
 run_selected_tests
+if [[ "${EXPECT_FAILURE}" == false ]]; then
+  verify_extension_dispatch_static_contract
+fi
 
 if [[ "${FOCUSED}" == false && "${EXPECT_FAILURE}" == false &&
       -z "${FOCUS}" ]]; then
