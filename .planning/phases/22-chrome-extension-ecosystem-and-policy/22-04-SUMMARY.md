@@ -57,7 +57,7 @@ patterns-established:
 
 requirements-completed: [EXT-02, EXT-04, EXT-05, EXT-06]
 
-duration: 3h 5m
+duration: 3h 28m
 completed: 2026-07-29
 ---
 
@@ -67,11 +67,11 @@ completed: 2026-07-29
 
 ## Performance
 
-- **Duration:** 3h 5m
+- **Duration:** 3h 28m
 - **Started:** 2026-07-29T13:28:02Z
-- **Completed:** 2026-07-29T16:30:50Z
+- **Completed:** 2026-07-29T16:56:15Z
 - **Tasks:** 3
-- **Files modified:** 39 root and nested repository paths
+- **Files modified:** 40 root and nested repository paths (39 in the Task 3 commit, plus one follow-up fix to the MV2 observation test)
 
 ## Accomplishments
 
@@ -92,8 +92,9 @@ Each task was committed atomically in both repositories:
    - Root: `8797e55b1` — Chromium: `cdaff22b49`
 3. **Task 3 [22-04-02]: Generate exact compatibility evidence and observe Manifest/Web Store truth without overrides**
    - Root: `d46dd1bf9` — Chromium: `c3dc3f6104`
+   - Follow-up fix (discovered during final re-verification): Root: `d314e244c` — Chromium: `5c4263e8ed`
 
-_Note: Tasks 1 and 2 were already complete and committed at the start of this execution session; this session verified their artifacts, then executed and committed Task 3._
+_Note: Tasks 1 and 2 were already complete and committed at the start of this execution session; this session verified their artifacts, then executed and committed Task 3, including one follow-up fix commit for a test-hang found during final regression re-verification (see Deviations #8)._
 
 ## Files Created/Modified
 
@@ -184,15 +185,24 @@ _Note: Tasks 1 and 2 were already complete and committed at the start of this ex
 - **Verification:** Compiles cleanly.
 - **Committed in:** `c3dc3f6104`
 
+**8. [Rule 1 - Bug] MV2 observation test intermittently hung past the test-launcher timeout**
+
+- **Found during:** Task 3, final full-regression re-verification pass (after the plan's own work was already committed)
+- **Issue:** `ManifestV2PinnedPolicyObservation` timed out twice in a row at 90s under repeated consecutive local browser-test invocations, despite passing in ~1-12s in every prior isolated run. `extensions::UnpackedInstaller` defaults `be_noisy_on_failure` to `true`, which surfaces a native load-error notification on exactly the rejected-install path this test exercises; that notification path appears to stall an automated harness after enough consecutive native browser-test launches.
+- **Fix:** Called `installer->set_be_noisy_on_failure(false)` before `Load()`. This does not change whether the extension installs or any registry/prefs disable-reason outcome, and is not an install-verification or MV2-policy bypass — it only suppresses the user-facing failure notification. The observation test now completes in ~1.3s.
+- **Files modified:** `prometheus_extension_fixtures_browsertest.cc`
+- **Verification:** Full and focused `verify-phase-22-extension-fixtures.sh` runs, plus `verify-phase-22-webui.sh --focused`, all pass cleanly after the fix; `22-MV2-OBSERVATION.json` regenerated unchanged (`result: "rejected"`, `reason: "unpacked_load_failed"`) at the new nested revision.
+- **Committed in:** `5c4263e8ed` / `d314e244c` (patch `0016`)
+
 ---
 
-**Total deviations:** 7 auto-fixed (2 bugs blocking compilation/linking, 1 pre-existing BUILD.gn bug, 1 pre-existing test-infrastructure limitation worked around, 2 correctness bugs caught by fresh verification, 1 blocking crash fix).
-**Impact on plan:** All fixes were required to make the planned catalog, MV2 observation, and evidence-generation work actually compile, link, run, and render correctly. No scope creep beyond what Task 3 requires; the one architectural issue found (a genuine circular GN dependency) was explicitly left untouched as out of scope.
+**Total deviations:** 8 auto-fixed (2 bugs blocking compilation/linking, 1 pre-existing BUILD.gn bug, 1 pre-existing test-infrastructure limitation worked around, 2 correctness bugs caught by fresh verification, 1 blocking crash fix, 1 test-hang fix found during final re-verification).
+**Impact on plan:** All fixes were required to make the planned catalog, MV2 observation, and evidence-generation work actually compile, link, run, and render correctly, and to make the MV2 observation test reliably terminate under repeated local invocation. No scope creep beyond what Task 3 requires; the one architectural issue found (a genuine circular GN dependency) was explicitly left untouched as out of scope.
 
 ## Issues Encountered
 
 - `gn gen` cannot currently complete for this checkout (a real circular dependency: `prometheus_extension_surface_resolver` → `//chrome/browser/ui` → ... → back to `prometheus_extension_surface_resolver`, introduced in Plan 22-02). This project's established workflow never relies on `gn gen` succeeding — every Prometheus object is compiled via direct Siso compile-command synthesis from a genuinely-registered template — so this did not block Task 3, but it remains latent for whichever future plan first needs a real `gn gen`/`autoninja` pass (likely Plan 22-05's built-app work). Flagging here rather than silently fixing, since resolving it requires a structural dependency change (Rule 4).
-- Two MV2-observation test runs briefly hit the default 45s `--test-launcher-timeout` under heavy local system load from repeated consecutive browser-test invocations during this session's iteration; not a logic bug (the identical test completed in ~12s once given more time). Mitigated by passing an explicit `--test-launcher-timeout=90000` for the MV2 and catalog test invocations.
+- MV2-observation test runs hit the test-launcher timeout under heavy local system load from repeated consecutive browser-test invocations during this session's iteration, first at the default 45s, then again at 90s after raising it. Root cause identified as the native "noisy failure" notification path (see Deviation #8), not raw slowness; fixed at the source rather than by further raising the timeout. `--test-launcher-timeout=90000` remains for the MV2 and catalog test invocations as defense in depth.
 
 ## User Setup Required
 
@@ -204,9 +214,10 @@ None — no external service configuration required.
 - `bash .planning/chromium/verify-phase-22-extension-fixtures.sh --focused` passes: five category tests GREEN with zero retry/skip/fail, closed compatibility-catalog unit suite 12/12, MV2 observation test executed with fresh summary output.
 - `bash .planning/chromium/verify-phase-22-extension-fixtures.sh` (full) passes: all of the above, plus catalog-vs-fixture freshness, `22-COMPATIBILITY.json` schema validation (five unique MV3 rows, closed results, current build/revision), Markdown-matches-JSON, `22-MV2-OBSERVATION.json` generation/validation, Control Panel WebUI projection check, and claim-language/no-bypass static gates — all passed, `.ninja_log`/`.ninja_deps` byte-identical before/after (`eccf79f3dfdc6c8d51af20f56bf1973eb35ff486b1dab9b2b0653cc37b586dce` / `ab1a6ad4639e8db53459384f8636dc53f396397363f3c2751bcdadc0349947c0`).
 - `bash .planning/chromium/verify-phase-22-webui.sh --focused` passes 4/4 (3 existing extension-policy/confirmation tests plus the new `ParityMatrixRendersRealFiveCategoryCompatibilityEvidence`), with fresh GRIT/framework resources and unchanged Ninja metadata.
-- `22-COMPATIBILITY.json` contains exactly five rows, each with `"manifest_version": 3`, a valid 64-character lowercase-hex `fixture_sha256`, `"result": "Verified"`, and the current nested revision `cdaff22b49f53572263eae29c61688b63ec3791e` / build `151.0.7898.0`.
-- `22-MV2-OBSERVATION.json` contains `"manifest_version": 2`, `"result": "rejected"`, `"reason": "unpacked_load_failed"` — the pinned build's actual native behavior for an unpacked, non-component, developer-mode MV2 extension, observed without any MV2 allowance helper or install-verification bypass.
-- Root and nested working trees are clean after both commits (verified via `git status --short`).
+- `22-COMPATIBILITY.json` contains exactly five rows, each with `"manifest_version": 3`, a valid 64-character lowercase-hex `fixture_sha256`, `"result": "Verified"`, and the current nested revision `5c4263e8edccbf7f57b6a5f9c975ee286b362420` / build `151.0.7898.0` (regenerated after the Deviation #8 fix commit).
+- `22-MV2-OBSERVATION.json` contains `"manifest_version": 2`, `"result": "rejected"`, `"reason": "unpacked_load_failed"` — the pinned build's actual native behavior for an unpacked, non-component, developer-mode MV2 extension, observed without any MV2 allowance helper or install-verification bypass. Unchanged after the Deviation #8 fix, confirming that fix only affects notification behavior, not the observed policy outcome.
+- After the Deviation #8 fix, re-ran the full sequence once more end to end: `--focused --expect-failure` (expected all-pass, not a regression), `--focused` (GREEN, MV2 test now ~1.3s), full run (all gates green, evidence regenerated), and `verify-phase-22-webui.sh --focused` (4/4) — all passed.
+- Root and nested working trees are clean after all commits (verified via `git status --short`).
 
 ## Next Phase Readiness
 
@@ -216,8 +227,8 @@ None — no external service configuration required.
 
 ## Self-Check: PASSED
 
-- All created files exist on disk (catalog `.h`/`.cc`/`_unittest.cc`, `mv2_observation` fixture, `22-COMPATIBILITY.json`/`.md`, `22-MV2-OBSERVATION.json`, patch `0015`).
-- All six task commits resolve in their respective repositories (root: `c20e42c1c`, `8797e55b1`, `d46dd1bf9`; nested: `8ba88e08c1`, `cdaff22b49`, `c3dc3f6104`).
+- All created files exist on disk (catalog `.h`/`.cc`/`_unittest.cc`, `mv2_observation` fixture, `22-COMPATIBILITY.json`/`.md`, `22-MV2-OBSERVATION.json`, patches `0015` and `0016`).
+- All eight commits resolve in their respective repositories (root: `c20e42c1c`, `8797e55b1`, `d46dd1bf9`, `d314e244c`; nested: `8ba88e08c1`, `cdaff22b49`, `c3dc3f6104`, `5c4263e8ed`).
 - Both root and nested working trees were clean before this summary was written.
 
 ---
