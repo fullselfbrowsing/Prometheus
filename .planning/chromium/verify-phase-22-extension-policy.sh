@@ -99,12 +99,34 @@ SURFACE_RED_FAILURES=(
   'PrometheusExtensionSurfaceResolverTest.RejectsWrongProfile'
   'PrometheusExtensionSurfaceResolverTest.RejectsZeroSelectorMatches'
 )
+ADAPTER_RED_FAILURES=(
+  'PrometheusExtensionAgentAdapterTest.AuditProjectionIsSuffixOnlyClosedAndContentFree'
+  'PrometheusExtensionAgentAdapterTest.BlockedDeniesEveryReadAndAction'
+  'PrometheusExtensionAgentAdapterTest.ContentScriptHttpPageKeepsNormalPageProvenance'
+  'PrometheusExtensionAgentAdapterTest.ExecutionRevalidatesPolicyVisibilityContextAndDocument'
+  'PrometheusExtensionAgentAdapterTest.InteractAddsExactlySevenTypedActions'
+  'PrometheusExtensionAgentAdapterTest.PrivatePolicyIsExplicitAndNeverInherited'
+  'PrometheusExtensionAgentAdapterTest.ReadOnlyAllowsExactlyFiveReads'
+  'PrometheusExtensionAgentAdapterTest.ScriptsDragAndDropRemainDenied'
+  'PrometheusExtensionAgentAuditTest.ProjectionRejectsContentFullIdentityAndAuthoritySentinels'
+  'PrometheusExtensionAgentBrowserTest.ContentScriptProvenanceRemainsNormalPage'
+  'PrometheusExtensionAgentBrowserTest.ExactNonTabSurfaceRoutingContract'
+  'PrometheusExtensionAgentBrowserTest.ReverseAuthorityAndScriptRemainUnreachable'
+  'PrometheusExtensionAgentServiceContractTest.CommittedExtensionIsClassifiedBeforeNormalPageDispatch'
+  'PrometheusExtensionAgentServiceContractTest.SelectorResolutionPrecedesExtensionAdapterDispatch'
+)
 RED_FAILURES=("${POLICY_RED_FAILURES[@]}")
 if [[ -n "${FOCUS}" ]]; then
   FILTER="${FOCUS}"
 fi
+if [[ "${FOCUSED}" == true && -z "${FOCUS}" ]]; then
+  FILTER='PrometheusExtensionPolicy*:*PrometheusExtensionSurface*:*PrometheusExtensionAgent*'
+fi
 if [[ "${FILTER}" == 'PrometheusExtensionSurface*' ]]; then
   RED_FAILURES=("${SURFACE_RED_FAILURES[@]}")
+fi
+if [[ "${FILTER}" == 'PrometheusExtensionAgent*' ]]; then
+  RED_FAILURES=("${ADAPTER_RED_FAILURES[@]}")
 fi
 
 fail() {
@@ -240,8 +262,13 @@ build_focused_binary() {
   local codec_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_transport_codec_unittest.o'
   local surface_resolver='obj/chrome/browser/prometheus/prometheus_extension_surface_resolver/prometheus_extension_surface_resolver.o'
   local surface_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_extension_surface_resolver_unittest.o'
+  local extension_adapter='obj/chrome/browser/prometheus/prometheus_extension_page_adapter/prometheus_extension_page_adapter.o'
+  local extension_adapter_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_extension_page_adapter_unittest.o'
+  local agent_audit_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_audit_unittest.o'
+  local agent_service_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_service_unittest.o'
   local browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_page_adapter_browsertest.o'
   local surface_browser_test='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_extension_surface_browsertest.o'
+  local extension_agent_browser_test='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_extension_agent_browsertest.o'
   local extension_popup='obj/chrome/browser/ui/ui/extension_popup.o'
   local side_panel_coordinator='obj/chrome/browser/ui/views/side_panel/side_panel/extension_side_panel_coordinator.o'
   local side_panel_manager='obj/chrome/browser/ui/views/side_panel/side_panel/extension_side_panel_manager.o'
@@ -269,6 +296,11 @@ build_focused_binary() {
     "${surface_resolver}"
     "${surface_test}"
     "${surface_browser_test}"
+    "${extension_adapter}"
+    "${extension_adapter_test}"
+    "${agent_audit_test}"
+    "${agent_service_test}"
+    "${extension_agent_browser_test}"
   )
 
   : >"${BUILD_LOG}"
@@ -294,9 +326,19 @@ build_focused_binary() {
   compile_synthesized_object "${runtime_test}" "${surface_test}" \
     prometheus_runtime_profile_service_unittest \
     prometheus_extension_surface_resolver_unittest
+  compile_synthesized_object "${runtime_service}" "${extension_adapter}" \
+    prometheus_runtime_profile_service prometheus_extension_page_adapter
+  compile_synthesized_object "${runtime_test}" "${extension_adapter_test}" \
+    prometheus_runtime_profile_service_unittest \
+    prometheus_extension_page_adapter_unittest
+  compile_exact_object "${agent_audit_test}"
+  compile_exact_object "${agent_service_test}"
   compile_synthesized_object "${browser_test_template}" \
     "${surface_browser_test}" prometheus_page_adapter_browsertest \
     prometheus_extension_surface_browsertest
+  compile_synthesized_object "${browser_test_template}" \
+    "${extension_agent_browser_test}" prometheus_page_adapter_browsertest \
+    prometheus_extension_agent_browsertest
   compile_exact_object "${extension_popup}"
   compile_exact_object "${side_panel_coordinator}"
   compile_exact_object "${side_panel_manager}"
