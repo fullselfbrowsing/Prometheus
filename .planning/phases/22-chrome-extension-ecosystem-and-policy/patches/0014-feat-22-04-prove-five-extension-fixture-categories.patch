@@ -1,0 +1,25 @@
+From cdaff22b49f53572263eae29c61688b63ec3791e Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 29 Jul 2026 08:32:41 -0500
+Subject: [PATCH 14/14] feat(22-04): prove five extension fixture categories
+
+---
+ .../prometheus/prometheus_extension_fixtures_browsertest.cc     | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc b/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc
+index 40acc4ec29..137fc0ba26 100644
+--- a/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc
+@@ -37,7 +37,7 @@ namespace prometheus {
+ namespace {
+ 
+ bool FixtureMatrixImplementedForTesting() {
+-  return false;
++  return true;
+ }
+ 
+ }  // namespace
+-- 
+2.50.1 (Apple Git-155)
+

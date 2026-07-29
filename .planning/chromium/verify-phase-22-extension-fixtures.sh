@@ -372,8 +372,16 @@ run_selected_tests() {
     tail -n 120 "${TEST_LOG}" >&2 || true
     fail "fixture suite failed with status ${status}"
   }
-  rg -q '^\[  PASSED  \] 5 tests' "${TEST_LOG}" \
-    || fail 'fixture suite did not report five passing tests'
+  local passed_count
+  passed_count="$(
+    rg -c \
+      '^\[       OK \] PrometheusExtensionFixturesBrowserTest\.[^ ]+ \([0-9]+ ms\)$' \
+      "${TEST_LOG}"
+  )"
+  [[ "${passed_count}" -eq 5 ]] \
+    || fail "fixture suite reported ${passed_count} passing category tests"
+  rg -q '^SUCCESS: all tests passed\.$' "${TEST_LOG}" \
+    || fail 'Chromium test launcher did not report success'
   if rg -q '^\[  FAILED  \]|^\[  SKIPPED \] [1-9][0-9]* test' \
       "${TEST_LOG}"; then
     fail 'fixture suite reported a failure or skip'
