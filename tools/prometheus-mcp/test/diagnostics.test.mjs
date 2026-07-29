@@ -31,6 +31,42 @@ const deniedFields = new Set([
   'visual_reason',
 ]);
 
+const extensionReasonByStatus = Object.freeze({
+  ready: 'extension_policy_ready',
+  degraded: 'extension_system_not_ready',
+  unavailable: 'extension_policy_unavailable',
+});
+
+const nativeHealth = ({
+  extensionStatus = 'ready',
+  extensionReason = extensionReasonByStatus[extensionStatus],
+  extensionRecovery = 'No extension recovery action is required.',
+} = {}) => ({
+  ok: true,
+  diagnostics: expectedKeys.map((key) => ({
+    key,
+    status: key === 'extensions' ? extensionStatus : 'ready',
+    reason: key === 'extensions'
+      ? extensionReason
+      : 'Private native reason must not be forwarded.',
+    next_action: key === 'extensions'
+      ? extensionRecovery
+      : 'Private native recovery must not be forwarded.',
+  })),
+});
+
+const containsSentinelRecursively = (value, sentinel) => {
+  if (typeof value === 'string') return value.includes(sentinel);
+  if (Array.isArray(value)) {
+    return value.some((child) => containsSentinelRecursively(child, sentinel));
+  }
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(
+    ([key, child]) => key.includes(sentinel)
+      || containsSentinelRecursively(child, sentinel),
+  );
+};
+
 test('Wave 0 diagnostics fixture has exactly ten closed components', () => {
   const components = fixture.diagnostics.components;
   assert.deepEqual(components.map(({ key }) => key), expectedKeys);
@@ -51,56 +87,131 @@ test('diagnostic serialization contains no secret or page-content field names', 
   }
 });
 
-test('Phase 21 supervision diagnostics preserves live readiness while extensions stay not_ready', async () => {
-  const privateText = 'private reason, profile, page, and token material';
-  let healthCalls = 0;
-  let commandCalls = 0;
-  const handler = createToolHandler({
-    session: {
-      health: async () => {
-        healthCalls += 1;
-        return {
-          ok: true,
-          bearer: 'never-return-this-bearer',
-          profile_path: '/private/profile/path',
-          diagnostics: expectedKeys.map((key, index) => ({
-            key,
-            status: index < 9 ? 'ready' : 'not_ready',
-            reason: privateText,
-            next_action: privateText,
-            page_text: privateText,
-          })),
-        };
+test('Phase 22 extension diagnostics preserve live bounded status and recovery', async () => {
+  for (const extensionStatus of ['ready', 'degraded', 'unavailable']) {
+    const extensionReason = extensionReasonByStatus[extensionStatus];
+    const extensionRecovery = extensionStatus === 'ready'
+      ? 'No extension recovery action is required.'
+      : 'Open Extension policy and try again.';
+    let healthCalls = 0;
+    let commandCalls = 0;
+    const handler = createToolHandler({
+      session: {
+        health: async () => {
+          healthCalls += 1;
+          return nativeHealth({
+            extensionStatus,
+            extensionReason,
+            extensionRecovery,
+          });
+        },
+        command: async () => { commandCalls += 1; },
       },
-      command: async () => { commandCalls += 1; },
-    },
+    });
+    const result = await handler.callTool({
+      name: 'diagnostics',
+      arguments: {},
+    });
+    assert.equal(result.isError, false, extensionStatus);
+    assert.equal(healthCalls, 1);
+    assert.equal(commandCalls, 0);
+    const { components } = result.structuredContent;
+    assert.deepEqual(components.map(({ key }) => key), expectedKeys);
+    assert.equal(new Set(components.map(({ key }) => key)).size, 10);
+    const extensions = components.at(-1);
+    assert.deepEqual(extensions, {
+      key: 'extensions',
+      status: extensionStatus,
+      reason: extensionReason,
+      next_action: extensionRecovery,
+    });
+    assert.ok(Buffer.byteLength(extensions.reason, 'utf8') <= 48);
+    assert.ok(Buffer.byteLength(extensions.next_action, 'utf8') <= 160);
+    for (const component of components) {
+      assert.ok(statuses.has(component.status), component.key);
+    }
+    const privateSentinels = [
+      'abcdefghijklmnopabcdefghijklmnop',
+      'Installed extension inventory sentinel',
+      'manifest_permissions',
+      'https://private-origin.example',
+      'page-content-sentinel',
+      'form-value-sentinel',
+      'script-source-sentinel',
+      '/Users/private/profile',
+      'browser-session-sentinel',
+      'bearer-authority-sentinel',
+      'Interact',
+    ];
+    for (const sentinel of privateSentinels) {
+      assert.equal(containsSentinelRecursively(result, sentinel), false);
+    }
+  }
+});
+
+test('Phase 22 extension diagnostics reject malformed state and recursive inventory', async () => {
+  const exactLimit = nativeHealth({
+    extensionRecovery: 'r'.repeat(160),
   });
-  const result = await handler.callTool({ name: 'diagnostics', arguments: {} });
+  let handler = createToolHandler({
+    session: { health: async () => exactLimit },
+  });
+  let result = await handler.callTool({ name: 'diagnostics', arguments: {} });
   assert.equal(result.isError, false);
-  assert.equal(healthCalls, 1);
-  assert.equal(commandCalls, 0);
-  const { components } = result.structuredContent;
-  assert.deepEqual(components.map(({ key }) => key), expectedKeys);
-  assert.equal(components.find(({ key }) => key === 'bridge').status, 'ready');
-  for (const key of ['vault', 'provider', 'supervision']) {
-    assert.equal(components.find((component) => component.key === key).status, 'ready');
-    assert.doesNotMatch(
-      components.find((component) => component.key === key).reason,
-      /not ready in this phase/iu,
-    );
-  }
   assert.equal(
-    components.find((component) => component.key === 'extensions').status,
-    'not_ready',
+    result.structuredContent.components.at(-1).next_action,
+    'r'.repeat(160),
   );
-  for (const component of components) {
-    assert.ok(statuses.has(component.status));
-    assert.ok(component.reason.length > 0);
-    assert.ok(component.next_action.length > 0);
+
+  const reordered = nativeHealth();
+  [reordered.diagnostics[0], reordered.diagnostics[1]] = [
+    reordered.diagnostics[1],
+    reordered.diagnostics[0],
+  ];
+  const missingReason = nativeHealth();
+  delete missingReason.diagnostics.at(-1).reason;
+  const nestedInventory = nativeHealth();
+  nestedInventory.diagnostics.at(-1).details = {
+    installed_extensions: [{
+      extension_id: 'abcdefghijklmnopabcdefghijklmnop',
+      name: 'Installed extension inventory sentinel',
+      permissions: ['https://private-origin.example'],
+      page_content: 'page-content-sentinel',
+      profile_path: '/Users/private/profile',
+      bearer: 'bearer-authority-sentinel',
+    }],
+  };
+  const malformedHealth = [
+    reordered,
+    nativeHealth({ extensionStatus: 'not_ready' }),
+    nativeHealth({
+      extensionStatus: 'ready',
+      extensionReason: 'extension_system_not_ready',
+    }),
+    missingReason,
+    nativeHealth({ extensionReason: 'r'.repeat(49) }),
+    nativeHealth({ extensionRecovery: 'r'.repeat(161) }),
+    nativeHealth({ extensionRecovery: 'Bearer bearer-authority-sentinel' }),
+    nestedInventory,
+  ];
+  for (const health of malformedHealth) {
+    handler = createToolHandler({
+      session: { health: async () => health },
+    });
+    result = await handler.callTool({ name: 'diagnostics', arguments: {} });
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.error.code, 'DIAGNOSTICS_INVALID');
+    for (const sentinel of [
+      'abcdefghijklmnopabcdefghijklmnop',
+      'Installed extension inventory sentinel',
+      'https://private-origin.example',
+      'page-content-sentinel',
+      '/Users/private/profile',
+      'bearer-authority-sentinel',
+    ]) {
+      assert.equal(containsSentinelRecursively(result, sentinel), false);
+    }
   }
-  const serialized = JSON.stringify(result);
-  assert.doesNotMatch(serialized, new RegExp(privateText, 'u'));
-  assert.doesNotMatch(serialized, /never-return|private\/profile|bearer|profile_path|page_text/iu);
 });
 
 test('malformed or incomplete browser health is a typed diagnostics failure', async () => {
