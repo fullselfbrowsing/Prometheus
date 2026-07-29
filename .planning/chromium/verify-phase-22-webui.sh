@@ -41,12 +41,19 @@ CHROMIUM_DIR="${ROOT_DIR}/.context/chromium/src"
 OUT_DIR="${CHROMIUM_DIR}/out/Default"
 SISO="${CHROMIUM_DIR}/third_party/siso/cipd/siso"
 LOG_DIR="${OUT_DIR}/phase22-webui"
+LOG_DIR_RELATIVE="${LOG_DIR#"${OUT_DIR}/"}"
 BUILD_LOG="${LOG_DIR}/build.log"
 LIST_LOG="${LOG_DIR}/list.log"
 TEST_LOG="${LOG_DIR}/test.log"
 FOCUSED_RESPONSE="${LOG_DIR}/focused-browser-tests.rsp"
+FOCUSED_RESOURCE_DIR="${LOG_DIR}/resources"
+FOCUSED_PROMETHEUS_PAK="${FOCUSED_RESOURCE_DIR}/prometheus/prometheus_resources.pak"
+FOCUSED_FRAMEWORK_RESOURCES_PAK="${FOCUSED_RESOURCE_DIR}/framework-resources.pak"
+FRAMEWORK_RESOURCES_PAK="${OUT_DIR}/Prometheus Framework.framework/Resources/resources.pak"
+FRAMEWORK_RESOURCES_PAK_BACKUP="${FOCUSED_RESOURCE_DIR}/framework-resources.before-phase22-webui.pak"
 BINARY="${OUT_DIR}/prometheus_webui_tests"
 METADATA_CAPTURED=false
+FRAMEWORK_RESOURCES_SWAPPED=false
 
 fail() {
   printf 'Phase 22 WebUI verification failed: %s\n' "$1" >&2
@@ -76,6 +83,14 @@ capture_metadata() {
 verify_metadata_on_exit() {
   local status="$?"
   trap - EXIT
+  if [[ "${FRAMEWORK_RESOURCES_SWAPPED}" == true ]]; then
+    if ! cp -p "${FRAMEWORK_RESOURCES_PAK_BACKUP}" \
+        "${FRAMEWORK_RESOURCES_PAK}"; then
+      printf 'Phase 22 WebUI verification failed: could not restore framework resources.pak\n' >&2
+      status=1
+    fi
+    FRAMEWORK_RESOURCES_SWAPPED=false
+  fi
   if [[ "${METADATA_CAPTURED}" == true ]]; then
     local ninja_log_after ninja_deps_after
     ninja_log_after="$(sha256_file "${OUT_DIR}/.ninja_log" 2>/dev/null || true)"
@@ -137,30 +152,82 @@ compile_synthesized_object() {
   }
 }
 
-refresh_packaged_resources() {
-  local command
-  command="$(
-    LC_ALL=C "${SISO}" query commands -C "${OUT_DIR}" \
-      gen/chrome/prometheus_resources.pak 2>/dev/null |
-      LC_ALL=C awk '
-        index($0, "grit.py -i ../../chrome/browser/resources/prometheus/") {
-          command = $0
-        }
-        END { print command }
-      '
-  )"
-  [[ -n "${command}" ]] ||
-    fail 'Prometheus resource generation command not found'
+query_framework_resource_repack_command() {
+  LC_ALL=C "${SISO}" query commands -C "${OUT_DIR}" \
+      gen/repack/resources.pak 2>/dev/null |
+    LC_ALL=C awk '
+      index($0, "pak_util.py repack gen/repack/resources.pak ") {
+        command = $0
+      }
+      END { print command }
+    '
+}
+
+build_and_install_focused_resources() {
+  local prometheus_output="${FOCUSED_RESOURCE_DIR}/prometheus"
+  mkdir -p "${prometheus_output}"
   (
     cd "${OUT_DIR}"
-    /bin/zsh -c "${command}"
-    ln -f gen/chrome/prometheus_resources.pak prometheus_resources.pak \
-      2>/dev/null ||
-      cp -af gen/chrome/prometheus_resources.pak prometheus_resources.pak
+    python3 ../../tools/grit/grit.py \
+      -i ../../chrome/browser/resources/prometheus/prometheus_resources.grd \
+      build -o "${LOG_DIR_RELATIVE}/resources/prometheus" \
+      --depdir . \
+      --depfile "${LOG_DIR_RELATIVE}/resources/prometheus/prometheus_resources_grit.d" \
+      --write-only-new=1 \
+      -D DEVTOOLS_GRD_PATH=gen/third_party/devtools-frontend/src/front_end/devtools_resources \
+      -D SHARED_INTERMEDIATE_DIR=gen \
+      -D _google_chrome=false \
+      -D _is_chrome_for_testing_branded=false \
+      -D reven=false \
+      -D toolkit_views=true \
+      -D use_aura=false \
+      -D use_ozone=false \
+      -D use_titlecase=true \
+      -D is_desktop_android=false \
+      -D scale_factors=2x \
+      -E branding_path_component=chromium \
+      -E root_gen_dir=gen \
+      -E root_src_dir=../../ \
+      -E CHROMIUM_BUILD=chromium \
+      -t darwin \
+      -f gen/tools/gritsettings/default_resource_ids \
+      -p ../../tools/gritsettings/startup_resources_mac.txt
   ) >>"${BUILD_LOG}" 2>&1 || {
     tail -n 120 "${BUILD_LOG}" >&2 || true
-    fail 'direct Prometheus resource packaging failed'
+    fail 'focused Prometheus GRIT build failed'
   }
+  require_file "${FOCUSED_PROMETHEUS_PAK}"
+  cmp -s \
+      "${OUT_DIR}/gen/chrome/grit/prometheus_resources.h" \
+      "${prometheus_output}/grit/prometheus_resources.h" ||
+    fail 'focused Prometheus GRIT build changed reviewed resource IDs'
+
+  local repack_command
+  repack_command="$(query_framework_resource_repack_command)"
+  [[ -n "${repack_command}" ]] ||
+    fail 'framework resource repack command not found'
+  local original_output='repack gen/repack/resources.pak'
+  local focused_output="repack ${LOG_DIR_RELATIVE}/resources/framework-resources.pak"
+  local original_prometheus=' gen/chrome/prometheus_resources.pak '
+  local focused_prometheus=" ${LOG_DIR_RELATIVE}/resources/prometheus/prometheus_resources.pak "
+  [[ "${repack_command}" == *"${original_output}"* &&
+     "${repack_command}" == *"${original_prometheus}"* ]] ||
+    fail 'framework resource repack command lacks expected Prometheus input'
+  repack_command="${repack_command/${original_output}/${focused_output}}"
+  repack_command="${repack_command/${original_prometheus}/${focused_prometheus}}"
+  (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${repack_command}"
+  ) >>"${BUILD_LOG}" 2>&1 || {
+    tail -n 120 "${BUILD_LOG}" >&2 || true
+    fail 'focused framework resource repack failed'
+  }
+  require_file "${FOCUSED_FRAMEWORK_RESOURCES_PAK}"
+  require_file "${FRAMEWORK_RESOURCES_PAK}"
+  cp -p "${FRAMEWORK_RESOURCES_PAK}" "${FRAMEWORK_RESOURCES_PAK_BACKUP}"
+  FRAMEWORK_RESOURCES_SWAPPED=true
+  cp -p "${FOCUSED_FRAMEWORK_RESOURCES_PAK}" "${FRAMEWORK_RESOURCES_PAK}"
+  note 'focused framework resource pack contains current Prometheus HTML, JS, and CSS'
 }
 
 query_browser_link_command() {
@@ -197,6 +264,7 @@ build_focused_response() {
 
 run_direct_build() {
   local web_ui='obj/chrome/browser/ui/webui/prometheus/side_panel_ui/prometheus_web_ui.o'
+  local tab_control_web_ui='obj/chrome/browser/ui/webui/prometheus/prometheus/prometheus_tab_control_web_ui.o'
   local side_panel_runtime='obj/chrome/browser/ui/webui/prometheus/side_panel_ui/prometheus_side_panel_runtime.o'
   local runtime_dialogs='obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o'
   local browser_test='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_web_ui_browsertest.o'
@@ -205,6 +273,8 @@ run_direct_build() {
   local policy_types='obj/chrome/browser/prometheus/prometheus_extension_policy_types/prometheus_extension_policy_types.o'
   local policy_prefs='obj/chrome/browser/prometheus/prometheus_extension_policy_prefs/prometheus_extension_policy_prefs.o'
   local policy_service='obj/chrome/browser/prometheus/prometheus_extension_policy_service/prometheus_extension_policy_service.o'
+  local browser_composition='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_browser_main_extra_parts.o'
+  local profiles_factories='obj/chrome/browser/profiles/profiles_extra_parts_impl/chrome_browser_main_extra_parts_profiles.o'
   local extras=(
     obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o
     obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o
@@ -238,9 +308,12 @@ run_direct_build() {
     prometheus_runtime_profile_service prometheus_extension_policy_service
   compile_exact_object "${side_panel_runtime}"
   compile_exact_object "${web_ui}"
+  compile_exact_object "${tab_control_web_ui}"
   compile_exact_object "${runtime_dialogs}"
+  compile_exact_object "${browser_composition}"
+  compile_exact_object "${profiles_factories}"
   compile_exact_object "${browser_test}"
-  refresh_packaged_resources
+  build_and_install_focused_resources
 
   build_focused_response
   local link_command
