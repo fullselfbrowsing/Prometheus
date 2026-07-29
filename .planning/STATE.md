@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Chromium Engine Migration
 current_phase: 22
 current_phase_name: chrome-extension-ecosystem-and-policy
-current_plan: 4
+current_plan: 5
 status: executing
-stopped_at: Completed 22-03-PLAN.md
-last_updated: "2026-07-29T12:50:54.482Z"
+stopped_at: Completed 22-04-PLAN.md
+last_updated: "2026-07-29T16:39:36.430Z"
 last_activity: 2026-07-29
 progress:
   total_phases: 14
   completed_phases: 11
   total_plans: 97
-  completed_plans: 95
-  percent: 98
+  completed_plans: 96
+  percent: 79
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: `.planning/PROJECT.md` (updated 2026-07-13)
 **Core value:** Agents get fast, precise, auditable whole-browser control
 through DOM/native structure rather than screenshots or extension injection.
 
-**Current focus:** Phase 22 extension policy execution. Plans 22-01 through
-22-03 are complete; Plan 22-04 is next to prove the deterministic MV3
-compatibility baseline and separate pinned MV2 policy observation.
+**Current focus:** Phase 22 — chrome-extension-ecosystem-and-policy
+22-01 through 22-04 are complete; Plan 22-05 is next to run the built
+application and closeout gates.
 
 **Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
 external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
@@ -37,21 +37,21 @@ terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 ## Current Position
 
 Phase: 22 (chrome-extension-ecosystem-and-policy) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 **Current Phase:** 22
 **Current Phase Name:** chrome-extension-ecosystem-and-policy
 **Total Phases:** 14
 **Completed Phases:** 11
-**Current Plan:** 4
+**Current Plan:** 5
 **Total Plans in Phase:** 5
-**Status:** Ready to execute
-**Progress:** [██████████] 98%
+**Status:** Executing Phase 22
+**Progress:** [██████████] 99%
 **Last Activity:** 2026-07-29
-**Last Activity Description:** Plan 22-03 completed generation-bound local
-extension controls, safe native Interact confirmation, and inventory-free live
-health; focused WebUI/MCP, 7/7 gateway, and 85/85 Node tests pass.
+**Last Activity Description:** Completed Plan 22-04 — five MV3 fixtures,
+compiled compatibility catalog wired into the Parity Matrix, and a separate
+MV2 pinned-policy observation (native result: rejected).
 
-Milestone work is 95 of 97 current plans complete (98%).
+Milestone work is 96 of 97 current plans complete (99%).
 
 ## Latest Evidence
 
@@ -395,6 +395,8 @@ Milestone work is 95 of 97 current plans complete (98%).
 - [Phase 22]: Persist only bounded requested extension grant choices and derive effective access from fresh Chromium registry truth, with Private access separately requested and capped by regular access. — This preserves Chromium as lifecycle and installed-identity authority, prevents persisted runtime authority, and makes OTR, uninstall, replacement, eligibility loss, and stale-generation behavior fail closed.
 - [Phase 22]: Treat extension_surface as a closed popup or side_panel routing hint anchored to a positive stable tab; reconstruct extension identity only from current browser-owned visible WebContents and revalidate policy immediately before dispatch. — This prevents caller-supplied extension, URL, frame, renderer, script, or reverse-authority identities from widening the Agent route while preserving ordinary HTTP(S) page behavior.
 - [Phase 22]: Keep chrome://extensions as lifecycle authority and expose only generation-bound Prometheus grants in the local Control Panel; confirm Interact increases with a safe-default native dialog and publish inventory-free live extension health. — Renderer references are display-only, so native code must resolve and revalidate current identity before confirmation and mutation while external diagnostics remain an exact-ten bounded status channel rather than an inventory surface.
+- [Phase 22]: Keep the compatibility catalog as its own GN target so its manually-synthesized object path stays self-consistent, and derive its five rows as a compiled evidence snapshot cross-checked only on fixture SHA-256 and category keys against the independently regenerated JSON/Markdown evidence. — Prometheus builds in this project via direct Siso compile-command synthesis rather than gn gen, so new targets must synthesize from a genuinely Siso-known template, and evidence integrity is best enforced on the narrow machine-checkable facts rather than requiring byte-identical prose.
+- [Phase 22]: Observe the pinned Chromium build's native Manifest V2 policy through the ordinary UnpackedInstaller path without asserting a specific accepted/rejected outcome, and record whichever result occurs (this build: rejected, unpacked_load_failed) as evidence kept structurally outside the five-row MV3 catalog. — The plan requires truthful observation, not a hand-authored expectation; asserting a specific outcome would risk silently becoming a bypass if the pinned policy ever changes.
 
 ## Performance Metrics
 
@@ -439,6 +441,7 @@ Milestone work is 95 of 97 current plans complete (98%).
 | Phase 22 P01 | 47 min | 3 tasks | 16 files |
 | Phase 22 P02 | 11h 34m | 3 tasks | 44 files |
 | Phase 22 P03 | 1h 17m | 4 tasks | 32 files |
+| Phase 22 P04 | 3h 5m | 3 tasks | 17 files |
 
 ## Blockers and Deferred Items
 
@@ -453,8 +456,8 @@ Milestone work is 95 of 97 current plans complete (98%).
 
 ## Session
 
-**Last Date:** 2026-07-29T12:50:54.478Z
-**Stopped At:** Completed 22-03-PLAN.md
+**Last Date:** 2026-07-29T16:39:11.287Z
+**Stopped At:** Completed 22-04-PLAN.md
 **Resume File:** None
 
 ## Operator Next Step

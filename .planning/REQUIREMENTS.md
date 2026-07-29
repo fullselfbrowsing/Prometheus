@@ -130,7 +130,7 @@ This milestone intentionally treats Falkon as a historical reference and preserv
 - [x] **EXT-02**: User can install and manage Chrome/Chromium-compatible extensions through a Prometheus-approved flow or documented sideload/developer flow.
 - [x] **EXT-03**: Prometheus distinguishes extension permissions from Prometheus agent permissions so an extension cannot silently gain agent-native internal-surface control.
 - [x] **EXT-04**: Agent routing can identify extension pages/surfaces and apply explicit policy before reading or mutating them.
-- [ ] **EXT-05**: Extension compatibility is tested with representative categories: password manager, ad blocker, productivity/content script, side panel/tooling extension, and developer extension.
+- [x] **EXT-05**: Extension compatibility is tested with representative categories: password manager, ad blocker, productivity/content script, side panel/tooling extension, and developer extension.
 - [x] **EXT-06**: Prometheus documents any intentionally disabled Chrome/Google-service extension features and provides user-facing explanations.
 
 ### Validation, Security, And Release
