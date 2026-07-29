@@ -1,7 +1,7 @@
 # Phase 22 Extension Compatibility Evidence
 
-Generated: 2026-07-29T16:29:48Z
-Chromium revision: cdaff22b49f53572263eae29c61688b63ec3791e
+Generated: 2026-07-29T16:55:45Z
+Chromium revision: 5c4263e8edccbf7f57b6a5f9c975ee286b362420
 Prometheus build: 151.0.7898.0
 
 | Category | Result | Fixture | Version | Manifest | Install source | Regular | Private | Limitation |

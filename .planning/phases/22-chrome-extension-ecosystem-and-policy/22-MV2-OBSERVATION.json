@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-29T16:29:48Z",
-  "chromium_revision": "cdaff22b49f53572263eae29c61688b63ec3791e",
+  "generated_at": "2026-07-29T16:55:45Z",
+  "chromium_revision": "5c4263e8edccbf7f57b6a5f9c975ee286b362420",
   "manifest_version": 2,
   "fixture": "mv2_observation",
   "result": "rejected",
