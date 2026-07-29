@@ -4,7 +4,7 @@ shopt -s nullglob
 
 FOCUSED=false
 EXPECT_FAILURE=false
-FILTER='PrometheusWebUI*ExtensionPolicy*:*PrometheusExtensionConfirmation*'
+FILTER='PrometheusWebUI*ExtensionPolicy*:*PrometheusExtensionConfirmation*:PrometheusWebUIFoundationBrowserTest.ParityMatrixRendersRealFiveCategoryCompatibilityEvidence'
 
 usage() {
   printf 'Usage: %s [--focused] [--expect-failure]\n' "$0" >&2
@@ -273,6 +273,7 @@ run_direct_build() {
   local policy_types='obj/chrome/browser/prometheus/prometheus_extension_policy_types/prometheus_extension_policy_types.o'
   local policy_prefs='obj/chrome/browser/prometheus/prometheus_extension_policy_prefs/prometheus_extension_policy_prefs.o'
   local policy_service='obj/chrome/browser/prometheus/prometheus_extension_policy_service/prometheus_extension_policy_service.o'
+  local catalog='obj/chrome/browser/prometheus/prometheus_extension_compatibility_catalog/prometheus_extension_compatibility_catalog.o'
   local browser_composition='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_browser_main_extra_parts.o'
   local profiles_factories='obj/chrome/browser/profiles/profiles_extra_parts_impl/chrome_browser_main_extra_parts_profiles.o'
   local extras=(
@@ -292,6 +293,7 @@ run_direct_build() {
     obj/chrome/browser/prometheus/prometheus_extension_policy_prefs/prometheus_extension_policy_prefs.o
     obj/chrome/browser/prometheus/prometheus_extension_policy_service/prometheus_extension_policy_service.o
     obj/chrome/browser/prometheus/prometheus_extension_policy_service/prometheus_extension_policy_service_factory.o
+    "${catalog}"
     obj/chrome/browser/prometheus/prometheus_extension_surface_resolver/prometheus_extension_surface_resolver.o
     obj/chrome/browser/prometheus/prometheus_extension_page_adapter/prometheus_extension_page_adapter.o
     obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_audit_unittest.o
@@ -306,6 +308,12 @@ run_direct_build() {
   require_file "${OUT_DIR}/${policy_prefs}"
   compile_synthesized_object "${runtime_service}" "${policy_service}" \
     prometheus_runtime_profile_service prometheus_extension_policy_service
+  # Template must be a genuinely Siso-known object (wired into a subninja
+  # reachable from toolchain.ninja). policy_service above is itself only ever
+  # produced via synthesis and was never registered, so reuse the same
+  # pre-Phase-22 runtime_service template used for it.
+  compile_synthesized_object "${runtime_service}" "${catalog}" \
+    prometheus_runtime_profile_service prometheus_extension_compatibility_catalog
   compile_exact_object "${side_panel_runtime}"
   compile_exact_object "${web_ui}"
   compile_exact_object "${tab_control_web_ui}"
