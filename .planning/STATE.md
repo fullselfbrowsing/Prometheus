@@ -7,7 +7,7 @@ current_phase_name: chrome-extension-ecosystem-and-policy
 current_plan: 5
 status: executing
 stopped_at: Completed 22-04-PLAN.md
-last_updated: "2026-07-29T16:39:36.430Z"
+last_updated: "2026-07-30T01:10:17.590Z"
 last_activity: 2026-07-29
 progress:
   total_phases: 14
@@ -44,14 +44,17 @@ Plan: 5 of 5
 **Completed Phases:** 11
 **Current Plan:** 5
 **Total Plans in Phase:** 5
-**Status:** Executing Phase 22
+**Status:** Executing Phase 22 (Plan 22-05 partial — see Blockers)
 **Progress:** [██████████] 99%
 **Last Activity:** 2026-07-29
-**Last Activity Description:** Completed Plan 22-04 — five MV3 fixtures,
-compiled compatibility catalog wired into the Parity Matrix, and a separate
-MV2 pinned-policy observation (native result: rejected).
+**Last Activity Description:** Plan 22-05 Task 1 complete (retained built-app
+extension smoke RED contract). Task 2 partial: landed the developer-private
+manager-caller integration and verified native install/inspect/reload
+end to end; disable onward, `smoke-phase-22-extensions.sh`, and Tasks 3-4
+remain. Plan 22-05 is NOT complete; do not advance past it.
 
-Milestone work is 96 of 97 current plans complete (99%).
+Milestone work is 96 of 97 current plans complete (99%); 22-05 is the
+remaining plan and is in progress.
 
 ## Latest Evidence
 
@@ -397,6 +400,8 @@ Milestone work is 96 of 97 current plans complete (99%).
 - [Phase 22]: Keep chrome://extensions as lifecycle authority and expose only generation-bound Prometheus grants in the local Control Panel; confirm Interact increases with a safe-default native dialog and publish inventory-free live extension health. — Renderer references are display-only, so native code must resolve and revalidate current identity before confirmation and mutation while external diagnostics remain an exact-ten bounded status channel rather than an inventory surface.
 - [Phase 22]: Keep the compatibility catalog as its own GN target so its manually-synthesized object path stays self-consistent, and derive its five rows as a compiled evidence snapshot cross-checked only on fixture SHA-256 and category keys against the independently regenerated JSON/Markdown evidence. — Prometheus builds in this project via direct Siso compile-command synthesis rather than gn gen, so new targets must synthesize from a genuinely Siso-known template, and evidence integrity is best enforced on the narrow machine-checkable facts rather than requiring byte-identical prose.
 - [Phase 22]: Observe the pinned Chromium build's native Manifest V2 policy through the ordinary UnpackedInstaller path without asserting a specific accepted/rejected outcome, and record whichever result occurs (this build: rejected, unpacked_load_failed) as evidence kept structurally outside the five-row MV3 catalog. — The plan requires truthful observation, not a hand-authored expectation; asserting a specific outcome would risk silently becoming a bypass if the pinned policy ever changes.
+- [Phase 22 P05, partial]: Install a one-shot `ui::SelectFileDialogFactory` immediately before the real Load-unpacked click that removes itself from the global factory slot inside `Create()` itself (before `SelectFileImpl` runs), and advance the controller's stage/pending-transition/timeout state synchronously before issuing any WebUI click rather than in that click's own completion callback. — A factory install can otherwise answer a second/unrelated picker, and the renderer's native API call and the triggering `ExecuteJavaScript()` completion are independent IPC round trips with no ordering guarantee between them.
+- [Phase 22 P05, partial]: Copy the live sender WebContents' committed URL into `SelectFileDialog::SelectFile()`'s `caller` argument only when that sender is exactly the live `chrome://extensions` origin; every other caller keeps the prior caller-less call. — Verified end to end (real install through reload); disable onward remains unverified pending root-causing why the native `chrome.management.setEnabled()` click produces no observed registry unload. Phase 22 is not closed.
 
 ## Performance Metrics
 
@@ -442,10 +447,22 @@ Milestone work is 96 of 97 current plans complete (99%).
 | Phase 22 P02 | 11h 34m | 3 tasks | 44 files |
 | Phase 22 P03 | 1h 17m | 4 tasks | 32 files |
 | Phase 22 P04 | 3h 5m | 3 tasks | 17 files |
+| Phase 22 P05 (partial) | unrecorded | 1 of 4 tasks complete, 1 partial | 13 files |
 
 ## Blockers and Deferred Items
 
-- Blockers: none.
+- Blocker: Phase 22 Plan 05 is partially complete. Task 1 (retained RED
+  contract) is done and verified. Task 2 is partial: the developer-private
+  manager-caller integration and native install/inspect/reload are verified
+  end to end against a synthesized test binary, but the disable stage's
+  `chrome.management.setEnabled()` DOM click reports success while no
+  matching `ExtensionRegistryObserver` unload is ever observed (root cause
+  not identified); enable/local-policy/options/remove were never reached to
+  test. `smoke-phase-22-extensions.sh` (driving the real packaged
+  `Prometheus.app`) was not built. Tasks 3 (`verify-phase-22.sh`) and 4
+  (closeout evidence) were not started. See
+  `.planning/phases/22-chrome-extension-ecosystem-and-policy/22-05-SUMMARY.md`
+  for the full account. Phase 22 is not ready to close.
 - Human desktop visual review: deferred to the non-blocking Phase 24 release review.
 - UI audit carry-forward: add `Review in Prometheus` for waiting confirmation,
   add a browser-owned `Use in Current Tab` vault action, keep the vault secret
@@ -456,12 +473,14 @@ Milestone work is 96 of 97 current plans complete (99%).
 
 ## Session
 
-**Last Date:** 2026-07-29T16:39:11.287Z
-**Stopped At:** Completed 22-04-PLAN.md
-**Resume File:** None
+**Last Date:** 2026-07-30T01:10:17.590Z
+**Stopped At:** Partial: 22-05-PLAN.md Task 1 complete, Task 2 partial (see Blockers)
+**Resume File:** .planning/phases/22-chrome-extension-ecosystem-and-policy/22-05-PLAN.md
 
 ## Operator Next Step
 
-Phase 22 remains planned and `not_ready`; no Phase 22 implementation has
-started. Begin its specification/planning workflow only when explicitly
-authorized.
+Resume 22-05-PLAN.md Task 2: root-cause why the built-app extension smoke's
+disable-toggle click does not produce an observed `ExtensionRegistryObserver`
+unload, extend the controller browser test through `kComplete`, build
+`smoke-phase-22-extensions.sh` against the real `Prometheus.app`, then
+execute Tasks 3-4. Phase 22 remains `not_ready` until 22-05 fully completes.
