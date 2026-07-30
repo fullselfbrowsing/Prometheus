@@ -128,6 +128,14 @@ FOCUSED_FILTER='PrometheusExtensionSmokeBootstrapTest.*:PrometheusExtensionSmoke
 BOOTSTRAP_FILTER='PrometheusExtensionSmokeBootstrapTest.*'
 CONTROLLER_FILTER='PrometheusExtensionSmokeControllerBrowserTest.*'
 CALLER_FILTER='PrometheusDeveloperPrivateCallerBrowserTest.*'
+# Historical note: at the commit that landed this script, exactly
+# LoadUnpackedPassesCommittedManagerCallerToSelectFileDialog failed (RED)
+# because DeveloperPrivateLoadUnpackedFunction::ShowSelectFileDialog() had not
+# yet been given the committed-caller copy. A later commit in this same plan
+# landed that narrow change, which flips the cohort GREEN; --expect-failure is
+# retained for reference but is no longer the correct invocation for the
+# current tree (it now correctly reports a failure itself, since there is no
+# longer a RED assertion to match). Use the no-argument --focused mode.
 EXPECTED_RED_FAILURES=(
   'PrometheusDeveloperPrivateCallerBrowserTest.LoadUnpackedPassesCommittedManagerCallerToSelectFileDialog'
 )
@@ -222,7 +230,7 @@ verify_source_contract() {
     "${DEVELOPER_PRIVATE_UNITTEST_CC}"
   require_literal 'LoadUnpackedPassesCommittedManagerCallerToSelectFileDialog' \
     "${BROWSERTEST_CC}"
-  require_literal 'FullLifecycleRequiresDeveloperPrivateManagerCallerIntegration' \
+  require_literal 'FullLifecycleInstallsInspectsAndReloads' \
     "${BROWSERTEST_CC}"
 
   reject_pattern 'accept_dialog_for_testing_' \
