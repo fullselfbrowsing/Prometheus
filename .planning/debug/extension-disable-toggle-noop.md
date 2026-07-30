@@ -2,7 +2,7 @@
 status: awaiting_human_verify
 trigger: Phase 22 Plan 22-05 Task 2 — real DOM click on the chrome://extensions item card #enableToggle reports "clicked" but no ExtensionRegistryObserver::OnExtensionUnloaded is ever observed, stalling PrometheusExtensionSmokeController at the kReloaded stage
 created: 2026-07-30T08:54:53Z
-updated: 2026-07-30T09:30:00Z
+updated: 2026-07-30T15:00:00Z
 phase: 22-chrome-extension-ecosystem-and-policy
 plan: 22-05
 ---
@@ -212,9 +212,433 @@ bash .planning/chromium/verify-phase-22-extension-smoke.sh --focused
   implication: The reported disable-toggle bug is resolved. A separate downstream defect in
     the policy stage is now exposed and must be root-caused for the plan to progress.
 
+## Evidence (continued — downstream defects)
+
+- timestamp: 2026-07-30T07:45:08Z
+  checked: |
+    Instrumented build 1 (`/tmp/pdiag-run1.log`). Added: a test-side
+    `RenderProcessHostCreationObserver`/`RenderProcessHostObserver` tracer logging every
+    renderer's create/ready/exit(status,exit_code)/destroy; controller-side `PDIAG procs[...]`
+    snapshots at each stage listing every `RenderProcessHost` with its `ProcessMap` extension
+    mapping plus `ProcessManager::GetServiceWorkersForExtension()` /
+    `GetRenderFrameHostsForExtension()`; `TryAcceptVisibleBrowserOwnedDialog()` logging every
+    visible browser-owned widget's `Widget::GetName()`/`GetWindowTitle()`; a diagnostic second
+    `chrome.management.uninstall()` call whose rejection is stashed on `window` and read back;
+    and the browsertest predicate extended from `>= kEnabled` to a terminal outcome.
+  found: |
+    DEFECT 2 ROOT CAUSE CONFIRMED, verbatim:
+      `PDIAG uninstall_probe=rejected:chrome.management.uninstall requires a user gesture.`
+    (repeated on every 200 ms poll). That is `keys::kGestureNeededForUninstallError` from
+    `ManagementUninstallFunctionBase::Uninstall()`:
+      `if (show_confirm_dialog && !user_gesture()) return RespondNow(Error(kGestureNeeded...));`
+    `Service.deleteItem()` calls `chrome.management.uninstall(id, {showConfirmDialog:true})`,
+    and for a WebUI caller `extension()` is null so `self_uninstall` is false and
+    `show_confirm_dialog |= !self_uninstall` forces it true. The uninstall therefore never
+    starts at all.
+    Also: ZERO `PDIAG owned_widget` lines were emitted across the whole 10 s dialog poll, so no
+    visible browser-owned widget existed at any point — the uninstall confirmation dialog was
+    never created (consistent with the API rejecting before `UninstallFunctionDelegate()`), and
+    the previous session's "a visible browser-owned dialog was accepted" observation did not
+    reproduce.
+  implication: |
+    `RenderFrameHost::ExecuteJavaScript()` conveys no user activation, so the injected
+    `button.click()` produces an untrusted click with no transient activation. The gesture gate
+    is an anti-abuse gate on the API, not the user-consent gate (the confirmation dialog is the
+    consent gate). A faithful fix must make the click a real user-activated click rather than
+    fabricate the activation signal.
+
+- timestamp: 2026-07-30T07:45:08Z
+  checked: Same run — renderer process lifecycle around the bad Mojo message
+  found: |
+    DEFECT 1 LEADING THEORY DISPROVEN. The killed renderer is NOT a stale pre-disable process.
+    Timeline (all 0730/0744xx):
+      56.369760 rph_created id=10
+      56.559032 procs[reloaded]      rph=10 live pm=ohbeakalcafjdggcmdohgkgannopghdg
+      56.765536 procs[disabled]      rph=10 live pm=ohbeakal...  (extension now unloaded)
+      56.936697 rph_ready id=10      <- the old extension process only finished launching here
+      56.957864 rph_exited id=10 status=0 exit_code=0 ; 56.957966 rph_destroyed id=10
+      56.958753 rph_created id=11    <- 0.8 ms after 10 died, 13 ms BEFORE the re-enable
+      56.971765 procs[enabled]       rph=11 live pm=-      (extension re-enabled here)
+      57.172482 procs[ready]         rph=11 live pm=-
+      57.172592 procs[policy_exercised] rph=11 live pm=-
+      57.183284 rph_created id=12 ; 57.193352 procs[options_tab_opened] rph=12 pm=ohbeakal...,
+                                                                        rph=11 pm=-
+      57.518602 rph_ready id=11      <- 560 ms launch
+      57.540644 Terminating render process for bad Mojo message: ... unauthorized extension ID
+      57.540804 bad_message.cc reason 123 (= RPH_MOJO_PROCESS_ERROR)
+      57.901456 rph_exited id=11 status=0 exit_code=0 ; 57.901530 rph_destroyed id=11
+      57.954732 procs[options_routing_checked] rph=12 pm=ohbeakal...,
+                frame_rph=12:url=chrome-extension://.../options.html  (rph=11 gone)
+    So the killed process is rph=11, created during the re-enable churn and NEVER present in
+    `ProcessMap` at any snapshot, while the options tab's process rph=12 WAS inserted normally.
+    `ProcessMap::Insert()` has exactly one caller,
+    `ChromeContentBrowserClientExtensionsPart::SiteInstanceGotProcessAndSite()`, which returns
+    early without inserting when `GetEnabledExtensionFromSecurityPrincipal()` finds no *enabled*
+    extension; `ProcessMap::Remove()` has exactly one caller,
+    `ExtensionService::RenderProcessHostDestroyed()`. There is no retroactive insert when an
+    extension later becomes enabled.
+  implication: |
+    Mechanism is the mirror image of the assumed one: a *fresh* renderer for the re-enabled
+    extension was allocated while the extension was still disabled, so it never entered
+    ProcessMap; by the time it finished launching and registered its listener the extension was
+    enabled again, so `ShouldIgnoreListenerMessageForUnloadedExtension()` no longer suppressed
+    the message and `IsProcessAuthorizedForExtensionProcessListener()` failed. Still to confirm:
+    that rph=11 hosts the extension's service worker, and that the extension was genuinely not
+    in `enabled_extensions()` at rph=11's creation.
+
+- timestamp: 2026-07-30T07:45:08Z
+  checked: |
+    Whether defect 1 actually fails the browser test, as the previous session asserted
+    ("`NoRendererCrashesAssertion` fails the browser test regardless of controller state").
+  found: |
+    IT DOES NOT. The instrumented run exited 0 and reported
+    `[       OK ] PrometheusExtensionSmokeControllerBrowserTest.FullLifecycleInstalls
+    InspectsAndReloads (13496 ms)` with the bad Mojo message present in the same log. Reading
+    `content/public/test/no_renderer_crashes_assertion.cc`, `RenderProcessExited()` returns
+    early ("Not a crash") for `TERMINATION_STATUS_LAUNCH_FAILED`,
+    `TERMINATION_STATUS_NORMAL_TERMINATION` and `TERMINATION_STATUS_STILL_RUNNING`. rph=11
+    exited with `status=0` (= `TERMINATION_STATUS_NORMAL_TERMINATION`) `exit_code=0`, because
+    `RenderProcessHostImpl::ShutdownForBadMessage()` goes through the ordinary
+    `Shutdown(RESULT_CODE_KILLED_BAD_MESSAGE)` path. The verify script's own crash-line rejection
+    regex (`segmentation fault|received signal|check failed|fatal error|addresssanitizer|
+    CRASHED\)|test timed out|\(TIMEOUT\)`) also does not match either bad-message log line.
+  implication: |
+    The previous session's gating claim was an inference, not an observation, and it is wrong.
+    Defect 1 does not block reaching `kComplete`; defect 2 is the only actual blocker. Defect 1
+    is still a real finding that must be characterised honestly rather than ignored, because a
+    renderer being killed for a bad IPC during the smoke is a genuine defect signal.
+
+- timestamp: 2026-07-30T07:57:07Z
+  checked: |
+    Instrumented build 2 (`/tmp/pdiag-run2.log`) — same instrumentation as build 1, run again.
+    Read specifically to re-test the immediately preceding entry's claim that defect 1 does
+    not fail the browser test.
+  found: |
+    THAT CLAIM IS WRONG, AND THE RUN-1 OBSERVATION IT RESTED ON WAS THE UNLUCKY SAMPLE.
+    Run 2 ends:
+      `../../content/public/test/no_renderer_crashes_assertion.cc:102: Failure`
+      `Unexpected termination of a renderer process; status: 2, exit_code: 3`
+      `[  FAILED  ] PrometheusExtensionSmokeControllerBrowserTest.
+       FullLifecycleInstallsInspectsAndReloads (3936 ms)`
+    status=2 is `TERMINATION_STATUS_PROCESS_WAS_KILLED` and exit_code=3 is
+    `RESULT_CODE_KILLED_BAD_MESSAGE`. Confirmed against source: the switch in
+    `no_renderer_crashes_assertion.cc` early-returns only for `LAUNCH_FAILED`,
+    `NORMAL_TERMINATION` and `STILL_RUNNING`; status=2 falls to `default: break` and FAILs.
+    Note the controller itself reached the end in this run too
+    (`PDIAG Complete`, `PDIAG terminal stage=complete outcome=1`) — the test failed purely on
+    the crash assertion, exactly as the original session claimed.
+    The same run also settles the two facts the previous entry left open:
+      `PDIAG rph_created id=11 enabled_unpacked: <none>` — the enabled-extension set was
+      genuinely empty at rph=11's creation.
+      `PDIAG sw_started version=0 rph=11 script=chrome-extension://ohbeakal.../
+       service_worker.js` — rph=11 did host the extension's service worker.
+  implication: |
+    Defect 1's termination status is not deterministic: run 1 reported status=0/exit_code=0
+    (test passed), run 2 reported status=2/exit_code=3 (test failed) from the identical
+    binary and identical code path. So defect 1 IS a gating failure, intermittently — which
+    is worse than a deterministic one, because it makes the smoke flaky rather than red.
+    The withdrawal of the gating claim in the 07:45:08Z entry above is itself withdrawn; the
+    original session's assertion was right. Generalising "does not fail" from a single
+    passing sample was the error.
+
+- timestamp: 2026-07-30T08:02:25Z
+  checked: |
+    Instrumented build 3 (`/tmp/pdiag-run3.log`) — instrumentation plus both candidate fixes
+    (the activation-settled wait before the disable click, and the real-mouse-event remove
+    click).
+  found: |
+    Clean green, and every step of the predicted mechanism visible:
+      `PDIAG procs[activation_settled] rph=13:live:pm=ohbeakal... sw_rph=13:ver=1:thr=1`
+      `PDIAG procs[disabled] ...` 3.5 ms later — the disable now lands on a settled process
+      `PDIAG rph_created id=14 enabled_unpacked: unpacked=ohbeakal...` — the replacement
+        renderer is now created while the extension is ENABLED
+      `PDIAG procs[ready] rph=14:live:pm=ohbeakal...` — and is therefore in ProcessMap
+      NO bad Mojo message anywhere in the run, and no crash assertion.
+    Remove stage, same run:
+      `PDIAG remove_point status=ok x=456 y=387 hit=removeButton`
+      `PDIAG child_widget name=ExtensionUninstallDialog visible=0`   (dialog created)
+      `PDIAG owned_widget name=ExtensionUninstallDialog title=Remove "Prometheus Developer
+       Workflow Fixture"? is_dialog=1 modal=0`                       (dialog shown, real title)
+      `PDIAG accepting uninstall confirmation dialog`
+      `PDIAG Complete` / `PDIAG terminal stage=complete outcome=1`
+      `[       OK ] ...FullLifecycleInstallsInspectsAndReloads (5503 ms)`
+  implication: |
+    Both candidate fixes are confirmed effective by direct observation, and the user-consent
+    gate is confirmed genuinely exercised rather than bypassed: the real uninstall dialog is
+    created, becomes visible with its real "Remove ...?" title, and is accepted through
+    `DialogDelegate::AcceptDialog()`. The gesture gate and the consent gate are distinct, and
+    only the gesture gate was ever the blocker.
+
+- timestamp: 2026-07-30T08:02:25Z
+  checked: |
+    Every mechanism claim asserted in the uncommitted code's comments, read against real
+    source in this checkout rather than taken on trust.
+  found: |
+    All verified:
+      `ProcessMap::Insert()` — exactly one production caller,
+        `chrome_content_browser_client_extensions_part.cc:802`, inside
+        `SiteInstanceGotProcessAndSite()`, which returns at :764 when
+        `GetEnabledExtensionFromSecurityPrincipal()` yields null. No retroactive insert exists.
+      `ProcessMap::Remove()` — exactly one production caller,
+        `extension_service.cc:869` (`RenderProcessHostDestroyed`).
+      `EventRouter::ValidateServiceWorkerListenerForExtension()` — suppresses via
+        `ShouldIgnoreListenerMessageForUnloadedExtension()` only while the extension is
+        disabled, then requires `IsProcessAuthorizedForExtensionProcessListener()` =
+        `ProcessMap::Contains(id, pid)`, reporting
+        `kEventListenerWithUnauthorizedExtensionID` on failure. Exact message match.
+      `management_api.cc:741-745` — `show_confirm_dialog |= !self_uninstall;` then
+        `if (show_confirm_dialog && !user_gesture()) return
+        RespondNow(Error(kGestureNeededForUninstallError));`
+      `extension_uninstall_dialog_impl.cc:75` — `dialog_builder.SetInternalName(
+        "ExtensionUninstallDialog")`, so the widget-name match is real (and empirically
+        confirmed by the `owned_widget name=ExtensionUninstallDialog` line above).
+      `RenderWidgetHostImpl::ForwardMouseEvent()` — this IS the real macOS input entry point:
+        `RenderWidgetHostViewCocoa` (real NSEvent) -> `_hostHelper->ForwardMouseEvent()` ->
+        `RenderWidgetHostViewMac::ForwardMouseEvent()` (:2079) -> `host()->ForwardMouseEvent()`.
+      `content::RenderFrameHost` exposes NO production `ExecuteJavaScriptWithUserGesture()` —
+        only `ExecuteJavaScriptWithUserGestureForTests()` (`render_frame_host.h:606`), which
+        the verify script's own static guard already rejects by name.
+  implication: |
+    The lead recorded in `defect_2.leads(a)` — "there is a distinct
+    `ExecuteJavaScriptWithUserGesture()`; must judge whether using it is legitimate" — is moot.
+    No such production API exists, and the test-only spelling is explicitly forbidden by the
+    verify script's no-bypass guard. Real synthesized input was not merely the better choice,
+    it was the only non-bypassing one available.
+
+- timestamp: 2026-07-30T08:02:25Z
+  checked: |
+    Build provenance of the uncommitted working tree, via file mtimes against the built
+    binary and the verify script's own logs.
+  found: |
+    `out/Default/prometheus_extension_smoke_tests` mtime 08:02:10, but
+    `prometheus_extension_smoke_controller.cc` 08:05:55, `BUILD.gn` 08:07:09 and
+    `prometheus_extension_smoke_browsertest.cc` 08:08:17. `phase22-extension-smoke/build.log`
+    and `static-guard.log` are both 0 bytes, created 08:08.
+    All `PDIAG`/tracer/`owned_widget`/uninstall-probe instrumentation is absent from the
+    working tree (`grep` over `chrome/browser/prometheus/` returns nothing).
+  implication: |
+    The uncommitted code is the stripped, fix-only descendant of run 3's instrumented tree.
+    It was WRITTEN but NEVER BUILT and NEVER RUN — a verify run was started at 08:08 and died
+    before producing any output. So run 3's green belongs to the instrumented ancestor, not to
+    this tree. Nothing here may be treated as verified until this exact tree builds and passes.
+    Newly written and entirely unproven in any run: the browsertest's result-record field
+    assertions, and the widget-name gate in
+    `TryAcceptVisibleUninstallConfirmationDialog()`.
+
+- timestamp: 2026-07-30T14:45:00Z
+  checked: |
+    Built the previously-never-built working tree and ran the focused verify script, then —
+    because defect 1 was known to manifest INTERMITTENTLY — ran
+    `FullLifecycleInstallsInspectsAndReloads` 12 times directly against the built binary
+    rather than trusting the single green.
+  found: |
+    THE ACTIVATION-SETTLED WAIT DOES NOT CLOSE DEFECT 1. A single verify run passed
+    (`[ OK ] ... (5718 ms)`, 31/32, with only the documented Mojo-thread SIGSEGV env flake on
+    the unrelated `EarlyShutdownTerminalizesWithoutCrashing`, which passed 8/8 in isolation).
+    But the 12-run stability sweep gave:
+      `RESULT: pass=4 fail=8 badmessage=10 of 12`
+    The bad Mojo message still appears in 10 of 12 runs, and 8 of 12 runs FAIL on
+    `no_renderer_crashes_assertion.cc:102 ... status: 2, exit_code: 3`. A second full verify
+    run also failed on this test (`EXIT_CODE=1`).
+  implication: |
+    Two things follow. First, run 3's green and the first verify green were lucky samples;
+    the previous session's conclusion that both defects were "root-caused and fixed" rested on
+    single observations of an intermittent failure — the same generalise-from-one-sample error
+    that produced the retracted gating claim earlier in this file. Second, the predicate itself
+    is too weak: `RenderProcessHost::IsReady()` means the process launched and its channel
+    connected, which says nothing about whether the background service worker finished
+    starting inside it. Since the window being closed is precisely an in-flight service-worker
+    start being aborted by the disable, the predicate must observe the worker, not the process.
+
+- timestamp: 2026-07-30T14:52:00Z
+  checked: |
+    Strengthened `ExtensionActivationSettled()` to additionally require a genuinely started
+    service worker: `ProcessManager::GetServiceWorkersForExtension(id)` non-empty, with every
+    returned `WorkerId`'s host live, `IsReady()`, and ProcessMap-attributed to the extension.
+    `ProcessManager` registers a `WorkerId` only once the worker has actually started, so this
+    is a direct observation of the state the old predicate merely inferred.
+  found: |
+    DECISIVE. Same 12-run sweep, rebuilt binary:
+      `RESULT: pass=11 fail=1 badmessage=0 of 12`
+    The bad Mojo message went from 10/12 to 0/12 and the defect's own failure signature
+    (`no_renderer_crashes_assertion.cc:102 ... status: 2, exit_code: 3`) disappeared entirely.
+    The single remaining failure is `Received signal 10 BUS_ADRALN` on a `base::Thread` inside
+    `SequenceManagerImpl::GetNextDelayedWakeUpWithOption()` — the documented environment-flake
+    family (outside the test body, in base/mojo infrastructure, non-reproducing in isolation),
+    not the defect.
+  implication: |
+    Confirms the diagnosis that the first predicate was measuring the wrong thing: process
+    readiness, not worker readiness. It also confirms the mechanism itself — the vulnerable
+    window really is an in-flight service-worker start being aborted by the disable, because
+    waiting specifically for the worker to have started is what closed it.
+    This remains a precondition check on observable state, not a sleep, so it does not change
+    the judgement that defect 1 is an upstream product defect being AVOIDED rather than fixed.
+    A real user performing the same sequence is still exposed; only this smoke stops hitting it.
+
 ## Current Focus
 
-hypothesis: |
+<!-- ORIGINAL BUG: RESOLVED, verified, and committed (nested dc4fd00d3e, root 40243e4b5).
+     Human verify came back "confirmed fixed — option 2, commit + chase defects".
+     The session now continues on the two downstream defects that fix exposed. -->
+
+<!-- RECONCILED 2026-07-30 (resumed session). This block previously contradicted the
+     `## Evidence (continued)` entries in the same file; both were partly wrong. Corrected
+     against /tmp/pdiag-run2.log and /tmp/pdiag-run3.log, which no prior entry had read. -->
+
+active_defect: none — both root-caused, fix verified, awaiting human confirmation
+
+next_action: |
+  Human verification only. Both downstream defects are resolved to the extent they can be:
+  defect 2 genuinely fixed, defect 1 avoided in-harness and reported upstream. Plan 22-05
+  remains PARTIAL — Tasks 3 (authoritative verify gate) and 4 (closeout evidence) are
+  unstarted and this session does not touch them.
+
+retained_observability_decision: |
+  Deliberate. All `PDIAG`/tracer/`owned_widget`/uninstall-probe instrumentation was stripped
+  before commit — none of it remains. But the fix itself deliberately KEEPS new named failure
+  reasons rather than reducing everything to a timeout, because this file has now recorded
+  three separate bugs (the original toggle no-op, the policy readiness refusal, and the remove
+  gesture rejection) that all hid behind a swallowed error and surfaced only as a silent
+  bounded-wait expiry. The retained reasons are
+  `extension_activation_not_settled_timeout`, `remove_button_not_actionable:<shape>`
+  (`missing_item` / `missing_button` / `button_not_actionable` / `button_not_laid_out` /
+  `button_off_screen` / `button_not_hittable`), `manager_widget_unavailable`, and the existing
+  `remove_confirmation_dialog_not_found` — which is now reachable rather than dead, since the
+  dialog is matched by widget name. Each converts a previously silent 20 s stall into a
+  message naming the exact shape that never resolved. That is the observability gap this
+  session kept paying for; closing it is worth the code.
+
+defect_1:
+  summary: |
+    A renderer is terminated for a bad Mojo message — "Tried to manipulate an event listener
+    for an unauthorized extension ID." (`bad_message` reason 123) — shortly after the
+    re-enable transition. Gating status: CONFIRMED gating, but INTERMITTENTLY. Run 2 failed on
+    `no_renderer_crashes_assertion.cc:102` with `status: 2, exit_code: 3`; run 1 saw the same
+    bad message but `status=0/exit_code=0` and passed. Same binary, same code path.
+  hypothesis: |
+    CONFIRMED BY DIRECT OBSERVATION. The original session's "stale pre-disable renderer"
+    theory is DISPROVEN — the mechanism is its mirror image:
+      1. The reload activates the extension; its background service worker begins starting in
+         a fresh renderer, which IS inserted into ProcessMap (created while enabled).
+      2. The disable click lands BEFORE that renderer finishes launching (measured: 173 ms
+         early, against a 562 ms launch), aborting the in-flight service-worker start.
+      3. That renderer exits; the service-worker context immediately starts a REPLACEMENT
+         renderer — while the extension is still disabled.
+      4. `SiteInstanceGotProcessAndSite()` returns early without `ProcessMap::Insert()`
+         because `GetEnabledExtensionFromSecurityPrincipal()` finds no *enabled* extension.
+      5. The extension is re-enabled ~12 ms later. Nothing inserts retroactively:
+         `ProcessMap::Insert()` has exactly one caller and it is never re-run.
+      6. The stranded renderer finishes launching, its service worker registers listeners,
+         `ShouldIgnoreListenerMessageForUnloadedExtension()` no longer suppresses (enabled
+         again), `IsProcessAuthorizedForExtensionProcessListener()` fails, bad message, kill.
+    Confirmed at every step: `rph_created id=11 enabled_unpacked: <none>` (empty enabled set
+    at creation), `sw_started version=0 rph=11 script=.../service_worker.js` (it did host the
+    service worker), `pm=-` at every later snapshot (never in ProcessMap).
+  critical_judgement_required: |
+    ANSWERED: (b) — a genuine product defect, NOT a harness pacing artifact.
+    Reasoning. Every link in the chain is ordinary product code reached by an ordinary
+    sequence of user actions. The controller's only contribution is choosing an unlucky
+    moment to disable; it does nothing a user cannot do. The vulnerable window is the whole
+    extension-renderer launch — 562 ms measured on this machine, longer on slower or colder
+    ones — which is comfortably human-reachable: reload an unpacked extension, then toggle it
+    off before its service worker has finished starting. The resulting ProcessMap omission is
+    permanent for that process's lifetime, with no self-healing path, and the user-visible
+    consequence is the browser killing that extension's background service worker as if it
+    were hostile. A "fresh renderer never entered ProcessMap and there is no retroactive
+    insert" mechanism is product-shaped, not pacing-shaped.
+    Therefore `PollExtensionActivationSettled()` is explicitly NOT claimed as a fix for this.
+    Per the honesty gate, it is reported as a product finding and left open upstream.
+  activation_wait_justification: |
+    The wait is retained, but justified on different grounds than "the harness was too fast":
+    the smoke's contract is install/inspect/reload/disable/enable/policy/options/remove, and a
+    correct driver of that contract should disable an extension whose activation it has
+    actually confirmed rather than one caught mid-activation. Waiting for a settled
+    precondition is right regardless of the upstream bug, and it keeps this smoke scoped to
+    its own contract instead of silently doubling as a flaky regression test for an unrelated
+    upstream race. Note this is a precondition check on observable state, not a sleep.
+    This framing is written into the code comments so the distinction survives the session.
+  status: root-caused; avoided in-harness; reported upstream as a product finding, NOT fixed
+  avoidance_took_two_attempts: |
+    Worth recording, because the first attempt looked convincing and was not.
+    Attempt 1 waited for `ExtensionRegistry` readiness plus every ProcessMap-attributed
+    `RenderProcessHost` being `IsReady()`. It passed the single instrumented run and the first
+    full verify run, and its code comment asserted "no bad message occurs". A 12-run sweep
+    then showed the bad message in 10/12 and outright failure in 8/12. `IsReady()` means the
+    process launched and its channel connected — it does not mean the background service
+    worker inside it has finished starting, which is the actual thing the disable was
+    interrupting. The predicate was measuring a proxy, not the mechanism.
+    Attempt 2 additionally requires `ProcessManager::GetServiceWorkersForExtension(id)` to be
+    non-empty with every returned `WorkerId`'s host live, ready, and ProcessMap-attributed.
+    `ProcessManager` registers a `WorkerId` only once the worker has actually started, so this
+    observes the worker directly. 12-run sweep: bad message 0/12, failures 1/12 (unrelated
+    BUS_ADRALN environment flake).
+    Lesson, and it is the same one this file has now recorded three times: a single green
+    against an intermittent failure proves nothing. Every claim about this defect that rested
+    on one sample has been overturned by a sweep.
+
+defect_2:
+  summary: |
+    `remove_not_observed_timeout`. The `#removeButton` click reports `"clicked"` yet no
+    `OnExtensionUninstalled` arrives within 20 s.
+  status: ROOT CAUSE CONFIRMED and FIXED (fix pending verification of this exact tree)
+  root_cause: |
+    Verbatim, from the diagnostic probe in run 1:
+      `PDIAG uninstall_probe=rejected:chrome.management.uninstall requires a user gesture.`
+    That is `keys::kGestureNeededForUninstallError`. `management_api.cc:741-745`:
+    `show_confirm_dialog |= !self_uninstall;` then
+    `if (show_confirm_dialog && !user_gesture()) return RespondNow(Error(...));`.
+    `Service.deleteItem()` calls `chrome.management.uninstall(id, {showConfirmDialog:true})`;
+    for a chrome://extensions WebUI caller `extension()` is null, so `self_uninstall` is false
+    and the confirm-dialog flag is forced on unconditionally. `ExecuteJavaScript()` conveys no
+    user activation, so the injected `button.click()` was untrusted, the uninstall never
+    started, and `Service.deleteItem()`'s bare `.catch(_ => {})` swallowed the rejection — the
+    identical observability gap that hid the original bug.
+  correction_to_prior_leads: |
+    Lead (a) is settled but its premise was wrong: there is NO production
+    `RenderFrameHost::ExecuteJavaScriptWithUserGesture()`. Only
+    `ExecuteJavaScriptWithUserGestureForTests()` exists (`render_frame_host.h:606`), and the
+    verify script's own static no-bypass guard rejects that spelling by name. So the choice
+    was never "fabricate activation vs. not" — fabricating it was already forbidden.
+    Lead (b)'s premise was also wrong, and this matters: the earlier session's report that
+    `TryAcceptVisibleBrowserOwnedDialog()` "did find and accept a visible browser-owned
+    dialog" DID NOT REPRODUCE. Run 1 emitted ZERO `owned_widget` lines across the whole 10 s
+    poll — no confirmation dialog was ever created, exactly as expected when the API rejects
+    before `UninstallFunctionDelegate()`. The original inference came from
+    `remove_confirmation_dialog_not_found` not firing, which was a misread of a code path that
+    simply never reached its failure branch.
+  critical_judgement_required: |
+    ANSWERED: synthesizing real user input IS legitimate here; fabricating the activation bit
+    would NOT have been.
+    The two gates are distinct. The gesture gate is an ANTI-ABUSE gate — it stops a caller
+    invoking the uninstall flow unattended. The user-CONSENT gate is the native
+    `ExtensionUninstallDialog` ("Remove <name>?"), which must still be shown and accepted.
+    The fix satisfies the anti-abuse gate the same way a real user does: by actually clicking.
+    `RenderWidgetHost::ForwardMouseEvent()` is not a test shim — it is literally the function
+    the real macOS input stack calls (`RenderWidgetHostViewCocoa` receives the NSEvent ->
+    `_hostHelper->ForwardMouseEvent()` -> `RenderWidgetHostViewMac::ForwardMouseEvent()` ->
+    `host()->ForwardMouseEvent()`). Blink then derives transient activation from that trusted
+    input event via `EventHandler` -> `LocalFrame::NotifyUserActivation()`. Nothing is told to
+    pretend an interaction happened; one actually does.
+    CONSENT GATE CONFIRMED STILL EXERCISED, not bypassed (run 3, direct observation): the real
+    dialog is created (`child_widget name=ExtensionUninstallDialog`), becomes visible with its
+    real title (`owned_widget name=ExtensionUninstallDialog title=Remove "Prometheus Developer
+    Workflow Fixture"?`), and is accepted through `DialogDelegate::AcceptDialog()` — the same
+    call its own OK button issues. The uninstall only completes after that acceptance.
+  strengthening: |
+    The dialog search was also tightened rather than loosened: it now requires
+    `Widget::GetName() == "ExtensionUninstallDialog"` (published by
+    `extension_uninstall_dialog_impl.cc:75` `SetInternalName(...)`) instead of accepting the
+    first visible browser-owned `DialogDelegate`. A browser window legitimately owns other
+    dialog widgets, so the old predicate could have accepted the wrong one and reported a
+    success that uninstalled nothing. That is now an explicit
+    `remove_confirmation_dialog_not_found` failure instead of a silent false positive.
+    Also hardened: the resolved click point is hit-tested
+    (`item.shadowRoot.elementFromPoint(x,y) !== button` -> `button_not_hittable`) before any
+    real mouse event is sent, so a mis-resolved point can never silently click another
+    control; and the transition timeout is armed synchronously immediately before the click
+    rather than in a completion callback, so it cannot race the registry notification.
+
+original_bug_hypothesis: |
   CONFIRMED (see Evidence 09:09:24). Original hypothesis, now established by observation:
   when the reload's native `OnExtensionLoaded` fires, the chrome://extensions WebUI has not
   yet processed the matching `developerPrivate.onItemStateChanged` round trip, so the item
@@ -223,19 +647,20 @@ hypothesis: |
   click flips it to `true`, so `onEnableToggleChange_` calls
   `chrome.management.setEnabled(id, true)` on an extension that is already enabled — a
   silent no-op that produces no `OnExtensionUnloaded`, hence the stall.
-test: |
+original_bug_test: |
   DONE. Instrumented build (disable/enable click script returning a diagnostic dict, registry
   observer logging, browsertest extended to a terminal outcome), then a clean fix-only build
   verified by `bash .planning/chromium/verify-phase-22-extension-smoke.sh --focused`.
-expecting: |
+original_bug_expecting: |
   Predicted `checked_before === false` / `state === "DISABLED"` on the first attempt.
   Observed exactly that. Alternative branch (`checked_before === true` with the disable still
   dropped, which would have implicated the browser-side management/registrar path) was ruled
   out by the same run.
-next_action: |
-  Awaiting human confirmation. Nothing is committed yet: the fix sits uncommitted in the
-  nested Chromium worktree (3 modified files) and this debug file is untracked in the root
-  repo. On confirmation, commit both and archive this session.
+original_bug_outcome: |
+  COMMITTED. Human verify confirmed. Nested Chromium repo commit `dc4fd00d3e`
+  "fix(22-05): drive the extension enable toggle only from settled WebUI state" (3 files);
+  root repo commit `40243e4b5` "docs(22-05): record extension-disable-toggle-noop debug
+  session". Plan 22-05 deliberately NOT marked complete; Tasks 3 and 4 remain unstarted.
 
 reasoning_checkpoint:
   hypothesis: |
@@ -347,28 +772,58 @@ files_changed:
 
 ## Findings Handed Back (NOT fixed here — separate defects)
 
-1. **Renderer terminated for a bad Mojo message during the options stage.**
-   `Terminating render process for bad Mojo message: Received bad user message: Tried to
-   manipulate an event listener for an unauthorized extension ID.` (`bad_message` reason 123),
-   0.35 s after the re-enable and 0.35 s after `OpenOptionsTab()`. The options tab itself was
-   fine (`crashed=0`, URL committed), so a different process was killed.
-   `EventRouter::ValidateMainThreadListenerOwner()` emits this only when the extension *is*
-   enabled but the sending process is not authorized for it
-   (`ShouldIgnoreListenerMessageForUnloadedExtension()` suppresses it otherwise) — consistent
-   with a stale extension renderer / service-worker process surviving the ~200 ms
-   reload→disable→enable churn. `NoRendererCrashesAssertion` fails the browser test on this
-   regardless of controller state, so no assertion can be raised past `kEnabled` until it is
-   resolved. Related churn signal in the same logs:
-   `service_worker_task_queue.cc:1007 Failed to unregister service worker ... error status
-   was: 2`.
-2. **`remove_not_observed_timeout`.** The `#removeButton` click reports `"clicked"` and
-   `TryAcceptVisibleBrowserOwnedDialog()` does find and accept a visible browser-owned dialog
-   (the `remove_confirmation_dialog_not_found` path never fires), yet no
-   `OnExtensionUninstalled` arrives within 20 s. Note `Service.deleteItem()` swallows
-   `chrome.runtime.lastError`, the same observability gap that hid the original bug — worth
-   instrumenting the same way. Also worth checking whether the accepted dialog was actually
-   the uninstall confirmation and whether `chrome.management.uninstall()` needs a user gesture
-   that `RenderFrameHost::ExecuteJavaScript()` does not convey.
+<!-- Items 1 and 2 REWRITTEN 2026-07-30 (resumed session). Both previously carried claims
+     that direct observation has since overturned; the superseded text is preserved inline so
+     the correction is auditable. -->
+
+1. **UPSTREAM CHROMIUM PRODUCT DEFECT — extension service-worker renderer permanently
+   stranded outside `ProcessMap`, then killed for a bad Mojo message.** ROOT-CAUSED. NOT
+   FIXED, and deliberately so: it is a real product race, not a harness artifact, and the
+   smoke only avoids it.
+   *Mechanism.* Disabling an extension while its background service-worker renderer is still
+   launching aborts that start. The service-worker context immediately spawns a replacement
+   renderer; if that happens while the extension is disabled,
+   `ChromeContentBrowserClientExtensionsPart::SiteInstanceGotProcessAndSite()` returns early
+   without `ProcessMap::Insert()` (`GetEnabledExtensionFromSecurityPrincipal()` finds no
+   *enabled* extension). `ProcessMap::Insert()` has exactly one caller and is never re-run, so
+   re-enabling the extension does not repair the omission — the process is stranded for life.
+   When it finishes launching and its worker registers listeners,
+   `ShouldIgnoreListenerMessageForUnloadedExtension()` no longer suppresses (enabled again),
+   `IsProcessAuthorizedForExtensionProcessListener()` fails, and the browser kills the
+   renderer: `kEventListenerWithUnauthorizedExtensionID`, `bad_message` reason 123.
+   *User impact.* Reachable by a developer who reloads an unpacked extension and toggles it
+   off before its service worker finishes starting — a 562 ms window as measured here, wider
+   on slower or colder machines. The extension's background worker is then destroyed as if it
+   were hostile.
+   *Gating status — CORRECTED TWICE.* Original session: "fails the test regardless of
+   controller state" (inferred). First resumed session: "IT DOES NOT [fail]" (generalised from
+   run 1's `status=0/exit_code=0` pass). Both wrong as stated. Truth: it fails
+   INTERMITTENTLY. Run 2 failed with `no_renderer_crashes_assertion.cc:102 ... status: 2,
+   exit_code: 3`; run 1 passed with the same bad message. Same binary, same path. So the
+   original session was substantively right, and the danger is flakiness, not a stable red.
+   *Superseded text:* the earlier "consistent with a stale extension renderer / service-worker
+   process surviving the churn" theory is DISPROVEN — the killed process is not stale, it is
+   fresher than the transition, created 13 ms *before* the re-enable.
+   Related churn signal, unchanged: `service_worker_task_queue.cc:1007 Failed to unregister
+   service worker ... error status was: 2`.
+
+2. **`remove_not_observed_timeout` — ROOT-CAUSED AND FIXED** (moved out of "not fixed here";
+   retained in this list only because the correction is load-bearing).
+   *Root cause.* `chrome.management.uninstall()` with `showConfirmDialog` requires user
+   activation (`management_api.cc:743`), which `ExecuteJavaScript()` does not convey. The
+   injected click was untrusted, the uninstall never started, and `Service.deleteItem()`'s
+   bare `.catch(_ => {})` swallowed the rejection. Captured verbatim by probe:
+   `uninstall_probe=rejected:chrome.management.uninstall requires a user gesture.`
+   *Superseded observation — important.* The earlier claim that
+   `TryAcceptVisibleBrowserOwnedDialog()` "does find and accept a visible browser-owned
+   dialog" DID NOT REPRODUCE. Run 1 emitted ZERO `owned_widget` lines across the full 10 s
+   poll: no dialog was ever created, which is exactly right for an API that rejects before
+   `UninstallFunctionDelegate()`. The original claim was inferred from
+   `remove_confirmation_dialog_not_found` not firing — a misread of a branch that was simply
+   never reached. Nothing was accepting the wrong dialog; nothing was accepting any dialog.
+   *Superseded lead.* "There is a distinct `ExecuteJavaScriptWithUserGesture()`" — there is
+   not, as a production API. Only `ExecuteJavaScriptWithUserGestureForTests()` exists, and the
+   verify script's own no-bypass guard rejects that spelling by name.
 3. **`policy_default_blocked_` was a false positive before fix 2.** `GetEffectiveGrant()`
    clamps to `kBlocked` for a not-yet-ready extension, so the "default is Blocked" assertion
    passed for the wrong reason. With `PollExtensionReady()` in place it is now meaningful, but
@@ -376,6 +831,66 @@ files_changed:
 4. **No patch export needed yet.** `.planning/phases/22-.../patches/` stops at
    `0016-fix-22-04-...`; both existing 22-05 nested commits are also unexported. Task 3 exports
    everything after the frozen baseline, so this fix's commit will be picked up there.
+
+## Downstream Defect Resolution (second session)
+
+defect_2_resolution:
+  root_cause: |
+    `chrome.management.uninstall()` with `showConfirmDialog` requires user activation
+    (`management_api.cc:743`), which `RenderFrameHost::ExecuteJavaScript()` does not convey.
+    For a chrome://extensions caller `extension()` is null, so `self_uninstall` is false and
+    `show_confirm_dialog |= !self_uninstall` forces the flag on unconditionally — the WebUI
+    remove path can never avoid the gate. The injected `button.click()` was therefore an
+    untrusted click, the uninstall never started, and `Service.deleteItem()`'s bare
+    `.catch(_ => {})` swallowed the rejection.
+  fix: |
+    `RemoveClickScript()` -> `RemoveButtonPointScript()`: resolves `#removeButton` to a real
+    viewport point, scrolls it into view, rejects a zero-size or off-screen rect, and
+    hit-tests the resolved point (`shadowRoot.elementFromPoint(x,y) !== button` ->
+    `button_not_hittable`) so a mis-resolved point can never silently click another control.
+    `DispatchRealMouseClick()` then sends kMouseMove/kMouseDown/kMouseUp through
+    `RenderWidgetHost::ForwardMouseEvent()` — the same function the real macOS input stack
+    calls. Every not-yet-actionable shape is a bounded transient retried within
+    `kRemoveButtonActionableTimeout`, failing explicitly by name if permanent.
+    `TryAcceptVisibleBrowserOwnedDialog()` -> `TryAcceptVisibleUninstallConfirmationDialog()`,
+    now requiring `Widget::GetName() == "ExtensionUninstallDialog"` instead of accepting the
+    first visible browser-owned dialog.
+  verification: |
+    Real dialog observed created, shown with its real "Remove ...?" title, and accepted via
+    `DialogDelegate::AcceptDialog()`; `OnExtensionUninstalled` then arrives and the controller
+    reaches `kComplete`. Consent gate exercised, not bypassed.
+
+defect_1_resolution:
+  root_cause: |
+    Upstream Chromium race. Disabling an extension while its background service-worker
+    renderer is still starting aborts that start; the replacement renderer is allocated while
+    the extension is disabled, so `SiteInstanceGotProcessAndSite()` returns before
+    `ProcessMap::Insert()`. Nothing inserts retroactively, so re-enabling leaves the process
+    permanently unmapped; when its worker registers listeners the browser kills it for
+    `kEventListenerWithUnauthorizedExtensionID` (`bad_message` 123).
+  disposition: NOT FIXED — avoided in-harness, reported as an upstream product finding.
+  avoidance: |
+    `PollExtensionActivationSettled()` gates the disable click on
+    `ExtensionActivationSettled()`, which requires registry readiness, a ProcessMap-attributed
+    and ready process, AND a genuinely started service worker via
+    `ProcessManager::GetServiceWorkersForExtension()`. Bounded at
+    `kActivationSettledTimeout` (15 s), failing explicitly as
+    `extension_activation_not_settled_timeout` rather than hanging.
+  verification: |
+    12-run sweeps of `FullLifecycleInstallsInspectsAndReloads` against the built binary:
+      process-readiness predicate only : pass=4  fail=8 badmessage=10 of 12
+      + started-service-worker required: pass=11 fail=1 badmessage=0  of 12
+    The one remaining failure is a `BUS_ADRALN` environment flake on a `base::Thread`, of the
+    family already documented in 22-05-SUMMARY.md item 6.
+
+no_verification_path_weakened: |
+  Confirmed. The script's static no-bypass guards pass. No MV2 enablement, no
+  install-verification bypass, no `accept_dialog_for_testing_`, no direct installer/registrar
+  mutation, no command-line extension loading. Notably `ExecuteJavaScriptWithUserGesture()`
+  does not exist as a production API — only `ExecuteJavaScriptWithUserGestureForTests()`,
+  which the guard rejects by name — so the gesture was satisfied with real input rather than
+  a fabricated activation bit. Two paths were made STRICTER: the uninstall dialog must now
+  match by widget name, and the remove point must hit-test to the remove button.
 
 ## Relevant Files
 
