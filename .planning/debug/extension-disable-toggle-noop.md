@@ -2,7 +2,7 @@
 status: awaiting_human_verify
 trigger: Phase 22 Plan 22-05 Task 2 — real DOM click on the chrome://extensions item card #enableToggle reports "clicked" but no ExtensionRegistryObserver::OnExtensionUnloaded is ever observed, stalling PrometheusExtensionSmokeController at the kReloaded stage
 created: 2026-07-30T08:54:53Z
-updated: 2026-07-30T15:00:00Z
+updated: 2026-07-31T01:40:34Z
 phase: 22-chrome-extension-ecosystem-and-policy
 plan: 22-05
 ---
@@ -475,6 +475,137 @@ bash .planning/chromium/verify-phase-22-extension-smoke.sh --focused
     the judgement that defect 1 is an upstream product defect being AVOIDED rather than fixed.
     A real user performing the same sequence is still exposed; only this smoke stops hitting it.
 
+- timestamp: 2026-07-31T01:40:00Z
+  checked: |
+    THE HARDENING SWEEP the human required before trusting the `kComplete` boundary.
+    110 runs total against the ALREADY-BUILT binary, no rebuild at any point during any arm.
+    Build provenance established BEFORE iteration 1: `siso ninja -n` reported
+    `Build Succeeded: 0 steps`, and both repos were clean, so the binary postdates every
+    committed source. Harness: `/tmp/sweep-22-05/run-sweep.sh`, per-run logs retained under
+    `/tmp/sweep-22-05/{main,main2,comparison,postrevert}/`.
+    Four arms:
+      main       n=30  extension smoke, `kComplete` boundary
+      main2      n=30  identical, to sharpen the flow-internal rate estimate
+      comparison n=30  `SafeBrowsingBlockingPageRealTimeUrlCheckTest.
+                       EnterpriseRealTimeUrlCheck_NoWarning` -- same binary, same browser
+                       startup/shutdown, ZERO contact with extensions. The independence arm.
+      postrevert n=20  extension smoke, `kEnabled` boundary, after the revert
+  found: |
+    main:       pass=27/30. Failures: 2x infra crash, 1x extension-flow failure.
+    main2:      pass=30/30. Every tracked signature 0/30.
+    comparison: pass=25/30. FIVE crashes across FOUR distinct signatures, all outside any
+                test body.
+    postrevert: pass=20/20. Every tracked signature 0/20.
+
+    Combined main arms at the `kComplete` boundary: pass=57/60.
+      flow-attributable failures : 1/60  (`remove_confirmation_dialog_not_found`,
+                                          terminal stage `options_routing_checked`)
+      infrastructure failures    : 2/60  (browser shutdown DCHECK, see below)
+      DEFECT 1 bad Mojo message  : 0/60
+      DEFECT 1 gating signature
+        (`no_renderer_crashes_assertion.cc:102 status: 2, exit_code: 3`) : 0/60
+  implication: |
+    Defect 1's avoidance is now confirmed at 0/60 rather than 0/12. The
+    started-service-worker predicate holds. That claim no longer rests on a small sample.
+
+- timestamp: 2026-07-31T01:40:00Z
+  checked: |
+    CRASH CHARACTERIZATION BY OBSERVATION. The human lifted the "do not chase the sporadic
+    memory-corruption-shaped crashes" constraint for this sweep, on the grounds that
+    22-05-SUMMARY.md item 6 itself calls them "not proven benign" and the prior briefing had
+    propagated that as if settled. Each failure was bucketed by full stack signature rather
+    than lumped into "environment".
+  found: |
+    Of the three signatures named in the briefing:
+
+    (a) Mojo `ReceiverSetState`         -- 0/110. DID NOT REPRODUCE AT ALL.
+    (b) base sequence manager           -- 1/30 comparison, 0/60 main.
+    (c) `ref_counted.h` DCHECK          -- 1/30 comparison, 0/60 main.
+
+    (b) and (c) ARE THE SAME CRASH, not two families. One stack:
+      `FATAL:base/memory/ref_counted.h:235] DCHECK failed: !ref_count_.IsZero().`
+      `RefCountedThreadSafeBase::Release()` <- `~BindStateHolder()` <- `~PendingTask()`
+      <- `IntrusiveHeap<...>::~IntrusiveHeap()` <- `TaskQueueImpl::UnregisterTaskQueue()`
+      <- `SequenceManagerImpl::UnregisterTaskQueueImpl()` <- `~BrowserTaskQueues()`
+      <- `~BrowserUIThreadScheduler()` <- `BrowserTaskExecutor::Shutdown()`
+      <- `ContentMainRunnerImpl::Shutdown()`
+    i.e. browser task queues torn down with tasks still queued; destroying those pending
+    tasks releases a BindState whose refcount is already zero. Pure shutdown teardown.
+
+    Two more signatures the briefing did not list:
+
+    (d) `FATAL:base/memory/weak_ptr.h:408] DCHECK failed: ptr_.`
+        at `prometheus::PrometheusBrowserMainExtraParts::PostMainMessageLoopRun()`
+        <- `ChromeBrowserMainParts::PostMainMessageLoopRun()`
+        <- `BrowserMainLoop::ShutdownThreadsAndCleanUp()`.
+        Rate: 2/30 main, 0/30 main2, 2/30 COMPARISON, 0/20 postrevert.
+        This is NOT environment and NOT upstream -- it is Prometheus's own code. The first
+        statement of that function is `weak_ptr_factory_.InvalidateWeakPtrs()`, and
+        `weak_ptr.h:407-410` is `void InvalidateWeakPtrs() { DCHECK(ptr_); ... }`. Only
+        `InvalidateWeakPtrsAndDoom()` ever zeroes `ptr_`, and grep confirms that spelling
+        appears NOWHERE in `prometheus_browser_main_extra_parts.{cc,h}`. So `ptr_` reading
+        zero is consistent with the factory's storage no longer being valid at that point.
+        Characterized only -- deliberately NOT root-caused; Phase 22 does not own it.
+
+    (e) `Received signal 11 SEGV_ACCERR` in Cocoa view teardown:
+        crash-core `ZombieDealloc()` <- `-[__NSArrayM dealloc]` <- `-[NSView _finalize]`
+        <- `-[BaseView dealloc]` <- `-[BridgedContentView dealloc]`. 1/30 comparison.
+        Plus one `SEGV_ACCERR` at `BrowserMainLoop::CreateMainMessageLoop()` -- a STARTUP
+        crash, 1/30 comparison, which never reaches any test body at all.
+
+    Also: the previously documented LaunchServices `BUS_ADRALN` startup crash
+    (`WasLaunchedAsLoginItemRestoreState`) was 0/110. Did not reproduce either.
+  implication: |
+    CORRELATION QUESTION ANSWERED, and the answer is INDEPENDENCE -- established by
+    observation rather than inherited:
+      1. The shared bucket (d) occurs at 2/30 in the extension arm and 2/30 in an arm that
+         never touches extensions. Identical rate, zero extension involvement.
+      2. Total infrastructure crash rate is HIGHER in the arm with no extension contact
+         (5/30) than in the extension arms (2/60).
+      3. Every infrastructure crash in every arm sits on the browser-process startup or
+         shutdown path, OUTSIDE any test body. There is therefore no controller stage to
+         correlate them with -- they do not occur during the flow at all. That is a stronger
+         result than "they scatter uniformly across stages".
+    HONEST LIMIT: at n=30 per arm, 2/30 versus 5/30 is not a statistically meaningful
+    difference and is not claimed as one. The robust claim is qualitative: these crashes
+    demonstrably occur with zero extension involvement, so they cannot be attributed to the
+    extension flow.
+    CORRECTION TO THE INHERITED RECORD: (a) and the `BUS_ADRALN` family were NOT observed at
+    all here, so this sweep does not characterize them -- "not observed in 110 runs" is the
+    honest statement, NOT "benign". And (d) was previously filed as a pre-existing
+    environment flake; it is in fact Prometheus-owned code.
+
+- timestamp: 2026-07-31T01:40:00Z
+  checked: |
+    The single extension-flow failure (main arm run 17, `/tmp/sweep-22-05/main/run-17.log`),
+    read against the controller source rather than assumed.
+  found: |
+    Terminal record, verbatim:
+      `{"background_denied":true,"inspected":true,"options_routing_visible":true,
+        "outcome":"failed","policy_default_blocked":true,"policy_interact_applied":true,
+        "policy_read_only_applied":true,"reason":"remove_confirmation_dialog_not_found",
+        "reload_transitions_seen":1,"schema_version":1,"stage":"options_routing_checked"}`
+    Run duration 16.3 s against a 6.7 s median -- consistent with `kRemoveConfirmationTimeout`
+    (10 s, controller.cc:71) expiring. `remove_button_not_actionable` did NOT fire in any of
+    the 110 runs, so the point resolved with `status:"ok"` and the real mouse click WAS
+    dispatched; the confirmation dialog simply never appeared.
+    Structural cause, from source: `RemoveButtonPointScript()` hit-tests the resolved point
+    IN THE RENDERER (`item.shadowRoot.elementFromPoint(x,y)!==button` ->
+    `button_not_hittable`, controller.cc:409-410). The point is then returned to the browser
+    process and the click is dispatched later by `DispatchRealMouseClick()`
+    (controller.cc:1370). Check and use are in different processes at different times, so a
+    card re-layout in that interval lands the click off the button, no
+    `chrome.management.uninstall()` runs, no `ExtensionUninstallDialog` widget is created,
+    and the poll expires with exactly the observed reason.
+  implication: |
+    This is a HARNESS race (time of check versus time of use on the click point), not a
+    product defect. Stated as source-supported reasoning, NOT direct observation: this build
+    carries no instrumentation, so the re-layout itself was not witnessed.
+    Decisive for the boundary decision: stage `options_routing_checked` is PAST `kEnabled`,
+    so this run is green at the `kEnabled` boundary and red at `kComplete`. The raise is what
+    converts it from pass to fail. This is squarely the "failures that touch the flow" case,
+    not the "provably independent" case.
+
 ## Current Focus
 
 <!-- ORIGINAL BUG: RESOLVED, verified, and committed (nested dc4fd00d3e, root 40243e4b5).
@@ -485,13 +616,119 @@ bash .planning/chromium/verify-phase-22-extension-smoke.sh --focused
      `## Evidence (continued)` entries in the same file; both were partly wrong. Corrected
      against /tmp/pdiag-run2.log and /tmp/pdiag-run3.log, which no prior entry had read. -->
 
-active_defect: none — both root-caused, fix verified, awaiting human confirmation
+active_defect: none — both root-caused; both human checkpoint decisions now executed
 
 next_action: |
-  Human verification only. Both downstream defects are resolved to the extent they can be:
-  defect 2 genuinely fixed, defect 1 avoided in-harness and reported upstream. Plan 22-05
-  remains PARTIAL — Tasks 3 (authoritative verify gate) and 4 (closeout evidence) are
-  unstarted and this session does not touch them.
+  Human verification of the two executed decisions. Nothing is in flight.
+  Decision 1 (upstream report) is DONE: see
+  `.planning/phases/22-chrome-extension-ecosystem-and-policy/22-FINDING-processmap-race.md`.
+  Decision 2 (harden first) is DONE and went against the stated preference: the sweep did not
+  hold, so the assertion boundary was reverted from `kComplete` to `kEnabled`.
+  Plan 22-05 remains PARTIAL — Tasks 3 (authoritative verify gate) and 4 (closeout evidence)
+  are unstarted and this session does not touch them.
+
+decision_1_executed:
+  instruction: "REQUIRE UPSTREAM REPORT — filable Chromium bug, do not attempt the product fix."
+  status: DONE
+  document: .planning/phases/22-chrome-extension-ecosystem-and-policy/22-FINDING-processmap-race.md
+  pinned_revision: |
+    Determined exactly, not approximated. `.planning/chromium/CHROMIUM-CHECKOUT.md` pins
+    `0e8499df5172f55d0d29e2b92ef7e6a704529578`; `git log -1` on that commit yields
+    `Cr-Commit-Position: refs/heads/main@{#1648468}` (subject "[Vertical Tabs] Implement Touch
+    Handler", dated 2026-06-17), and `chrome/VERSION` is 151.0.7898.0.
+    `git merge-base --is-ancestor <baseline> HEAD` confirms every local commit sits on top.
+  unmodified_upstream_confirmed: |
+    `git diff --name-only <baseline>..HEAD` reports ZERO changed files under `extensions/` and
+    ZERO under `content/`. The only touched file under `chrome/browser/extensions/` is
+    `api/developer_private/developer_private_functions.cc`, whose sole change is a 21-line
+    addition inside `DeveloperPrivateLoadUnpackedFunction::ShowSelectFileDialog()` — the load
+    chooser caller — touching no enable, disable, process, or event routing path.
+    So every file named in the reported mechanism is unmodified upstream code.
+  citations_reverified: |
+    Every source citation in the finding was re-derived in this checkout rather than copied:
+      `ProcessMap::Insert()` — ONE production call site, verified rigorously by enumerating
+        every non-test translation unit that includes `extensions/browser/process_map.h` and
+        grepping each for `->Insert(`. Single hit:
+        `chrome_content_browser_client_extensions_part.cc:802`. The early return is `:765`,
+        guarded by `GetEnabledExtensionFromSecurityPrincipal()` at `:762` (helper at `:113`).
+      `ProcessMap::Remove()` — ONE production call site, `extension_service.cc:869`.
+      `ShouldIgnoreListenerMessageForUnloadedExtension()` `event_router.cc:389`;
+        `IsProcessAuthorizedForExtensionProcessListener()` `:408`;
+        `ValidateMainThreadListenerOwner()` `:425` reporting at `:447`;
+        `ValidateServiceWorkerListenerForExtension()` `:467` reporting at `:490`;
+        message string `kEventListenerWithUnauthorizedExtensionID` at `:94`.
+      `bad_message` reason 123 = `content::bad_message::RPH_MOJO_PROCESS_ERROR`
+        (`content/browser/bad_message.h:150`) — the generic content-side wrapper for "a Mojo
+        interface reported a bad message", NOT an extensions-specific code. The finding says so
+        explicitly rather than implying 123 names this bug.
+  measurement_honesty: |
+    The briefing's "562 ms" was replaced with the actual measured spread rather than carried
+    forward. Recomputed from `/tmp/pdiag-run{1,2}.log`: four extension-renderer launches
+    (create -> ready) of 566.9, 559.8, 561.4 and 566.9 ms, so the window is reported as
+    "roughly 560 to 567 ms on this machine", explicitly flagged as one machine, debug build.
+    The finding carries an explicit observed-versus-inferred split.
+  product_fix_attempted: false
+
+decision_2_executed:
+  instruction: "KEEP kComplete, BUT HARDEN FIRST — 25-30 runs; if it does not hold, revert to kEnabled and say so plainly."
+  status: DONE — sweep did NOT hold; boundary REVERTED to `kEnabled`.
+  threshold_stated_before_applying: |
+    Stated first, then applied, as instructed.
+    Task 3 freezes this as an AUTHORITATIVE gate, and the defining property of an authoritative
+    gate is that red means the product is broken. So the bar is: ZERO observed failures
+    attributable to the extension flow itself across the sweep.
+    Infrastructure crashes proven to occur without the flow are excluded from that criterion —
+    not because they are acceptable, but because they occur at browser startup/shutdown
+    regardless of which stage the assertion names, so they affect `kEnabled` and `kComplete`
+    identically and cannot discriminate between the two boundaries.
+    Why zero and not "low": a known false-positive source trains a gate's consumers to rerun on
+    red, and once that habit exists the gate no longer gates. Here the false positive would
+    report a HARNESS bug as a product failure, which inverts the gate's meaning entirely.
+  applied: |
+    Flow-attributable failures: 1/60 (1.7%). Nonzero, so the bar is not met.
+    Which of the human's two cases this is: the MIXED case, resolved toward "touches the flow".
+    The 2/60 infrastructure failures are provably independent (same bucket, same 2/30 rate, in
+    an arm with zero extension contact). But the 1/60 is `remove_confirmation_dialog_not_found`
+    at stage `options_routing_checked` — which is PAST `kEnabled`. The run is green at
+    `kEnabled` and red at `kComplete`. The boundary raise is what creates the flake, so the
+    flake is not incidental to the decision; it is the decision's direct consequence.
+  call: |
+    Do NOT freeze `kComplete`. Reverted the assertion boundary to `kEnabled`.
+    Not kept on a hoped-for explanation: the remove race has a concrete, source-supported
+    mechanism (renderer-side hit test, browser-side click, different processes, different
+    times), and it is a harness bug that can be closed — but it is not closed today, and this
+    session was not authorized to close it.
+  what_the_revert_costs: |
+    Stated plainly. The revert restores the exact previously COMMITTED and previously VERIFIED
+    shape from `dc4fd00d3e` — `RunUntil(stage >= kEnabled)`, `EXPECT_FALSE(id.empty())`,
+    `Shutdown()`. Because that shape shuts the controller down at the boundary, and because
+    `Shutdown()` terminalizes the record as `failed`, the terminal result-record assertions
+    (`stage=="complete"`, `outcome=="succeeded"`, `reason=="ok"`, `schema_version`,
+    `reload_transitions_seen`, `inspected`, the three `policy_*` fields,
+    `options_routing_visible`, `background_denied`) are ALL lost. That is real coverage loss and
+    is not minimised here.
+    What is NOT lost: the controller still RUNS the entire flow on every run. The policy matrix,
+    options routing, the real remove click, and the real uninstall consent dialog are all still
+    exercised end to end — only the assertion stops earlier.
+  recommended_target_for_task_3: |
+    The data supports `kOptionsRoutingChecked` rather than either extreme: every one of the 60
+    main-arm runs reached at least that stage (59 reached `kComplete`, 1 stopped exactly there).
+    A boundary of `kOptionsRoutingChecked` plus the record-field assertions that are established
+    by then would recover nearly all the lost coverage at an observed 60/60.
+    Deliberately NOT done here: the human's authorized fallback was `kEnabled`, and choosing a
+    third boundary is a judgement they should make with these numbers in front of them rather
+    than one this session should take unilaterally.
+    The clean path to a legitimate `kComplete` is to close the click race first — re-verify the
+    hit test at dispatch time, or retry the click while the dialog poll runs — then re-sweep.
+  post_revert_verification: |
+    `bash .planning/chromium/verify-phase-22-extension-smoke.sh --focused` -> green:
+    "controller/bootstrap static no-bypass guards passed", "selected 26 bootstrap unit, 2
+    developer-private caller, and 4 controller browser test(s)", "focused suite passed with zero
+    retry, skip, or failure", `SUCCESS: all tests passed.` (32/32).
+    `.ninja_log` / `.ninja_deps` SHA-256 identical before and after.
+    Then a 20-run confirmation sweep on the reverted binary: pass=20/20, with
+    `unauthorized extension ID`, `weak_ptr.h:408`, `ref_counted.h:235`,
+    `remove_confirmation_dialog_not_found`, `SEGV` and `BUS_ADRALN` all 0/20.
 
 retained_observability_decision: |
   Deliberate. All `PDIAG`/tracer/`owned_widget`/uninstall-probe instrumentation was stripped
@@ -757,14 +994,21 @@ verification: |
   "selected 26 bootstrap unit, 2 developer-private caller, and 4 controller browser test(s)",
   "focused suite passed with zero retry, skip, or failure", `SUCCESS: all tests passed.`
   Reviewed `.ninja_log`/`.ninja_deps` SHA-256 unchanged before/after.
-  Stability: `FullLifecycleInstallsInspectsAndReloads` run 13 more times directly against the
-  built binary — 11 passes; the 2 failures are both pre-existing environment flakes already
-  documented in 22-05-SUMMARY.md item 6 and both occur outside the test body
-  (`ChromeBrowserMainPartsMac::PreEarlyInitialization()` →
-  `base::mac::WasLaunchedAsLoginItemRestoreState()` → LaunchServices `BUS_ADRALN` during
-  browser startup; and the pre-existing `DCHECK failed: ptr_.` at
-  `PrometheusBrowserMainExtraParts::PostMainMessageLoopRun()`'s first line during
-  browser-process shutdown). No run ever failed with "never reached kEnabled".
+  Stability, SUPERSEDED AND RE-MEASURED (2026-07-31). The earlier claim here — 13 runs, 11
+  passes, "2 failures are both pre-existing environment flakes already documented in
+  22-05-SUMMARY.md item 6" — is withdrawn on two counts. It rested on a small sample, and it
+  inherited the "environment flake" label rather than testing it; one of those two signatures
+  is Prometheus's own shutdown code (Findings item 6) and the other did not reproduce at all in
+  110 runs.
+  Re-measured across 110 runs against the built binary, no rebuild mid-sweep:
+    extension smoke @ kComplete : pass 57/60  (flow 1/60, infrastructure 2/60)
+    extension smoke @ kEnabled  : pass 20/20  (every tracked signature 0/20)
+    unrelated browsertest,
+      zero extension contact    : pass 25/30  (5 crashes, 4 distinct signatures, all outside
+                                               any test body)
+  Defect 1's bad Mojo message and its `no_renderer_crashes_assertion.cc:102 status: 2,
+  exit_code: 3` gating signature were both 0/60 in the extension arms. No run ever failed with
+  "never reached kEnabled". Per-run logs retained under `/tmp/sweep-22-05/`.
 files_changed:
   - .context/chromium/src/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
   - .context/chromium/src/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
@@ -780,6 +1024,17 @@ files_changed:
    stranded outside `ProcessMap`, then killed for a bad Mojo message.** ROOT-CAUSED. NOT
    FIXED, and deliberately so: it is a real product race, not a harness artifact, and the
    smoke only avoids it.
+   **FILABLE REPORT WRITTEN (2026-07-31):**
+   `.planning/phases/22-chrome-extension-ecosystem-and-policy/22-FINDING-processmap-race.md`
+   — written to be filed upstream as is: user-visible repro first, then the mechanism, with
+   the pinned revision (`0e8499df5172f55d0d29e2b92ef7e6a704529578`,
+   `refs/heads/main@{#1648468}`, 151.0.7898.0), the single-caller analysis proving the
+   `ProcessMap` omission is permanent rather than transient, the `bad_message` reason 123
+   attribution, an explicit argument for why the PROCESS and not the extension is the
+   mismatched party, measured timings with their one-machine caveat, and an
+   observed-versus-inferred split. No Prometheus jargon, no plan or task numbers, and the
+   repro does not depend on the smoke controller existing.
+   Avoidance confirmed at **0/60** in the hardening sweep (was 0/12).
    *Mechanism.* Disabling an extension while its background service-worker renderer is still
    launching aborts that start. The service-worker context immediately spawns a replacement
    renderer; if that happens while the extension is disabled,
@@ -829,8 +1084,54 @@ files_changed:
    passed for the wrong reason. With `PollExtensionReady()` in place it is now meaningful, but
    the stage has no retained assertion yet.
 4. **No patch export needed yet.** `.planning/phases/22-.../patches/` stops at
-   `0016-fix-22-04-...`; both existing 22-05 nested commits are also unexported. Task 3 exports
-   everything after the frozen baseline, so this fix's commit will be picked up there.
+   `0016-fix-22-04-...`; the existing 22-05 nested commits are also unexported. Task 3 exports
+   everything after the frozen baseline, so these commits will be picked up there.
+
+5. **NEW — HARNESS RACE in the remove click (time of check versus time of use).** Observed
+   1/60 in the hardening sweep as `remove_confirmation_dialog_not_found` at terminal stage
+   `options_routing_checked`. `RemoveButtonPointScript()` hit-tests the resolved click point in
+   the RENDERER (`item.shadowRoot.elementFromPoint(x,y)!==button`, controller.cc:409-410); the
+   point then travels to the browser process and `DispatchRealMouseClick()` sends the click
+   later (controller.cc:1370). A card re-layout in that interval lands the click off the button,
+   so no `chrome.management.uninstall()` runs, no `ExtensionUninstallDialog` is created, and the
+   10 s `kRemoveConfirmationTimeout` poll expires. `remove_button_not_actionable` never fired in
+   any of the 110 runs, confirming the point always resolved `ok` and the click was always sent.
+   This is the sole reason the `kComplete` boundary was not frozen. Suggested direction for
+   Task 3: re-verify the hit test at dispatch time, or keep re-clicking while the dialog poll
+   runs. NOT fixed here — closing it needs a rebuild and a fresh sweep, and this session was
+   scoped to the two checkpoint decisions.
+   Note the retained named failure reasons paid for themselves here: this surfaced as
+   `remove_confirmation_dialog_not_found` rather than as a silent 20 s stall.
+
+6. **NEW — `PrometheusBrowserMainExtraParts::PostMainMessageLoopRun()` DCHECKs on shutdown, and
+   it is OURS, not the environment.** `FATAL:base/memory/weak_ptr.h:408] DCHECK failed: ptr_.`
+   at that function's first statement, `weak_ptr_factory_.InvalidateWeakPtrs()`
+   (`prometheus_browser_main_extra_parts.cc:3231-3232`). `weak_ptr.h:407-410` is
+   `void InvalidateWeakPtrs() { DCHECK(ptr_); ... }`, and only `InvalidateWeakPtrsAndDoom()`
+   ever zeroes `ptr_` — a spelling that appears nowhere in that file. So `ptr_` reading zero is
+   consistent with the factory's storage no longer being valid at that point.
+   Rate: 2/30 main, 0/30 main2, **2/30 in the comparison arm that never touches extensions**,
+   0/20 post-revert. **CORRECTION TO THE INHERITED RECORD:** 22-05-SUMMARY.md item 6 files this
+   as a pre-existing environment flake. It is not environmental — it is Prometheus-owned code
+   crashing the browser process at shutdown, and it fails any browsertest in this binary
+   regardless of subject. It IS independent of the extension flow. Characterized only;
+   deliberately not root-caused, as Phase 22 does not own it.
+
+7. **NEW — the "memory-corruption-shaped" crash list in 22-05-SUMMARY.md item 6 needs
+   correcting.** Measured across 110 runs:
+   - "base sequence manager" and "`ref_counted.h` DCHECK" are **one crash, not two**: a single
+     stack, `RefCountedThreadSafeBase::Release()` <- `~BindStateHolder()` <- `~PendingTask()`
+     <- `TaskQueueImpl::UnregisterTaskQueue()` <- `~BrowserTaskQueues()` <-
+     `BrowserTaskExecutor::Shutdown()` <- `ContentMainRunnerImpl::Shutdown()`. Browser task
+     queues torn down with tasks still queued. 1/30 comparison arm, 0/60 extension arms.
+   - Mojo `ReceiverSetState`: **0/110, did not reproduce.** The honest statement is "not
+     observed in 110 runs", NOT "benign" — this sweep does not characterize it.
+   - LaunchServices `BUS_ADRALN` startup crash: **0/110, did not reproduce.** Same caveat.
+   - Previously undocumented: `SEGV_ACCERR` in Cocoa view teardown (crash-core `ZombieDealloc`
+     <- `-[NSView _finalize]` <- `-[BridgedContentView dealloc]`), 1/30 comparison; and
+     `SEGV_ACCERR` at `BrowserMainLoop::CreateMainMessageLoop()`, a startup crash that never
+     reaches a test body, 1/30 comparison.
+   All of them sit on the browser-process startup or shutdown path, outside any test body.
 
 ## Downstream Defect Resolution (second session)
 
