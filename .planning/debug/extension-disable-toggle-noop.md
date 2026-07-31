@@ -616,16 +616,33 @@ bash .planning/chromium/verify-phase-22-extension-smoke.sh --focused
      `## Evidence (continued)` entries in the same file; both were partly wrong. Corrected
      against /tmp/pdiag-run2.log and /tmp/pdiag-run3.log, which no prior entry had read. -->
 
-active_defect: none — both root-caused; both human checkpoint decisions now executed
+active_defect: finding 5 — the remove-click TOCTOU (harness). Third checkpoint response received.
 
 next_action: |
-  Human verification of the two executed decisions. Nothing is in flight.
-  Decision 1 (upstream report) is DONE: see
-  `.planning/phases/22-chrome-extension-ecosystem-and-policy/22-FINDING-processmap-race.md`.
-  Decision 2 (harden first) is DONE and went against the stated preference: the sweep did not
-  hold, so the assertion boundary was reverted from `kComplete` to `kEnabled`.
-  Plan 22-05 remains PARTIAL — Tasks 3 (authoritative verify gate) and 4 (closeout evidence)
-  are unstarted and this session does not touch them.
+  THIRD CHECKPOINT RESPONSE RECEIVED (2026-07-31). Two decisions to execute, in this order:
+  1. FIRST, unconditionally: correct `22-05-SUMMARY.md` item 6's ownership misattribution and
+     fold in finding 7's crash-list corrections. Lands regardless of how the boundary work goes.
+  2. Close the remove-click TOCTOU (finding 5), rebuild, re-sweep at `kComplete` under the same
+     stated threshold (zero flow-attributable failures; infrastructure excluded only where the
+     comparison arm supports it). ONE fix-and-sweep cycle only. If `kComplete` is not clean,
+     set the boundary to `kOptionsRoutingChecked` (NOT `kEnabled`), record the observed rate,
+     stop. Do not iterate a third time.
+  3. Track the shutdown DCHECK as its own finding, including what happens at that site in a
+     RELEASE build where the DCHECK compiles out.
+  Plan 22-05 remains PARTIAL — Tasks 3 and 4 are unstarted and this session does not touch them.
+
+checkpoint_3_decisions:
+  decision_1: |
+    "Do not settle for either boundary yet. Fix the TOCTOU." Close the window rather than
+    narrow it; no sleeps. Bounded fallback: one cycle, then `kOptionsRoutingChecked`.
+  decision_2: |
+    Findings disposition. Item 6 correction first and separately. Shutdown DCHECK tracked as
+    its own finding with the release-build behaviour determined, not assumed. Finding 5
+    resolved by the fix if the sweep holds, otherwise recorded as an open harness limitation.
+    Carry two corrections to the briefing into the finding doc: the timing is a 560-567 ms
+    spread across four launches on one machine (not a single 562 ms measurement), and reason
+    123 is `content::bad_message::RPH_MOJO_PROCESS_ERROR`, a generic content wrapper rather
+    than an extensions-specific code.
 
 decision_1_executed:
   instruction: "REQUIRE UPSTREAM REPORT — filable Chromium bug, do not attempt the product fix."
@@ -758,7 +775,7 @@ defect_1:
       1. The reload activates the extension; its background service worker begins starting in
          a fresh renderer, which IS inserted into ProcessMap (created while enabled).
       2. The disable click lands BEFORE that renderer finishes launching (measured: 173 ms
-         early, against a 562 ms launch), aborting the in-flight service-worker start.
+         early, against a 560-567 ms launch), aborting the in-flight service-worker start.
       3. That renderer exits; the service-worker context immediately starts a REPLACEMENT
          renderer — while the extension is still disabled.
       4. `SiteInstanceGotProcessAndSite()` returns early without `ProcessMap::Insert()`
@@ -776,7 +793,8 @@ defect_1:
     Reasoning. Every link in the chain is ordinary product code reached by an ordinary
     sequence of user actions. The controller's only contribution is choosing an unlucky
     moment to disable; it does nothing a user cannot do. The vulnerable window is the whole
-    extension-renderer launch — 562 ms measured on this machine, longer on slower or colder
+    extension-renderer launch — 560-567 ms across four measured launches on this one machine
+    (NOT a single 562 ms figure; that was a briefing error), longer on slower or colder
     ones — which is comfortably human-reachable: reload an unpacked extension, then toggle it
     off before its service worker has finished starting. The resulting ProcessMap omission is
     permanent for that process's lifetime, with no self-healing path, and the user-visible
@@ -1047,7 +1065,8 @@ files_changed:
    `IsProcessAuthorizedForExtensionProcessListener()` fails, and the browser kills the
    renderer: `kEventListenerWithUnauthorizedExtensionID`, `bad_message` reason 123.
    *User impact.* Reachable by a developer who reloads an unpacked extension and toggles it
-   off before its service worker finishes starting — a 562 ms window as measured here, wider
+   off before its service worker finishes starting — a 560-567 ms window across four measured
+   launches here (the inherited "562 ms" was a briefing error), wider
    on slower or colder machines. The extension's background worker is then destroyed as if it
    were hostile.
    *Gating status — CORRECTED TWICE.* Original session: "fails the test regardless of

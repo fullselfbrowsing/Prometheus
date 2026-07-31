@@ -326,18 +326,69 @@ as closing Phase 22.**
    and this checkout's `gn gen` output predates most Prometheus/Phase-20+
    files, so most of that binary's object closure is not Siso-known) would
    be needed to execute the unittest copy.
-6. **Observed test-environment flakiness**, unrelated to the above: roughly
-   1 in 3 full-suite runs crashes a *different*, otherwise-reliably-passing
-   `IN_PROC_BROWSER_TEST_F` case with either a Mojo/GPU-thread `SIGSEGV` or
-   (once) a `DCHECK failed: ptr_.` inside `PrometheusBrowserMainExtraParts::
-   PostMainMessageLoopRun()`'s pre-existing `weak_ptr_factory_.
-   InvalidateWeakPtrs()` during full browser-process shutdown. Every affected
-   test passed reliably (3/3, 3/3) when re-run in isolation, and a different
-   test was affected on each occurrence, so this was treated as environment
-   resource contention (this sandbox launches a full Chromium browser
-   process per test) rather than a logic bug in this plan's own code — but it
-   is not proven benign and should be watched by whichever session next
-   extends this suite.
+6. **Sporadic browser-process crashes outside any test body.** **CORRECTED
+   2026-07-31** after a 110-run measured sweep (see
+   `.planning/debug/resolved/extension-disable-toggle-noop.md`). The original
+   text of this item filed *all* of these as "test-environment flakiness" and
+   attributed them to sandbox resource contention. **That attribution was
+   wrong for at least one signature, and the crash list itself was wrong.**
+   The superseded claim is preserved here so the correction is auditable:
+   *"roughly 1 in 3 full-suite runs crashes a different, otherwise-reliably-
+   passing `IN_PROC_BROWSER_TEST_F` case with either a Mojo/GPU-thread
+   `SIGSEGV` or (once) a `DCHECK failed: ptr_.` ... so this was treated as
+   environment resource contention ... rather than a logic bug in this plan's
+   own code."*
+
+   What 110 runs across four arms actually measured (30 extension smoke, 30
+   extension smoke repeat, 30 an unrelated `SafeBrowsing` browsertest in the
+   same binary with zero extension contact, 20 post-revert):
+
+   - **`weak_ptr.h:408 DCHECK failed: ptr_.` is NOT environmental. It is
+     Prometheus-owned code.** It fires at
+     `PrometheusBrowserMainExtraParts::PostMainMessageLoopRun() + 96` — the
+     function's first statement, `weak_ptr_factory_.InvalidateWeakPtrs()`
+     (`prometheus_browser_main_extra_parts.cc:3232`) — at the identical
+     offset in all four occurrences. Rate: 2/30, 0/30, **2/30 in the arm that
+     never touches extensions**, 0/20. It is independent of the extension
+     flow, and it fails whichever browsertest happens to be running,
+     regardless of subject. That is why it looked like environment noise. It
+     is not: it is our shutdown code running on an already-destroyed object.
+     Tracked as its own finding — see
+     `22-FINDING-shutdown-weakptr-use-after-destroy.md`, which also records
+     what this site does in an official build where the `DCHECK` compiles
+     out. It is **not** cosmetic.
+   - **"Base sequence manager" and "`ref_counted.h` DCHECK" are one crash,
+     not two.** A single stack:
+     `FATAL:base/memory/ref_counted.h:235] DCHECK failed:
+     !ref_count_.IsZero().` <- `RefCountedThreadSafeBase::Release()` <-
+     `~BindStateHolder()` <- `~PendingTask()` <-
+     `TaskQueueImpl::UnregisterTaskQueue()` <- `~BrowserTaskQueues()` <-
+     `BrowserTaskExecutor::Shutdown()` <- `ContentMainRunnerImpl::Shutdown()`.
+     Browser task queues torn down with tasks still queued. 1/30 in the
+     comparison arm, 0/60 in the extension arms.
+   - **Mojo `ReceiverSetState` crash: not observed in 110 runs.** This sweep
+     therefore does not characterize it. "Not observed in 110 runs" is the
+     claim; it is **not** a finding of benignness.
+   - **LaunchServices `BUS_ADRALN` startup crash
+     (`WasLaunchedAsLoginItemRestoreState`): not observed in 110 runs.** Same
+     caveat — not characterized, not shown benign.
+   - **Previously undocumented, both 1/30 in the comparison arm:**
+     `SIGSEGV`/`SEGV_ACCERR` in Cocoa view teardown (crash-core
+     `ZombieDealloc` <- `-[NSView _finalize]` <- `-[BridgedContentView
+     dealloc]`), and `SEGV_ACCERR` at
+     `BrowserMainLoop::CreateMainMessageLoop()`, a startup crash that never
+     reaches a test body at all.
+
+   Every one of these sits on the browser-process **startup or shutdown**
+   path, outside any test body — which is a stronger independence result than
+   "they scatter across stages", because there is no stage to correlate them
+   with. Total infrastructure crash rate was **higher** in the arm with zero
+   extension contact (5/30) than in the extension arms (2/60). Honest limit:
+   at n=30 per arm that difference is not statistically meaningful and is not
+   claimed as one; the robust claim is qualitative — these crashes
+   demonstrably occur with zero extension involvement, so they cannot be
+   attributed to the extension flow. None of them is proven benign, and the
+   `weak_ptr` one is now known not to be.
 
 ## Issues Encountered
 

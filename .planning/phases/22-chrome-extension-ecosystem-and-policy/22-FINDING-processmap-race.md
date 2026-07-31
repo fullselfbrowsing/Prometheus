@@ -18,7 +18,7 @@ the repro below does not depend on any test infrastructure.
 | Commit subject | `[Vertical Tabs] Implement Touch Handler` |
 | Commit date | 2026-06-17 |
 | `chrome/VERSION` | `151.0.7898.0` |
-| Platform observed | macOS, arm64, debug build with DCHECKs enabled |
+| Platform observed | macOS, arm64. `is_debug = false`, `is_component_build = true`, DCHECKs live via `dcheck_always_on` defaulting true for non official builds. An **optimized** build, not a debug build. |
 
 How the revision was determined: the checkout pins this commit as its baseline, and
 `git merge-base --is-ancestor 0e8499df5172f55d0d29e2b92ef7e6a704529578 HEAD` confirms every
@@ -52,9 +52,11 @@ as though the renderer were hostile.
    `chrome://extensions` with developer mode on.
 2. Click **Reload** on that extension's card.
 3. While the extension's service worker is still starting, toggle the extension **off** using the
-   card's enable toggle. On the machine measured here the window is roughly 560 ms wide, starting
-   at the moment the reload activates the extension. It is wider on slower or colder machines,
-   and wider still on first activation after a cold start.
+   card's enable toggle. On the machine measured here the window is roughly 560 to 567 ms wide,
+   starting at the moment the reload activates the extension. That is a spread across four
+   separate renderer launches on one machine, not a single measurement; see Measurements below.
+   It is wider on slower or colder machines, and wider still on first activation after a cold
+   start.
 4. Toggle the extension back **on**.
 
 Observed: within roughly 25 ms of the replacement renderer completing its launch, the browser logs
@@ -240,9 +242,13 @@ investigators toward the wrong half of the pair.
 ## Measurements
 
 All timings below are **direct observations from instrumented runs on a single machine** (macOS,
-arm64, debug build with DCHECKs enabled, no artificial load). They are illustrative of the scale of
-the window, not a claim about any other configuration. Two independent runs are shown because the
-window width is the load bearing quantity.
+arm64, optimized build with DCHECKs enabled, no artificial load). They are illustrative of the
+scale of the window, not a claim about any other configuration. Two independent runs are shown
+because the window width is the load bearing quantity.
+
+There is no single headline number here. The window is reported as a **range across four measured
+launches**, and any restatement of it as one figure is a loss of information rather than a
+simplification.
 
 Instrumentation used: a `RenderProcessHostCreationObserver` and `RenderProcessHostObserver` logging
 each renderer's create, ready, and exit, together with the enabled unpacked extension set at
