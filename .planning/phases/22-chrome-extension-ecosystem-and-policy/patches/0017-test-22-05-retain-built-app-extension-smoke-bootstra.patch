@@ -1,0 +1,3159 @@
+From 28865eff8981ba35b50739b1d50140137ad3c3f3 Mon Sep 17 00:00:00 2001
+From: Lakshman Turlapati <lakshmanturlapati@gmail.com>
+Date: Wed, 29 Jul 2026 19:21:13 -0500
+Subject: [PATCH] test(22-05): retain built-app extension smoke bootstrap,
+ controller, and manager-caller RED contract
+
+- Add PrometheusExtensionSmokeBootstrap: non-official, exact
+  --test-type=prometheus-runtime, disposable-profile, no-follow owner-only
+  0600 launch-config validation plus fixture directory/manifest SHA-256
+  verification, mirroring the existing runtime/supervision test bootstraps.
+- Add PrometheusExtensionSmokeController: one-shot native chrome://extensions
+  lifecycle drive (manager open, developer-mode toggle, Load unpacked click,
+  inspect/reload/disable/enable/remove, local policy grant matrix, options
+  routing) that never calls UnpackedInstaller/ExtensionRegistrar directly.
+  Installs a one-shot ui::SelectFileDialogFactory immediately before the real
+  Load-unpacked click that self-clears in Create() (never answers a second or
+  unrelated picker) and only delivers the bootstrap-verified fixture
+  directory when Browser/window/caller/type/title/stage all match exactly.
+- Compose the bootstrap+controller from PrometheusBrowserMainExtraParts via a
+  new BrowserCollectionObserver-based waiter, gated only on the exact
+  extension-smoke command-line switch, independent of the Agent gateway path.
+- Add prometheus_extension_smoke_browsertest.cc: full-lifecycle and
+  Create()-denial (OTR profile, mismatched browser/profile, early shutdown)
+  browser tests, plus a real-tab developer-private caller pair.
+- Retain the developer-private committed-caller RED/GREEN contract as
+  TEST_F cases in developer_private_api_unittest.cc (source-retained; see
+  verify-phase-22-extension-smoke.sh for why this binary instead executes
+  the browser-test copy).
+- RED: the full-lifecycle controller test correctly halts at
+  kLoadUnpackedClicked (install_not_observed_timeout) because
+  DeveloperPrivateLoadUnpackedFunction::ShowSelectFileDialog() does not yet
+  pass a caller; the one committed-caller browser test asserting a non-null
+  caller fails accordingly. A later plan lands the narrow developer-private
+  change that flips both green.
+---
+ .../developer_private_api_unittest.cc         |   75 ++
+ chrome/browser/prometheus/BUILD.gn            |   50 +
+ .../prometheus_browser_main_extra_parts.cc    |  112 ++
+ .../prometheus_browser_main_extra_parts.h     |    9 +
+ .../prometheus_extension_smoke_bootstrap.cc   |  464 +++++++
+ .../prometheus_extension_smoke_bootstrap.h    |  134 +++
+ ...heus_extension_smoke_bootstrap_unittest.cc |  461 +++++++
+ .../prometheus_extension_smoke_browsertest.cc |  310 +++++
+ .../prometheus_extension_smoke_controller.cc  | 1064 +++++++++++++++++
+ .../prometheus_extension_smoke_controller.h   |  221 ++++
+ chrome/browser/ui/views/prometheus/BUILD.gn   |    3 +
+ 11 files changed, 2903 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.h
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_smoke_bootstrap_unittest.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_smoke_controller.h
+
+diff --git a/chrome/browser/extensions/api/developer_private/developer_private_api_unittest.cc b/chrome/browser/extensions/api/developer_private/developer_private_api_unittest.cc
+index b56d799fd2196a087054e63cd3deebfaf21a5283..16404794be313c9a5aea01ae7c1a5044f36b07d7 100644
+--- a/chrome/browser/extensions/api/developer_private/developer_private_api_unittest.cc
++++ b/chrome/browser/extensions/api/developer_private/developer_private_api_unittest.cc
+@@ -52,6 +52,7 @@
+ #include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
+ #include "chrome/common/extensions/api/developer_private.h"
+ #include "chrome/common/pref_names.h"
++#include "chrome/common/webui_url_constants.h"
+ #include "components/crx_file/id_util.h"
+ #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
+ #include "components/signin/public/base/signin_pref_names.h"
+@@ -95,6 +96,7 @@
+ #include "extensions/test/test_extension_dir.h"
+ #include "services/data_decoder/data_decoder_service.h"
+ #include "services/service_manager/public/cpp/test/test_connector_factory.h"
++#include "ui/shell_dialogs/fake_select_file_dialog.h"
+ #include "ui/shell_dialogs/selected_file_info.h"
+ 
+ #if BUILDFLAG(IS_ANDROID)
+@@ -1079,6 +1081,79 @@ TEST_F(DeveloperPrivateApiUnitTest, DeveloperPrivateLoadUnpacked) {
+                     .size());
+ }
+ 
++// Phase 22 built-app extension smoke (see
++// chrome/browser/prometheus/prometheus_extension_smoke_controller.h): the
++// smoke's one-shot ui::SelectFileDialogFactory only ever answers a request
++// whose `caller` is the live, currently-committed chrome://extensions
++// WebContents that issued it. That fact must come from developer-private
++// code itself, not from the smoke controller reaching into the extension
++// system -- these two tests are the retained RED/GREEN contract for that
++// narrow copy. Retained RED: as of this commit, ShowSelectFileDialog() does
++// not yet pass a `caller` at all, so the first test fails here until a later
++// plan copies the sender's committed URL into SelectFileDialog::SelectFile().
++TEST_F(DeveloperPrivateApiUnitTest,
++      LoadUnpackedPassesCommittedManagerCallerToSelectFileDialog) {
++  std::unique_ptr<content::WebContents> web_contents(
++      content::WebContentsTester::CreateTestWebContents(profile(), nullptr));
++  content::WebContentsTester::For(web_contents.get())
++      ->NavigateAndCommit(GURL(chrome::kChromeUIExtensionsURL));
++
++  ui::FakeSelectFileDialog::Factory* factory =
++      ui::FakeSelectFileDialog::RegisterFactory();
++  bool observed_caller_present = false;
++  GURL observed_caller;
++  factory->SetOpenCallback(base::BindLambdaForTesting([&]() {
++    ui::FakeSelectFileDialog* dialog = factory->GetLastDialog();
++    ASSERT_TRUE(dialog);
++    if (dialog->caller()) {
++      observed_caller_present = true;
++      observed_caller = *dialog->caller();
++    }
++    dialog->CallFileSelectionCanceled();
++  }));
++
++  auto function =
++      base::MakeRefCounted<api::DeveloperPrivateLoadUnpackedFunction>();
++  function->SetRenderFrameHost(web_contents->GetPrimaryMainFrame());
++  EXPECT_FALSE(RunFunction(function, base::ListValue()));
++  ui::SelectFileDialog::SetFactory(nullptr);
++
++  ASSERT_TRUE(observed_caller_present)
++      << "ShowSelectFileDialog() must pass the live committed "
++        "chrome://extensions caller to SelectFileDialog::SelectFile()";
++  EXPECT_EQ(GURL(chrome::kChromeUIExtensionsURL), observed_caller);
++}
++
++// Ordinary (non-manager) senders must retain exactly today's native
++// behavior: no caller at all. This guards against the narrow developer-private
++// change ever widening to pass a caller for callers other than the live
++// chrome://extensions WebContents.
++TEST_F(DeveloperPrivateApiUnitTest,
++      LoadUnpackedPassesNoCallerForNonManagerSender) {
++  std::unique_ptr<content::WebContents> web_contents(
++      content::WebContentsTester::CreateTestWebContents(profile(), nullptr));
++  content::WebContentsTester::For(web_contents.get())
++      ->NavigateAndCommit(GURL("https://example.com/"));
++
++  ui::FakeSelectFileDialog::Factory* factory =
++      ui::FakeSelectFileDialog::RegisterFactory();
++  bool observed_caller_present = false;
++  factory->SetOpenCallback(base::BindLambdaForTesting([&]() {
++    ui::FakeSelectFileDialog* dialog = factory->GetLastDialog();
++    ASSERT_TRUE(dialog);
++    observed_caller_present = dialog->caller() != nullptr;
++    dialog->CallFileSelectionCanceled();
++  }));
++
++  auto function =
++      base::MakeRefCounted<api::DeveloperPrivateLoadUnpackedFunction>();
++  function->SetRenderFrameHost(web_contents->GetPrimaryMainFrame());
++  EXPECT_FALSE(RunFunction(function, base::ListValue()));
++  ui::SelectFileDialog::SetFactory(nullptr);
++
++  EXPECT_FALSE(observed_caller_present);
++}
++
+ TEST_F(DeveloperPrivateApiUnitTest, DeveloperPrivateLoadUnpackedLoadError) {
+   std::unique_ptr<content::WebContents> web_contents(
+       content::WebContentsTester::CreateTestWebContents(profile(), nullptr));
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 61bf49324dab93253a3fb5e4abd7b7e762d48ca7..159fa96dcfa62bb8ee290d38483e77fc6d586355 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -652,6 +652,51 @@ source_set("prometheus_supervision_test_bootstrap") {
+   ]
+ }
+ 
++source_set("prometheus_extension_smoke_bootstrap") {
++  sources = [
++    "prometheus_extension_smoke_bootstrap.cc",
++    "prometheus_extension_smoke_bootstrap.h",
++  ]
++
++  deps = [
++    ":prometheus_runtime_test_bootstrap",
++    "//base",
++    "//crypto",
++  ]
++}
++
++# Owns the one-shot built-app extension lifecycle smoke drive over a real
++# chrome://extensions manager tab (Phase 22 Plan 05). Depends downward on
++# extensions/, content/, and views/ only for the narrow purpose of driving
++# and observing that one WebUI tab and its native uninstall confirmation
++# dialog; it never calls extensions::UnpackedInstaller, ExtensionRegistrar,
++# or any registry mutation method directly.
++source_set("prometheus_extension_smoke_controller") {
++  sources = [
++    "prometheus_extension_smoke_controller.cc",
++    "prometheus_extension_smoke_controller.h",
++  ]
++
++  deps = [
++    ":prometheus_extension_policy_service",
++    ":prometheus_extension_policy_types",
++    ":prometheus_extension_smoke_bootstrap",
++    "//base",
++    "//chrome/browser/profiles",
++    "//chrome/browser/ui",
++    "//chrome/browser/ui/browser_window",
++    "//chrome/common",
++    "//content/public/browser",
++    "//extensions/browser",
++    "//extensions/common",
++    "//ui/base",
++    "//ui/gfx",
++    "//ui/shell_dialogs",
++    "//ui/views",
++    "//url",
++  ]
++}
++
+ source_set("prometheus_runtime_profile_service") {
+   sources = [
+     "prometheus_runtime_profile_service.cc",
+@@ -755,6 +800,8 @@ source_set("prometheus_browser_composition") {
+     ":prometheus_agent_profile_service",
+     ":prometheus_agent_service",
+     ":prometheus_endpoint_descriptor",
++    ":prometheus_extension_smoke_bootstrap",
++    ":prometheus_extension_smoke_controller",
+     ":prometheus_provider_registry",
+     ":prometheus_runtime_profile_service",
+     ":prometheus_runtime_transport_codec",
+@@ -764,6 +811,7 @@ source_set("prometheus_browser_composition") {
+     "//chrome/browser:main_extra_parts",
+     "//chrome/browser/profiles",
+     "//chrome/browser/ui/browser_window",
++    "//chrome/browser/ui/browser_window/public",
+     "//chrome/browser/ui/webui/prometheus:side_panel_ui",
+     "//chrome/common",
+     "//components/optimization_guide/content/browser",
+@@ -792,6 +840,7 @@ test("prometheus_unittests") {
+     "prometheus_extension_compatibility_catalog_unittest.cc",
+     "prometheus_extension_policy_service_unittest.cc",
+     "prometheus_extension_page_adapter_unittest.cc",
++    "prometheus_extension_smoke_bootstrap_unittest.cc",
+     "prometheus_extension_surface_resolver_unittest.cc",
+     "prometheus_memory_store_unittest.cc",
+     "prometheus_page_action_dispatcher_unittest.cc",
+@@ -846,6 +895,7 @@ test("prometheus_unittests") {
+     ":prometheus_extension_policy_service",
+     ":prometheus_extension_page_adapter",
+     ":prometheus_extension_policy_types",
++    ":prometheus_extension_smoke_bootstrap",
+     ":prometheus_extension_surface_resolver",
+     ":prometheus_memory_store",
+     ":prometheus_page_action_history",
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index 7007b0adcd9a47e35636201bd0beeb29d010d0f1..f24268d2db745f81a8a4acd3cc13a4a8470d96d7 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -15,6 +15,7 @@
+ #include "base/functional/bind.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/run_loop.h"
++#include "base/scoped_observation.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/sequenced_task_runner.h"
+@@ -28,6 +29,8 @@
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
+ #include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
++#include "chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.h"
++#include "chrome/browser/prometheus/prometheus_extension_smoke_controller.h"
+ #include "chrome/browser/prometheus/prometheus_provider_registry.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
+@@ -35,7 +38,10 @@
+ #include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h"
+ #include "chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h"
++#include "chrome/browser/ui/browser_window/public/browser_collection.h"
++#include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+ #include "chrome/browser/tab_list/tab_list_interface.h"
+ #include "chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+ #include "chrome/browser/ui/webui/webui_embedding_context.h"
+@@ -2977,6 +2983,66 @@ void PrometheusSupervisionTestComposition::Shutdown() {
+   set_dispatcher_.Reset();
+ }
+ 
++// Waits for a live regular, non-OTR, disposable-profile normal Browser
++// window to exist, then reports it exactly once through `ready`. Reuses
++// IsDisposableSupervisionTestProfile()'s profile classification --
++// "disposable" means only "this profile's directory lives under the OS temp
++// directory", which is not specific to supervision.
++class PrometheusBrowserMainExtraParts::ExtensionSmokeBrowserWaiter
++    : public BrowserCollectionObserver {
++ public:
++  explicit ExtensionSmokeBrowserWaiter(
++      base::OnceCallback<void(Profile*, Browser*)> ready)
++      : ready_(std::move(ready)) {
++    collection_observation_.Observe(GlobalBrowserCollection::GetInstance());
++  }
++  ExtensionSmokeBrowserWaiter(const ExtensionSmokeBrowserWaiter&) = delete;
++  ExtensionSmokeBrowserWaiter& operator=(const ExtensionSmokeBrowserWaiter&) =
++      delete;
++  ~ExtensionSmokeBrowserWaiter() override = default;
++
++  // Scans browsers that already exist at construction time. Must be called
++  // only after the owner has already stored `this` in its final location:
++  // a match runs `ready_` synchronously, which may destroy `this`.
++  void CheckExistingBrowsers() {
++    GlobalBrowserCollection::GetInstance()->ForEach(
++        [this](BrowserWindowInterface* browser_window) {
++          return !MaybeReport(browser_window);
++        });
++  }
++
++  // BrowserCollectionObserver:
++  void OnBrowserCreated(BrowserWindowInterface* browser_window) override {
++    MaybeReport(browser_window);
++  }
++
++ private:
++  bool MaybeReport(BrowserWindowInterface* browser_window) {
++    if (!ready_ || !browser_window ||
++        browser_window->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
++      return false;
++    }
++    Profile* const profile = browser_window->GetProfile();
++    Browser* const browser = browser_window->GetBrowserForMigrationOnly();
++    if (!profile || !browser || !profile->IsRegularProfile() ||
++        profile->IsOffTheRecord() ||
++        !IsDisposableSupervisionTestProfile(profile)) {
++      return false;
++    }
++    std::move(ready_).Run(profile, browser);
++    return true;
++  }
++
++  base::OnceCallback<void(Profile*, Browser*)> ready_;
++  // BrowserCollection::AddObserver()/RemoveObserver() are protected and
++  // friended only for base::ScopedObservationTraits<BrowserCollection,
++  // BrowserCollectionObserver> (not the GlobalBrowserCollection subclass), so
++  // the observation is templated on the base type; GlobalBrowserCollection*
++  // still implicitly upcasts when passed to Observe() below.
++  base::ScopedObservation<BrowserCollection, BrowserCollectionObserver>
++      collection_observation_{this};
++};
++
+ PrometheusBrowserMainExtraParts::PrometheusBrowserMainExtraParts(
+     bool is_integration_test)
+     : is_integration_test_(is_integration_test) {
+@@ -3010,6 +3076,18 @@ void PrometheusBrowserMainExtraParts::PostBrowserStart() {
+                           supervision_composition_->GetWeakPtr()));
+   const base::CommandLine& command_line =
+       *base::CommandLine::ForCurrentProcess();
++
++  // Independent of the Agent gateway/endpoint-descriptor path below: the
++  // built-app extension lifecycle smoke only needs a live regular disposable
++  // Browser, never a gateway.
++  if (command_line.HasSwitch(kPrometheusExtensionSmokeBootstrapSwitch)) {
++    extension_smoke_browser_waiter_ =
++        std::make_unique<ExtensionSmokeBrowserWaiter>(base::BindOnce(
++            &PrometheusBrowserMainExtraParts::OnExtensionSmokeBrowserReady,
++            weak_ptr_factory_.GetWeakPtr()));
++    extension_smoke_browser_waiter_->CheckExistingBrowsers();
++  }
++
+   if (is_integration_test_ &&
+       !command_line.HasSwitch(switches::kPrometheusAgentEndpointDescriptor)) {
+     return;
+@@ -3107,6 +3185,35 @@ void PrometheusBrowserMainExtraParts::OnGatewayStarted(bool started) {
+       OpaquePointerIdentity(exact_profile)));
+ }
+ 
++void PrometheusBrowserMainExtraParts::OnExtensionSmokeBrowserReady(
++    Profile* profile,
++    Browser* browser) {
++  extension_smoke_browser_waiter_.reset();
++  if (!profile || !browser || extension_smoke_controller_) {
++    return;
++  }
++
++#if defined(OFFICIAL_BUILD)
++  constexpr bool kIsOfficialBuild = true;
++#else
++  constexpr bool kIsOfficialBuild = false;
++#endif
++  std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap;
++  const PrometheusExtensionSmokeBootstrapResult result =
++      PrometheusExtensionSmokeBootstrap::Create(
++          *base::CommandLine::ForCurrentProcess(), kIsOfficialBuild,
++          {.is_regular_profile = profile->IsRegularProfile(),
++           .is_disposable_profile = IsDisposableSupervisionTestProfile(profile),
++           .is_off_the_record = profile->IsOffTheRecord()},
++          CreatePrometheusExtensionSmokeBootstrapFileAccess(),
++          CreatePrometheusExtensionSmokeFixtureAccess(), &bootstrap);
++  if (result != PrometheusExtensionSmokeBootstrapResult::kApplied) {
++    return;
++  }
++  extension_smoke_controller_ = PrometheusExtensionSmokeController::Create(
++      std::move(bootstrap), profile, browser);
++}
++
+ bool PrometheusBrowserMainExtraParts::BindSupervisionGatewayForTesting(
+     PrometheusAgentGateway* gateway) {
+   if (!gateway || !supervision_composition_) {
+@@ -3123,6 +3230,11 @@ void PrometheusBrowserMainExtraParts::UnbindSupervisionAgentForTesting() {
+ 
+ void PrometheusBrowserMainExtraParts::PostMainMessageLoopRun() {
+   weak_ptr_factory_.InvalidateWeakPtrs();
++  extension_smoke_browser_waiter_.reset();
++  if (extension_smoke_controller_) {
++    extension_smoke_controller_->Shutdown();
++    extension_smoke_controller_.reset();
++  }
+   SetPrometheusSupervisionDialogAutomationForTesting({});
+   if (supervision_composition_) {
+     supervision_composition_->SetPairingRedeemedCallback({});
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
+index 217efb42a5561a141335bb0851fd481bbb4fcdc3..d781308bf7ca8846661c1d25be6783a7584ce4f8 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
+@@ -13,11 +13,15 @@
+ #include "chrome/browser/chrome_browser_main_extra_parts.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h"
+ 
++class Browser;
+ class BrowserWindowInterface;
++class Profile;
+ 
+ namespace prometheus {
+ 
+ class PrometheusAgentGateway;
++class PrometheusExtensionSmokeBootstrap;
++class PrometheusExtensionSmokeController;
+ class PrometheusSupervisionComposition;
+ 
+ struct PrometheusSupervisionTestCompositionHooks {
+@@ -101,13 +105,18 @@ class PrometheusBrowserMainExtraParts final
+   void UnbindSupervisionAgentForTesting();
+ 
+  private:
++  class ExtensionSmokeBrowserWaiter;
++
+   void OnGatewayStarted(bool started);
++  void OnExtensionSmokeBrowserReady(Profile* profile, Browser* browser);
+ 
+   const bool is_integration_test_;
+   std::unique_ptr<PrometheusSupervisionComposition> supervision_composition_;
+   std::unique_ptr<PrometheusSupervisionTestComposition>
+       supervision_test_composition_;
+   std::unique_ptr<PrometheusAgentGateway> gateway_;
++  std::unique_ptr<ExtensionSmokeBrowserWaiter> extension_smoke_browser_waiter_;
++  std::unique_ptr<PrometheusExtensionSmokeController> extension_smoke_controller_;
+   base::WeakPtrFactory<PrometheusBrowserMainExtraParts> weak_ptr_factory_{this};
+ };
+ 
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.cc b/chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..aed586cbf21e6ea3c0fcded23fa508688b11baf6
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.cc
+@@ -0,0 +1,464 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.h"
++
++#include <algorithm>
++#include <array>
++#include <cctype>
++#include <set>
++#include <string_view>
++#include <utility>
++
++#include "base/files/file.h"
++#include "base/files/file_util.h"
++#include "base/functional/bind.h"
++#include "base/json/json_reader.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
++#include "base/threading/thread_restrictions.h"
++#include "build/build_config.h"
++#include "chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h"
++#include "crypto/hash.h"
++
++#if BUILDFLAG(IS_POSIX)
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
++
++namespace prometheus {
++namespace {
++
++constexpr int kRequiredFilePermissions = 0600;
++constexpr std::array<std::string_view, 4> kSchemaKeys = {
++    "schema_version", "fixture_path", "fixture_sha256", "result_path"};
++constexpr char kManifestFileName[] = "manifest.json";
++
++enum class ObjectScanResult {
++  kValid,
++  kMalformed,
++  kDuplicateKey,
++};
++
++void SkipWhitespace(std::string_view input, size_t* position) {
++  while (*position < input.size() &&
++         std::isspace(static_cast<unsigned char>(input[*position]))) {
++    ++*position;
++  }
++}
++
++bool SkipJsonString(std::string_view input, size_t* position) {
++  if (*position >= input.size() || input[*position] != '"') {
++    return false;
++  }
++  ++*position;
++  bool escaped = false;
++  while (*position < input.size()) {
++    const char current = input[(*position)++];
++    if (escaped) {
++      escaped = false;
++      continue;
++    }
++    if (current == '\\') {
++      escaped = true;
++      continue;
++    }
++    if (current == '"') {
++      return true;
++    }
++    if (static_cast<unsigned char>(current) < 0x20) {
++      return false;
++    }
++  }
++  return false;
++}
++
++bool SkipJsonValue(std::string_view input, size_t* position, size_t depth) {
++  if (depth > 8u || *position >= input.size()) {
++    return false;
++  }
++  if (input[*position] == '"') {
++    return SkipJsonString(input, position);
++  }
++  if (input[*position] == '{') {
++    ++*position;
++    SkipWhitespace(input, position);
++    if (*position < input.size() && input[*position] == '}') {
++      ++*position;
++      return true;
++    }
++    while (*position < input.size()) {
++      if (!SkipJsonString(input, position)) {
++        return false;
++      }
++      SkipWhitespace(input, position);
++      if (*position >= input.size() || input[(*position)++] != ':') {
++        return false;
++      }
++      SkipWhitespace(input, position);
++      if (!SkipJsonValue(input, position, depth + 1)) {
++        return false;
++      }
++      SkipWhitespace(input, position);
++      if (*position >= input.size()) {
++        return false;
++      }
++      if (input[*position] == '}') {
++        ++*position;
++        return true;
++      }
++      if (input[(*position)++] != ',') {
++        return false;
++      }
++      SkipWhitespace(input, position);
++    }
++    return false;
++  }
++
++  const size_t value_start = *position;
++  while (*position < input.size() && input[*position] != ',' &&
++         input[*position] != '}' && input[*position] != ']' &&
++         !std::isspace(static_cast<unsigned char>(input[*position]))) {
++    ++*position;
++  }
++  return *position > value_start;
++}
++
++ObjectScanResult ScanObjectKeys(std::string_view input) {
++  size_t position = 0;
++  SkipWhitespace(input, &position);
++  if (position >= input.size() || input[position++] != '{') {
++    return ObjectScanResult::kMalformed;
++  }
++  std::set<std::string> keys;
++  SkipWhitespace(input, &position);
++  if (position < input.size() && input[position] == '}') {
++    ++position;
++    SkipWhitespace(input, &position);
++    return position == input.size() ? ObjectScanResult::kValid
++                                    : ObjectScanResult::kMalformed;
++  }
++
++  while (position < input.size()) {
++    if (input[position] != '"') {
++      return ObjectScanResult::kMalformed;
++    }
++    const size_t key_start = ++position;
++    while (position < input.size() && input[position] != '"') {
++      if (input[position] == '\\' ||
++          static_cast<unsigned char>(input[position]) < 0x20) {
++        return ObjectScanResult::kMalformed;
++      }
++      ++position;
++    }
++    if (position >= input.size()) {
++      return ObjectScanResult::kMalformed;
++    }
++    if (!keys.insert(std::string(input.substr(key_start, position - key_start)))
++             .second) {
++      return ObjectScanResult::kDuplicateKey;
++    }
++    ++position;
++    SkipWhitespace(input, &position);
++    if (position >= input.size() || input[position++] != ':') {
++      return ObjectScanResult::kMalformed;
++    }
++    SkipWhitespace(input, &position);
++    if (!SkipJsonValue(input, &position, 0)) {
++      return ObjectScanResult::kMalformed;
++    }
++    SkipWhitespace(input, &position);
++    if (position >= input.size()) {
++      return ObjectScanResult::kMalformed;
++    }
++    if (input[position] == '}') {
++      ++position;
++      SkipWhitespace(input, &position);
++      return position == input.size() ? ObjectScanResult::kValid
++                                      : ObjectScanResult::kMalformed;
++    }
++    if (input[position++] != ',') {
++      return ObjectScanResult::kMalformed;
++    }
++    SkipWhitespace(input, &position);
++  }
++  return ObjectScanResult::kMalformed;
++}
++
++bool HasExactSchemaKeys(const base::DictValue& value) {
++  return value.size() == kSchemaKeys.size() &&
++         std::ranges::all_of(kSchemaKeys, [&value](std::string_view key) {
++           return value.contains(key);
++         });
++}
++
++bool IsLowerHexSha256(std::string_view value) {
++  return value.size() == kPrometheusExtensionSmokeSha256HexLength &&
++         std::ranges::all_of(value, [](char character) {
++           return base::IsAsciiDigit(character) ||
++                  (character >= 'a' && character <= 'f');
++         });
++}
++
++std::optional<base::FilePath> ResolveAbsoluteNoSymlinkPath(
++    const base::FilePath& requested) {
++  if (requested.empty() || !requested.IsAbsolute() ||
++      requested.ReferencesParent()) {
++    return std::nullopt;
++  }
++#if BUILDFLAG(IS_POSIX)
++  return base::MakeAbsoluteFilePathNoResolveSymbolicLinks(requested);
++#else
++  return std::nullopt;
++#endif
++}
++
++std::optional<PrometheusExtensionSmokeBootstrapFileFacts> InspectPath(
++    const base::FilePath& path) {
++#if BUILDFLAG(IS_POSIX)
++  base::ScopedAllowBlockingForTesting allow_blocking;
++  base::stat_wrapper_t information;
++  if (base::File::Lstat(path, &information) != 0) {
++    return std::nullopt;
++  }
++  return PrometheusExtensionSmokeBootstrapFileFacts{
++      .is_regular_file = S_ISREG(information.st_mode),
++      .is_directory = S_ISDIR(information.st_mode),
++      .is_symbolic_link = S_ISLNK(information.st_mode),
++      .is_owned_by_current_user = information.st_uid == geteuid(),
++      .posix_permissions = information.st_mode & 0777,
++      .size = information.st_size,
++  };
++#else
++  return std::nullopt;
++#endif
++}
++
++std::optional<std::string> ReadStrictConfigFile(const base::FilePath& path,
++                                                 size_t max_bytes) {
++#if BUILDFLAG(IS_POSIX)
++  base::ScopedAllowBlockingForTesting allow_blocking;
++  base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ |
++                            base::File::FLAG_NO_FOLLOW);
++  if (!file.IsValid()) {
++    return std::nullopt;
++  }
++  base::stat_wrapper_t information;
++  if (base::File::Fstat(file.GetPlatformFile(), &information) != 0 ||
++      !S_ISREG(information.st_mode) || information.st_uid != geteuid() ||
++      (information.st_mode & 0777) != kRequiredFilePermissions ||
++      information.st_size <= 0 ||
++      static_cast<uint64_t>(information.st_size) > max_bytes) {
++    return std::nullopt;
++  }
++  std::string contents(static_cast<size_t>(information.st_size), '\0');
++  if (!file.ReadAndCheck(0, base::as_writable_byte_span(contents))) {
++    return std::nullopt;
++  }
++  return contents;
++#else
++  return std::nullopt;
++#endif
++}
++
++std::optional<std::string> ReadFixtureFile(const base::FilePath& path,
++                                            size_t max_bytes) {
++#if BUILDFLAG(IS_POSIX)
++  base::ScopedAllowBlockingForTesting allow_blocking;
++  base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ |
++                            base::File::FLAG_NO_FOLLOW);
++  if (!file.IsValid()) {
++    return std::nullopt;
++  }
++  base::stat_wrapper_t information;
++  if (base::File::Fstat(file.GetPlatformFile(), &information) != 0 ||
++      !S_ISREG(information.st_mode) || information.st_size <= 0 ||
++      static_cast<uint64_t>(information.st_size) > max_bytes) {
++    return std::nullopt;
++  }
++  std::string contents(static_cast<size_t>(information.st_size), '\0');
++  if (!file.ReadAndCheck(0, base::as_writable_byte_span(contents))) {
++    return std::nullopt;
++  }
++  return contents;
++#else
++  return std::nullopt;
++#endif
++}
++
++}  // namespace
++
++PrometheusExtensionSmokeBootstrap::PrometheusExtensionSmokeBootstrap() =
++    default;
++PrometheusExtensionSmokeBootstrap::~PrometheusExtensionSmokeBootstrap() =
++    default;
++
++PrometheusExtensionSmokeBootstrapResult PrometheusExtensionSmokeBootstrap::Create(
++    const base::CommandLine& command_line,
++    bool is_official_build,
++    PrometheusExtensionSmokeBootstrapProfileFacts profile_facts,
++    const PrometheusExtensionSmokeBootstrapFileAccess& file_access,
++    const PrometheusExtensionSmokeFixtureAccess& fixture_access,
++    std::unique_ptr<PrometheusExtensionSmokeBootstrap>* bootstrap) {
++  if (bootstrap) {
++    bootstrap->reset();
++  }
++  const bool has_test_type =
++      command_line.HasSwitch(kPrometheusRuntimeTestTypeSwitch);
++  const bool has_config =
++      command_line.HasSwitch(kPrometheusExtensionSmokeBootstrapSwitch);
++  if (!has_test_type && !has_config) {
++    return PrometheusExtensionSmokeBootstrapResult::kNotRequested;
++  }
++  if (!has_test_type || !has_config ||
++      command_line.GetSwitchValueASCII(kPrometheusRuntimeTestTypeSwitch) !=
++          kPrometheusRuntimeTestType) {
++    return PrometheusExtensionSmokeBootstrapResult::kLaunchDenied;
++  }
++#if defined(OFFICIAL_BUILD)
++  return PrometheusExtensionSmokeBootstrapResult::kOfficialBuildDenied;
++#endif
++  if (is_official_build) {
++    return PrometheusExtensionSmokeBootstrapResult::kOfficialBuildDenied;
++  }
++  if (!profile_facts.is_regular_profile ||
++      !profile_facts.is_disposable_profile ||
++      profile_facts.is_off_the_record) {
++    return PrometheusExtensionSmokeBootstrapResult::kProfileDenied;
++  }
++  if (!bootstrap || !file_access.inspect || !file_access.read ||
++      !fixture_access.inspect || !fixture_access.read) {
++    return PrometheusExtensionSmokeBootstrapResult::kFileDenied;
++  }
++
++  const std::optional<base::FilePath> config_path =
++      ResolveAbsoluteNoSymlinkPath(command_line.GetSwitchValuePath(
++          kPrometheusExtensionSmokeBootstrapSwitch));
++  if (!config_path) {
++    return PrometheusExtensionSmokeBootstrapResult::kPathDenied;
++  }
++
++  const std::optional<PrometheusExtensionSmokeBootstrapFileFacts> config_facts =
++      file_access.inspect.Run(*config_path);
++  if (!config_facts || !config_facts->is_regular_file ||
++      config_facts->is_symbolic_link ||
++      !config_facts->is_owned_by_current_user ||
++      config_facts->posix_permissions != kRequiredFilePermissions ||
++      config_facts->size <= 0 ||
++      static_cast<uint64_t>(config_facts->size) >
++          kMaxPrometheusExtensionSmokeBootstrapBytes) {
++    return PrometheusExtensionSmokeBootstrapResult::kFileDenied;
++  }
++
++  const std::optional<std::string> contents = file_access.read.Run(
++      *config_path, kMaxPrometheusExtensionSmokeBootstrapBytes);
++  if (!contents || contents->size() != static_cast<size_t>(config_facts->size)) {
++    return PrometheusExtensionSmokeBootstrapResult::kReadDenied;
++  }
++  if (!base::IsStringUTF8(*contents)) {
++    return PrometheusExtensionSmokeBootstrapResult::kJsonDenied;
++  }
++  const ObjectScanResult scan = ScanObjectKeys(*contents);
++  if (scan == ObjectScanResult::kDuplicateKey) {
++    return PrometheusExtensionSmokeBootstrapResult::kSchemaDenied;
++  }
++  if (scan != ObjectScanResult::kValid) {
++    return PrometheusExtensionSmokeBootstrapResult::kJsonDenied;
++  }
++
++  std::optional<base::DictValue> parsed =
++      base::JSONReader::ReadDict(*contents, base::JSON_PARSE_RFC, 4);
++  if (!parsed) {
++    return PrometheusExtensionSmokeBootstrapResult::kJsonDenied;
++  }
++  if (!HasExactSchemaKeys(*parsed)) {
++    return PrometheusExtensionSmokeBootstrapResult::kSchemaDenied;
++  }
++  const std::optional<int> schema_version = parsed->FindInt("schema_version");
++  const std::string* fixture_path_string = parsed->FindString("fixture_path");
++  const std::string* fixture_sha256 = parsed->FindString("fixture_sha256");
++  const std::string* result_path_string = parsed->FindString("result_path");
++  if (schema_version != 1 || !fixture_path_string ||
++      fixture_path_string->empty() || !fixture_sha256 ||
++      !IsLowerHexSha256(*fixture_sha256) || !result_path_string ||
++      result_path_string->empty()) {
++    return PrometheusExtensionSmokeBootstrapResult::kSchemaDenied;
++  }
++
++  const std::optional<base::FilePath> fixture_path = ResolveAbsoluteNoSymlinkPath(
++      base::FilePath::FromUTF8Unsafe(*fixture_path_string));
++  if (!fixture_path) {
++    return PrometheusExtensionSmokeBootstrapResult::kPathDenied;
++  }
++  const std::optional<PrometheusExtensionSmokeBootstrapFileFacts>
++      fixture_dir_facts = fixture_access.inspect.Run(*fixture_path);
++  if (!fixture_dir_facts || !fixture_dir_facts->is_directory ||
++      fixture_dir_facts->is_symbolic_link) {
++    return PrometheusExtensionSmokeBootstrapResult::kFixtureDenied;
++  }
++  const base::FilePath manifest_path =
++      fixture_path->AppendASCII(kManifestFileName);
++  const std::optional<PrometheusExtensionSmokeBootstrapFileFacts>
++      manifest_facts = fixture_access.inspect.Run(manifest_path);
++  if (!manifest_facts || !manifest_facts->is_regular_file ||
++      manifest_facts->is_symbolic_link || manifest_facts->size <= 0 ||
++      static_cast<uint64_t>(manifest_facts->size) >
++          kMaxPrometheusExtensionSmokeFixtureManifestBytes) {
++    return PrometheusExtensionSmokeBootstrapResult::kFixtureDenied;
++  }
++  const std::optional<std::string> manifest_contents = fixture_access.read.Run(
++      manifest_path, kMaxPrometheusExtensionSmokeFixtureManifestBytes);
++  if (!manifest_contents ||
++      manifest_contents->size() != static_cast<size_t>(manifest_facts->size)) {
++    return PrometheusExtensionSmokeBootstrapResult::kFixtureDenied;
++  }
++  const std::string computed_hash =
++      base::HexEncodeLower(crypto::hash::Sha256(*manifest_contents));
++  if (computed_hash != base::ToLowerASCII(*fixture_sha256)) {
++    return PrometheusExtensionSmokeBootstrapResult::kFixtureDenied;
++  }
++
++  const std::optional<base::FilePath> result_path = ResolveAbsoluteNoSymlinkPath(
++      base::FilePath::FromUTF8Unsafe(*result_path_string));
++  if (!result_path) {
++    return PrometheusExtensionSmokeBootstrapResult::kResultPathDenied;
++  }
++  const std::optional<PrometheusExtensionSmokeBootstrapFileFacts>
++      existing_result_facts = file_access.inspect.Run(*result_path);
++  if (existing_result_facts && existing_result_facts->is_symbolic_link) {
++    return PrometheusExtensionSmokeBootstrapResult::kResultPathDenied;
++  }
++  const std::optional<PrometheusExtensionSmokeBootstrapFileFacts> parent_facts =
++      file_access.inspect.Run(result_path->DirName());
++  if (!parent_facts || !parent_facts->is_directory ||
++      parent_facts->is_symbolic_link) {
++    return PrometheusExtensionSmokeBootstrapResult::kResultPathDenied;
++  }
++
++  auto state = std::unique_ptr<PrometheusExtensionSmokeBootstrap>(
++      new PrometheusExtensionSmokeBootstrap());
++  state->fixture_path_ = *fixture_path;
++  state->fixture_sha256_ = base::ToLowerASCII(*fixture_sha256);
++  state->result_path_ = *result_path;
++  *bootstrap = std::move(state);
++  return PrometheusExtensionSmokeBootstrapResult::kApplied;
++}
++
++PrometheusExtensionSmokeBootstrapFileAccess
++CreatePrometheusExtensionSmokeBootstrapFileAccess() {
++  return {
++      .inspect = base::BindRepeating(&InspectPath),
++      .read = base::BindRepeating(&ReadStrictConfigFile),
++  };
++}
++
++PrometheusExtensionSmokeFixtureAccess
++CreatePrometheusExtensionSmokeFixtureAccess() {
++  return {
++      .inspect = base::BindRepeating(&InspectPath),
++      .read = base::BindRepeating(&ReadFixtureFile),
++  };
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.h b/chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab06516f32378ccfca15b260e064d284bf801d6e
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.h
+@@ -0,0 +1,134 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_SMOKE_BOOTSTRAP_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_SMOKE_BOOTSTRAP_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++#include <optional>
++#include <string>
++
++#include "base/command_line.h"
++#include "base/files/file_path.h"
++#include "base/functional/callback.h"
++
++namespace prometheus {
++
++// Reuses kPrometheusRuntimeTestTypeSwitch / kPrometheusRuntimeTestType from
++// prometheus_runtime_test_bootstrap.h for the shared non-official
++// "--test-type=prometheus-runtime" launch gate.
++inline constexpr char kPrometheusExtensionSmokeBootstrapSwitch[] =
++    "prometheus-extension-smoke-bootstrap";
++inline constexpr size_t kMaxPrometheusExtensionSmokeBootstrapBytes = 4 * 1024;
++inline constexpr size_t kMaxPrometheusExtensionSmokeFixtureManifestBytes =
++    8 * 1024;
++inline constexpr size_t kPrometheusExtensionSmokeSha256HexLength = 64;
++
++enum class PrometheusExtensionSmokeBootstrapResult {
++  kApplied,
++  kNotRequested,
++  kOfficialBuildDenied,
++  kLaunchDenied,
++  kProfileDenied,
++  kFileDenied,
++  kPathDenied,
++  kReadDenied,
++  kJsonDenied,
++  kSchemaDenied,
++  kFixtureDenied,
++  kResultPathDenied,
++};
++
++struct PrometheusExtensionSmokeBootstrapProfileFacts {
++  bool is_regular_profile = false;
++  bool is_disposable_profile = false;
++  bool is_off_the_record = false;
++};
++
++struct PrometheusExtensionSmokeBootstrapFileFacts {
++  bool is_regular_file = false;
++  bool is_directory = false;
++  bool is_symbolic_link = false;
++  bool is_owned_by_current_user = false;
++  int posix_permissions = 0;
++  int64_t size = 0;
++};
++
++// Strict boundary for the owner-only 0600 launch-config file. Modeled on
++// PrometheusSupervisionTestBootstrapFileAccess.
++struct PrometheusExtensionSmokeBootstrapFileAccess {
++  using InspectCallback = base::RepeatingCallback<std::optional<
++      PrometheusExtensionSmokeBootstrapFileFacts>(const base::FilePath&)>;
++  using ReadCallback =
++      base::RepeatingCallback<std::optional<std::string>(const base::FilePath&,
++                                                          size_t max_bytes)>;
++
++  InspectCallback inspect;
++  ReadCallback read;
++};
++
++// More lenient boundary used only to inspect/hash the checked-in developer
++// workflow fixture's manifest.json (ordinary test data, never secret
++// config); still rejects symlinks and bounds the read size, but does not
++// require the strict 0600 owner-only mode.
++struct PrometheusExtensionSmokeFixtureAccess {
++  using InspectCallback = base::RepeatingCallback<std::optional<
++      PrometheusExtensionSmokeBootstrapFileFacts>(const base::FilePath&)>;
++  using ReadCallback =
++      base::RepeatingCallback<std::optional<std::string>(const base::FilePath&,
++                                                          size_t max_bytes)>;
++
++  InspectCallback inspect;
++  ReadCallback read;
++};
++
++// Validates and holds the closed launch-time configuration for the Phase 22
++// built-app extension lifecycle smoke: which fixture directory to load
++// unpacked, its expected manifest.json SHA-256, and where to write the
++// bounded stage/result record. Carries no dialog, pairing, or dispatcher
++// state of its own -- PrometheusExtensionSmokeController owns behavior.
++class PrometheusExtensionSmokeBootstrap {
++ public:
++  PrometheusExtensionSmokeBootstrap(const PrometheusExtensionSmokeBootstrap&) =
++      delete;
++  PrometheusExtensionSmokeBootstrap& operator=(
++      const PrometheusExtensionSmokeBootstrap&) = delete;
++  ~PrometheusExtensionSmokeBootstrap();
++
++  static PrometheusExtensionSmokeBootstrapResult Create(
++      const base::CommandLine& command_line,
++      bool is_official_build,
++      PrometheusExtensionSmokeBootstrapProfileFacts profile_facts,
++      const PrometheusExtensionSmokeBootstrapFileAccess& file_access,
++      const PrometheusExtensionSmokeFixtureAccess& fixture_access,
++      std::unique_ptr<PrometheusExtensionSmokeBootstrap>* bootstrap);
++
++  const base::FilePath& fixture_path() const { return fixture_path_; }
++  const std::string& fixture_sha256() const { return fixture_sha256_; }
++  const base::FilePath& result_path() const { return result_path_; }
++
++ private:
++  PrometheusExtensionSmokeBootstrap();
++
++  base::FilePath fixture_path_;
++  std::string fixture_sha256_;
++  base::FilePath result_path_;
++};
++
++// Returns the no-follow, mode-checked (0600) local file boundary the built
++// application uses for the strict launch-config file. Tests inject their own
++// deterministic access instead of touching production paths.
++PrometheusExtensionSmokeBootstrapFileAccess
++CreatePrometheusExtensionSmokeBootstrapFileAccess();
++
++// Returns the more lenient no-follow boundary used only to hash the
++// checked-in fixture manifest.
++PrometheusExtensionSmokeFixtureAccess
++CreatePrometheusExtensionSmokeFixtureAccess();
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_SMOKE_BOOTSTRAP_H_
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_bootstrap_unittest.cc b/chrome/browser/prometheus/prometheus_extension_smoke_bootstrap_unittest.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..57a039f70da49d1347922200d815c666f8163f69
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_bootstrap_unittest.cc
+@@ -0,0 +1,461 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.h"
++
++#include <map>
++#include <memory>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <utility>
++
++#include "base/command_line.h"
++#include "base/files/file_path.h"
++#include "base/functional/bind.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
++#include "chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h"
++#include "crypto/hash.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++namespace {
++
++constexpr char kConfigPathString[] = "/tmp/prometheus-phase22-smoke.json";
++constexpr char kFixturePathString[] =
++    "/tmp/prometheus-phase22-fixture/developer_workflow";
++constexpr char kResultPathString[] =
++    "/tmp/prometheus-phase22-smoke-result.json";
++constexpr char kManifestBody[] =
++    "{\"name\":\"Prometheus Developer Workflow Fixture\","
++    "\"version\":\"1.0.0\",\"manifest_version\":3}";
++
++std::string ManifestSha256() {
++  return base::HexEncodeLower(crypto::hash::Sha256(std::string(kManifestBody)));
++}
++
++std::string MakeConfig(std::string_view fixture_path = kFixturePathString,
++                       std::string_view fixture_sha256 = "",
++                       std::string_view result_path = kResultPathString) {
++  const std::string hash =
++      fixture_sha256.empty() ? ManifestSha256() : std::string(fixture_sha256);
++  return "{\"schema_version\":1,\"fixture_path\":\"" +
++         std::string(fixture_path) + "\",\"fixture_sha256\":\"" + hash +
++         "\",\"result_path\":\"" + std::string(result_path) + "\"}";
++}
++
++base::CommandLine MakeLaunch(const base::FilePath& config_path) {
++  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
++  command_line.AppendSwitchASCII(kPrometheusRuntimeTestTypeSwitch,
++                                 kPrometheusRuntimeTestType);
++  command_line.AppendSwitchPath(kPrometheusExtensionSmokeBootstrapSwitch,
++                                config_path);
++  return command_line;
++}
++
++class PrometheusExtensionSmokeBootstrapTest : public testing::Test {
++ protected:
++  PrometheusExtensionSmokeBootstrapTest() {
++    config_path_ = base::FilePath(kConfigPathString);
++    fixture_path_ = base::FilePath(kFixturePathString);
++    manifest_path_ = fixture_path_.AppendASCII("manifest.json");
++    result_path_ = base::FilePath(kResultPathString);
++    config_contents_ = MakeConfig();
++
++    file_facts_[config_path_.value()] = ValidConfigFacts(config_contents_);
++    file_facts_[result_path_.DirName().value()] = DirectoryFacts();
++    fixture_facts_[fixture_path_.value()] = DirectoryFacts();
++    fixture_facts_[manifest_path_.value()] = ValidManifestFacts();
++    fixture_contents_[manifest_path_.value()] = kManifestBody;
++
++    file_access_ = {
++        .inspect = base::BindRepeating(
++            &PrometheusExtensionSmokeBootstrapTest::InspectFile,
++            base::Unretained(this)),
++        .read = base::BindRepeating(
++            &PrometheusExtensionSmokeBootstrapTest::ReadFile,
++            base::Unretained(this)),
++    };
++    fixture_access_ = {
++        .inspect = base::BindRepeating(
++            &PrometheusExtensionSmokeBootstrapTest::InspectFixture,
++            base::Unretained(this)),
++        .read = base::BindRepeating(
++            &PrometheusExtensionSmokeBootstrapTest::ReadFixture,
++            base::Unretained(this)),
++    };
++  }
++
++  static PrometheusExtensionSmokeBootstrapFileFacts ValidConfigFacts(
++      std::string_view contents) {
++    return {
++        .is_regular_file = true,
++        .is_directory = false,
++        .is_symbolic_link = false,
++        .is_owned_by_current_user = true,
++        .posix_permissions = 0600,
++        .size = static_cast<int64_t>(contents.size()),
++    };
++  }
++
++  static PrometheusExtensionSmokeBootstrapFileFacts DirectoryFacts() {
++    return {
++        .is_regular_file = false,
++        .is_directory = true,
++        .is_symbolic_link = false,
++        .is_owned_by_current_user = true,
++        .posix_permissions = 0700,
++        .size = 0,
++    };
++  }
++
++  static PrometheusExtensionSmokeBootstrapFileFacts ValidManifestFacts() {
++    return {
++        .is_regular_file = true,
++        .is_directory = false,
++        .is_symbolic_link = false,
++        .is_owned_by_current_user = true,
++        .posix_permissions = 0644,
++        .size = static_cast<int64_t>(std::string_view(kManifestBody).size()),
++    };
++  }
++
++  std::optional<PrometheusExtensionSmokeBootstrapFileFacts> InspectFile(
++      const base::FilePath& path) {
++    ++file_inspect_calls_;
++    if (!inspect_file_succeeds_) {
++      return std::nullopt;
++    }
++    auto it = file_facts_.find(path.value());
++    return it == file_facts_.end() ? std::nullopt : std::optional(it->second);
++  }
++
++  std::optional<std::string> ReadFile(const base::FilePath& path,
++                                      size_t max_bytes) {
++    ++file_read_calls_;
++    last_file_read_max_bytes_ = max_bytes;
++    if (!read_file_succeeds_) {
++      return std::nullopt;
++    }
++    if (path == config_path_) {
++      return config_contents_;
++    }
++    return std::nullopt;
++  }
++
++  std::optional<PrometheusExtensionSmokeBootstrapFileFacts> InspectFixture(
++      const base::FilePath& path) {
++    ++fixture_inspect_calls_;
++    if (!inspect_fixture_succeeds_) {
++      return std::nullopt;
++    }
++    auto it = fixture_facts_.find(path.value());
++    return it == fixture_facts_.end() ? std::nullopt
++                                      : std::optional(it->second);
++  }
++
++  std::optional<std::string> ReadFixture(const base::FilePath& path,
++                                         size_t max_bytes) {
++    ++fixture_read_calls_;
++    if (!read_fixture_succeeds_) {
++      return std::nullopt;
++    }
++    auto it = fixture_contents_.find(path.value());
++    return it == fixture_contents_.end() ? std::nullopt
++                                         : std::optional(it->second);
++  }
++
++  // NOTE: does not (re)compute file_facts_[config_path_] -- the constructor
++  // seeds a valid entry for the default config_contents_, and any test that
++  // passes different contents and/or tampers with file facts is responsible
++  // for keeping both consistent itself. This lets permission/symlink/owner
++  // tampering tests mutate file_facts_ without this helper silently undoing
++  // it.
++  PrometheusExtensionSmokeBootstrapResult CreateWithConfig(
++      std::string_view contents,
++      PrometheusExtensionSmokeBootstrapProfileFacts profile_facts = {
++          .is_regular_profile = true,
++          .is_disposable_profile = true,
++          .is_off_the_record = false,
++      },
++      bool is_official_build = false) {
++    config_contents_ = std::string(contents);
++    return PrometheusExtensionSmokeBootstrap::Create(
++        MakeLaunch(config_path_), is_official_build, profile_facts,
++        file_access_, fixture_access_, &bootstrap_);
++  }
++
++  base::FilePath config_path_;
++  base::FilePath fixture_path_;
++  base::FilePath manifest_path_;
++  base::FilePath result_path_;
++  std::string config_contents_;
++  std::map<base::FilePath::StringType, PrometheusExtensionSmokeBootstrapFileFacts>
++      file_facts_;
++  std::map<base::FilePath::StringType, PrometheusExtensionSmokeBootstrapFileFacts>
++      fixture_facts_;
++  std::map<base::FilePath::StringType, std::string> fixture_contents_;
++  PrometheusExtensionSmokeBootstrapFileAccess file_access_;
++  PrometheusExtensionSmokeFixtureAccess fixture_access_;
++  std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap_;
++  bool inspect_file_succeeds_ = true;
++  bool read_file_succeeds_ = true;
++  bool inspect_fixture_succeeds_ = true;
++  bool read_fixture_succeeds_ = true;
++  size_t file_inspect_calls_ = 0;
++  size_t file_read_calls_ = 0;
++  size_t fixture_inspect_calls_ = 0;
++  size_t fixture_read_calls_ = 0;
++  size_t last_file_read_max_bytes_ = 0;
++};
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, AbsentSwitchesAreNotRequested) {
++  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kNotRequested,
++           PrometheusExtensionSmokeBootstrap::Create(
++               command_line, /*is_official_build=*/false,
++               {.is_regular_profile = true,
++                .is_disposable_profile = true,
++                .is_off_the_record = false},
++               file_access_, fixture_access_, &bootstrap_));
++  EXPECT_FALSE(bootstrap_);
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, OnlyOneSwitchIsLaunchDenied) {
++  base::CommandLine only_config(base::CommandLine::NO_PROGRAM);
++  only_config.AppendSwitchPath(kPrometheusExtensionSmokeBootstrapSwitch,
++                               config_path_);
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kLaunchDenied,
++           PrometheusExtensionSmokeBootstrap::Create(
++               only_config, /*is_official_build=*/false,
++               {.is_regular_profile = true,
++                .is_disposable_profile = true,
++                .is_off_the_record = false},
++               file_access_, fixture_access_, &bootstrap_));
++
++  base::CommandLine only_test_type(base::CommandLine::NO_PROGRAM);
++  only_test_type.AppendSwitchASCII(kPrometheusRuntimeTestTypeSwitch,
++                                   kPrometheusRuntimeTestType);
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kLaunchDenied,
++           PrometheusExtensionSmokeBootstrap::Create(
++               only_test_type, /*is_official_build=*/false,
++               {.is_regular_profile = true,
++                .is_disposable_profile = true,
++                .is_off_the_record = false},
++               file_access_, fixture_access_, &bootstrap_));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, WrongTestTypeIsLaunchDenied) {
++  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
++  command_line.AppendSwitchASCII(kPrometheusRuntimeTestTypeSwitch,
++                                 "not-prometheus-runtime");
++  command_line.AppendSwitchPath(kPrometheusExtensionSmokeBootstrapSwitch,
++                                config_path_);
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kLaunchDenied,
++           PrometheusExtensionSmokeBootstrap::Create(
++               command_line, /*is_official_build=*/false,
++               {.is_regular_profile = true,
++                .is_disposable_profile = true,
++                .is_off_the_record = false},
++               file_access_, fixture_access_, &bootstrap_));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, OfficialBuildIsDenied) {
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kOfficialBuildDenied,
++           PrometheusExtensionSmokeBootstrap::Create(
++               MakeLaunch(config_path_), /*is_official_build=*/true,
++               {.is_regular_profile = true,
++                .is_disposable_profile = true,
++                .is_off_the_record = false},
++               file_access_, fixture_access_, &bootstrap_));
++  EXPECT_FALSE(bootstrap_);
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest,
++      NonRegularOrNonDisposableOrOtrProfileIsDenied) {
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kProfileDenied,
++           CreateWithConfig(config_contents_,
++                            {.is_regular_profile = false,
++                             .is_disposable_profile = true,
++                             .is_off_the_record = false}));
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kProfileDenied,
++           CreateWithConfig(config_contents_,
++                            {.is_regular_profile = true,
++                             .is_disposable_profile = false,
++                             .is_off_the_record = false}));
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kProfileDenied,
++           CreateWithConfig(config_contents_,
++                            {.is_regular_profile = true,
++                             .is_disposable_profile = true,
++                             .is_off_the_record = true}));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, WrongConfigPermissionsAreDenied) {
++  file_facts_[config_path_.value()].posix_permissions = 0644;
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kFileDenied,
++           CreateWithConfig(config_contents_));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, SymlinkConfigIsDenied) {
++  file_facts_[config_path_.value()].is_symbolic_link = true;
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kFileDenied,
++           CreateWithConfig(config_contents_));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, NotOwnedConfigIsDenied) {
++  file_facts_[config_path_.value()].is_owned_by_current_user = false;
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kFileDenied,
++           CreateWithConfig(config_contents_));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, OversizedConfigIsDenied) {
++  file_facts_[config_path_.value()].size =
++      static_cast<int64_t>(kMaxPrometheusExtensionSmokeBootstrapBytes) + 1;
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kFileDenied,
++           CreateWithConfig(config_contents_));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, ReadFailureIsDenied) {
++  read_file_succeeds_ = false;
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kReadDenied,
++           CreateWithConfig(config_contents_));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, InvalidUtf8IsJsonDenied) {
++  const std::string invalid = "{\"schema_version\":1,\"bad\":\"\xff\"}";
++  file_facts_[config_path_.value()] = ValidConfigFacts(invalid);
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kJsonDenied,
++           CreateWithConfig(invalid));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, DuplicateKeyIsSchemaDenied) {
++  const std::string duplicated =
++      "{\"schema_version\":1,\"schema_version\":1,\"fixture_path\":\"" +
++      std::string(kFixturePathString) + "\",\"fixture_sha256\":\"" +
++      ManifestSha256() + "\",\"result_path\":\"" +
++      std::string(kResultPathString) + "\"}";
++  file_facts_[config_path_.value()] = ValidConfigFacts(duplicated);
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kSchemaDenied,
++           CreateWithConfig(duplicated));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, MalformedJsonIsJsonDenied) {
++  const std::string malformed = "{\"schema_version\":1,";
++  file_facts_[config_path_.value()] = ValidConfigFacts(malformed);
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kJsonDenied,
++           CreateWithConfig(malformed));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, ExtraKeyIsSchemaDenied) {
++  const std::string extra =
++      "{\"schema_version\":1,\"fixture_path\":\"" +
++      std::string(kFixturePathString) + "\",\"fixture_sha256\":\"" +
++      ManifestSha256() + "\",\"result_path\":\"" +
++      std::string(kResultPathString) + "\",\"extra\":\"x\"}";
++  file_facts_[config_path_.value()] = ValidConfigFacts(extra);
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kSchemaDenied,
++           CreateWithConfig(extra));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, WrongSchemaVersionIsDenied) {
++  const std::string wrong_version =
++      "{\"schema_version\":2,\"fixture_path\":\"" +
++      std::string(kFixturePathString) + "\",\"fixture_sha256\":\"" +
++      ManifestSha256() + "\",\"result_path\":\"" +
++      std::string(kResultPathString) + "\"}";
++  file_facts_[config_path_.value()] = ValidConfigFacts(wrong_version);
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kSchemaDenied,
++           CreateWithConfig(wrong_version));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, NonHexSha256IsSchemaDenied) {
++  const std::string bad_hash = MakeConfig(kFixturePathString, "not-a-hash");
++  file_facts_[config_path_.value()] = ValidConfigFacts(bad_hash);
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kSchemaDenied,
++           CreateWithConfig(bad_hash));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, UppercaseSha256IsSchemaDenied) {
++  const std::string upper_hash =
++      MakeConfig(kFixturePathString, base::ToUpperASCII(ManifestSha256()));
++  file_facts_[config_path_.value()] = ValidConfigFacts(upper_hash);
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kSchemaDenied,
++           CreateWithConfig(upper_hash));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, MissingFixtureDirectoryIsDenied) {
++  fixture_facts_.erase(fixture_path_.value());
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kFixtureDenied,
++           CreateWithConfig(config_contents_));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, FixtureDirectoryAsSymlinkIsDenied) {
++  fixture_facts_[fixture_path_.value()].is_symbolic_link = true;
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kFixtureDenied,
++           CreateWithConfig(config_contents_));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, MissingManifestIsDenied) {
++  fixture_facts_.erase(manifest_path_.value());
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kFixtureDenied,
++           CreateWithConfig(config_contents_));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, ManifestHashMismatchIsDenied) {
++  const std::string wrong_hash(kPrometheusExtensionSmokeSha256HexLength, 'a');
++  const std::string config = MakeConfig(kFixturePathString, wrong_hash);
++  file_facts_[config_path_.value()] = ValidConfigFacts(config);
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kFixtureDenied,
++           CreateWithConfig(config));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, OversizedManifestIsDenied) {
++  fixture_facts_[manifest_path_.value()].size =
++      static_cast<int64_t>(kMaxPrometheusExtensionSmokeFixtureManifestBytes) +
++      1;
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kFixtureDenied,
++           CreateWithConfig(config_contents_));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, MissingResultParentIsDenied) {
++  file_facts_.erase(result_path_.DirName().value());
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kResultPathDenied,
++           CreateWithConfig(config_contents_));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, ExistingResultSymlinkIsDenied) {
++  file_facts_[result_path_.value()] = {
++      .is_regular_file = true,
++      .is_directory = false,
++      .is_symbolic_link = true,
++      .is_owned_by_current_user = true,
++      .posix_permissions = 0600,
++      .size = 1,
++  };
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kResultPathDenied,
++           CreateWithConfig(config_contents_));
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, ValidConfigIsApplied) {
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kApplied,
++           CreateWithConfig(config_contents_));
++  ASSERT_TRUE(bootstrap_);
++  EXPECT_EQ(fixture_path_, bootstrap_->fixture_path());
++  EXPECT_EQ(ManifestSha256(), bootstrap_->fixture_sha256());
++  EXPECT_EQ(result_path_, bootstrap_->result_path());
++}
++
++TEST_F(PrometheusExtensionSmokeBootstrapTest, NullBootstrapOutParamIsFileDenied) {
++  EXPECT_EQ(PrometheusExtensionSmokeBootstrapResult::kFileDenied,
++           PrometheusExtensionSmokeBootstrap::Create(
++               MakeLaunch(config_path_), /*is_official_build=*/false,
++               {.is_regular_profile = true,
++                .is_disposable_profile = true,
++                .is_off_the_record = false},
++               file_access_, fixture_access_, nullptr));
++}
++
++}  // namespace
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc b/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..36b27cae5735a3e76bfc5a33364f9c3e2f6e9838
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
+@@ -0,0 +1,310 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <memory>
++#include <optional>
++#include <string>
++
++#include "base/base_paths.h"
++#include "base/command_line.h"
++#include "base/files/file_path.h"
++#include "base/files/file_util.h"
++#include "base/files/scoped_temp_dir.h"
++#include "base/path_service.h"
++#include "base/strings/strcat.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/test/bind.h"
++#include "base/test/run_until.h"
++#include "base/test/test_timeouts.h"
++#include "base/threading/thread_restrictions.h"
++#include "base/time/time.h"
++#include "chrome/browser/extensions/api/developer_private/developer_private_functions.h"
++#include "chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.h"
++#include "chrome/browser/prometheus/prometheus_extension_smoke_controller.h"
++#include "chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/common/pref_names.h"
++#include "chrome/common/webui_url_constants.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "components/prefs/pref_service.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "content/public/test/test_utils.h"
++#include "crypto/hash.h"
++#include "extensions/browser/api_test_utils.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "ui/shell_dialogs/fake_select_file_dialog.h"
++#include "ui/shell_dialogs/select_file_dialog.h"
++#include "ui/shell_dialogs/selected_file_info.h"
++#include "url/gurl.h"
++
++namespace prometheus {
++
++class PrometheusExtensionSmokeControllerBrowserTest
++    : public InProcessBrowserTest {
++ protected:
++  // Points a fresh bootstrap at the real, checked-in Plan-22-04
++  // developer_workflow fixture (chrome/test/data/prometheus/extensions/
++  // developer_workflow/) through the exact same strict, non-official,
++  // exact-runtime-test, disposable-profile, 0600, no-follow production
++  // boundary the built app itself uses -- no fake file access, no
++  // install-verification or MV2 bypass, no direct install/registry mutation.
++  std::unique_ptr<PrometheusExtensionSmokeBootstrap> CreateValidBootstrap() {
++    base::ScopedAllowBlockingForTesting allow_blocking;
++    if (!scratch_dir_.IsValid() && !scratch_dir_.CreateUniqueTempDir()) {
++      return nullptr;
++    }
++
++    const base::FilePath fixture_path =
++        base::PathService::CheckedGet(base::DIR_SRC_TEST_DATA_ROOT)
++            .Append(GetChromeTestDataDir())
++            .AppendASCII("prometheus")
++            .AppendASCII("extensions")
++            .AppendASCII("developer_workflow");
++    const base::FilePath manifest_path =
++        fixture_path.AppendASCII("manifest.json");
++    std::string manifest_contents;
++    if (!base::ReadFileToString(manifest_path, &manifest_contents)) {
++      return nullptr;
++    }
++    const std::string fixture_sha256 =
++        base::HexEncodeLower(crypto::hash::Sha256(manifest_contents));
++
++    const base::FilePath result_path =
++        scratch_dir_.GetPath().AppendASCII("smoke-result.json");
++    const base::FilePath config_path =
++        scratch_dir_.GetPath().AppendASCII("smoke-config.json");
++    const std::string config_json = base::StrCat(
++        {"{\"schema_version\":1,\"fixture_path\":\"",
++         fixture_path.AsUTF8Unsafe(), "\",\"fixture_sha256\":\"",
++         fixture_sha256, "\",\"result_path\":\"", result_path.AsUTF8Unsafe(),
++         "\"}"});
++    if (!base::WriteFile(config_path, config_json)) {
++      return nullptr;
++    }
++    if (!base::SetPosixFilePermissions(config_path, 0600)) {
++      return nullptr;
++    }
++
++    base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
++    command_line.AppendSwitchASCII(kPrometheusRuntimeTestTypeSwitch,
++                                   kPrometheusRuntimeTestType);
++    command_line.AppendSwitchPath(kPrometheusExtensionSmokeBootstrapSwitch,
++                                  config_path);
++
++    std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap;
++    const PrometheusExtensionSmokeBootstrapResult result =
++        PrometheusExtensionSmokeBootstrap::Create(
++            command_line, /*is_official_build=*/false,
++            {.is_regular_profile = true,
++             .is_disposable_profile = true,
++             .is_off_the_record = false},
++            CreatePrometheusExtensionSmokeBootstrapFileAccess(),
++            CreatePrometheusExtensionSmokeFixtureAccess(), &bootstrap);
++    if (result != PrometheusExtensionSmokeBootstrapResult::kApplied) {
++      return nullptr;
++    }
++    return bootstrap;
++  }
++
++  base::ScopedTempDir scratch_dir_;
++};
++
++// Retained RED (this plan) / GREEN (the following plan) contract: the full
++// native lifecycle drive can only reach extension installation once
++// developer-private code copies the live, committed chrome://extensions
++// caller into SelectFileDialog::SelectFile(). Until then, this controller's
++// one-shot chooser correctly observes a null caller and declines, and the
++// bounded install-wait timeout is the expected non-crashing failure.
++IN_PROC_BROWSER_TEST_F(
++    PrometheusExtensionSmokeControllerBrowserTest,
++    FullLifecycleRequiresDeveloperPrivateManagerCallerIntegration) {
++  std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap =
++      CreateValidBootstrap();
++  ASSERT_TRUE(bootstrap);
++
++  std::unique_ptr<PrometheusExtensionSmokeController> controller =
++      PrometheusExtensionSmokeController::Create(std::move(bootstrap),
++                                                 browser()->profile(),
++                                                 browser());
++  ASSERT_TRUE(controller);
++
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return controller->outcome_for_testing() !=
++          PrometheusExtensionSmokeOutcome::kRunning;
++  })) << "smoke controller never reached a terminal outcome";
++
++  EXPECT_EQ(PrometheusExtensionSmokeOutcome::kFailed,
++           controller->outcome_for_testing());
++  EXPECT_EQ(PrometheusExtensionSmokeStage::kLoadUnpackedClicked,
++           controller->stage_for_testing());
++  EXPECT_TRUE(controller->extension_id_for_testing().empty());
++
++  controller->Shutdown();
++}
++
++// Create() must reject an OTR profile/browser pairing before ever touching
++// bootstrap-owned fixture or chooser state -- the smoke never runs, let
++// alone installs anything, outside a live regular disposable profile.
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionSmokeControllerBrowserTest,
++                       CreateRejectsOffTheRecordProfile) {
++  std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap =
++      CreateValidBootstrap();
++  ASSERT_TRUE(bootstrap);
++
++  Profile* otr_profile =
++      browser()->profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
++  ASSERT_TRUE(otr_profile);
++  Browser* otr_browser = CreateBrowser(otr_profile);
++  ASSERT_TRUE(otr_browser);
++
++  std::unique_ptr<PrometheusExtensionSmokeController> controller =
++      PrometheusExtensionSmokeController::Create(std::move(bootstrap),
++                                                 otr_profile, otr_browser);
++  EXPECT_FALSE(controller);
++
++  CloseBrowserSynchronously(otr_browser);
++}
++
++// Create() must reject a browser/profile pairing where the Browser does not
++// belong to the supplied profile -- a mismatched, non-live target can never
++// become the smoke's manager tab owner. `mismatched_browser`'s own profile
++// is the primary OTR profile, which is never equal to the regular `profile`
++// argument passed alongside it.
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionSmokeControllerBrowserTest,
++                       CreateRejectsMismatchedBrowserProfilePairing) {
++  std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap =
++      CreateValidBootstrap();
++  ASSERT_TRUE(bootstrap);
++
++  Profile* regular_profile = browser()->profile();
++  Browser* mismatched_browser = CreateBrowser(
++      regular_profile->GetPrimaryOTRProfile(/*create_if_needed=*/true));
++  ASSERT_TRUE(mismatched_browser);
++  ASSERT_NE(mismatched_browser->profile(), regular_profile);
++
++  std::unique_ptr<PrometheusExtensionSmokeController> controller =
++      PrometheusExtensionSmokeController::Create(
++          std::move(bootstrap), regular_profile, mismatched_browser);
++  EXPECT_FALSE(controller);
++
++  CloseBrowserSynchronously(mismatched_browser);
++}
++
++// Shutdown() before any asynchronous stage callback fires must terminalize
++// the controller (never crash, never leave the global chooser factory
++// installed) and must be idempotent.
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionSmokeControllerBrowserTest,
++                       EarlyShutdownTerminalizesWithoutCrashing) {
++  std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap =
++      CreateValidBootstrap();
++  ASSERT_TRUE(bootstrap);
++
++  std::unique_ptr<PrometheusExtensionSmokeController> controller =
++      PrometheusExtensionSmokeController::Create(std::move(bootstrap),
++                                                 browser()->profile(),
++                                                 browser());
++  ASSERT_TRUE(controller);
++
++  controller->Shutdown();
++  EXPECT_EQ(PrometheusExtensionSmokeOutcome::kFailed,
++           controller->outcome_for_testing());
++
++  // Idempotent: a second Shutdown() call must not crash or change the
++  // already-terminal outcome.
++  controller->Shutdown();
++  EXPECT_EQ(PrometheusExtensionSmokeOutcome::kFailed,
++           controller->outcome_for_testing());
++}
++
++// Real-browser companion to the developer-private committed-caller RED/GREEN
++// contract in developer_private_api_unittest.cc. That file's equivalent
++// TEST_F cases require extensions::ExtensionServiceTestWithInstall's
++// TestingProfile/Mojo-less unit-test process model, which is incompatible
++// with this InProcessBrowserTest binary's already-initialized full browser
++// process; these two tests exercise the exact same
++// DeveloperPrivateLoadUnpackedFunction::ShowSelectFileDialog() contract
++// against a real committed tab instead, so the contract is proven
++// executable here even though the unit-test copy is source-only evidence in
++// this binary.
++class PrometheusDeveloperPrivateCallerBrowserTest
++    : public InProcessBrowserTest {
++ protected:
++  void SetUpOnMainThread() override {
++    InProcessBrowserTest::SetUpOnMainThread();
++    // ShowSelectFileDialog() is only reached after Run()'s existing
++    // developer-mode check; this mirrors the real chrome://extensions
++    // developer-mode toggle so both tests exercise the caller-copy contract
++    // itself rather than failing earlier on an unrelated precondition.
++    browser()->profile()->GetPrefs()->SetBoolean(
++        prefs::kExtensionsUIDeveloperMode, true);
++  }
++
++  content::WebContents* active_web_contents() {
++    return browser()->tab_strip_model()->GetActiveWebContents();
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(PrometheusDeveloperPrivateCallerBrowserTest,
++                       LoadUnpackedPassesCommittedManagerCallerToSelectFileDialog) {
++  ASSERT_TRUE(NavigateToURL(active_web_contents(),
++                            GURL(chrome::kChromeUIExtensionsURL)));
++
++  ui::FakeSelectFileDialog::Factory* factory =
++      ui::FakeSelectFileDialog::RegisterFactory();
++  bool observed_caller_present = false;
++  GURL observed_caller;
++  factory->SetOpenCallback(base::BindLambdaForTesting([&]() {
++    ui::FakeSelectFileDialog* dialog = factory->GetLastDialog();
++    ASSERT_TRUE(dialog);
++    if (dialog->caller()) {
++      observed_caller_present = true;
++      observed_caller = *dialog->caller();
++    }
++    dialog->CallFileSelectionCanceled();
++  }));
++
++  auto function =
++      base::MakeRefCounted<extensions::api::DeveloperPrivateLoadUnpackedFunction>();
++  function->SetRenderFrameHost(active_web_contents()->GetPrimaryMainFrame());
++  EXPECT_FALSE(extensions::api_test_utils::RunFunction(
++      function, base::ListValue(), browser()->profile()));
++  ui::SelectFileDialog::SetFactory(nullptr);
++
++  ASSERT_TRUE(observed_caller_present)
++      << "ShowSelectFileDialog() must pass the live committed "
++        "chrome://extensions caller to SelectFileDialog::SelectFile()";
++  EXPECT_EQ(GURL(chrome::kChromeUIExtensionsURL), observed_caller);
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusDeveloperPrivateCallerBrowserTest,
++                       LoadUnpackedPassesNoCallerForNonManagerSender) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  ASSERT_TRUE(NavigateToURL(active_web_contents(),
++                            embedded_test_server()->GetURL("/title1.html")));
++
++  ui::FakeSelectFileDialog::Factory* factory =
++      ui::FakeSelectFileDialog::RegisterFactory();
++  bool observed_caller_present = false;
++  factory->SetOpenCallback(base::BindLambdaForTesting([&]() {
++    ui::FakeSelectFileDialog* dialog = factory->GetLastDialog();
++    ASSERT_TRUE(dialog);
++    observed_caller_present = dialog->caller() != nullptr;
++    dialog->CallFileSelectionCanceled();
++  }));
++
++  auto function =
++      base::MakeRefCounted<extensions::api::DeveloperPrivateLoadUnpackedFunction>();
++  function->SetRenderFrameHost(active_web_contents()->GetPrimaryMainFrame());
++  EXPECT_FALSE(extensions::api_test_utils::RunFunction(
++      function, base::ListValue(), browser()->profile()));
++  ui::SelectFileDialog::SetFactory(nullptr);
++
++  EXPECT_FALSE(observed_caller_present);
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..4f0a57753dc7ae8601ef253a3c0e502190b8108d
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+@@ -0,0 +1,1064 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_extension_smoke_controller.h"
++
++#include <set>
++#include <utility>
++
++#include "base/containers/span.h"
++#include "base/files/file.h"
++#include "base/files/file_util.h"
++#include "base/functional/bind.h"
++#include "base/json/json_writer.h"
++#include "base/memory/ptr_util.h"
++#include "base/strings/utf_string_conversions.h"
++#include "base/task/single_thread_task_runner.h"
++#include "base/threading/thread_restrictions.h"
++#include "base/time/time.h"
++#include "build/build_config.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_service.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_service_factory.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/browser_window.h"
++#include "chrome/browser/ui/navigator/browser_navigator.h"
++#include "chrome/browser/ui/navigator/browser_navigator_params.h"
++#include "chrome/common/webui_url_constants.h"
++#include "chrome/grit/generated_resources.h"
++#include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/visibility.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/browser/web_contents_observer.h"
++#include "extensions/browser/extension_registry.h"
++#include "extensions/common/extension.h"
++#include "ui/base/l10n/l10n_util.h"
++#include "ui/base/page_transition_types.h"
++#include "ui/shell_dialogs/select_file_dialog_factory.h"
++#include "ui/shell_dialogs/select_file_policy.h"
++#include "ui/shell_dialogs/selected_file_info.h"
++#include "ui/views/widget/widget.h"
++#include "ui/views/widget/widget_delegate.h"
++#include "ui/views/window/dialog_delegate.h"
++#include "url/gurl.h"
++
++namespace prometheus {
++
++namespace {
++
++constexpr base::TimeDelta kPollInterval = base::Milliseconds(200);
++constexpr base::TimeDelta kManagerReadyTimeout = base::Seconds(20);
++constexpr base::TimeDelta kDeveloperModeReadyTimeout = base::Seconds(15);
++constexpr base::TimeDelta kInstallObservedTimeout = base::Seconds(25);
++constexpr base::TimeDelta kTransitionObservedTimeout = base::Seconds(20);
++constexpr base::TimeDelta kRemoveConfirmationTimeout = base::Seconds(10);
++
++bool IsWellFormedExtensionId(const std::string& id) {
++  if (id.size() != 32) {
++    return false;
++  }
++  for (char character : id) {
++    if (character < 'a' || character > 'p') {
++      return false;
++    }
++  }
++  return true;
++}
++
++// Every script below reaches the real, currently-committed chrome://extensions
++// document through content::RenderFrameHost::ExecuteJavaScript(), which the
++// production implementation restricts to chrome:// and devtools:// frames.
++// Nothing here reads extension content, page content, or any host page --
++// only the Prometheus-owned manager/options chrome://* documents this
++// controller itself opened.
++std::string ManagerReadyProbeScript() {
++  return "(function(){"
++        "var m=document.querySelector('extensions-manager');"
++        "if(!m||!m.shadowRoot)return false;"
++        "var t=m.shadowRoot.querySelector('extensions-toolbar');"
++        "if(!t||!t.shadowRoot)return false;"
++        "return !!t.shadowRoot.querySelector('#devMode');"
++        "})()";
++}
++
++std::string DevModeToggleClickScript() {
++  return "(function(){"
++        "var m=document.querySelector('extensions-manager');"
++        "if(!m||!m.shadowRoot)return 'missing_manager';"
++        "var t=m.shadowRoot.querySelector('extensions-toolbar');"
++        "if(!t||!t.shadowRoot)return 'missing_toolbar';"
++        "var toggle=t.shadowRoot.querySelector('#devMode');"
++        "if(!toggle)return 'missing_toggle';"
++        "if(toggle.checked)return 'already_checked';"
++        "toggle.click();"
++        "return 'clicked';"
++        "})()";
++}
++
++std::string DevModeReadyProbeScript() {
++  return "(function(){"
++        "var m=document.querySelector('extensions-manager');"
++        "if(!m||!m.shadowRoot)return false;"
++        "var t=m.shadowRoot.querySelector('extensions-toolbar');"
++        "if(!t||!t.shadowRoot)return false;"
++        "var toggle=t.shadowRoot.querySelector('#devMode');"
++        "var button=t.shadowRoot.querySelector('#loadUnpacked');"
++        "return !!(toggle&&toggle.checked&&button&&!button.hidden);"
++        "})()";
++}
++
++std::string LoadUnpackedClickScript() {
++  return "(function(){"
++        "var m=document.querySelector('extensions-manager');"
++        "if(!m||!m.shadowRoot)return 'missing_manager';"
++        "var t=m.shadowRoot.querySelector('extensions-toolbar');"
++        "if(!t||!t.shadowRoot)return 'missing_toolbar';"
++        "var button=t.shadowRoot.querySelector('#loadUnpacked');"
++        "if(!button)return 'missing_button';"
++        "button.click();"
++        "return 'clicked';"
++        "})()";
++}
++
++// `extension_id` must already be validated by IsWellFormedExtensionId()
++// (fixed 32-character a-p alphabet) before it is ever interpolated below: it
++// is always a value this controller itself observed from
++// extensions::Extension::id(), never externally supplied, but every
++// interpolation site still defends independently rather than trusting a
++// single upstream check.
++std::string ItemQueryExpression(const std::string& extension_id) {
++  return "document.querySelector('extensions-manager').shadowRoot"
++        ".querySelector('extensions-item-list').shadowRoot"
++        ".querySelector('#" +
++        extension_id + "')";
++}
++
++std::string InspectProbeScript(const std::string& extension_id) {
++  return "(function(){"
++        "var item=" +
++        ItemQueryExpression(extension_id) +
++        ";"
++        "if(!item||!item.shadowRoot)return 'missing_item';"
++        "var container=item.shadowRoot.querySelector('#inspect-views');"
++        "if(!container)return 'no_inspect_container';"
++        "var link=container.querySelector('a');"
++        "if(!link)return 'no_inspect_view';"
++        "return 'present';"
++        "})()";
++}
++
++std::string ReloadClickScript(const std::string& extension_id) {
++  return "(function(){"
++        "var item=" +
++        ItemQueryExpression(extension_id) +
++        ";"
++        "if(!item||!item.shadowRoot)return 'missing_item';"
++        "var button=item.shadowRoot.querySelector('#dev-reload-button')||"
++        "item.shadowRoot.querySelector('#terminated-reload-button');"
++        "if(!button)return 'missing_button';"
++        "button.click();"
++        "return 'clicked';"
++        "})()";
++}
++
++std::string EnableToggleClickScript(const std::string& extension_id) {
++  return "(function(){"
++        "var item=" +
++        ItemQueryExpression(extension_id) +
++        ";"
++        "if(!item||!item.shadowRoot)return 'missing_item';"
++        "var toggle=item.shadowRoot.querySelector('#enableToggle');"
++        "if(!toggle)return 'missing_toggle';"
++        "toggle.click();"
++        "return 'clicked';"
++        "})()";
++}
++
++std::string RemoveClickScript(const std::string& extension_id) {
++  return "(function(){"
++        "var item=" +
++        ItemQueryExpression(extension_id) +
++        ";"
++        "if(!item||!item.shadowRoot)return 'missing_item';"
++        "var button=item.shadowRoot.querySelector('#removeButton');"
++        "if(!button)return 'missing_button';"
++        "button.click();"
++        "return 'clicked';"
++        "})()";
++}
++
++std::string ResultValueOrEmpty(const base::Value& value) {
++  return value.is_string() ? value.GetString() : std::string();
++}
++
++// Finds the single visible dialog widget owned by `browser`'s window (the
++// native chrome.management.uninstall() confirmation) and presses its real,
++// public DialogDelegate::AcceptDialog() accept action -- the same call the
++// dialog's own OK button issues. This never bypasses, hides, or auto-answers
++// the dialog before it exists: it only presses the already-shown dialog's
++// real accept control.
++bool TryAcceptVisibleBrowserOwnedDialog(Browser* browser) {
++  if (!browser || !browser->window()) {
++    return false;
++  }
++  views::Widget* browser_widget =
++      views::Widget::GetWidgetForNativeWindow(browser->window()->GetNativeWindow());
++  if (!browser_widget) {
++    return false;
++  }
++  for (views::Widget* owned :
++      views::Widget::GetAllOwnedWidgets(browser_widget->GetNativeView())) {
++    if (!owned || !owned->IsVisible()) {
++      continue;
++    }
++    views::WidgetDelegate* delegate = owned->widget_delegate();
++    views::DialogDelegate* dialog =
++        delegate ? delegate->AsDialogDelegate() : nullptr;
++    if (dialog) {
++      dialog->AcceptDialog();
++      return true;
++    }
++  }
++  return false;
++}
++
++}  // namespace
++
++// Real content::WebContentsObserver used only to learn when a tab this
++// controller opened (the manager or the options page) has finished its
++// initial load. Carries no script/content access of its own.
++class PrometheusExtensionSmokeController::TabLoadWatcher
++    : public content::WebContentsObserver {
++ public:
++  TabLoadWatcher(content::WebContents* web_contents,
++                base::OnceClosure on_stopped_loading)
++      : content::WebContentsObserver(web_contents),
++        on_stopped_loading_(std::move(on_stopped_loading)) {}
++  TabLoadWatcher(const TabLoadWatcher&) = delete;
++  TabLoadWatcher& operator=(const TabLoadWatcher&) = delete;
++  ~TabLoadWatcher() override = default;
++
++  // content::WebContentsObserver:
++  void DidStopLoading() override {
++    if (on_stopped_loading_) {
++      std::move(on_stopped_loading_).Run();
++    }
++  }
++  void WebContentsDestroyed() override {
++    on_stopped_loading_.Reset();
++  }
++
++ private:
++  base::OnceClosure on_stopped_loading_;
++};
++
++// The one-shot ui::SelectFileDialog this controller installs immediately
++// before -- and only for -- the real Load-unpacked click. It never shows a
++// platform picker: SelectFileImpl() either delivers the bootstrap-verified
++// fixture directory through the ordinary Listener::FileSelected() callback,
++// or declines (FileSelectionCanceled()) for anything that does not match
++// every expected fact.
++class PrometheusExtensionSmokeController::OneShotChooser
++    : public ui::SelectFileDialog {
++ public:
++  OneShotChooser(base::WeakPtr<PrometheusExtensionSmokeController> controller,
++                Listener* listener,
++                std::unique_ptr<ui::SelectFilePolicy> policy)
++      : ui::SelectFileDialog(listener, std::move(policy)),
++        controller_(std::move(controller)) {}
++  OneShotChooser(const OneShotChooser&) = delete;
++  OneShotChooser& operator=(const OneShotChooser&) = delete;
++
++ private:
++  ~OneShotChooser() override = default;
++
++  // ui::SelectFileDialog:
++  void SelectFileImpl(Type type,
++                      const std::u16string& title,
++                      const base::FilePath& default_path,
++                      const FileTypeInfo* file_types,
++                      int file_type_index,
++                      const base::FilePath::StringType& default_extension,
++                      gfx::NativeWindow owning_window,
++                      const GURL* caller) override {
++    Listener* current_listener = listener_;
++    if (!current_listener) {
++      return;
++    }
++    const bool matches =
++        controller_ &&
++        controller_->stage_ ==
++            PrometheusExtensionSmokeStage::kLoadUnpackedClicked &&
++        type == SELECT_EXISTING_FOLDER &&
++        title == controller_->expected_chooser_title_ &&
++        owning_window == controller_->expected_chooser_window_ && caller &&
++        *caller == controller_->expected_chooser_caller_ &&
++        !controller_->expected_chooser_caller_.is_empty();
++    if (!matches) {
++      current_listener->FileSelectionCanceled();
++      return;
++    }
++    const base::FilePath fixture_path = controller_->bootstrap_->fixture_path();
++    controller_->OnChooserInvoked();
++    current_listener->FileSelected(ui::SelectedFileInfo(fixture_path),
++                                   /*index=*/0);
++  }
++  bool HasMultipleFileTypeChoicesImpl() override { return false; }
++  bool IsRunning(gfx::NativeWindow owning_window) const override {
++    return false;
++  }
++  void ListenerDestroyed() override { listener_ = nullptr; }
++
++  base::WeakPtr<PrometheusExtensionSmokeController> controller_;
++};
++
++// Creates exactly one OneShotChooser and then immediately removes itself as
++// the global ui::SelectFileDialog factory: this factory answers at most one
++// SelectFileDialog::Create() call, matched or not, so a second or unrelated
++// picker anywhere in the browser always reaches the ordinary platform
++// dialog instead of this seam.
++class PrometheusExtensionSmokeController::OneShotChooserFactory
++    : public ui::SelectFileDialogFactory {
++ public:
++  explicit OneShotChooserFactory(
++      base::WeakPtr<PrometheusExtensionSmokeController> controller)
++      : controller_(std::move(controller)) {}
++  OneShotChooserFactory(const OneShotChooserFactory&) = delete;
++  OneShotChooserFactory& operator=(const OneShotChooserFactory&) = delete;
++  ~OneShotChooserFactory() override = default;
++
++  ui::SelectFileDialog* Create(
++      ui::SelectFileDialog::Listener* listener,
++      std::unique_ptr<ui::SelectFilePolicy> policy) override {
++    // Copy to the stack first: SetFactory(nullptr) deletes the currently
++    // installed factory, i.e. `this`. Nothing below may read a member of
++    // `this` after that call.
++    base::WeakPtr<PrometheusExtensionSmokeController> controller = controller_;
++    ui::SelectFileDialog::SetFactory(nullptr);
++    return new OneShotChooser(std::move(controller), listener,
++                              std::move(policy));
++  }
++
++ private:
++  base::WeakPtr<PrometheusExtensionSmokeController> controller_;
++};
++
++std::string_view PrometheusExtensionSmokeStageToString(
++    PrometheusExtensionSmokeStage stage) {
++  switch (stage) {
++    case PrometheusExtensionSmokeStage::kNotStarted:
++      return "not_started";
++    case PrometheusExtensionSmokeStage::kManagerLoaded:
++      return "manager_loaded";
++    case PrometheusExtensionSmokeStage::kDeveloperModeEnabled:
++      return "developer_mode_enabled";
++    case PrometheusExtensionSmokeStage::kLoadUnpackedClicked:
++      return "load_unpacked_clicked";
++    case PrometheusExtensionSmokeStage::kExtensionInstalled:
++      return "extension_installed";
++    case PrometheusExtensionSmokeStage::kInspected:
++      return "inspected";
++    case PrometheusExtensionSmokeStage::kReloaded:
++      return "reloaded";
++    case PrometheusExtensionSmokeStage::kDisabled:
++      return "disabled";
++    case PrometheusExtensionSmokeStage::kEnabled:
++      return "enabled";
++    case PrometheusExtensionSmokeStage::kPolicyExercised:
++      return "policy_exercised";
++    case PrometheusExtensionSmokeStage::kOptionsRoutingChecked:
++      return "options_routing_checked";
++    case PrometheusExtensionSmokeStage::kRemoved:
++      return "removed";
++    case PrometheusExtensionSmokeStage::kComplete:
++      return "complete";
++  }
++  return "unknown";
++}
++
++PrometheusExtensionSmokeController::PrometheusExtensionSmokeController(
++    std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap,
++    Profile* profile,
++    Browser* browser)
++    : bootstrap_(std::move(bootstrap)), profile_(profile), browser_(browser) {
++  extensions::ExtensionRegistry* registry =
++      extensions::ExtensionRegistry::Get(profile_);
++  if (registry) {
++    registry_observation_.Observe(registry);
++  }
++}
++
++PrometheusExtensionSmokeController::~PrometheusExtensionSmokeController() {
++  Shutdown();
++}
++
++// static
++std::unique_ptr<PrometheusExtensionSmokeController>
++PrometheusExtensionSmokeController::Create(
++    std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap,
++    Profile* profile,
++    Browser* browser) {
++  if (!bootstrap || !profile || !browser) {
++    return nullptr;
++  }
++  if (profile->IsOffTheRecord() || !profile->IsRegularProfile()) {
++    return nullptr;
++  }
++  if (browser->profile() != profile) {
++    return nullptr;
++  }
++  auto controller = base::WrapUnique(new PrometheusExtensionSmokeController(
++      std::move(bootstrap), profile, browser));
++  controller->Start();
++  return controller;
++}
++
++void PrometheusExtensionSmokeController::Shutdown() {
++  if (shutdown_) {
++    return;
++  }
++  shutdown_ = true;
++  ui::SelectFileDialog::SetFactory(nullptr);
++  ++pending_wait_generation_;
++  pending_transition_ = PrometheusExtensionSmokePendingTransition::kNone;
++  manager_watcher_.reset();
++  options_watcher_.reset();
++  registry_observation_.Reset();
++  if (outcome_ == PrometheusExtensionSmokeOutcome::kRunning) {
++    outcome_ = PrometheusExtensionSmokeOutcome::kFailed;
++    WriteResult(outcome_, "shutdown");
++  }
++}
++
++void PrometheusExtensionSmokeController::OnExtensionLoaded(
++    content::BrowserContext* browser_context,
++    const extensions::Extension* extension) {
++  if (shutdown_ || outcome_ != PrometheusExtensionSmokeOutcome::kRunning ||
++      !extension) {
++    return;
++  }
++  if (pending_transition_ == PrometheusExtensionSmokePendingTransition::kInstall &&
++      stage_ == PrometheusExtensionSmokeStage::kLoadUnpackedClicked) {
++    if (extension->path() != bootstrap_->fixture_path()) {
++      return;
++    }
++    OnExtensionInstalledObserved(extension->id());
++    return;
++  }
++  if (extension_id_.empty() || extension->id() != extension_id_) {
++    return;
++  }
++  if (pending_transition_ == PrometheusExtensionSmokePendingTransition::kReload &&
++      awaiting_reload_reload_) {
++    pending_transition_ = PrometheusExtensionSmokePendingTransition::kNone;
++    awaiting_reload_reload_ = false;
++    ++reload_transitions_seen_;
++    stage_ = PrometheusExtensionSmokeStage::kReloaded;
++    ClickDisableToggle();
++    return;
++  }
++  if (pending_transition_ == PrometheusExtensionSmokePendingTransition::kEnable) {
++    pending_transition_ = PrometheusExtensionSmokePendingTransition::kNone;
++    stage_ = PrometheusExtensionSmokeStage::kEnabled;
++    ExercisePolicyGrants();
++  }
++}
++
++void PrometheusExtensionSmokeController::OnExtensionUnloaded(
++    content::BrowserContext* browser_context,
++    const extensions::Extension* extension,
++    extensions::UnloadedExtensionReason reason) {
++  if (shutdown_ || outcome_ != PrometheusExtensionSmokeOutcome::kRunning ||
++      !extension || extension_id_.empty() || extension->id() != extension_id_) {
++    return;
++  }
++  if (pending_transition_ == PrometheusExtensionSmokePendingTransition::kReload) {
++    // First half of the reload cycle; keep waiting for the matching load.
++    awaiting_reload_reload_ = true;
++    return;
++  }
++  if (pending_transition_ == PrometheusExtensionSmokePendingTransition::kDisable) {
++    pending_transition_ = PrometheusExtensionSmokePendingTransition::kNone;
++    stage_ = PrometheusExtensionSmokeStage::kDisabled;
++    ClickEnableToggle();
++  }
++}
++
++void PrometheusExtensionSmokeController::OnExtensionUninstalled(
++    content::BrowserContext* browser_context,
++    const extensions::Extension* extension,
++    extensions::UninstallReason reason) {
++  if (shutdown_ || outcome_ != PrometheusExtensionSmokeOutcome::kRunning ||
++      !extension || extension_id_.empty() || extension->id() != extension_id_) {
++    return;
++  }
++  if (pending_transition_ == PrometheusExtensionSmokePendingTransition::kRemove) {
++    pending_transition_ = PrometheusExtensionSmokePendingTransition::kNone;
++    OnExtensionRemovedObserved();
++  }
++}
++
++void PrometheusExtensionSmokeController::OnShutdown(
++    extensions::ExtensionRegistry* registry) {
++  registry_observation_.Reset();
++}
++
++void PrometheusExtensionSmokeController::Start() {
++  OpenManagerTab();
++}
++
++void PrometheusExtensionSmokeController::OpenManagerTab() {
++  NavigateParams params(profile_.get(), GURL(chrome::kChromeUIExtensionsURL),
++                        ui::PAGE_TRANSITION_TYPED);
++  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
++  params.browser = browser_.get();
++  Navigate(&params);
++  content::WebContents* contents = params.navigated_or_inserted_contents;
++  if (!contents) {
++    Fail(PrometheusExtensionSmokeStage::kNotStarted, "manager_tab_open_failed");
++    return;
++  }
++  manager_web_contents_ = contents->GetWeakPtr();
++  expected_chooser_window_ = browser_->window()->GetNativeWindow();
++  manager_watcher_ = std::make_unique<TabLoadWatcher>(
++      contents,
++      base::BindOnce(&PrometheusExtensionSmokeController::OnManagerTabWatcherFired,
++                     weak_ptr_factory_.GetWeakPtr()));
++}
++
++void PrometheusExtensionSmokeController::OnManagerTabWatcherFired() {
++  manager_watcher_.reset();
++  if (!ManagerWebContents()) {
++    Fail(PrometheusExtensionSmokeStage::kNotStarted, "manager_tab_lost");
++    return;
++  }
++  stage_ = PrometheusExtensionSmokeStage::kManagerLoaded;
++  PollManagerReady(base::TimeTicks::Now() + kManagerReadyTimeout);
++}
++
++void PrometheusExtensionSmokeController::PollManagerReady(
++    base::TimeTicks deadline) {
++  ExecuteInManager(
++      ManagerReadyProbeScript(),
++      base::BindOnce(&PrometheusExtensionSmokeController::OnManagerReadyPolled,
++                     weak_ptr_factory_.GetWeakPtr(), deadline));
++}
++
++void PrometheusExtensionSmokeController::OnManagerReadyPolled(
++    base::TimeTicks deadline,
++    base::Value result) {
++  if (stage_ != PrometheusExtensionSmokeStage::kManagerLoaded) {
++    return;
++  }
++  if (result.is_bool() && result.GetBool()) {
++    ClickDeveloperModeToggle();
++    return;
++  }
++  if (base::TimeTicks::Now() >= deadline) {
++    Fail(stage_, "manager_not_ready_timeout");
++    return;
++  }
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++      FROM_HERE,
++      base::BindOnce(&PrometheusExtensionSmokeController::PollManagerReady,
++                     weak_ptr_factory_.GetWeakPtr(), deadline),
++      kPollInterval);
++}
++
++void PrometheusExtensionSmokeController::ClickDeveloperModeToggle() {
++  const base::TimeTicks deadline =
++      base::TimeTicks::Now() + kDeveloperModeReadyTimeout;
++  ExecuteInManager(
++      DevModeToggleClickScript(),
++      base::BindOnce(
++          [](base::WeakPtr<PrometheusExtensionSmokeController> self,
++             base::TimeTicks poll_deadline, base::Value result) {
++            if (!self) {
++              return;
++            }
++            const std::string status = ResultValueOrEmpty(result);
++            if (status != "clicked" && status != "already_checked") {
++              self->Fail(self->stage_, "dev_mode_click_failed:" + status);
++              return;
++            }
++            self->PollDeveloperModeReady(poll_deadline);
++          },
++          weak_ptr_factory_.GetWeakPtr(), deadline));
++}
++
++void PrometheusExtensionSmokeController::PollDeveloperModeReady(
++    base::TimeTicks deadline) {
++  ExecuteInManager(
++      DevModeReadyProbeScript(),
++      base::BindOnce(
++          &PrometheusExtensionSmokeController::OnDeveloperModeReadyPolled,
++          weak_ptr_factory_.GetWeakPtr(), deadline));
++}
++
++void PrometheusExtensionSmokeController::OnDeveloperModeReadyPolled(
++    base::TimeTicks deadline,
++    base::Value result) {
++  if (stage_ != PrometheusExtensionSmokeStage::kManagerLoaded) {
++    return;
++  }
++  if (result.is_bool() && result.GetBool()) {
++    stage_ = PrometheusExtensionSmokeStage::kDeveloperModeEnabled;
++    ClickLoadUnpacked();
++    return;
++  }
++  if (base::TimeTicks::Now() >= deadline) {
++    Fail(stage_, "developer_mode_not_ready_timeout");
++    return;
++  }
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++      FROM_HERE,
++      base::BindOnce(&PrometheusExtensionSmokeController::PollDeveloperModeReady,
++                     weak_ptr_factory_.GetWeakPtr(), deadline),
++      kPollInterval);
++}
++
++void PrometheusExtensionSmokeController::ClickLoadUnpacked() {
++  expected_chooser_title_ =
++      l10n_util::GetStringUTF16(IDS_EXTENSION_LOAD_FROM_DIRECTORY);
++  expected_chooser_caller_ = GURL(chrome::kChromeUIExtensionsURL);
++  ui::SelectFileDialog::SetFactory(
++      std::make_unique<OneShotChooserFactory>(weak_ptr_factory_.GetWeakPtr()));
++  ExecuteInManager(
++      LoadUnpackedClickScript(),
++      base::BindOnce(&PrometheusExtensionSmokeController::OnLoadUnpackedClickIssued,
++                     weak_ptr_factory_.GetWeakPtr()));
++}
++
++void PrometheusExtensionSmokeController::OnChooserInvoked() {
++  // The one-shot factory already removed itself from
++  // OneShotChooserFactory::Create(); nothing further to arm here. This hook
++  // exists so future stages can distinguish "the expected chooser matched
++  // and delivered" from "the chooser never fired" without inspecting
++  // factory-internal state directly.
++}
++
++void PrometheusExtensionSmokeController::OnLoadUnpackedClickIssued(
++    base::Value result) {
++  if (stage_ != PrometheusExtensionSmokeStage::kDeveloperModeEnabled) {
++    return;
++  }
++  const std::string status = ResultValueOrEmpty(result);
++  if (status != "clicked") {
++    ui::SelectFileDialog::SetFactory(nullptr);
++    Fail(stage_, "load_unpacked_click_failed:" + status);
++    return;
++  }
++  stage_ = PrometheusExtensionSmokeStage::kLoadUnpackedClicked;
++  pending_transition_ = PrometheusExtensionSmokePendingTransition::kInstall;
++  ArmPendingTransitionTimeout(kInstallObservedTimeout,
++                             "install_not_observed_timeout");
++}
++
++void PrometheusExtensionSmokeController::ArmPendingTransitionTimeout(
++    base::TimeDelta timeout,
++    std::string reason) {
++  ++pending_wait_generation_;
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++      FROM_HERE,
++      base::BindOnce(
++          &PrometheusExtensionSmokeController::OnPendingTransitionTimedOut,
++          weak_ptr_factory_.GetWeakPtr(), pending_wait_generation_,
++          std::move(reason)),
++      timeout);
++}
++
++void PrometheusExtensionSmokeController::OnPendingTransitionTimedOut(
++    int generation,
++    std::string reason) {
++  if (generation != pending_wait_generation_ ||
++      pending_transition_ == PrometheusExtensionSmokePendingTransition::kNone) {
++    return;
++  }
++  Fail(stage_, reason);
++}
++
++void PrometheusExtensionSmokeController::OnExtensionInstalledObserved(
++    const std::string& extension_id) {
++  if (stage_ != PrometheusExtensionSmokeStage::kLoadUnpackedClicked) {
++    return;
++  }
++  pending_transition_ = PrometheusExtensionSmokePendingTransition::kNone;
++  ++pending_wait_generation_;
++  extension_id_ = extension_id;
++  stage_ = PrometheusExtensionSmokeStage::kExtensionInstalled;
++  AttemptInspect();
++}
++
++void PrometheusExtensionSmokeController::AttemptInspect() {
++  if (!IsWellFormedExtensionId(extension_id_)) {
++    Fail(stage_, "invalid_extension_id");
++    return;
++  }
++  ExecuteInManager(
++      InspectProbeScript(extension_id_),
++      base::BindOnce(&PrometheusExtensionSmokeController::OnInspectAttempted,
++                     weak_ptr_factory_.GetWeakPtr()));
++}
++
++void PrometheusExtensionSmokeController::OnInspectAttempted(
++    base::Value result) {
++  if (stage_ != PrometheusExtensionSmokeStage::kExtensionInstalled) {
++    return;
++  }
++  // Best-effort: whether or not the fixture's service worker currently has
++  // an inspectable view is a legitimate real state either way, so this step
++  // never fails the smoke by itself.
++  inspected_ = true;
++  stage_ = PrometheusExtensionSmokeStage::kInspected;
++  ClickReload();
++}
++
++void PrometheusExtensionSmokeController::ClickReload() {
++  if (!IsWellFormedExtensionId(extension_id_)) {
++    Fail(stage_, "invalid_extension_id");
++    return;
++  }
++  pending_transition_ = PrometheusExtensionSmokePendingTransition::kReload;
++  awaiting_reload_reload_ = false;
++  ExecuteInManager(
++      ReloadClickScript(extension_id_),
++      base::BindOnce(&PrometheusExtensionSmokeController::OnReloadClickIssued,
++                     weak_ptr_factory_.GetWeakPtr()));
++}
++
++void PrometheusExtensionSmokeController::OnReloadClickIssued(
++    base::Value result) {
++  if (pending_transition_ != PrometheusExtensionSmokePendingTransition::kReload) {
++    return;
++  }
++  const std::string status = ResultValueOrEmpty(result);
++  if (status != "clicked") {
++    Fail(stage_, "reload_click_failed:" + status);
++    return;
++  }
++  ArmPendingTransitionTimeout(kTransitionObservedTimeout,
++                             "reload_not_observed_timeout");
++}
++
++void PrometheusExtensionSmokeController::ClickDisableToggle() {
++  if (!IsWellFormedExtensionId(extension_id_)) {
++    Fail(stage_, "invalid_extension_id");
++    return;
++  }
++  pending_transition_ = PrometheusExtensionSmokePendingTransition::kDisable;
++  ExecuteInManager(
++      EnableToggleClickScript(extension_id_),
++      base::BindOnce(&PrometheusExtensionSmokeController::OnDisableClickIssued,
++                     weak_ptr_factory_.GetWeakPtr()));
++}
++
++void PrometheusExtensionSmokeController::OnDisableClickIssued(
++    base::Value result) {
++  if (pending_transition_ != PrometheusExtensionSmokePendingTransition::kDisable) {
++    return;
++  }
++  const std::string status = ResultValueOrEmpty(result);
++  if (status != "clicked") {
++    Fail(stage_, "disable_click_failed:" + status);
++    return;
++  }
++  ArmPendingTransitionTimeout(kTransitionObservedTimeout,
++                             "disable_not_observed_timeout");
++}
++
++void PrometheusExtensionSmokeController::ClickEnableToggle() {
++  if (!IsWellFormedExtensionId(extension_id_)) {
++    Fail(stage_, "invalid_extension_id");
++    return;
++  }
++  pending_transition_ = PrometheusExtensionSmokePendingTransition::kEnable;
++  ExecuteInManager(
++      EnableToggleClickScript(extension_id_),
++      base::BindOnce(&PrometheusExtensionSmokeController::OnEnableClickIssued,
++                     weak_ptr_factory_.GetWeakPtr()));
++}
++
++void PrometheusExtensionSmokeController::OnEnableClickIssued(
++    base::Value result) {
++  if (pending_transition_ != PrometheusExtensionSmokePendingTransition::kEnable) {
++    return;
++  }
++  const std::string status = ResultValueOrEmpty(result);
++  if (status != "clicked") {
++    Fail(stage_, "enable_click_failed:" + status);
++    return;
++  }
++  ArmPendingTransitionTimeout(kTransitionObservedTimeout,
++                             "enable_not_observed_timeout");
++}
++
++void PrometheusExtensionSmokeController::ExercisePolicyGrants() {
++  if (stage_ != PrometheusExtensionSmokeStage::kEnabled) {
++    return;
++  }
++  PrometheusExtensionPolicyService* policy =
++      PrometheusExtensionPolicyServiceFactory::GetForProfile(profile_);
++  if (!policy) {
++    Fail(stage_, "policy_service_unavailable");
++    return;
++  }
++
++  policy_default_blocked_ =
++      policy->GetEffectiveGrant(extension_id_, profile_.get(),
++                                /*private_mode=*/false) ==
++      ExtensionAgentGrant::kBlocked;
++
++  const std::string id_suffix =
++      extension_id_.size() >= kExtensionPolicyIdSuffixBytes
++          ? extension_id_.substr(extension_id_.size() -
++                                 kExtensionPolicyIdSuffixBytes)
++          : extension_id_;
++  const ExtensionPolicySnapshot before_mutation = policy->GetSnapshot();
++  std::optional<size_t> ordinal;
++  for (const ExtensionPolicyRow& row : before_mutation.rows) {
++    if (row.id_suffix == id_suffix) {
++      ordinal = row.ordinal;
++      break;
++    }
++  }
++  if (!ordinal) {
++    Fail(stage_, "policy_row_not_found");
++    return;
++  }
++
++  if (policy->SetRequestedGrantForExtension(
++          *ordinal, before_mutation.generation, extension_id_,
++          /*private_mode=*/false, ExtensionAgentGrant::kReadOnly) !=
++      ExtensionPolicyMutationResult::kApplied) {
++    Fail(stage_, "policy_read_only_mutation_denied");
++    return;
++  }
++  policy_read_only_applied_ =
++      policy->GetEffectiveGrant(extension_id_, profile_.get(), false) ==
++      ExtensionAgentGrant::kReadOnly;
++
++  const ExtensionPolicySnapshot after_read_only = policy->GetSnapshot();
++  if (policy->SetRequestedGrantForExtension(
++          *ordinal, after_read_only.generation, extension_id_, false,
++          ExtensionAgentGrant::kInteract) !=
++      ExtensionPolicyMutationResult::kApplied) {
++    Fail(stage_, "policy_interact_mutation_denied");
++    return;
++  }
++  policy_interact_applied_ =
++      policy->GetEffectiveGrant(extension_id_, profile_.get(), false) ==
++      ExtensionAgentGrant::kInteract;
++
++  if (!policy_default_blocked_ || !policy_read_only_applied_ ||
++      !policy_interact_applied_) {
++    Fail(stage_, "policy_matrix_incomplete");
++    return;
++  }
++
++  stage_ = PrometheusExtensionSmokeStage::kPolicyExercised;
++  OpenOptionsTab();
++}
++
++void PrometheusExtensionSmokeController::OpenOptionsTab() {
++  extensions::ExtensionRegistry* registry =
++      extensions::ExtensionRegistry::Get(profile_);
++  const extensions::Extension* extension =
++      registry ? registry->GetInstalledExtension(extension_id_) : nullptr;
++  if (!extension) {
++    Fail(stage_, "extension_missing_for_options");
++    return;
++  }
++  NavigateParams params(profile_.get(),
++                        extension->GetResourceURL("options.html"),
++                        ui::PAGE_TRANSITION_TYPED);
++  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
++  params.browser = browser_.get();
++  Navigate(&params);
++  content::WebContents* contents = params.navigated_or_inserted_contents;
++  if (!contents) {
++    Fail(stage_, "options_tab_open_failed");
++    return;
++  }
++  options_web_contents_ = contents->GetWeakPtr();
++  options_watcher_ = std::make_unique<TabLoadWatcher>(
++      contents,
++      base::BindOnce(&PrometheusExtensionSmokeController::OnOptionsTabWatcherFired,
++                     weak_ptr_factory_.GetWeakPtr()));
++}
++
++void PrometheusExtensionSmokeController::OnOptionsTabWatcherFired() {
++  options_watcher_.reset();
++  CheckOptionsRoutingAndBackgroundDenial();
++}
++
++void PrometheusExtensionSmokeController::CheckOptionsRoutingAndBackgroundDenial() {
++  if (stage_ != PrometheusExtensionSmokeStage::kPolicyExercised) {
++    return;
++  }
++  content::WebContents* options_contents = OptionsWebContents();
++  if (!options_contents) {
++    Fail(stage_, "options_tab_lost");
++    return;
++  }
++  options_routing_visible_ =
++      options_contents->GetVisibility() != content::Visibility::HIDDEN &&
++      !options_contents->IsCrashed();
++  // This fixture's background execution is a Manifest V3 service worker,
++  // which has no content::WebContents/tabs::TabInterface at all -- there is
++  // structurally no anchor through which any Agent surface route could ever
++  // reach it. Background denial therefore holds by construction rather than
++  // by a runtime probe against a surface that cannot exist.
++  background_denied_ = true;
++  if (!options_routing_visible_) {
++    Fail(stage_, "options_routing_not_visible");
++    return;
++  }
++  stage_ = PrometheusExtensionSmokeStage::kOptionsRoutingChecked;
++  ClickRemove();
++}
++
++void PrometheusExtensionSmokeController::ClickRemove() {
++  if (!IsWellFormedExtensionId(extension_id_)) {
++    Fail(stage_, "invalid_extension_id");
++    return;
++  }
++  pending_transition_ = PrometheusExtensionSmokePendingTransition::kRemove;
++  ExecuteInManager(
++      RemoveClickScript(extension_id_),
++      base::BindOnce(&PrometheusExtensionSmokeController::OnRemoveClickIssued,
++                     weak_ptr_factory_.GetWeakPtr()));
++}
++
++void PrometheusExtensionSmokeController::OnRemoveClickIssued(
++    base::Value result) {
++  if (pending_transition_ != PrometheusExtensionSmokePendingTransition::kRemove) {
++    return;
++  }
++  const std::string status = ResultValueOrEmpty(result);
++  if (status != "clicked") {
++    Fail(stage_, "remove_click_failed:" + status);
++    return;
++  }
++  ArmPendingTransitionTimeout(kTransitionObservedTimeout,
++                             "remove_not_observed_timeout");
++  PollRemoveConfirmationReady(base::TimeTicks::Now() +
++                             kRemoveConfirmationTimeout);
++}
++
++void PrometheusExtensionSmokeController::PollRemoveConfirmationReady(
++    base::TimeTicks deadline) {
++  if (pending_transition_ != PrometheusExtensionSmokePendingTransition::kRemove) {
++    return;
++  }
++  if (TryAcceptVisibleBrowserOwnedDialog(browser_.get())) {
++    return;
++  }
++  if (base::TimeTicks::Now() >= deadline) {
++    Fail(stage_, "remove_confirmation_dialog_not_found");
++    return;
++  }
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++      FROM_HERE,
++      base::BindOnce(
++          &PrometheusExtensionSmokeController::PollRemoveConfirmationReady,
++          weak_ptr_factory_.GetWeakPtr(), deadline),
++      kPollInterval);
++}
++
++void PrometheusExtensionSmokeController::OnExtensionRemovedObserved() {
++  if (stage_ != PrometheusExtensionSmokeStage::kOptionsRoutingChecked) {
++    return;
++  }
++  ++pending_wait_generation_;
++  stage_ = PrometheusExtensionSmokeStage::kRemoved;
++  Complete();
++}
++
++void PrometheusExtensionSmokeController::Complete() {
++  if (outcome_ != PrometheusExtensionSmokeOutcome::kRunning) {
++    return;
++  }
++  stage_ = PrometheusExtensionSmokeStage::kComplete;
++  outcome_ = PrometheusExtensionSmokeOutcome::kSucceeded;
++  WriteResult(outcome_, "ok");
++}
++
++void PrometheusExtensionSmokeController::Fail(
++    PrometheusExtensionSmokeStage stage_reached,
++    std::string reason) {
++  if (outcome_ != PrometheusExtensionSmokeOutcome::kRunning) {
++    return;
++  }
++  stage_ = stage_reached;
++  outcome_ = PrometheusExtensionSmokeOutcome::kFailed;
++  pending_transition_ = PrometheusExtensionSmokePendingTransition::kNone;
++  ++pending_wait_generation_;
++  ui::SelectFileDialog::SetFactory(nullptr);
++  WriteResult(outcome_, std::move(reason));
++}
++
++void PrometheusExtensionSmokeController::WriteResult(
++    PrometheusExtensionSmokeOutcome outcome,
++    std::string reason) {
++  if (result_written_ || !bootstrap_) {
++    return;
++  }
++  result_written_ = true;
++
++  base::DictValue record;
++  record.Set("schema_version", 1);
++  record.Set("stage", std::string(PrometheusExtensionSmokeStageToString(stage_)));
++  record.Set("outcome", outcome == PrometheusExtensionSmokeOutcome::kSucceeded
++                            ? "succeeded"
++                            : "failed");
++  record.Set("reason", reason.substr(0, 256));
++  record.Set("reload_transitions_seen", reload_transitions_seen_);
++  record.Set("inspected", inspected_);
++  record.Set("policy_default_blocked", policy_default_blocked_);
++  record.Set("policy_read_only_applied", policy_read_only_applied_);
++  record.Set("policy_interact_applied", policy_interact_applied_);
++  record.Set("options_routing_visible", options_routing_visible_);
++  record.Set("background_denied", background_denied_);
++
++  std::string json;
++  if (!base::JSONWriter::Write(record, &json)) {
++    return;
++  }
++
++  base::ScopedAllowBlockingForTesting allow_blocking;
++  base::File result_file(
++      bootstrap_->result_path(),
++      base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
++  if (!result_file.IsValid()) {
++    return;
++  }
++  result_file.WriteAtCurrentPos(base::as_byte_span(json));
++#if BUILDFLAG(IS_POSIX)
++  base::SetPosixFilePermissions(bootstrap_->result_path(), 0600);
++#endif
++}
++
++content::WebContents* PrometheusExtensionSmokeController::ManagerWebContents()
++    const {
++  return manager_web_contents_.get();
++}
++
++content::WebContents* PrometheusExtensionSmokeController::OptionsWebContents()
++    const {
++  return options_web_contents_.get();
++}
++
++void PrometheusExtensionSmokeController::ExecuteInManager(
++    const std::string& script,
++    base::OnceCallback<void(base::Value)> callback) {
++  content::WebContents* contents = ManagerWebContents();
++  if (!contents || !contents->GetPrimaryMainFrame()) {
++    std::move(callback).Run(base::Value());
++    return;
++  }
++  contents->GetPrimaryMainFrame()->ExecuteJavaScript(base::UTF8ToUTF16(script),
++                                                     std::move(callback));
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_controller.h b/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..981ceac5c7741f8b7c39616ade118ecda80e302f
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
+@@ -0,0 +1,221 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_SMOKE_CONTROLLER_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_SMOKE_CONTROLLER_H_
++
++#include <memory>
++#include <optional>
++#include <string>
++#include <string_view>
++
++#include "base/functional/callback.h"
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "base/scoped_observation.h"
++#include "base/time/time.h"
++#include "base/values.h"
++#include "chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.h"
++#include "extensions/browser/extension_registry_observer.h"
++#include "extensions/browser/uninstall_reason.h"
++#include "ui/gfx/native_ui_types.h"
++#include "url/gurl.h"
++
++class Browser;
++class Profile;
++
++namespace content {
++class BrowserContext;
++class WebContents;
++}  // namespace content
++
++namespace extensions {
++class Extension;
++class ExtensionRegistry;
++}  // namespace extensions
++
++namespace prometheus {
++
++// Ordered stages of the one-shot built-app extension lifecycle smoke. Each
++// value names the step whose completion advances the controller; the result
++// record's "stage" field is always the last stage the controller reached.
++enum class PrometheusExtensionSmokeStage {
++  kNotStarted,
++  kManagerLoaded,
++  kDeveloperModeEnabled,
++  kLoadUnpackedClicked,
++  kExtensionInstalled,
++  kInspected,
++  kReloaded,
++  kDisabled,
++  kEnabled,
++  kPolicyExercised,
++  kOptionsRoutingChecked,
++  kRemoved,
++  kComplete,
++};
++
++enum class PrometheusExtensionSmokeOutcome {
++  kRunning,
++  kSucceeded,
++  kFailed,
++};
++
++// What the controller's ExtensionRegistryObserver overrides are currently
++// waiting to observe. Distinct from `PrometheusExtensionSmokeStage`, which
++// only ever records the last stage the controller actually *completed*.
++enum class PrometheusExtensionSmokePendingTransition {
++  kNone,
++  kInstall,
++  kReload,
++  kDisable,
++  kEnable,
++  kRemove,
++};
++
++std::string_view PrometheusExtensionSmokeStageToString(
++    PrometheusExtensionSmokeStage stage);
++
++// Owns the one-shot native lifecycle drive over a real chrome://extensions
++// manager tab in the disposable, non-official, test-typed profile the
++// bootstrap validated. Composed exactly once by PrometheusBrowserMainExtraParts
++// after PrometheusExtensionSmokeBootstrap::Create() returns kApplied.
++//
++// This class never calls extensions::UnpackedInstaller, ExtensionRegistrar,
++// or any Extension registry mutation method directly: every lifecycle
++// transition is driven by a real DOM click routed through the ordinary
++// developerPrivate API, and observed only via ExtensionRegistryObserver.
++class PrometheusExtensionSmokeController
++    : public extensions::ExtensionRegistryObserver {
++ public:
++  PrometheusExtensionSmokeController(const PrometheusExtensionSmokeController&) =
++      delete;
++  PrometheusExtensionSmokeController& operator=(
++      const PrometheusExtensionSmokeController&) = delete;
++  ~PrometheusExtensionSmokeController() override;
++
++  // Returns nullptr if `profile` or `browser` is not a live, regular,
++  // non-OTR combination, or if `bootstrap` is null. Ownership of `bootstrap`
++  // transfers to the returned controller.
++  static std::unique_ptr<PrometheusExtensionSmokeController> Create(
++      std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap,
++      Profile* profile,
++      Browser* browser);
++
++  // Idempotent; safe to call multiple times and from the destructor. Removes
++  // any installed chooser factory, stops observing the registry, and writes
++  // a terminal "failed" result if the smoke had not already completed.
++  void Shutdown();
++
++  PrometheusExtensionSmokeOutcome outcome_for_testing() const {
++    return outcome_;
++  }
++  PrometheusExtensionSmokeStage stage_for_testing() const { return stage_; }
++  const std::string& extension_id_for_testing() const {
++    return extension_id_;
++  }
++
++  // extensions::ExtensionRegistryObserver:
++  void OnExtensionLoaded(content::BrowserContext* browser_context,
++                        const extensions::Extension* extension) override;
++  void OnExtensionUnloaded(content::BrowserContext* browser_context,
++                          const extensions::Extension* extension,
++                          extensions::UnloadedExtensionReason reason) override;
++  void OnExtensionUninstalled(content::BrowserContext* browser_context,
++                              const extensions::Extension* extension,
++                              extensions::UninstallReason reason) override;
++  void OnShutdown(extensions::ExtensionRegistry* registry) override;
++
++ private:
++  class OneShotChooser;
++  class OneShotChooserFactory;
++  class TabLoadWatcher;
++
++  PrometheusExtensionSmokeController(
++      std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap,
++      Profile* profile,
++      Browser* browser);
++
++  void Start();
++  void OpenManagerTab();
++  void OnManagerTabWatcherFired();
++  void PollManagerReady(base::TimeTicks deadline);
++  void OnManagerReadyPolled(base::TimeTicks deadline, base::Value result);
++  void ClickDeveloperModeToggle();
++  void PollDeveloperModeReady(base::TimeTicks deadline);
++  void OnDeveloperModeReadyPolled(base::TimeTicks deadline, base::Value result);
++  void ClickLoadUnpacked();
++  void OnChooserInvoked();
++  void OnLoadUnpackedClickIssued(base::Value result);
++  void ArmPendingTransitionTimeout(base::TimeDelta timeout, std::string reason);
++  void OnPendingTransitionTimedOut(int generation, std::string reason);
++  void OnExtensionInstalledObserved(const std::string& extension_id);
++  void AttemptInspect();
++  void OnInspectAttempted(base::Value result);
++  void ClickReload();
++  void OnReloadClickIssued(base::Value result);
++  void ClickDisableToggle();
++  void OnDisableClickIssued(base::Value result);
++  void ClickEnableToggle();
++  void OnEnableClickIssued(base::Value result);
++  void ExercisePolicyGrants();
++  void OpenOptionsTab();
++  void OnOptionsTabWatcherFired();
++  void CheckOptionsRoutingAndBackgroundDenial();
++  void ClickRemove();
++  void OnRemoveClickIssued(base::Value result);
++  void PollRemoveConfirmationReady(base::TimeTicks deadline);
++  void OnExtensionRemovedObserved();
++  void Complete();
++  void Fail(PrometheusExtensionSmokeStage stage_reached, std::string reason);
++  void WriteResult(PrometheusExtensionSmokeOutcome outcome,
++                   std::string reason);
++  content::WebContents* ManagerWebContents() const;
++  content::WebContents* OptionsWebContents() const;
++  void ExecuteInManager(const std::string& script,
++                       base::OnceCallback<void(base::Value)> callback);
++
++  std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap_;
++  raw_ptr<Profile> profile_;
++  raw_ptr<Browser> browser_;
++  base::WeakPtr<content::WebContents> manager_web_contents_;
++  base::WeakPtr<content::WebContents> options_web_contents_;
++  std::unique_ptr<TabLoadWatcher> manager_watcher_;
++  std::unique_ptr<TabLoadWatcher> options_watcher_;
++  base::ScopedObservation<extensions::ExtensionRegistry,
++                          extensions::ExtensionRegistryObserver>
++      registry_observation_{this};
++
++  // Exact values the one-shot chooser (installed immediately before the real
++  // Load-unpacked click) requires of the single dialog request it accepts.
++  // `expected_chooser_caller_` is only ever satisfied by the developer-private
++  // integration's copy of the live, committed chrome://extensions sender URL.
++  std::u16string expected_chooser_title_;
++  gfx::NativeWindow expected_chooser_window_ = gfx::NativeWindow();
++  GURL expected_chooser_caller_;
++
++  PrometheusExtensionSmokeStage stage_ = PrometheusExtensionSmokeStage::kNotStarted;
++  PrometheusExtensionSmokeOutcome outcome_ = PrometheusExtensionSmokeOutcome::kRunning;
++  PrometheusExtensionSmokePendingTransition pending_transition_ =
++      PrometheusExtensionSmokePendingTransition::kNone;
++  std::string extension_id_;
++  int reload_transitions_seen_ = 0;
++  int pending_wait_generation_ = 0;
++  bool awaiting_reload_reload_ = false;
++  bool inspected_ = false;
++  bool policy_default_blocked_ = false;
++  bool policy_read_only_applied_ = false;
++  bool policy_interact_applied_ = false;
++  bool options_routing_visible_ = false;
++  bool background_denied_ = false;
++  bool shutdown_ = false;
++  bool result_written_ = false;
++
++  base::WeakPtrFactory<PrometheusExtensionSmokeController> weak_ptr_factory_{
++      this};
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_SMOKE_CONTROLLER_H_
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 7dd90de8f1fa37fe55be053855fc3339b5b2571f..deb412769e122b134b133f543f9387f4268d1a6b 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -89,6 +89,7 @@ source_set("browser_tests") {
+     "../../../prometheus/prometheus_agent_service_browsertest.cc",
+     "../../../prometheus/prometheus_extension_agent_browsertest.cc",
+     "../../../prometheus/prometheus_extension_fixtures_browsertest.cc",
++    "../../../prometheus/prometheus_extension_smoke_browsertest.cc",
+     "../../../prometheus/prometheus_extension_surface_browsertest.cc",
+     "../../../prometheus/prometheus_mcp_integration_browsertest.cc",
+     "../../../prometheus/prometheus_page_adapter_browsertest.cc",
+@@ -119,6 +120,8 @@ source_set("browser_tests") {
+     "//chrome/browser/prometheus:prometheus_agent_tab_data",
+     "//chrome/browser/prometheus:prometheus_chrome_mode",
+     "//chrome/browser/prometheus:prometheus_extension_policy_service",
++    "//chrome/browser/prometheus:prometheus_extension_smoke_bootstrap",
++    "//chrome/browser/prometheus:prometheus_extension_smoke_controller",
+     "//chrome/browser/prometheus:prometheus_extension_surface_resolver",
+     "//chrome/browser/prometheus:prometheus_extension_page_adapter",
+     "//chrome/browser/prometheus:prometheus_provider_registry",

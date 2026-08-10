@@ -1,0 +1,26 @@
+From 5fa559c75e0aec5740db3e138b4fb31d551022aa Mon Sep 17 00:00:00 2001
+From: Lakshman Turlapati <lakshmantvnm@gmail.com>
+Date: Sun, 9 Aug 2026 22:06:19 -0500
+Subject: [PATCH] fix(22-05): publish agent route header dependencies
+
+- expose direct public dependencies consumed by the route header
+- restore standalone policy harness compilation against the reviewed graph
+---
+ chrome/browser/prometheus/BUILD.gn | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 1f1b94446b4d0f5a9d15f71f86b9251b1250f286..c7efba4c605bf1dfed419b319ac4e91726a36d9c 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -109,8 +109,9 @@ source_set("prometheus_agent_route") {
+     "prometheus_agent_route.h",
+   ]
+ 
+-  deps = [
++  public_deps = [
+     "//base",
++    "//components/tabs:public",
+     "//url",
+   ]
+ }

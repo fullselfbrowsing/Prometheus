@@ -1,0 +1,690 @@
+From 86d629ec172370c57a95a29fa65208b2bdc5c981 Mon Sep 17 00:00:00 2001
+From: Lakshman Turlapati <lakshmantvnm@gmail.com>
+Date: Thu, 30 Jul 2026 15:03:53 -0500
+Subject: [PATCH] fix(22-05): drive extension remove with real input and
+ settled activation
+
+Raises the extension smoke's assertion boundary from kEnabled to kComplete by
+resolving the two defects that blocked the options/remove stretch. They were
+resolved differently, and the difference is deliberate.
+
+Remove click -- genuinely fixed. chrome.management.uninstall() with
+showConfirmDialog requires user activation (management_api.cc:743), and for a
+chrome://extensions caller extension() is null so show_confirm_dialog is forced
+on unconditionally. ExecuteJavaScript() conveys no activation, so the injected
+click was untrusted, the uninstall never started, and Service.deleteItem()'s
+bare .catch() swallowed the rejection. The click is now a real mouse event sent
+through RenderWidgetHost::ForwardMouseEvent(), the same function the macOS input
+stack calls, so Blink derives activation from real input instead of being told to
+assume it. There is no production ExecuteJavaScriptWithUserGesture() to use, and
+the ForTests spelling is rejected by the verify script's own no-bypass guard.
+
+The user-consent gate is untouched and still exercised: the native confirmation
+dialog is created, shown, and accepted through DialogDelegate::AcceptDialog().
+Two paths are made stricter, not looser -- the dialog must now match the widget
+name ExtensionUninstallDialog rather than being the first visible browser-owned
+dialog, and the resolved click point must hit-test to the remove button before
+any mouse event is sent at it.
+
+Bad-message renderer kill -- NOT fixed, only avoided. Disabling an extension
+mid-service-worker-start strands the replacement renderer outside ProcessMap
+permanently, and the browser later kills it for "Tried to manipulate an event
+listener for an unauthorized extension ID." This is an upstream Chromium race a
+developer can reach by toggling an extension off just after a reload, not a
+harness pacing artifact, and it is recorded as a product finding. The smoke now
+waits for activation to settle before disabling, which is the right precondition
+for a lifecycle driver independently of the bug, but closes nothing upstream.
+
+That wait took two attempts. Requiring only RenderProcessHost::IsReady() left the
+bad message in 10 of 12 runs and failed 8, because process readiness says nothing
+about whether the service worker inside it has started -- which is exactly what
+the disable was interrupting. Additionally requiring a started worker via
+ProcessManager::GetServiceWorkersForExtension() left it in 0 of 12 and failed 1,
+that one an unrelated BUS_ADRALN environment flake.
+
+Named failure reasons are retained rather than collapsed into timeouts: three
+bugs in this plan hid behind swallowed errors and surfaced only as silent
+bounded-wait expiries.
+
+Verified: verify-phase-22-extension-smoke.sh --focused, exit 0, static no-bypass
+guards passed, 26 bootstrap unit + 2 developer-private caller + 4 controller
+browser tests, zero retry/skip/failure, .ninja_log and .ninja_deps unchanged.
+---
+ chrome/browser/prometheus/BUILD.gn            |   2 +
+ .../prometheus_extension_smoke_browsertest.cc | 112 ++++--
+ .../prometheus_extension_smoke_controller.cc  | 336 ++++++++++++++++--
+ .../prometheus_extension_smoke_controller.h   |   7 +-
+ 4 files changed, 405 insertions(+), 52 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 159fa96dcfa62bb8ee290d38483e77fc6d586355..1f1b94446b4d0f5a9d15f71f86b9251b1250f286 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -689,8 +689,10 @@ source_set("prometheus_extension_smoke_controller") {
+     "//content/public/browser",
+     "//extensions/browser",
+     "//extensions/common",
++    "//third_party/blink/public/common",
+     "//ui/base",
+     "//ui/gfx",
++    "//ui/gfx/geometry",
+     "//ui/shell_dialogs",
+     "//ui/views",
+     "//url",
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc b/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
+index 9f7d3b1740168d6fcb7170610f75a8b7a441d27e..afacd40fc923c1dbca1dbd3d155b0bba5d9c1a5c 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
+@@ -11,6 +11,7 @@
+ #include "base/files/file_path.h"
+ #include "base/files/file_util.h"
+ #include "base/files/scoped_temp_dir.h"
++#include "base/json/json_reader.h"
+ #include "base/path_service.h"
+ #include "base/strings/strcat.h"
+ #include "base/strings/string_number_conversions.h"
+@@ -19,6 +20,7 @@
+ #include "base/test/test_timeouts.h"
+ #include "base/threading/thread_restrictions.h"
+ #include "base/time/time.h"
++#include "base/values.h"
+ #include "chrome/browser/extensions/api/developer_private/developer_private_functions.h"
+ #include "chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.h"
+ #include "chrome/browser/prometheus/prometheus_extension_smoke_controller.h"
+@@ -74,8 +76,8 @@ class PrometheusExtensionSmokeControllerBrowserTest
+     const std::string fixture_sha256 =
+         base::HexEncodeLower(crypto::hash::Sha256(manifest_contents));
+ 
+-    const base::FilePath result_path =
+-        scratch_dir_.GetPath().AppendASCII("smoke-result.json");
++    result_path_ = scratch_dir_.GetPath().AppendASCII("smoke-result.json");
++    const base::FilePath& result_path = result_path_;
+     const base::FilePath config_path =
+         scratch_dir_.GetPath().AppendASCII("smoke-config.json");
+     const std::string config_json = base::StrCat(
+@@ -112,29 +114,50 @@ class PrometheusExtensionSmokeControllerBrowserTest
+   }
+ 
+   base::ScopedTempDir scratch_dir_;
++  base::FilePath result_path_;
+ };
+ 
+-// PARTIAL GREEN (tracked, not yet complete -- see 22-05-SUMMARY.md "Known
+-// Stubs and Deferred Work"): the developer-private caller integration lands
+-// in this plan and is fully proven end to end here -- real chrome://
+-// extensions manager, real developer-mode toggle, the real Load-unpacked
+-// click through the one-shot chooser answering the developer-private-copied
+-// committed caller into the ordinary UnpackedInstaller path, real inspect
+-// (best-effort), a real native reload (unload+load) cycle, and -- since the
+-// stale-toggle-direction fix -- the real chrome.management.setEnabled() disable
+-// and re-enable clicks with both matching ExtensionRegistryObserver transitions
+-// observed.
++// The full native lifecycle, asserted end to end at kComplete: a real
++// chrome://extensions manager, the real developer-mode toggle, the real
++// Load-unpacked click through the one-shot chooser answering the
++// developer-private-copied committed caller into the ordinary UnpackedInstaller
++// path, a real inspect probe (best-effort), a real native reload (unload+load)
++// cycle, real chrome.management.setEnabled() disable and re-enable clicks with
++// both matching ExtensionRegistryObserver transitions observed, the local policy
++// Blocked/Read-only/Interact matrix against the real
++// PrometheusExtensionPolicyService, options routing plus service-worker
++// background denial, and a real mouse click on the item card's remove button
++// whose native uninstall confirmation dialog is accepted through the dialog's own
++// public accept action until OnExtensionUninstalled arrives.
+ //
+-// The assertion boundary is deliberately kEnabled rather than kComplete: the
+-// stages after it (local policy matrix / options routing / remove) are
+-// implemented and were observed to run in an instrumented session, but the
+-// options/remove stretch still trips two separate, unresolved defects -- a
+-// renderer terminated for the bad Mojo message "Tried to manipulate an event
+-// listener for an unauthorized extension ID." shortly after the rapid
+-// disable/enable churn plus options-tab open, and a remove click that reports
+-// success and accepts the native confirmation dialog without any
+-// OnExtensionUninstalled ever arriving. Asserting past kEnabled would make this
+-// test fail on those, not on this plan's own contract.
++// The boundary was raised from kEnabled once the two defects that previously
++// blocked the options/remove stretch were root-caused. They were resolved
++// differently, and the difference matters:
++//
++//   * The remove click was genuinely FIXED. chrome.management.uninstall() with
++//     showConfirmDialog requires user activation, which ExecuteJavaScript() does
++//     not convey, so the injected synthetic click was rejected outright and
++//     Service.deleteItem()'s bare .catch() swallowed the rejection. The click is
++//     now a real mouse event delivered through the same RenderWidgetHost entry
++//     point a real macOS mouse event arrives on, so Blink derives the activation
++//     from real input instead of being told to assume it. The user-consent gate
++//     is untouched: the native confirmation dialog is still created, still shown,
++//     and still accepted through its own public accept action.
++//
++//   * The bad-message renderer kill was NOT fixed, only AVOIDED. It is an
++//     upstream Chromium race -- disabling an extension mid-activation strands its
++//     replacement service-worker renderer outside ProcessMap permanently, and the
++//     browser later kills it for "Tried to manipulate an event listener for an
++//     unauthorized extension ID." A real developer can reach it by toggling an
++//     extension off just after a reload. See ExtensionActivationSettled() in
++//     prometheus_extension_smoke_controller.cc for the full mechanism and for why
++//     waiting for a settled activation is the right precondition for this smoke
++//     even though it closes nothing upstream. That race is tracked as a product
++//     finding; this test does not assert on it either way.
++//
++// The result record is asserted as well as the stage, so every individual
++// lifecycle fact the packaged smoke will consume -- not just the terminal stage
++// -- is covered here.
+ IN_PROC_BROWSER_TEST_F(PrometheusExtensionSmokeControllerBrowserTest,
+                        FullLifecycleInstallsInspectsAndReloads) {
+   std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap =
+@@ -148,13 +171,52 @@ IN_PROC_BROWSER_TEST_F(PrometheusExtensionSmokeControllerBrowserTest,
+   ASSERT_TRUE(controller);
+ 
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+-    return controller->stage_for_testing() >=
+-          PrometheusExtensionSmokeStage::kEnabled;
+-  })) << "smoke controller never reached kEnabled";
++    return controller->outcome_for_testing() !=
++          PrometheusExtensionSmokeOutcome::kRunning;
++  })) << "smoke controller never reached a terminal outcome";
+ 
+   EXPECT_FALSE(controller->extension_id_for_testing().empty());
++  EXPECT_EQ(PrometheusExtensionSmokeStage::kComplete,
++           controller->stage_for_testing());
++  EXPECT_EQ(PrometheusExtensionSmokeOutcome::kSucceeded,
++           controller->outcome_for_testing());
+ 
+   controller->Shutdown();
++
++  // The controller writes its terminal record before Shutdown(), so this reads
++  // the real 0600 result file the built app's smoke script will consume.
++  std::string result_json;
++  {
++    base::ScopedAllowBlockingForTesting allow_blocking;
++    ASSERT_TRUE(base::ReadFileToString(result_path_, &result_json));
++  }
++  const std::optional<base::Value> parsed =
++      base::JSONReader::Read(result_json, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(parsed && parsed->is_dict()) << result_json;
++  const base::DictValue& record = parsed->GetDict();
++
++  const std::string* stage = record.FindString("stage");
++  ASSERT_TRUE(stage);
++  EXPECT_EQ("complete", *stage) << result_json;
++  const std::string* outcome = record.FindString("outcome");
++  ASSERT_TRUE(outcome);
++  EXPECT_EQ("succeeded", *outcome) << result_json;
++  const std::string* reason = record.FindString("reason");
++  ASSERT_TRUE(reason);
++  EXPECT_EQ("ok", *reason) << result_json;
++
++  EXPECT_EQ(1, record.FindInt("schema_version").value_or(0));
++  EXPECT_GE(record.FindInt("reload_transitions_seen").value_or(0), 1);
++  EXPECT_TRUE(record.FindBool("inspected").value_or(false));
++  // Meaningful only now that the policy stage waits for the extension to be
++  // registry-ready: PrometheusExtensionPolicyService::GetEffectiveGrant()
++  // clamps to kBlocked for a not-yet-ready extension, so before that wait
++  // existed this field was true for the wrong reason.
++  EXPECT_TRUE(record.FindBool("policy_default_blocked").value_or(false));
++  EXPECT_TRUE(record.FindBool("policy_read_only_applied").value_or(false));
++  EXPECT_TRUE(record.FindBool("policy_interact_applied").value_or(false));
++  EXPECT_TRUE(record.FindBool("options_routing_visible").value_or(false));
++  EXPECT_TRUE(record.FindBool("background_denied").value_or(false));
+ }
+ 
+ // Create() must reject an OTR profile/browser pairing before ever touching
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+index 7d913ff39218c183026ddb408d8787826f55baaf..f81d74ca0c5b7dde5575bd293f3e6067972271ff 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+@@ -29,14 +29,23 @@
+ #include "chrome/common/webui_url_constants.h"
+ #include "chrome/grit/generated_resources.h"
+ #include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/render_process_host.h"
++#include "content/public/browser/render_widget_host.h"
+ #include "content/public/browser/visibility.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/browser/web_contents_observer.h"
+ #include "extensions/browser/extension_registry.h"
+ #include "extensions/browser/extension_system.h"
++#include "extensions/browser/process_manager.h"
++#include "extensions/browser/process_map.h"
++#include "extensions/browser/service_worker/worker_id.h"
+ #include "extensions/common/extension.h"
++#include "third_party/blink/public/common/input/web_input_event.h"
++#include "third_party/blink/public/common/input/web_mouse_event.h"
+ #include "ui/base/l10n/l10n_util.h"
+ #include "ui/base/page_transition_types.h"
++#include "ui/gfx/geometry/point.h"
++#include "ui/gfx/geometry/rect.h"
+ #include "ui/shell_dialogs/select_file_dialog_factory.h"
+ #include "ui/shell_dialogs/select_file_policy.h"
+ #include "ui/shell_dialogs/selected_file_info.h"
+@@ -57,8 +66,134 @@ constexpr base::TimeDelta kItemRenderedTimeout = base::Seconds(10);
+ constexpr base::TimeDelta kToggleActionableTimeout = base::Seconds(10);
+ constexpr base::TimeDelta kTransitionObservedTimeout = base::Seconds(20);
+ constexpr base::TimeDelta kExtensionReadyTimeout = base::Seconds(15);
++constexpr base::TimeDelta kActivationSettledTimeout = base::Seconds(15);
++constexpr base::TimeDelta kRemoveButtonActionableTimeout = base::Seconds(10);
+ constexpr base::TimeDelta kRemoveConfirmationTimeout = base::Seconds(10);
+ 
++// Widget name of the real native uninstall confirmation dialog. Set as the
++// ui::DialogModel internal name in
++// chrome/browser/ui/extensions/extension_uninstall_dialog_impl.cc
++// (`dialog_builder.SetInternalName("ExtensionUninstallDialog")`), which
++// views::BubbleDialogModelHost copies into its WidgetDelegate and which
++// views::Widget::Init() then copies into Widget::InitParams::name.
++constexpr char kUninstallDialogWidgetName[] = "ExtensionUninstallDialog";
++
++// Returns true once the extension's activation has settled at the *process*
++// level, not merely at the registry-notification level: the registry reports it
++// ready, it owns at least one renderer process, and every renderer process
++// ProcessMap attributes to it has finished launching.
++//
++// This gates the disable click. Disabling an extension whose background
++// service-worker process is still launching aborts that in-flight start, and the
++// service worker context then restarts the worker in a brand new renderer
++// process. If that replacement process is allocated while the extension is
++// disabled, ChromeContentBrowserClientExtensionsPart::
++// SiteInstanceGotProcessAndSite() returns before ProcessMap::Insert() because
++// GetEnabledExtensionFromSecurityPrincipal() finds no *enabled* extension -- and
++// nothing ever inserts retroactively, since ProcessMap::Insert() has exactly
++// that one caller and ProcessMap::Remove() runs only from
++// ExtensionService::RenderProcessHostDestroyed(). Once the extension is
++// re-enabled, that permanently unmapped process finishes launching and its
++// service worker registers its listeners, at which point
++// EventRouter::ValidateServiceWorkerListenerForExtension() no longer suppresses
++// the message (ShouldIgnoreListenerMessageForUnloadedExtension() suppresses only
++// while the extension is disabled) and
++// IsProcessAuthorizedForExtensionProcessListener() fails, so the browser kills
++// the renderer for the bad Mojo message "Tried to manipulate an event listener
++// for an unauthorized extension ID."
++//
++// Observed directly (Phase 22 Plan 22-05 instrumented runs). Without this wait
++// the disable click landed 173 ms before the extension's process became ready;
++// that process was destroyed 20 ms later, its replacement was created 0.8 ms
++// after that and 12 ms *before* the re-enable with the enabled-extension set
++// empty at that instant, never appeared in ProcessMap at any later snapshot, was
++// confirmed to host chrome-extension://<id>/service_worker.js, and was
++// terminated with status=2 exit_code=3 (RESULT_CODE_KILLED_BAD_MESSAGE). With
++// this wait the replacement process is instead created while the extension is
++// enabled, is present in ProcessMap, and no bad message occurs.
++//
++// Measured, not assumed. Over 12 consecutive direct runs of
++// FullLifecycleInstallsInspectsAndReloads: waiting only for process readiness
++// left the bad message in 10 runs and failed 8; additionally waiting for the
++// service worker to have actually started (below) left it in 0 and failed 1,
++// that one being an unrelated BUS_ADRALN environment flake on a base:: thread.
++//
++// IMPORTANT -- what this wait is and is not. It is NOT a fix for that race, and
++// the race is NOT an artifact of this harness driving faster than a user. Every
++// link in the chain above is ordinary product code reached by an ordinary
++// sequence of user actions, the vulnerable window is the extension renderer's
++// whole launch (562 ms as measured here, longer on slower or colder machines),
++// and the resulting ProcessMap omission is permanent for that process's lifetime
++// because nothing re-runs SiteInstanceGotProcessAndSite() when an extension
++// later becomes enabled. A developer who reloads an unpacked extension and
++// toggles it off before its service worker has finished starting can reach it,
++// and the visible effect is the browser killing that extension's background
++// service worker as if it were hostile. That is an upstream Chromium defect and
++// is recorded as a product finding, not closed by this wait.
++//
++// What this wait legitimately buys is a correct *precondition* for the smoke:
++// the lifecycle contract under test is install/inspect/reload/disable/enable/
++// policy/options/remove, and a driver asserting that contract should disable an
++// extension whose activation it has actually confirmed rather than one caught
++// mid-activation. Waiting for a settled precondition is what a correct driver
++// does regardless of the upstream bug; it keeps this smoke scoped to its own
++// contract instead of doubling as a regression test for an unrelated race.
++bool ExtensionActivationSettled(Profile* profile,
++                                const std::string& extension_id) {
++  extensions::ExtensionRegistry* registry =
++      extensions::ExtensionRegistry::Get(profile);
++  extensions::ExtensionSystem* system =
++      extensions::ExtensionSystem::Get(profile);
++  if (!registry || !system || !system->is_ready() ||
++      !registry->ready_extensions().Contains(extension_id)) {
++    return false;
++  }
++  extensions::ProcessMap* process_map = extensions::ProcessMap::Get(profile);
++  if (!process_map || !process_map->ExtensionHasProcess(extension_id)) {
++    return false;
++  }
++  for (content::RenderProcessHost::iterator it =
++           content::RenderProcessHost::AllHostsIterator();
++       !it.IsAtEnd(); it.Advance()) {
++    content::RenderProcessHost* host = it.GetCurrentValue();
++    if (process_map->Contains(extension_id, host->GetID()) &&
++        !host->IsReady()) {
++      return false;
++    }
++  }
++  // Process readiness alone is NOT sufficient, and assuming it was is what made
++  // the first version of this wait ineffective (bad message still reproduced in
++  // 10 of 12 runs). RenderProcessHost::IsReady() means the process launched and
++  // its channel connected -- it says nothing about whether the extension's
++  // background service worker has finished starting inside it. The window this
++  // wait exists to close is precisely an *in-flight service-worker start* being
++  // aborted by the disable, so the predicate has to observe the worker itself.
++  //
++  // ProcessManager registers a WorkerId only once the worker has actually
++  // started, so a non-empty GetServiceWorkersForExtension() is the direct
++  // signal. Require its host to be live, ready, and ProcessMap-attributed too,
++  // so a worker registered against a still-launching process does not count.
++  extensions::ProcessManager* process_manager =
++      extensions::ProcessManager::Get(profile);
++  if (!process_manager) {
++    return false;
++  }
++  const std::vector<extensions::WorkerId> workers =
++      process_manager->GetServiceWorkersForExtension(extension_id);
++  if (workers.empty()) {
++    return false;
++  }
++  for (const extensions::WorkerId& worker : workers) {
++    content::RenderProcessHost* host =
++        content::RenderProcessHost::FromID(worker.render_process_id);
++    if (!host || !host->IsInitializedAndNotDead() || !host->IsReady() ||
++        !process_map->Contains(extension_id, worker.render_process_id)) {
++      return false;
++    }
++  }
++  return true;
++}
++
+ bool IsWellFormedExtensionId(const std::string& id) {
+   if (id.size() != 32) {
+     return false;
+@@ -220,16 +355,60 @@ std::string EnableToggleClickScript(const std::string& extension_id,
+         "})()";
+ }
+ 
+-std::string RemoveClickScript(const std::string& extension_id) {
++// Resolves the item card's `#removeButton` to a real, currently-hittable
++// viewport point, so the remove step can drive it with a real mouse press and
++// release instead of an injected synthetic DOM click.
++//
++// Remove is the one lifecycle action that genuinely requires user activation.
++// `Service.deleteItem()` calls
++// `chrome.management.uninstall(id, {showConfirmDialog: true})`, and
++// ManagementUninstallFunctionBase::Uninstall() answers
++// `Error(kGestureNeededForUninstallError)` when
++// `show_confirm_dialog && !user_gesture()` -- which for a chrome://extensions
++// caller is unconditional, because `extension()` is null there so
++// `self_uninstall` is false and `show_confirm_dialog |= !self_uninstall` forces
++// the flag on. content::RenderFrameHost::ExecuteJavaScript() conveys no user
++// activation, so an injected `button.click()` is an untrusted click, the
++// uninstall never starts, and `Service.deleteItem()`'s bare
++// `.catch(_ => {})` swallows the rejection -- which is exactly why this looked
++// like a silent success for a full plan cycle.
++//
++// Observed directly (Phase 22 Plan 22-05 instrumented run): the same
++// `chrome.management.uninstall()` call issued from the manager context alongside
++// the injected click rejected with "chrome.management.uninstall requires a user
++// gesture." on every one of ~50 attempts, and no uninstall confirmation dialog
++// widget was ever created.
++//
++// A real mouse press and release routed through
++// content::RenderWidgetHost::ForwardMouseEvent() is how a real user's click
++// enters Blink, and Blink derives the transient user activation from that real
++// input event rather than being told to assume it. The actual user-consent gate
++// -- the native uninstall confirmation dialog -- is untouched and must still be
++// accepted through its own real accept action.
++std::string RemoveButtonPointScript(const std::string& extension_id) {
+   return "(function(){"
+         "var item=" +
+         ItemQueryExpression(extension_id) +
+         ";"
+-        "if(!item||!item.shadowRoot)return 'missing_item';"
++        "if(!item||!item.shadowRoot)return {status:'missing_item'};"
+         "var button=item.shadowRoot.querySelector('#removeButton');"
+-        "if(!button)return 'missing_button';"
+-        "button.click();"
+-        "return 'clicked';"
++        "if(!button)return {status:'missing_button'};"
++        "if(button.hidden||button.disabled)"
++        "return {status:'button_not_actionable'};"
++        "button.scrollIntoView({block:'center',inline:'center'});"
++        "var rect=button.getBoundingClientRect();"
++        "if(!(rect.width>0&&rect.height>0))"
++        "return {status:'button_not_laid_out'};"
++        "var x=Math.floor(rect.left+rect.width/2);"
++        "var y=Math.floor(rect.top+rect.height/2);"
++        "if(x<0||y<0||x>=window.innerWidth||y>=window.innerHeight)"
++        "return {status:'button_off_screen'};"
++        // Confirm the resolved point really hit-tests to the remove button
++        // before any real mouse event is sent at it, so a mis-resolved point can
++        // never silently click some other control.
++        "if(item.shadowRoot.elementFromPoint(x,y)!==button)"
++        "return {status:'button_not_hittable'};"
++        "return {status:'ok',x:x,y:y};"
+         "})()";
+ }
+ 
+@@ -237,13 +416,20 @@ std::string ResultValueOrEmpty(const base::Value& value) {
+   return value.is_string() ? value.GetString() : std::string();
+ }
+ 
+-// Finds the single visible dialog widget owned by `browser`'s window (the
+-// native chrome.management.uninstall() confirmation) and presses its real,
+-// public DialogDelegate::AcceptDialog() accept action -- the same call the
+-// dialog's own OK button issues. This never bypasses, hides, or auto-answers
+-// the dialog before it exists: it only presses the already-shown dialog's
+-// real accept control.
+-bool TryAcceptVisibleBrowserOwnedDialog(Browser* browser) {
++// Finds the visible native chrome.management.uninstall() confirmation dialog
++// owned by `browser`'s window -- identified by the widget name the uninstall
++// dialog itself publishes, never merely by being the first visible dialog -- and
++// presses its real, public DialogDelegate::AcceptDialog() accept action, the same
++// call the dialog's own OK button issues. This never bypasses, hides, or
++// auto-answers the dialog before it exists: it only presses the already-shown
++// dialog's real accept control.
++//
++// The name match matters. A browser window legitimately owns other visible
++// DialogDelegate widgets, so accepting the first one found would report success
++// while uninstalling nothing -- and a stricter identification is what turns a
++// silent false positive into an explicit
++// `remove_confirmation_dialog_not_found` failure.
++bool TryAcceptVisibleUninstallConfirmationDialog(Browser* browser) {
+   if (!browser || !browser->window()) {
+     return false;
+   }
+@@ -260,7 +446,7 @@ bool TryAcceptVisibleBrowserOwnedDialog(Browser* browser) {
+     views::WidgetDelegate* delegate = owned->widget_delegate();
+     views::DialogDelegate* dialog =
+         delegate ? delegate->AsDialogDelegate() : nullptr;
+-    if (dialog) {
++    if (dialog && owned->GetName() == kUninstallDialogWidgetName) {
+       dialog->AcceptDialog();
+       return true;
+     }
+@@ -522,7 +708,13 @@ void PrometheusExtensionSmokeController::OnExtensionLoaded(
+     awaiting_reload_reload_ = false;
+     ++reload_transitions_seen_;
+     stage_ = PrometheusExtensionSmokeStage::kReloaded;
+-    ClickDisableToggle(base::TimeTicks::Now() + kToggleActionableTimeout);
++    // Do not disable straight out of this notification. The reload's activation
++    // is still spinning up the extension's background service worker, and
++    // interrupting that in-flight start is what produces a replacement renderer
++    // that is permanently absent from ProcessMap and later killed for a bad Mojo
++    // message -- see ExtensionActivationSettled().
++    PollExtensionActivationSettled(base::TimeTicks::Now() +
++                                   kActivationSettledTimeout);
+     return;
+   }
+   if (pending_transition_ == PrometheusExtensionSmokePendingTransition::kEnable) {
+@@ -874,6 +1066,28 @@ void PrometheusExtensionSmokeController::OnReloadClickIssued(
+                              "reload_not_observed_timeout");
+ }
+ 
++void PrometheusExtensionSmokeController::PollExtensionActivationSettled(
++    base::TimeTicks deadline) {
++  if (shutdown_ || outcome_ != PrometheusExtensionSmokeOutcome::kRunning ||
++      stage_ != PrometheusExtensionSmokeStage::kReloaded) {
++    return;
++  }
++  if (ExtensionActivationSettled(profile_.get(), extension_id_)) {
++    ClickDisableToggle(base::TimeTicks::Now() + kToggleActionableTimeout);
++    return;
++  }
++  if (base::TimeTicks::Now() >= deadline) {
++    Fail(stage_, "extension_activation_not_settled_timeout");
++    return;
++  }
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++      FROM_HERE,
++      base::BindOnce(
++          &PrometheusExtensionSmokeController::PollExtensionActivationSettled,
++          weak_ptr_factory_.GetWeakPtr(), deadline),
++      kPollInterval);
++}
++
+ void PrometheusExtensionSmokeController::ClickDisableToggle(
+     base::TimeTicks deadline) {
+   if (!IsWellFormedExtensionId(extension_id_)) {
+@@ -1116,26 +1330,96 @@ void PrometheusExtensionSmokeController::ClickRemove() {
+     return;
+   }
+   pending_transition_ = PrometheusExtensionSmokePendingTransition::kRemove;
++  ResolveRemoveButtonPoint(base::TimeTicks::Now() +
++                           kRemoveButtonActionableTimeout);
++}
++
++void PrometheusExtensionSmokeController::ResolveRemoveButtonPoint(
++    base::TimeTicks deadline) {
++  if (pending_transition_ != PrometheusExtensionSmokePendingTransition::kRemove) {
++    return;
++  }
++  if (!IsWellFormedExtensionId(extension_id_)) {
++    Fail(stage_, "invalid_extension_id");
++    return;
++  }
+   ExecuteInManager(
+-      RemoveClickScript(extension_id_),
+-      base::BindOnce(&PrometheusExtensionSmokeController::OnRemoveClickIssued,
+-                     weak_ptr_factory_.GetWeakPtr()));
++      RemoveButtonPointScript(extension_id_),
++      base::BindOnce(
++          &PrometheusExtensionSmokeController::OnRemoveButtonPointResolved,
++          weak_ptr_factory_.GetWeakPtr(), deadline));
+ }
+ 
+-void PrometheusExtensionSmokeController::OnRemoveClickIssued(
++void PrometheusExtensionSmokeController::OnRemoveButtonPointResolved(
++    base::TimeTicks deadline,
+     base::Value result) {
+   if (pending_transition_ != PrometheusExtensionSmokePendingTransition::kRemove) {
+     return;
+   }
+-  const std::string status = ResultValueOrEmpty(result);
+-  if (status != "clicked") {
+-    Fail(stage_, "remove_click_failed:" + status);
++  const base::DictValue* point = result.GetIfDict();
++  const std::string* status = point ? point->FindString("status") : nullptr;
++  const std::optional<int> x = point ? point->FindInt("x") : std::nullopt;
++  const std::optional<int> y = point ? point->FindInt("y") : std::nullopt;
++  if (status && *status == "ok" && x && y) {
++    // Arm the observed-transition timeout immediately before the real click,
++    // never in a completion callback: the click is dispatched synchronously from
++    // this process, so the timeout is guaranteed armed before any
++    // ExtensionRegistry notification it produces can arrive.
++    ArmPendingTransitionTimeout(kTransitionObservedTimeout,
++                               "remove_not_observed_timeout");
++    DispatchRealMouseClick(gfx::Point(*x, *y));
++    PollRemoveConfirmationReady(base::TimeTicks::Now() +
++                               kRemoveConfirmationTimeout);
++    return;
++  }
++  // The card, its remove button, and that button's layout each settle through
++  // independent Lit update passes after the WebUI's own developerPrivate round
++  // trip, so treat every not-yet-actionable shape as a bounded transient rather
++  // than a hard failure -- the same pattern the item-render and toggle-state
++  // polls already use. A permanent one still fails explicitly, naming the
++  // precise shape that never resolved.
++  if (base::TimeTicks::Now() < deadline) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++        FROM_HERE,
++        base::BindOnce(
++            &PrometheusExtensionSmokeController::ResolveRemoveButtonPoint,
++            weak_ptr_factory_.GetWeakPtr(), deadline),
++        kPollInterval);
+     return;
+   }
+-  ArmPendingTransitionTimeout(kTransitionObservedTimeout,
+-                             "remove_not_observed_timeout");
+-  PollRemoveConfirmationReady(base::TimeTicks::Now() +
+-                             kRemoveConfirmationTimeout);
++  Fail(stage_, "remove_button_not_actionable:" +
++                   (status ? *status : std::string("no_result")));
++}
++
++void PrometheusExtensionSmokeController::DispatchRealMouseClick(
++    const gfx::Point& point_in_viewport) {
++  content::WebContents* contents = ManagerWebContents();
++  if (!contents || !contents->GetPrimaryMainFrame()) {
++    Fail(stage_, "manager_tab_lost");
++    return;
++  }
++  content::RenderWidgetHost* widget =
++      contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
++  if (!widget) {
++    Fail(stage_, "manager_widget_unavailable");
++    return;
++  }
++  const gfx::Rect container = contents->GetContainerBounds();
++  const auto forward = [&](blink::WebInputEvent::Type type) {
++    blink::WebMouseEvent event(type, blink::WebInputEvent::kNoModifiers,
++                               base::TimeTicks::Now());
++    const bool is_move = type == blink::WebInputEvent::Type::kMouseMove;
++    event.button = is_move ? blink::WebMouseEvent::Button::kNoButton
++                           : blink::WebMouseEvent::Button::kLeft;
++    event.click_count = is_move ? 0 : 1;
++    event.SetPositionInWidget(point_in_viewport.x(), point_in_viewport.y());
++    event.SetPositionInScreen(point_in_viewport.x() + container.x(),
++                              point_in_viewport.y() + container.y());
++    widget->ForwardMouseEvent(event);
++  };
++  forward(blink::WebInputEvent::Type::kMouseMove);
++  forward(blink::WebInputEvent::Type::kMouseDown);
++  forward(blink::WebInputEvent::Type::kMouseUp);
+ }
+ 
+ void PrometheusExtensionSmokeController::PollRemoveConfirmationReady(
+@@ -1143,7 +1427,7 @@ void PrometheusExtensionSmokeController::PollRemoveConfirmationReady(
+   if (pending_transition_ != PrometheusExtensionSmokePendingTransition::kRemove) {
+     return;
+   }
+-  if (TryAcceptVisibleBrowserOwnedDialog(browser_.get())) {
++  if (TryAcceptVisibleUninstallConfirmationDialog(browser_.get())) {
+     return;
+   }
+   if (base::TimeTicks::Now() >= deadline) {
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_controller.h b/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
+index e2ac97be8fc66c6f92e714d20334996fde21feaa..d0ea72ef3460f93df6e799723c5d6b86161a684a 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
+@@ -19,6 +19,7 @@
+ #include "chrome/browser/prometheus/prometheus_extension_smoke_bootstrap.h"
+ #include "extensions/browser/extension_registry_observer.h"
+ #include "extensions/browser/uninstall_reason.h"
++#include "ui/gfx/geometry/point.h"
+ #include "ui/gfx/native_ui_types.h"
+ #include "url/gurl.h"
+ 
+@@ -157,6 +158,7 @@ class PrometheusExtensionSmokeController
+   void OnInspectAttempted(base::Value result);
+   void ClickReload();
+   void OnReloadClickIssued(base::Value result);
++  void PollExtensionActivationSettled(base::TimeTicks deadline);
+   void ClickDisableToggle(base::TimeTicks deadline);
+   void OnDisableClickIssued(base::TimeTicks deadline, base::Value result);
+   void ClickEnableToggle(base::TimeTicks deadline);
+@@ -167,7 +169,10 @@ class PrometheusExtensionSmokeController
+   void OnOptionsTabWatcherFired();
+   void CheckOptionsRoutingAndBackgroundDenial();
+   void ClickRemove();
+-  void OnRemoveClickIssued(base::Value result);
++  void ResolveRemoveButtonPoint(base::TimeTicks deadline);
++  void OnRemoveButtonPointResolved(base::TimeTicks deadline,
++                                   base::Value result);
++  void DispatchRealMouseClick(const gfx::Point& point_in_viewport);
+   void PollRemoveConfirmationReady(base::TimeTicks deadline);
+   void OnExtensionRemovedObserved();
+   void Complete();

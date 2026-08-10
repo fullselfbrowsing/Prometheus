@@ -73,6 +73,7 @@ BOOTSTRAP_OBJECT='obj/chrome/browser/prometheus/prometheus_extension_smoke_boots
 CONTROLLER_OBJECT='obj/chrome/browser/prometheus/prometheus_extension_smoke_controller/prometheus_extension_smoke_controller.o'
 MAIN_EXTRA_PARTS_OBJECT='obj/chrome/browser/prometheus/prometheus_browser_main_extra_parts/prometheus_browser_main_extra_parts.o'
 OLD_MAIN_EXTRA_PARTS_OBJECT='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_browser_main_extra_parts.o'
+CHROME_BROWSER_MAIN_OBJECT='obj/chrome/browser/core/chrome_browser_main.o'
 BOOTSTRAP_TEST_OBJECT='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_extension_smoke_bootstrap_unittest.o'
 BROWSERTEST_OBJECT='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_extension_smoke_browsertest.o'
 DEVELOPER_PRIVATE_UNITTEST_OBJECT='obj/chrome/browser/extensions/unit_tests/developer_private_api_unittest.o'
@@ -351,6 +352,7 @@ build_focused_binary() {
     "${BROWSERTEST_TEMPLATE}" "${BROWSERTEST_OBJECT}" \
     prometheus_page_adapter_browsertest prometheus_extension_smoke_browsertest
   compile_direct_object "${DEVELOPER_PRIVATE_UNITTEST_OBJECT}"
+  compile_direct_object "${CHROME_BROWSER_MAIN_OBJECT}"
 
   build_focused_response
   local object
