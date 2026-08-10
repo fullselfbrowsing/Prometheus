@@ -184,8 +184,16 @@ query_compile_command() {
 compile_exact_object() {
   local object="$1"
   local command
-  command="$(query_compile_command "${object}")"
+  note "compiling ${object}"
+  command="$(query_compile_command "${object}")" \
+    || fail "compile command query failed for ${object}"
   [[ -n "${command}" ]] || fail "compile command not found for ${object}"
+  # The reviewed Siso graph predates the direct //components/tabs:public dep
+  # on prometheus_agent_route. Supply Skia's exported include root while the
+  # source-owned BUILD.gn fix remains intentionally ungenerated.
+  if [[ "${command}" != *" -I../../third_party/skia"* ]]; then
+    command="${command/ -o ${object}/ -I../../third_party/skia -o ${object}}"
+  fi
   mkdir -p "${OUT_DIR}/$(dirname "${object}")"
   (
     cd "${OUT_DIR}"
@@ -202,9 +210,14 @@ compile_synthesized_object() {
   local template_stem="$3"
   local target_stem="$4"
   local command
-  command="$(query_compile_command "${template_object}")"
+  note "compiling ${object} from ${template_object}"
+  command="$(query_compile_command "${template_object}")" \
+    || fail "compile template query failed for ${template_object}"
   [[ -n "${command}" ]] || fail "compile template not found for ${template_object}"
   command="${command//${template_stem}/${target_stem}}"
+  if [[ "${command}" != *" -I../../third_party/skia"* ]]; then
+    command="${command/ -o ${object}/ -I../../third_party/skia -o ${object}}"
+  fi
   [[ "${command}" == *" -o ${object}"* ]] \
     || fail "synthesized command does not produce ${object}"
   mkdir -p "${OUT_DIR}/$(dirname "${object}")"
@@ -256,6 +269,7 @@ build_focused_binary() {
   local policy_service='obj/chrome/browser/prometheus/prometheus_extension_policy_service/prometheus_extension_policy_service.o'
   local policy_factory='obj/chrome/browser/prometheus/prometheus_extension_policy_service/prometheus_extension_policy_service_factory.o'
   local policy_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_extension_policy_service_unittest.o'
+  local compatibility_catalog='obj/chrome/browser/prometheus/prometheus_extension_compatibility_catalog/prometheus_extension_compatibility_catalog.o'
   local route='obj/chrome/browser/prometheus/prometheus_agent_route/prometheus_agent_route.o'
   local route_test='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_route_unittest.o'
   local codec='obj/chrome/browser/prometheus/prometheus_agent_transport_codec/prometheus_agent_transport_codec.o'
@@ -282,6 +296,7 @@ build_focused_binary() {
   local side_panel_coordinator='obj/chrome/browser/ui/views/side_panel/side_panel/extension_side_panel_coordinator.o'
   local side_panel_manager='obj/chrome/browser/ui/views/side_panel/side_panel/extension_side_panel_manager.o'
   local browser_prefs='obj/chrome/browser/prefs/impl/browser_prefs.o'
+  local chrome_browser_main='obj/chrome/browser/core/chrome_browser_main.o'
   local extras=(
     obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o
     obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o
@@ -293,6 +308,8 @@ build_focused_binary() {
     obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_supervision_profile_service_factory.o
     obj/chrome/browser/prometheus/prometheus_supervision_capture_hub/prometheus_supervision_capture_hub.o
     obj/chrome/browser/prometheus/prometheus_supervision_action_controller/prometheus_supervision_action_controller.o
+    obj/chrome/browser/prometheus/prometheus_extension_smoke_bootstrap/prometheus_extension_smoke_bootstrap.o
+    obj/chrome/browser/prometheus/prometheus_extension_smoke_controller/prometheus_extension_smoke_controller.o
     obj/third_party/blink/public/mojom/mojom_platform/prometheus_supervision_document.mojom.o
     obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/prometheus_supervision_document.mojom-shared.o
     "${policy_types}"
@@ -300,6 +317,7 @@ build_focused_binary() {
     "${policy_service}"
     "${policy_factory}"
     "${policy_test}"
+    "${compatibility_catalog}"
     "${route_test}"
     "${codec_test}"
     "${surface_resolver}"
@@ -324,6 +342,8 @@ build_focused_binary() {
   compile_synthesized_object "${runtime_test}" "${policy_test}" \
     prometheus_runtime_profile_service_unittest \
     prometheus_extension_policy_service_unittest
+  compile_synthesized_object "${runtime_types}" "${compatibility_catalog}" \
+    prometheus_runtime_types prometheus_extension_compatibility_catalog
   compile_exact_object "${route}"
   compile_exact_object "${codec}"
   compile_exact_object "${route_test}"
@@ -366,6 +386,7 @@ build_focused_binary() {
   compile_exact_object "${side_panel_coordinator}"
   compile_exact_object "${side_panel_manager}"
   compile_exact_object "${browser_prefs}"
+  compile_exact_object "${chrome_browser_main}"
 
   local extra
   for extra in "${extras[@]}"; do
@@ -467,11 +488,11 @@ verify_extension_dispatch_static_contract() {
   local action_dispatcher="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_page_action_dispatcher.cc"
   local element_reader="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_page_element_reader.cc"
 
-  rg -q 'SchemeIsHTTPOrHTTPS\\(\\)' "${page_adapter}" \
+  rg -q 'SchemeIsHTTPOrHTTPS\(\)' "${page_adapter}" \
     || fail 'ordinary page adapter no longer has an HTTP(S)-only boundary'
   rg -q 'GetEffectiveGrant' "${adapter}" \
     || fail 'extension adapter does not re-read the effective grant'
-  rg -q 'resolver\\.Resolve' "${adapter}" \
+  rg -q 'resolver\.Resolve' "${adapter}" \
     || fail 'extension adapter does not re-resolve browser-owned state'
   rg -q 'DispatchValidationCallback' "${action_dispatcher}" \
     || fail 'extension actions lack an immediate pre-mutation validator'

@@ -276,6 +276,7 @@ run_direct_build() {
   local catalog='obj/chrome/browser/prometheus/prometheus_extension_compatibility_catalog/prometheus_extension_compatibility_catalog.o'
   local browser_composition='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_browser_main_extra_parts.o'
   local profiles_factories='obj/chrome/browser/profiles/profiles_extra_parts_impl/chrome_browser_main_extra_parts_profiles.o'
+  local chrome_browser_main='obj/chrome/browser/core/chrome_browser_main.o'
   local extras=(
     obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o
     obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o
@@ -293,6 +294,8 @@ run_direct_build() {
     obj/chrome/browser/prometheus/prometheus_extension_policy_prefs/prometheus_extension_policy_prefs.o
     obj/chrome/browser/prometheus/prometheus_extension_policy_service/prometheus_extension_policy_service.o
     obj/chrome/browser/prometheus/prometheus_extension_policy_service/prometheus_extension_policy_service_factory.o
+    obj/chrome/browser/prometheus/prometheus_extension_smoke_bootstrap/prometheus_extension_smoke_bootstrap.o
+    obj/chrome/browser/prometheus/prometheus_extension_smoke_controller/prometheus_extension_smoke_controller.o
     "${catalog}"
     obj/chrome/browser/prometheus/prometheus_extension_surface_resolver/prometheus_extension_surface_resolver.o
     obj/chrome/browser/prometheus/prometheus_extension_page_adapter/prometheus_extension_page_adapter.o
@@ -320,6 +323,7 @@ run_direct_build() {
   compile_exact_object "${runtime_dialogs}"
   compile_exact_object "${browser_composition}"
   compile_exact_object "${profiles_factories}"
+  compile_exact_object "${chrome_browser_main}"
   compile_exact_object "${browser_test}"
   build_and_install_focused_resources
 

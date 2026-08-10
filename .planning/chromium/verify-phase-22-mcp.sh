@@ -187,6 +187,8 @@ build_focused_binary() {
   local policy_prefs='obj/chrome/browser/prometheus/prometheus_extension_policy_prefs/prometheus_extension_policy_prefs.o'
   local policy_service='obj/chrome/browser/prometheus/prometheus_extension_policy_service/prometheus_extension_policy_service.o'
   local policy_factory='obj/chrome/browser/prometheus/prometheus_extension_policy_service/prometheus_extension_policy_service_factory.o'
+  local catalog='obj/chrome/browser/prometheus/prometheus_extension_compatibility_catalog/prometheus_extension_compatibility_catalog.o'
+  local chrome_browser_main='obj/chrome/browser/core/chrome_browser_main.o'
   local objects=(
     "${gateway}"
     "${gateway_test}"
@@ -195,6 +197,8 @@ build_focused_binary() {
     "${policy_prefs}"
     "${policy_service}"
     "${policy_factory}"
+    "${catalog}"
+    "${chrome_browser_main}"
   )
   local link_extras=(
     obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o
@@ -207,6 +211,8 @@ build_focused_binary() {
     obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_supervision_profile_service_factory.o
     obj/chrome/browser/prometheus/prometheus_supervision_capture_hub/prometheus_supervision_capture_hub.o
     obj/chrome/browser/prometheus/prometheus_supervision_action_controller/prometheus_supervision_action_controller.o
+    obj/chrome/browser/prometheus/prometheus_extension_smoke_bootstrap/prometheus_extension_smoke_bootstrap.o
+    obj/chrome/browser/prometheus/prometheus_extension_smoke_controller/prometheus_extension_smoke_controller.o
     obj/chrome/browser/prometheus/prometheus_extension_surface_resolver/prometheus_extension_surface_resolver.o
     obj/chrome/browser/prometheus/prometheus_extension_page_adapter/prometheus_extension_page_adapter.o
     obj/third_party/blink/public/mojom/mojom_platform/prometheus_supervision_document.mojom.o
@@ -225,6 +231,9 @@ build_focused_binary() {
     prometheus_runtime_profile_service prometheus_extension_policy_service
   compile_synthesized_object "${runtime_factory}" "${policy_factory}" \
     prometheus_runtime_profile_service prometheus_extension_policy_service
+  compile_synthesized_object "${runtime_types}" "${catalog}" \
+    prometheus_runtime_types prometheus_extension_compatibility_catalog
+  compile_exact_object "${chrome_browser_main}"
   build_focused_response
   local object
   for object in "${objects[@]}"; do
@@ -305,8 +314,7 @@ run_native_tests() {
   local status
   set +e
   "${BINARY}" --gtest_filter="${NATIVE_FILTER}" \
-    --test-launcher-jobs=1 \
-    --test-launcher-retry-limit=0 \
+    --single-process-tests \
     >"${TEST_LOG}" 2>&1
   status="$?"
   set -e
@@ -339,9 +347,7 @@ run_native_tests() {
     tail -n 180 "${TEST_LOG}" >&2 || true
     fail "native/browser focused suite failed with status ${status}"
   }
-  rg -q 'SUCCESS: all tests passed\.' "${TEST_LOG}" ||
-    fail 'native/browser focused suite lacks launcher success marker'
-  rg -q '\[2/2\]' "${TEST_LOG}" ||
+  rg -q '^\[  PASSED  \] 2 tests\.$' "${TEST_LOG}" ||
     fail 'native/browser focused suite did not pass exactly 2/2'
   if rg -q '^\[  FAILED  \]|^\[  SKIPPED \] [1-9][0-9]* test' \
       "${TEST_LOG}"; then

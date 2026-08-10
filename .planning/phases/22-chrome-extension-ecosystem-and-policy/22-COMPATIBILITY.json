@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-29T16:55:45Z",
-  "chromium_revision": "5c4263e8edccbf7f57b6a5f9c975ee286b362420",
+  "generated_at": "2026-08-10T06:14:32Z",
+  "chromium_revision": "d76947ab3ef99ff929978fb4d3a057e476b06591",
   "prometheus_build": "151.0.7898.0",
   "rows": [
     {
@@ -13,14 +13,14 @@
       "manifest_version": 3,
       "install_source": "Developer mode (unpacked)",
       "prometheus_build": "151.0.7898.0",
-      "chromium_revision": "5c4263e8edccbf7f57b6a5f9c975ee286b362420",
+      "chromium_revision": "d76947ab3ef99ff929978fb4d3a057e476b06591",
       "regular_mode_exercised": true,
       "private_mode_exercised": false,
       "actions_exercised": "Unpacked load; popup/options visibility; bounded DOM read; Blocked/Read only/Interact admission matrix; execute_js denial.",
       "result": "Verified",
       "limitation": "Synthetic values only; no vault, session, or gateway access.",
       "evidence_artifact": "chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc:PrometheusExtensionFixturesBrowserTest.PasswordManagerLikeLifecycleAndIsolation",
-      "last_verified": "2026-07-29T16:55:45Z"
+      "last_verified": "2026-08-10T06:14:32Z"
     },
     {
       "category": "ad_blocker",
@@ -31,14 +31,14 @@
       "manifest_version": 3,
       "install_source": "Developer mode (unpacked)",
       "prometheus_build": "151.0.7898.0",
-      "chromium_revision": "5c4263e8edccbf7f57b6a5f9c975ee286b362420",
+      "chromium_revision": "d76947ab3ef99ff929978fb4d3a057e476b06591",
       "regular_mode_exercised": true,
       "private_mode_exercised": true,
       "actions_exercised": "Unpacked load; static declarativeNetRequest rule blocks the local target request; effective Agent grant confirmed Blocked in both regular and Private mode.",
       "result": "Verified",
       "limitation": "Blocks only the local test target; grants no Agent access.",
       "evidence_artifact": "chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc:PrometheusExtensionFixturesBrowserTest.AdBlockerLifecycleAndPermissionIsolation",
-      "last_verified": "2026-07-29T16:55:45Z"
+      "last_verified": "2026-08-10T06:14:32Z"
     },
     {
       "category": "productivity_content_script",
@@ -49,14 +49,14 @@
       "manifest_version": 3,
       "install_source": "Developer mode (unpacked)",
       "prometheus_build": "151.0.7898.0",
-      "chromium_revision": "5c4263e8edccbf7f57b6a5f9c975ee286b362420",
+      "chromium_revision": "d76947ab3ef99ff929978fb4d3a057e476b06591",
       "regular_mode_exercised": true,
       "private_mode_exercised": false,
       "actions_exercised": "Unpacked load; content script mutates a local HTTP(S) page; the page remains ordinary normal-page-adapter routed, not extension-routed.",
       "result": "Verified",
       "limitation": "Injected DOM stays untrusted; cannot claim extension authority.",
       "evidence_artifact": "chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc:PrometheusExtensionFixturesBrowserTest.ProductivityContentScriptRoutingAndIsolation",
-      "last_verified": "2026-07-29T16:55:45Z"
+      "last_verified": "2026-08-10T06:14:32Z"
     },
     {
       "category": "side_panel_tooling",
@@ -67,14 +67,14 @@
       "manifest_version": 3,
       "install_source": "Developer mode (unpacked)",
       "prometheus_build": "151.0.7898.0",
-      "chromium_revision": "5c4263e8edccbf7f57b6a5f9c975ee286b362420",
+      "chromium_revision": "d76947ab3ef99ff929978fb4d3a057e476b06591",
       "regular_mode_exercised": true,
       "private_mode_exercised": false,
       "actions_exercised": "Unpacked load; active visible side panel accepted for routing; inactive/hidden panel and DevTools contexts denied.",
       "result": "Verified",
       "limitation": "Only the active, visible panel is Agent-routable.",
       "evidence_artifact": "chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc:PrometheusExtensionFixturesBrowserTest.SidePanelToolingVisibilityAndIsolation",
-      "last_verified": "2026-07-29T16:55:45Z"
+      "last_verified": "2026-08-10T06:14:32Z"
     },
     {
       "category": "developer_workflow",
@@ -85,14 +85,14 @@
       "manifest_version": 3,
       "install_source": "Developer mode (unpacked)",
       "prometheus_build": "151.0.7898.0",
-      "chromium_revision": "5c4263e8edccbf7f57b6a5f9c975ee286b362420",
+      "chromium_revision": "d76947ab3ef99ff929978fb4d3a057e476b06591",
       "regular_mode_exercised": true,
       "private_mode_exercised": false,
       "actions_exercised": "Unpacked load; manual reload; disable; enable; uninstall lifecycle; background service worker confirmed denied as Agent-routable.",
       "result": "Verified",
       "limitation": "Background/service worker stays outside the Agent route surface.",
       "evidence_artifact": "chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc:PrometheusExtensionFixturesBrowserTest.DeveloperWorkflowLifecycleAndWorkerIsolation",
-      "last_verified": "2026-07-29T16:55:45Z"
+      "last_verified": "2026-08-10T06:14:32Z"
     }
   ]
 }

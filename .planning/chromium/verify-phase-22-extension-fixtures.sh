@@ -253,6 +253,22 @@ query_compile_command() {
       'index($0, output) { command = $0 } END { print command }'
 }
 
+compile_exact_object() {
+  local object="$1"
+  local command
+  command="$(query_compile_command "${object}")"
+  [[ -n "${command}" ]] || fail "compile command not found for ${object}"
+  mkdir -p "${OUT_DIR}/$(dirname "${object}")"
+  (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${command}"
+  ) >>"${BUILD_LOG}" 2>&1 || {
+    tail -n 120 "${BUILD_LOG}" >&2 || true
+    fail "direct compile failed for ${object}"
+  }
+  require_file "${OUT_DIR}/${object}"
+}
+
 compile_synthesized_object() {
   local template_object="$1"
   local object="$2"
@@ -325,6 +341,7 @@ build_focused_binary() {
   local runtime_service_template='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_profile_service.o'
   local runtime_unittest_template='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_route_unittest.o'
   local catalog_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_extension_compatibility_catalog_unittest.o'
+  local chrome_browser_main='obj/chrome/browser/core/chrome_browser_main.o'
   local link_extras=(
     obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o
     obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o
@@ -336,6 +353,8 @@ build_focused_binary() {
     obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_supervision_profile_service_factory.o
     obj/chrome/browser/prometheus/prometheus_supervision_capture_hub/prometheus_supervision_capture_hub.o
     obj/chrome/browser/prometheus/prometheus_supervision_action_controller/prometheus_supervision_action_controller.o
+    obj/chrome/browser/prometheus/prometheus_extension_smoke_bootstrap/prometheus_extension_smoke_bootstrap.o
+    obj/chrome/browser/prometheus/prometheus_extension_smoke_controller/prometheus_extension_smoke_controller.o
     obj/third_party/blink/public/mojom/mojom_platform/prometheus_supervision_document.mojom.o
     obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/prometheus_supervision_document.mojom-shared.o
     obj/chrome/browser/prometheus/prometheus_extension_policy_types/prometheus_extension_policy_types.o
@@ -364,6 +383,7 @@ build_focused_binary() {
     prometheus_agent_route_unittest \
     prometheus_extension_compatibility_catalog_unittest
   require_file "${OUT_DIR}/${catalog_test_object}"
+  compile_exact_object "${chrome_browser_main}"
 
   build_focused_response
   append_response_object "${fixture_object}"
