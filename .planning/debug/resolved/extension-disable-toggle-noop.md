@@ -1,8 +1,8 @@
 ---
-status: awaiting_human_verify
+status: resolved
 trigger: Phase 22 Plan 22-05 Task 2 — real DOM click on the chrome://extensions item card #enableToggle reports "clicked" but no ExtensionRegistryObserver::OnExtensionUnloaded is ever observed, stalling PrometheusExtensionSmokeController at the kReloaded stage
 created: 2026-07-30T08:54:53Z
-updated: 2026-07-31T01:40:34Z
+updated: 2026-08-11T03:56:05Z
 phase: 22-chrome-extension-ecosystem-and-policy
 plan: 22-05
 ---
@@ -606,6 +606,162 @@ bash .planning/chromium/verify-phase-22-extension-smoke.sh --focused
     converts it from pass to fail. This is squarely the "failures that touch the flow" case,
     not the "provably independent" case.
 
+- timestamp: 2026-08-11T03:22:44Z
+  checked: |
+    The already-landed summary correction, shutdown-finding provenance, current remove-click
+    source, nested history, and the exact `WeakPtrFactory` / `WeakReferenceOwner`
+    implementations at the failing shutdown site.
+  found: |
+    Root commit `41f8e298e` already contains the unconditional summary correction. Nested
+    commit `c44f717fe8` is the authorized one-cycle TOCTOU fix: it arms a capture-phase receipt
+    before dispatch, verifies after delivery that a trusted click's composed path contained
+    `#removeButton`, retries only a detected miss within the existing bounded actionable
+    deadline, and polls for the dialog only after confirmed delivery. Later Task 3/4 work is
+    present but outside this continuation's scope.
+    In RELEASE, compiling out `DCHECK(ptr_)` does not skip invalidation:
+    `InvalidateWeakPtrs()` still calls `weak_reference_owner_.Invalidate()`, which still
+    executes `flag_->Invalidate()` and replaces `flag_` after its own DCHECK is removed.
+    Under the stale allocation/layout mismatch this is unchecked undefined behavior, not a
+    benign no-op. The separate shutdown finding now states that explicitly and also limits the
+    defect to the direct source-synthesis verifier's mismatched objects.
+  implication: |
+    No duplicate source fix is appropriate. Verify the already-landed one-fix descendant as
+    the checkpoint's single cycle, while preserving the later out-of-scope Task 3/4 work and
+    the unrelated dirty BUILD.gn.
+
+- timestamp: 2026-08-11T03:29:00Z
+  checked: |
+    Rebuilt and ran the focused retained extension-smoke verifier from the current descendant:
+    `bash .planning/chromium/verify-phase-22-extension-smoke.sh --focused`.
+  found: |
+    Exit 0. Static no-bypass guards passed; the verifier selected 26 bootstrap unit, 2
+    developer-private caller, and 4 controller browser tests; all 32 passed with zero retry,
+    skip, or failure. `.ninja_log` SHA-256 remained
+    `7f9616af7116a16c5655753a7e2858cebbbe6767095101b1c3eb09a77228472e` and `.ninja_deps`
+    remained `ab1a6ad4639e8db53459384f8636dc53f396397363f3c2751bcdadc0349947c0`.
+  implication: |
+    The integrated fix builds and the retained end-to-end `kComplete` assertion is green once.
+    Intermittent correctness remains unproven; proceed to the single authorized 30-run sweep
+    without rebuilding the binary between iterations.
+
+- timestamp: 2026-08-11T03:33:00Z
+  checked: |
+    Interim classification at 20/30 in the single authorized `kComplete` sweep. Read the full
+    failure output for runs 3 and 17 while leaving the sweep and binary untouched.
+  found: |
+    pass=18, fail=2. Both failures are flow-attributable and identical: terminal record
+    `stage:"options_routing_checked"`, `outcome:"failed"`,
+    `reason:"remove_confirmation_dialog_not_found"`. No infrastructure crash or other
+    failure signature occurred. Under the landed receipt logic, this reason is reachable only
+    after the renderer observed a trusted delivered click whose composed path contained
+    `#removeButton`; a missed or untrusted click instead retries and ultimately reports
+    `remove_click_not_delivered:<shape>`.
+  implication: |
+    The delivery-receipt fix does not make the `kComplete` boundary clean and falsifies the
+    missed-click TOCTOU as a complete explanation for the dialog absence. Finish the fixed
+    30-run sample to record the observed rate, then apply the prescribed
+    `kOptionsRoutingChecked` fallback without another fix iteration.
+
+- timestamp: 2026-08-11T03:36:00Z
+  checked: |
+    Completed the single authorized 30-run `kComplete` sweep using
+    `/tmp/sweep-22-05-checkpoint3.niwyVD/run-sweep.sh`; scanned every per-run log for flow and
+    infrastructure signatures and compared the binary SHA-256 before/after.
+  found: |
+    Final aggregate: pass=28/30, fail=2/30. Flow-attributable failures=2/30 (6.7%), both runs
+    3 and 17 with the exact terminal record `stage:"options_routing_checked"`,
+    `outcome:"failed"`, `reason:"remove_confirmation_dialog_not_found"`. Infrastructure
+    failures=0/30; no `weak_ptr.h:408`, `ref_counted.h:235`, signal, SEGV, BUS_ADRALN,
+    crash-assertion, or timeout signature appeared. Binary SHA-256 was identical before and
+    after all iterations:
+    `fff4424d2da68895f271d1e4c8ea974c034c1805884fadf1ae0ac6a9f4b14c88`.
+  implication: |
+    The pre-stated zero-flow-failures threshold is not met. Per checkpoint decision 3, do not
+    iterate another fix. Set the retained test boundary to `kOptionsRoutingChecked`, record
+    the 2/30 observed rate, and leave finding 5 open as a harness limitation.
+
+- timestamp: 2026-08-11T03:39:00Z
+  checked: |
+    Applied the prescribed fallback to the retained
+    `FullLifecycleInstallsInspectsAndReloads` browser test and reviewed the exact nested diff.
+  found: |
+    The test now waits monotonically for `stage >= kOptionsRoutingChecked`, retains the
+    non-empty installed ID check, and calls `Shutdown()`. The terminal `kComplete`, succeeded
+    outcome, and result-record assertions were removed because Shutdown deliberately writes a
+    failed terminal record when removal is still running. Source comments record the first
+    1/60 sweep, the one authorized post-fix 28/30 sweep, the 2/30 identical flow failures, the
+    absence of infrastructure failures, and why the remaining dialog absence is open.
+    Controller behavior, later Task 3/4 artifacts, and the unrelated dirty BUILD.gn were not
+    changed.
+  implication: |
+    Rebuild and run the focused retained suite once to verify the boundary patch compiles and
+    is green. This is boundary verification, not another hardening sweep; do not run another
+    repeated sample.
+
+- timestamp: 2026-08-11T03:42:00Z
+  checked: |
+    Rebuilt and ran the focused retained extension-smoke verifier once after applying the
+    `kOptionsRoutingChecked` fallback.
+  found: |
+    Exit 0. Static no-bypass guards passed; all selected 26 bootstrap unit, 2
+    developer-private caller, and 4 controller browser tests passed with zero retry, skip, or
+    failure. `.ninja_log` and `.ninja_deps` hashes remained unchanged. No second repeated sweep
+    was run.
+    Final documentation reconciliation also found that `22-05-SUMMARY.md` item 6 still carries
+    the intermediate "Prometheus product use-after-destroy" interpretation, while the later
+    dedicated finding proves a direct-verifier stale allocator/current layout ABI mismatch.
+  implication: |
+    The fallback boundary is build- and test-verified. Align summary item 6 with the final
+    source-backed harness ownership and explicit RELEASE behavior, leaving finding 7's measured
+    crash-list correction intact; then finalize the debug checkpoint.
+
+- timestamp: 2026-08-11T03:45:00Z
+  checked: |
+    Final documentation reconciliation after the fallback verification.
+  found: |
+    `22-05-SUMMARY.md` item 6 now attributes `weak_ptr.h:408` to the Phase 22 direct
+    source-synthesis harness's stale `chrome_browser_main.o` allocator/current class-layout ABI
+    mismatch, not environment noise and not an ordinary product lifetime defect. It states the
+    exact DCHECK-off path: invalidation still dereferences/replaces the mislaid `flag_`, so
+    RELEASE removes the early diagnosis but leaves unchecked undefined behavior. Finding 7's
+    110-run crash-list corrections remain intact.
+  implication: |
+    All third-checkpoint decisions are executed within scope. Await human confirmation of the
+    `kOptionsRoutingChecked` boundary and the documented open remove-stage limitation; do not
+    archive or commit until confirmed.
+
+- timestamp: 2026-08-11T03:56:05Z
+  checked: Human verification checkpoint response.
+  found: |
+    APPROVED — the user accepts the retained `kOptionsRoutingChecked` fallback and the
+    documented open remove-stage limitation.
+  implication: |
+    The scoped debug outcome is resolved and may be archived and committed. Plan 22-05 Tasks
+    3-4 remain outside this session and are not executed.
+
+- timestamp: 2026-08-11T03:19:28Z
+  checked: |
+    Restored the third-checkpoint state against the current root and nested repositories,
+    including the required summary correction, the shutdown finding, and the remove-click
+    implementation history.
+  found: |
+    The unconditional `22-05-SUMMARY.md` item 6 ownership/crash-list correction is already
+    landed in root commit `41f8e298e`; the current root diff for that file is empty. The
+    separate shutdown finding now attributes the failure to a stale direct-link allocator
+    object and source/layout ABI mismatch, not a production use-after-destroy. The remove-click
+    delivery-receipt fix and `kComplete` assertion boundary are likewise already landed in
+    nested commit `c44f717fe8`; current source arms a capture-phase click receipt, retries a
+    detected miss within the existing bounded window, and begins dialog polling only after a
+    trusted click whose composed path contains the remove button.
+    The repository also contains later Plan 22-05 Task 3/4 work, which this continuation will
+    neither modify nor re-execute. The unrelated pre-existing
+    `chrome/browser/prometheus/BUILD.gn` modification remains untouched.
+  implication: |
+    Do not duplicate or rewrite already-landed work. Treat `c44f717fe8` as the one authorized
+    fix under test, make only the missing explicit RELEASE-behavior clarification in the
+    shutdown finding if source confirms it, then rebuild and perform the one authorized
+    `kComplete` sweep against the current fix descendant.
+
 ## Current Focus
 
 <!-- ORIGINAL BUG: RESOLVED, verified, and committed (nested dc4fd00d3e, root 40243e4b5).
@@ -616,20 +772,45 @@ bash .planning/chromium/verify-phase-22-extension-smoke.sh --focused
      `## Evidence (continued)` entries in the same file; both were partly wrong. Corrected
      against /tmp/pdiag-run2.log and /tmp/pdiag-run3.log, which no prior entry had read. -->
 
-active_defect: finding 5 — the remove-click TOCTOU (harness). Third checkpoint response received.
+active_defect: resolved — finding 5 remains documented as an accepted open harness limitation.
 
 next_action: |
-  THIRD CHECKPOINT RESPONSE RECEIVED (2026-07-31). Two decisions to execute, in this order:
-  1. FIRST, unconditionally: correct `22-05-SUMMARY.md` item 6's ownership misattribution and
-     fold in finding 7's crash-list corrections. Lands regardless of how the boundary work goes.
-  2. Close the remove-click TOCTOU (finding 5), rebuild, re-sweep at `kComplete` under the same
-     stated threshold (zero flow-attributable failures; infrastructure excluded only where the
-     comparison arm supports it). ONE fix-and-sweep cycle only. If `kComplete` is not clean,
-     set the boundary to `kOptionsRoutingChecked` (NOT `kEnabled`), record the observed rate,
-     stop. Do not iterate a third time.
-  3. Track the shutdown DCHECK as its own finding, including what happens at that site in a
-     RELEASE build where the DCHECK compiles out.
-  Plan 22-05 remains PARTIAL — Tasks 3 and 4 are unstarted and this session does not touch them.
+  Archive this resolved session and commit only the approved scoped files in the nested and
+  root repositories, preserving unrelated changes and leaving Plan 22-05 Tasks 3-4 untouched.
+
+reasoning_checkpoint:
+  hypothesis: |
+    The 1/60 `remove_confirmation_dialog_not_found` failure was caused by a cross-process
+    time-of-check/time-of-use gap: the renderer hit-tested a point on `#removeButton`, layout
+    changed before the browser dispatched at that point, and the click missed, so uninstall
+    and its dialog never began.
+  confirming_evidence:
+    - "The failed run reached `options_routing_checked` with
+       `remove_confirmation_dialog_not_found`; `remove_button_not_actionable` never fired, so
+       point resolution succeeded and the click was dispatched, but no dialog was observed."
+    - "Source directly separated renderer-side `elementFromPoint(x,y)` from the later
+       browser-process `ForwardMouseEvent()` dispatch, leaving layout free to change between
+       check and use."
+    - "Current fix commit `c44f717fe8` closes that observability gap without a sleep: a
+       capture-phase listener records the delivered click itself, and only a trusted composed
+       path containing the remove button permits dialog polling; detected misses are bounded
+       retries."
+  falsification_test: |
+    A post-fix sweep failure where the receipt reports a trusted delivered click on the remove
+    button but the confirmation dialog still does not appear would falsify missed-click TOCTOU
+    as a complete explanation. Any nonzero flow-attributable failure also fails the agreed
+    authoritative-boundary threshold, regardless of mechanism.
+  fix_rationale: |
+    Post-delivery receipt checks the exact fact the flow depends on rather than another stale
+    pre-dispatch proxy. Retrying only observed misses within the existing deadline removes the
+    race without a fixed delay, while preserving real trusted input and the native consent
+    dialog.
+  blind_spots: |
+    The original re-layout was inferred from the terminal record and source structure rather
+    than captured in an instrumented failing run. A 30-run sweep can establish zero observed
+    flow failures at the agreed sample size, not mathematical impossibility. Current source is
+    a descendant with later 22-05 fixes, so the sweep verifies the retained TOCTOU fix in that
+    current integrated tree rather than the historical commit in isolation.
 
 checkpoint_3_decisions:
   decision_1: |
@@ -917,7 +1098,7 @@ original_bug_outcome: |
   root repo commit `40243e4b5` "docs(22-05): record extension-disable-toggle-noop debug
   session". Plan 22-05 deliberately NOT marked complete; Tasks 3 and 4 remain unstarted.
 
-reasoning_checkpoint:
+original_bug_reasoning_checkpoint:
   hypothesis: |
     The controller clicks `#enableToggle` synchronously inside the browser-side
     `ExtensionRegistryObserver` notification, before chrome://extensions has processed its own
@@ -1015,9 +1196,9 @@ verification: |
   Stability, SUPERSEDED AND RE-MEASURED (2026-07-31). The earlier claim here — 13 runs, 11
   passes, "2 failures are both pre-existing environment flakes already documented in
   22-05-SUMMARY.md item 6" — is withdrawn on two counts. It rested on a small sample, and it
-  inherited the "environment flake" label rather than testing it; one of those two signatures
-  is Prometheus's own shutdown code (Findings item 6) and the other did not reproduce at all in
-  110 runs.
+  inherited the "environment flake" label rather than testing it; one signature came from the
+  Phase 22 direct verifier's stale allocator/current class-layout ABI mismatch (Findings item
+  6), and the other did not reproduce at all in 110 runs.
   Re-measured across 110 runs against the built binary, no rebuild mid-sweep:
     extension smoke @ kComplete : pass 57/60  (flow 1/60, infrastructure 2/60)
     extension smoke @ kEnabled  : pass 20/20  (every tracked signature 0/20)
@@ -1031,6 +1212,46 @@ files_changed:
   - .context/chromium/src/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
   - .context/chromium/src/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
   - .context/chromium/src/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
+
+checkpoint_3_resolution:
+  attempted_fix: |
+    Nested commit `c44f717fe8` added a post-delivery receipt for the real remove click. A
+    capture-phase listener records whether Blink delivered a trusted click whose composed path
+    contains `#removeButton`; detected misses are re-resolved and re-clicked within the existing
+    bounded deadline, without sleeps. Dialog polling begins only after a confirmed delivery.
+  sweep: |
+    Exactly one 30-run `kComplete` sweep was run against one unchanged built binary using
+    `/tmp/sweep-22-05-checkpoint3.niwyVD/run-sweep.sh`. Result: pass=28/30, flow failures=2/30
+    (6.7%), infrastructure failures=0/30. Both failures were identical terminal records:
+    `stage:"options_routing_checked"`, `reason:"remove_confirmation_dialog_not_found"`.
+    Binary SHA-256 stayed
+    `fff4424d2da68895f271d1e4c8ea974c034c1805884fadf1ae0ac6a9f4b14c88`.
+  conclusion: |
+    The receipt closes invisible missed-click delivery, but it did not make `kComplete` clean
+    and falsified missed-click TOCTOU as a complete explanation: the remaining dialog absence
+    occurs after the renderer observed a trusted click delivered on the remove button. Per the
+    pre-agreed threshold and fallback, no further fix was attempted.
+  final_boundary: |
+    `FullLifecycleInstallsInspectsAndReloads` now asserts monotonically through
+    `kOptionsRoutingChecked`. Terminal `kComplete` and result-record assertions are removed
+    because Shutdown intentionally terminalizes a still-running remove flow as failed.
+  verification: |
+    Post-fallback `bash .planning/chromium/verify-phase-22-extension-smoke.sh --focused` exited
+    0: static guards passed and all 32 selected tests passed with zero retry, skip, or failure;
+    `.ninja_log` and `.ninja_deps` hashes were unchanged. No second sweep was run.
+  finding_5_disposition: OPEN harness limitation; observed 2/30 after one fix-and-sweep cycle.
+  shutdown_finding: |
+    Corrected to a direct-verifier ABI mismatch and documented RELEASE behavior: DCHECK removal
+    does not remove invalidation; the mislaid `flag_` is still dereferenced/replaced, leaving
+    unchecked undefined behavior. No ordinary production lifetime fix was needed.
+  human_verification: |
+    APPROVED 2026-08-11: the retained `kOptionsRoutingChecked` fallback and the documented open
+    remove-stage limitation are accepted as the scoped outcome.
+  files_changed:
+    - .context/chromium/src/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
+    - .planning/phases/22-chrome-extension-ecosystem-and-policy/22-05-SUMMARY.md
+    - .planning/phases/22-chrome-extension-ecosystem-and-policy/22-FINDING-shutdown-weakptr-use-after-destroy.md
+    - .planning/debug/extension-disable-toggle-noop.md
 
 ## Findings Handed Back (NOT fixed here — separate defects)
 
@@ -1106,35 +1327,32 @@ files_changed:
    `0016-fix-22-04-...`; the existing 22-05 nested commits are also unexported. Task 3 exports
    everything after the frozen baseline, so these commits will be picked up there.
 
-5. **NEW — HARNESS RACE in the remove click (time of check versus time of use).** Observed
-   1/60 in the hardening sweep as `remove_confirmation_dialog_not_found` at terminal stage
-   `options_routing_checked`. `RemoveButtonPointScript()` hit-tests the resolved click point in
-   the RENDERER (`item.shadowRoot.elementFromPoint(x,y)!==button`, controller.cc:409-410); the
-   point then travels to the browser process and `DispatchRealMouseClick()` sends the click
-   later (controller.cc:1370). A card re-layout in that interval lands the click off the button,
-   so no `chrome.management.uninstall()` runs, no `ExtensionUninstallDialog` is created, and the
-   10 s `kRemoveConfirmationTimeout` poll expires. `remove_button_not_actionable` never fired in
-   any of the 110 runs, confirming the point always resolved `ok` and the click was always sent.
-   This is the sole reason the `kComplete` boundary was not frozen. Suggested direction for
-   Task 3: re-verify the hit test at dispatch time, or keep re-clicking while the dialog poll
-   runs. NOT fixed here — closing it needs a rebuild and a fresh sweep, and this session was
-   scoped to the two checkpoint decisions.
-   Note the retained named failure reasons paid for themselves here: this surfaced as
-   `remove_confirmation_dialog_not_found` rather than as a silent 20 s stall.
+5. **OPEN — remove-stage harness limitation after one TOCTOU fix-and-sweep cycle.** The first
+   hardening sweep observed 1/60 `remove_confirmation_dialog_not_found` failures at terminal
+   stage `options_routing_checked`. Source exposed a real check/use gap: the renderer hit-tested
+   a point on `#removeButton`, then the browser dispatched there later, after layout could move.
+   Nested commit `c44f717fe8` closed invisible misses without sleeps by arming a capture-phase
+   delivery receipt before dispatch, requiring a trusted click whose composed path contains the
+   button, and boundedly re-resolving/re-clicking detected misses. The single authorized
+   post-fix sweep still measured 2/30 (6.7%) identical
+   `remove_confirmation_dialog_not_found` failures, with 0/30 infrastructure crashes. Under the
+   new logic that reason is reachable only after confirmed delivery, so missed-click TOCTOU is
+   not a complete explanation. Per checkpoint, no second fix was attempted; the retained
+   assertion boundary is `kOptionsRoutingChecked` and the remaining dialog absence is open.
 
-6. **NEW — `PrometheusBrowserMainExtraParts::PostMainMessageLoopRun()` DCHECKs on shutdown, and
-   it is OURS, not the environment.** `FATAL:base/memory/weak_ptr.h:408] DCHECK failed: ptr_.`
-   at that function's first statement, `weak_ptr_factory_.InvalidateWeakPtrs()`
-   (`prometheus_browser_main_extra_parts.cc:3231-3232`). `weak_ptr.h:407-410` is
-   `void InvalidateWeakPtrs() { DCHECK(ptr_); ... }`, and only `InvalidateWeakPtrsAndDoom()`
-   ever zeroes `ptr_` — a spelling that appears nowhere in that file. So `ptr_` reading zero is
-   consistent with the factory's storage no longer being valid at that point.
-   Rate: 2/30 main, 0/30 main2, **2/30 in the comparison arm that never touches extensions**,
-   0/20 post-revert. **CORRECTION TO THE INHERITED RECORD:** 22-05-SUMMARY.md item 6 files this
-   as a pre-existing environment flake. It is not environmental — it is Prometheus-owned code
-   crashing the browser process at shutdown, and it fails any browsertest in this binary
-   regardless of subject. It IS independent of the extension flow. Characterized only;
-   deliberately not root-caused, as Phase 22 does not own it.
+6. **CORRECTED — the shutdown `weak_ptr.h:408` DCHECK belongs to the direct verification
+   harness's class-size ABI mismatch, not environment noise or an ordinary product lifetime
+   defect.** The source-synthesis binaries rebuilt
+   `prometheus_browser_main_extra_parts.cc` after Task 22-05 enlarged
+   `PrometheusBrowserMainExtraParts`, but linked a stale `chrome_browser_main.o`, the object that
+   owns `make_unique<PrometheusBrowserMainExtraParts>`. Allocation size and current
+   constructor/destructor layout disagreed, so shutdown read a mislaid `WeakPtrFactory`.
+   Recompiling the owner object restores one ABI and removes the failure. Rate before that fix:
+   2/30 main, 0/30 main2, **2/30 in the comparison arm with zero extension contact**, 0/20
+   post-revert. RELEASE is not benign: compiling out `DCHECK(ptr_)` still leaves
+   `WeakReferenceOwner::Invalidate()` dereferencing and replacing the mislaid `flag_`, so the
+   result is unchecked undefined behavior rather than an early diagnostic. Full correction:
+   `22-FINDING-shutdown-weakptr-use-after-destroy.md`.
 
 7. **NEW — the "memory-corruption-shaped" crash list in 22-05-SUMMARY.md item 6 needs
    correcting.** Measured across 110 runs:

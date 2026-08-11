@@ -35,6 +35,24 @@ The decisive evidence is:
 - Recompiling `chrome_browser_main.o` before linking the source-synthesis
   binaries restores one consistent class layout and removes the failure.
 
+## RELEASE behavior at the failing site
+
+Compiling out the `DCHECK` does not make this mismatch benign. In a RELEASE
+build, `WeakPtrFactory::InvalidateWeakPtrs()` still calls
+`weak_reference_owner_.Invalidate()`. `WeakReferenceOwner::Invalidate()` also
+loses only its `DCHECK(flag_)`; it still executes `flag_->Invalidate()` and
+then replaces `flag_`. With the stale allocator object's wrong class-size ABI,
+those operations read and write the mislaid `WeakPtrFactory` storage without
+the diagnostic guard. The result is undefined behavior: it may crash on the
+invalid `flag_` access or silently corrupt/refcount unrelated storage. The
+debug `weak_ptr.h:408` failure therefore made the harness ABI mismatch visible;
+its absence in RELEASE would only remove the early diagnosis.
+
+This does not establish a defect in an ordinary official Prometheus build.
+The mismatched objects existed only in the direct source-synthesis verifier;
+recompiling the allocation-owning `chrome_browser_main.o` restores one layout
+before either debug or RELEASE code reaches this site.
+
 ## Fix and scope
 
 Every Phase 22 browser-derived direct verifier now recompiles

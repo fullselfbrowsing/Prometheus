@@ -327,8 +327,9 @@ as closing Phase 22.**
    files, so most of that binary's object closure is not Siso-known) would
    be needed to execute the unittest copy.
 6. **Sporadic browser-process crashes outside any test body.** **CORRECTED
-   2026-07-31** after a 110-run measured sweep (see
-   `.planning/debug/resolved/extension-disable-toggle-noop.md`). The original
+   2026-08-11** after a 110-run measured sweep and follow-up ABI investigation
+   (see `.planning/debug/extension-disable-toggle-noop.md` and
+   `22-FINDING-shutdown-weakptr-use-after-destroy.md`). The original
    text of this item filed *all* of these as "test-environment flakiness" and
    attributed them to sandbox resource contention. **That attribution was
    wrong for at least one signature, and the crash list itself was wrong.**
@@ -343,20 +344,28 @@ as closing Phase 22.**
    extension smoke repeat, 30 an unrelated `SafeBrowsing` browsertest in the
    same binary with zero extension contact, 20 post-revert):
 
-   - **`weak_ptr.h:408 DCHECK failed: ptr_.` is NOT environmental. It is
-     Prometheus-owned code.** It fires at
+   - **`weak_ptr.h:408 DCHECK failed: ptr_.` is NOT environmental, but it is
+     also NOT an ordinary Prometheus product lifetime defect. It belongs to the
+     Phase 22 direct source-synthesis verification harness.** It fires at
      `PrometheusBrowserMainExtraParts::PostMainMessageLoopRun() + 96` — the
      function's first statement, `weak_ptr_factory_.InvalidateWeakPtrs()`
      (`prometheus_browser_main_extra_parts.cc:3232`) — at the identical
      offset in all four occurrences. Rate: 2/30, 0/30, **2/30 in the arm that
      never touches extensions**, 0/20. It is independent of the extension
-     flow, and it fails whichever browsertest happens to be running,
-     regardless of subject. That is why it looked like environment noise. It
-     is not: it is our shutdown code running on an already-destroyed object.
-     Tracked as its own finding — see
-     `22-FINDING-shutdown-weakptr-use-after-destroy.md`, which also records
-     what this site does in an official build where the `DCHECK` compiles
-     out. It is **not** cosmetic.
+     flow because every affected direct binary linked the same stale allocator
+     object: the harness rebuilt `prometheus_browser_main_extra_parts.cc` after
+     Task 22-05 enlarged `PrometheusBrowserMainExtraParts`, but continued
+     linking the older `chrome_browser_main.o` that owns the
+     `make_unique<PrometheusBrowserMainExtraParts>` allocation. The stale
+     allocation size and current constructor/destructor layout disagreed, so
+     shutdown read a mislaid `WeakPtrFactory`. Recompiling
+     `chrome_browser_main.o` restores one class-size ABI and removes the
+     failure. In RELEASE, removing `DCHECK(ptr_)` does not skip invalidation:
+     `WeakReferenceOwner::Invalidate()` still dereferences and replaces its
+     mislaid `flag_`, leaving unchecked undefined behavior (crash or silent
+     corruption), not a benign no-op. This is tracked in
+     `22-FINDING-shutdown-weakptr-use-after-destroy.md`; no production lifetime
+     change was required.
    - **"Base sequence manager" and "`ref_counted.h` DCHECK" are one crash,
      not two.** A single stack:
      `FATAL:base/memory/ref_counted.h:235] DCHECK failed:
