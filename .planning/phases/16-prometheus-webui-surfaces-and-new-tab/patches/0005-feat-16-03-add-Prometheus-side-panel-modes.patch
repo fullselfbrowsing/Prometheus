@@ -1,0 +1,384 @@
+From df12d3c576297ccfd4e8d1a23e299fadba9b10e8 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 02:48:15 -0500
+Subject: [PATCH 5/9] feat(16-03): add Prometheus side panel modes
+
+---
+ .../prometheus/prometheus_side_panel.html     |  90 ++++++++++++--
+ .../resources/prometheus/prometheus_webui.css | 114 +++++++++++++++++-
+ .../resources/prometheus/prometheus_webui.js  |  23 ++++
+ .../ui/webui/prometheus/prometheus_web_ui.cc  |   6 +
+ .../prometheus_web_ui_browsertest.cc          |  34 +++++-
+ 5 files changed, 249 insertions(+), 18 deletions(-)
+
+diff --git a/chrome/browser/resources/prometheus/prometheus_side_panel.html b/chrome/browser/resources/prometheus/prometheus_side_panel.html
+index 1a2c6332a2..5e2f52ee75 100644
+--- a/chrome/browser/resources/prometheus/prometheus_side_panel.html
++++ b/chrome/browser/resources/prometheus/prometheus_side_panel.html
+@@ -17,20 +17,84 @@
+         </div>
+       </header>
+       <nav class="mode-bar" aria-label="Prometheus side panel modes">
+-        <button class="mode" aria-selected="true">FSB Agent</button>
+-        <button class="mode" aria-selected="false">Explorer</button>
+-        <button class="mode" aria-selected="false">Tabs</button>
+-        <button class="mode" aria-selected="false">Tools</button>
++        <button class="mode mode--agent" id="mode-fsb-agent"
++            data-mode-target="fsb-agent" aria-controls="panel-fsb-agent"
++            aria-label="FSB Agent" aria-selected="true" title="FSB Agent">
++          <span class="mode__icon" aria-hidden="true"></span>
++          <span class="visually-hidden">FSB Agent</span>
++        </button>
++        <button class="mode mode--explorer" id="mode-explorer"
++            data-mode-target="explorer" aria-controls="panel-explorer"
++            aria-label="Explorer" aria-selected="false" title="Explorer">
++          <span class="mode__icon" aria-hidden="true"></span>
++          <span class="visually-hidden">Explorer</span>
++        </button>
++        <button class="mode mode--tabs" id="mode-tabs"
++            data-mode-target="tabs" aria-controls="panel-tabs"
++            aria-label="Tabs" aria-selected="false" title="Tabs">
++          <span class="mode__icon" aria-hidden="true"></span>
++          <span class="visually-hidden">Tabs</span>
++        </button>
++        <button class="mode mode--tools" id="mode-tools"
++            data-mode-target="tools" aria-controls="panel-tools"
++            aria-label="Tools" aria-selected="false" title="Tools">
++          <span class="mode__icon" aria-hidden="true"></span>
++          <span class="visually-hidden">Tools</span>
++        </button>
+       </nav>
+-      <section class="panel-row">
+-        <strong>Ready</strong>
+-        <p class="muted">Ask FSB to work in this browser.</p>
+-      </section>
+-      <section class="panel-row handoff-seed" id="ask-fsb-seed" hidden>
+-        <strong>FSB Agent</strong>
+-        <p class="muted">Pending start-page request</p>
+-        <p id="ask-fsb-seed-text"></p>
+-      </section>
++      <div class="mode-stack">
++        <section class="mode-panel" id="panel-fsb-agent" role="tabpanel"
++            aria-labelledby="mode-fsb-agent" data-mode-panel="fsb-agent">
++          <div class="panel-heading">
++            <h1>FSB Agent</h1>
++            <span class="badge">Ready</span>
++          </div>
++          <p class="mode-copy">Ask FSB to work in this browser.</p>
++          <section class="panel-row handoff-seed" id="ask-fsb-seed" hidden>
++            <strong>Pending start-page request</strong>
++            <p id="ask-fsb-seed-text"></p>
++          </section>
++        </section>
++        <section class="mode-panel" id="panel-explorer" role="tabpanel"
++            aria-labelledby="mode-explorer" data-mode-panel="explorer" hidden>
++          <div class="panel-heading">
++            <h1>Explorer</h1>
++            <span class="badge badge--quiet">Stub</span>
++          </div>
++          <p class="mode-copy">No page snapshot selected.</p>
++          <div class="stub-list" aria-label="Explorer placeholders">
++            <div class="stub-row">Page outline</div>
++            <div class="stub-row">DOM snapshot</div>
++            <div class="stub-row">Selected element</div>
++          </div>
++        </section>
++        <section class="mode-panel" id="panel-tabs" role="tabpanel"
++            aria-labelledby="mode-tabs" data-mode-panel="tabs" hidden>
++          <div class="panel-heading">
++            <h1>Tabs</h1>
++            <span class="badge badge--quiet">Stub</span>
++          </div>
++          <p class="mode-copy">No tab ownership data yet.</p>
++          <div class="stub-list" aria-label="Tabs placeholders">
++            <div class="stub-row">Active tab</div>
++            <div class="stub-row">Agent-owned tabs</div>
++            <div class="stub-row">Supervision state</div>
++          </div>
++        </section>
++        <section class="mode-panel" id="panel-tools" role="tabpanel"
++            aria-labelledby="mode-tools" data-mode-panel="tools" hidden>
++          <div class="panel-heading">
++            <h1>Tools</h1>
++            <span class="badge badge--quiet">Stub</span>
++          </div>
++          <p class="mode-copy">Native tools are waiting for the agent service.</p>
++          <div class="stub-list" aria-label="Tools placeholders">
++            <div class="stub-row">Browser actions</div>
++            <div class="stub-row">Page actions</div>
++            <div class="stub-row">MCP routes</div>
++          </div>
++        </section>
++      </div>
+     </main>
+   </body>
+ </html>
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.css b/chrome/browser/resources/prometheus/prometheus_webui.css
+index 667eceb7ec..4ad937c92d 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.css
++++ b/chrome/browser/resources/prometheus/prometheus_webui.css
+@@ -157,20 +157,99 @@ input {
+ 
+ .mode-bar {
+   display: grid;
+-  gap: 6px;
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  gap: 8px;
++  grid-template-columns: repeat(4, 42px);
+ }
+ 
+ .mode {
++  align-items: center;
+   background: var(--prometheus-surface-2);
+   border: 1px solid var(--prometheus-surface-3);
+   border-radius: 8px;
+   color: var(--prometheus-text);
+-  min-height: 34px;
++  display: inline-flex;
++  height: 42px;
++  justify-content: center;
++  min-height: 42px;
++  padding: 0;
++  width: 42px;
+ }
+ 
+ .mode[aria-selected="true"] {
++  background: var(--prometheus-color-accent-soft);
+   border-color: var(--prometheus-accent);
++  color: var(--prometheus-color-accent);
++}
++
++.mode:focus-visible {
++  outline: 2px solid var(--prometheus-color-accent);
++  outline-offset: 2px;
++}
++
++.mode__icon {
++  background: currentColor;
++  display: block;
++  height: 17px;
++  mask-position: center;
++  mask-repeat: no-repeat;
++  mask-size: contain;
++  width: 17px;
++  -webkit-mask-position: center;
++  -webkit-mask-repeat: no-repeat;
++  -webkit-mask-size: contain;
++}
++
++.mode--agent .mode__icon {
++  mask-image: url("svg/fa_wand_magic_sparkles.svg");
++  -webkit-mask-image: url("svg/fa_wand_magic_sparkles.svg");
++}
++
++.mode--explorer .mode__icon {
++  mask-image: url("svg/fa_compass.svg");
++  -webkit-mask-image: url("svg/fa_compass.svg");
++}
++
++.mode--tabs .mode__icon {
++  mask-image: url("svg/fa_table_cells_large.svg");
++  -webkit-mask-image: url("svg/fa_table_cells_large.svg");
++}
++
++.mode--tools .mode__icon {
++  mask-image: url("svg/fa_wrench.svg");
++  -webkit-mask-image: url("svg/fa_wrench.svg");
++}
++
++.mode-stack {
++  display: grid;
++  gap: 12px;
++}
++
++.mode-panel {
++  display: flex;
++  flex-direction: column;
++  gap: 12px;
++}
++
++.mode-panel[hidden] {
++  display: none;
++}
++
++.panel-heading {
++  align-items: center;
++  display: flex;
++  gap: 8px;
++  justify-content: space-between;
++}
++
++.panel-heading h1 {
++  font-size: 18px;
++  line-height: 1.2;
++  margin: 0;
++}
++
++.mode-copy {
++  color: var(--prometheus-text-muted);
++  margin: 0;
+ }
+ 
+ .panel-row {
+@@ -187,6 +266,35 @@ input {
+   margin-bottom: 0;
+ }
+ 
++.badge {
++  border: 1px solid rgba(47, 158, 126, 0.35);
++  border-radius: 999px;
++  color: var(--prometheus-ok);
++  font-family: ui-monospace, monospace;
++  font-size: 11px;
++  line-height: 1;
++  padding: 5px 8px;
++}
++
++.badge--quiet {
++  border-color: var(--prometheus-color-border);
++  color: var(--prometheus-color-text-3);
++}
++
++.stub-list {
++  display: grid;
++  gap: 8px;
++}
++
++.stub-row {
++  background: var(--prometheus-surface);
++  border: 1px solid var(--prometheus-surface-3);
++  border-radius: 8px;
++  color: var(--prometheus-text-muted);
++  min-height: 36px;
++  padding: 10px 12px;
++}
++
+ .control-shell {
+   display: grid;
+   gap: 16px;
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.js b/chrome/browser/resources/prometheus/prometheus_webui.js
+index d3621aa85a..94b3c7bfaa 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.js
++++ b/chrome/browser/resources/prometheus/prometheus_webui.js
+@@ -17,6 +17,22 @@ function setAskFsbStatus(text) {
+   }
+ }
+ 
++function activateSidePanelMode(mode) {
++  const buttons = document.querySelectorAll('[data-mode-target]');
++  const panels = document.querySelectorAll('[data-mode-panel]');
++  if (!buttons.length || !panels.length) {
++    return;
++  }
++  for (const button of buttons) {
++    button.setAttribute(
++        'aria-selected', String(button.dataset.modeTarget === mode));
++  }
++  for (const panel of panels) {
++    panel.hidden = panel.dataset.modePanel !== mode;
++  }
++  document.documentElement.dataset.sidePanelMode = mode;
++}
++
+ window.prometheusAskFsbHandoffComplete = (prompt) => {
+   window.prometheusAskFsbHandoffForTesting = prompt;
+   document.documentElement.dataset.askFsbHandoff = 'submitted';
+@@ -36,6 +52,7 @@ window.prometheusReceiveAskFsbSeed = (prompt) => {
+   if (!seed || !seedText || !prompt) {
+     return;
+   }
++  activateSidePanelMode('fsb-agent');
+   seed.hidden = false;
+   seedText.textContent = prompt;
+ };
+@@ -56,5 +73,11 @@ if (surface === 'newtab') {
+ }
+ 
+ if (surface === 'side-panel') {
++  document.querySelectorAll('[data-mode-target]').forEach((button) => {
++    button.addEventListener('click', () => {
++      activateSidePanelMode(button.dataset.modeTarget);
++    });
++  });
++  activateSidePanelMode('fsb-agent');
+   chrome.send('prometheusRequestAskFsbSeed');
+ }
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index 05a557f150..ae3b3ad366 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -106,6 +106,12 @@ void AddPrometheusCommonResourcePaths(content::WebUIDataSource* source) {
+                           IDR_PROMETHEUS_ASSET_PM_MARK_DARK);
+   source->AddResourcePath("images/pm_wordmark_dark.png",
+                           IDR_PROMETHEUS_ASSET_PM_WORDMARK_DARK);
++  source->AddResourcePath("svg/fa_compass.svg", IDR_PROMETHEUS_ICON_FA_COMPASS);
++  source->AddResourcePath("svg/fa_table_cells_large.svg",
++                          IDR_PROMETHEUS_ICON_FA_TABLE_CELLS_LARGE);
++  source->AddResourcePath("svg/fa_wand_magic_sparkles.svg",
++                          IDR_PROMETHEUS_ICON_FA_WAND_MAGIC_SPARKLES);
++  source->AddResourcePath("svg/fa_wrench.svg", IDR_PROMETHEUS_ICON_FA_WRENCH);
+ }
+ 
+ void ConfigurePrometheusDataSource(content::WebUI* web_ui,
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 4e5f56c66b..dc5309ff9c 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -41,6 +41,13 @@ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
+     return content::EvalJs(web_contents, script).ExtractBool();
+   }
+ 
++  bool BodyTextContentContains(content::WebContents* web_contents,
++                               const std::string& text) {
++    const std::string script =
++        content::JsReplace("document.body.textContent.includes($1)", text);
++    return content::EvalJs(web_contents, script).ExtractBool();
++  }
++
+   bool InputPlaceholderIs(content::WebContents* web_contents,
+                           const std::string& placeholder) {
+     const std::string script = content::JsReplace(
+@@ -48,6 +55,19 @@ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
+     return content::EvalJs(web_contents, script).ExtractBool();
+   }
+ 
++  bool ModeButtonHasLabelAndTooltip(content::WebContents* web_contents,
++                                    const std::string& selector,
++                                    const std::string& label) {
++    const std::string script = content::JsReplace(R"(
++      const button = document.querySelector($1);
++      button?.getAttribute('aria-label') === $2 &&
++          button?.getAttribute('title') === $2 &&
++          !!button?.querySelector('.mode__icon');
++    )",
++                                                  selector, label);
++    return content::EvalJs(web_contents, script).ExtractBool();
++  }
++
+  private:
+   base::test::ScopedFeatureList scoped_feature_list_;
+ };
+@@ -80,8 +100,18 @@ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+                   ->GetController()
+                   ->GetAs<PrometheusSidePanelUI>());
+   EXPECT_TRUE(BodyContains(web_contents, "FSB Agent"));
+-  EXPECT_TRUE(BodyContains(web_contents, "Explorer"));
+-  EXPECT_TRUE(BodyContains(web_contents, "Tools"));
++  EXPECT_TRUE(BodyContains(web_contents, "Ready"));
++  EXPECT_TRUE(BodyContains(web_contents, "Ask FSB to work in this browser."));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "Explorer"));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "Tabs"));
++  EXPECT_TRUE(BodyTextContentContains(web_contents, "Tools"));
++  EXPECT_TRUE(ModeButtonHasLabelAndTooltip(web_contents, "#mode-fsb-agent",
++                                           "FSB Agent"));
++  EXPECT_TRUE(
++      ModeButtonHasLabelAndTooltip(web_contents, "#mode-explorer", "Explorer"));
++  EXPECT_TRUE(ModeButtonHasLabelAndTooltip(web_contents, "#mode-tabs", "Tabs"));
++  EXPECT_TRUE(
++      ModeButtonHasLabelAndTooltip(web_contents, "#mode-tools", "Tools"));
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,68 @@
+From 79ae3fa2228ae57c13b802930262bf0186f8c13f Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 25 Jun 2026 03:06:06 -0500
+Subject: [PATCH 04/15] refactor(14-02): register AddPrometheusColorMixer last;
+ move mixer into :mixers; drop duplicate test source (D-04)
+
+- Add #include prometheus_color_mixer.h (alphabetical) to chrome_color_mixers.cc
+- Call AddPrometheusColorMixer(provider, key) as last mixer after app_controller block (D-04)
+- Add prometheus_color_mixer.{cc,h} to ui/color/BUILD.gn :mixers sources (alphabetical)
+- Remove ../ui/color/prometheus_color_mixer.cc direct source from prometheus/BUILD.gn (Wave 0 stop-gap)
+- :mixers dep already present in prometheus/BUILD.gn (from Wave 0 b2be1c4359); no duplicate symbol
+---
+ chrome/browser/prometheus/BUILD.gn             | 3 ---
+ chrome/browser/ui/color/BUILD.gn               | 2 ++
+ chrome/browser/ui/color/chrome_color_mixers.cc | 5 +++++
+ 3 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 3721b446cd..93148c0cd8 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -13,9 +13,6 @@ test("prometheus_unittests") {
+     "prometheus_asset_resource_unittest.cc",
+     "prometheus_color_mixer_unittest.cc",
+     "prometheus_css_emission_unittest.cc",
+-    # Mixer stub included directly for Wave 0 so the test binary links before
+-    # prometheus_color_mixer.cc is registered in :mixers (Plan 14-02).
+-    "../ui/color/prometheus_color_mixer.cc",
+   ]
+ 
+   deps = [
+diff --git a/chrome/browser/ui/color/BUILD.gn b/chrome/browser/ui/color/BUILD.gn
+index 1cf5625148..aff181f4b3 100644
+--- a/chrome/browser/ui/color/BUILD.gn
++++ b/chrome/browser/ui/color/BUILD.gn
+@@ -42,6 +42,8 @@ source_set("mixers") {
+     "omnibox_color_mixer.h",
+     "product_specifications_color_mixer.cc",
+     "product_specifications_color_mixer.h",
++    "prometheus_color_mixer.cc",
++    "prometheus_color_mixer.h",
+     "projects_panel_color_mixer.cc",
+     "projects_panel_color_mixer.h",
+     "tab_group_color_ids.h",
+diff --git a/chrome/browser/ui/color/chrome_color_mixers.cc b/chrome/browser/ui/color/chrome_color_mixers.cc
+index 9dfe5e7cd5..63709638a6 100644
+--- a/chrome/browser/ui/color/chrome_color_mixers.cc
++++ b/chrome/browser/ui/color/chrome_color_mixers.cc
+@@ -21,6 +21,7 @@
+ #include "chrome/browser/ui/color/new_tab_page_color_mixer.h"
+ #include "chrome/browser/ui/color/omnibox_color_mixer.h"
+ #include "chrome/browser/ui/color/product_specifications_color_mixer.h"
++#include "chrome/browser/ui/color/prometheus_color_mixer.h"
+ #include "chrome/browser/ui/color/projects_panel_color_mixer.h"
+ #include "chrome/browser/ui/color/tab_strip_color_mixer.h"
+ #include "ui/color/color_provider_utils.h"
+@@ -83,4 +84,8 @@ void AddChromeColorMixers(ui::ColorProvider* provider,
+   if (key.app_controller) {
+     key.app_controller->AddColorMixers(provider, key);
+   }
++
++  // Prometheus warm palette — last mixer so it overrides GM3/Material and
++  // custom themes (D-04).
++  AddPrometheusColorMixer(provider, key);
+ }
+-- 
+2.50.1 (Apple Git-155)
+

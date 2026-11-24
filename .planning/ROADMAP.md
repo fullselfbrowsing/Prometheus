@@ -1,241 +1,581 @@
-# Roadmap: Prometheus
+# Roadmap: Prometheus v2.0 Chromium Engine Migration
 
-## Overview
+## Milestones
 
-Prometheus starts by making the Falkon-derived browser buildable and legally understood, then replaces product-visible identity with Prometheus and the "Powered by FSB" affiliation, then builds the native agent control spine that makes this more than an extension port. Once the native spine exists, the roadmap restores FSB MCP compatibility, multi-agent execution, FSB runtime surfaces, PhantomStream supervision, and release packaging.
+- Complete **v1.0 MVP** — Phases 1-10 (shipped 2026-06-17; archived under `.planning/milestones/`)
+- Active **v2.0 Chromium Engine Migration** — Phases 11-24
 
-## Phases
+## v2.0 Chromium Engine Migration
 
-**Phase Numbering:**
-- Integer phases (1, 2, 3): Planned milestone work
-- Decimal phases (2.1, 2.2): Urgent insertions
+**Status:** In progress — Phase 21 is complete; Phase 22 remains planned and `not_ready`.
 
-- [x] **Phase 1: Baseline and Legal Inventory** - Prove the fork builds and map inherited code, identity, and license obligations.
-- [x] **Phase 2: Prometheus Product Identity Shell** - Rebrand primary product surfaces and establish the Prometheus visual shell, with "Powered by FSB" as the affiliation/tagline.
-- [x] **Phase 3: Native Agent Control Spine** - Add the native command router, surface adapters, JS execution, page reads, and internal settings proof.
-- [x] **Phase 4: MCP Compatibility and Multi-Agent Control** - Expose the FSB-compatible tool contract with ownership, action execution, visual sessions, and diagnostics.
-- [x] **Phase 5: FSB Runtime Parity Surfaces** - Rebuild the user-facing FSB automation experience inside the browser.
-- [x] **Phase 6: Supervision, Packaging, and Release Hardening** - Add PhantomStream-style supervision, safe pairing, release artifacts, and full validation.
-- [x] **Phase 7: Compact Safari-style Browser Chrome and Advanced Tab Management** - Make Prometheus feel like a minimal native browser with compact toolbar/tab chrome, tab groups, overview, and agent-aware tab state.
-- [x] **Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix** - Build the four-mode side panel (FSB Agent, Explorer, Tabs, Tools) plus the FSB Control Panel operator page, settings, and parity matrix, skinned to the canonical Prometheus design. (completed 2026-06-17)
-- [x] **Phase 9: Offline Font Awesome Free Icon System and Minimal Themes** - Bundle Font Awesome icons and the Poppins/Space Mono brand fonts offline, complete the logo pass, and harden the warm minimal two-theme system. (completed 2026-06-17)
-- [x] **Phase 10: New Tab Start Page** - Build the Prometheus start page: hero mark, omnibox with Ask FSB handoff, favorites grid, and FSB suggested automations. (completed 2026-06-17)
+## Milestone Thesis
+
+Prometheus keeps its product, design, and agent-native control thesis, but retires Falkon/QtWebEngine as the production base. v2.0 starts by preserving the v1 source reference and design/behavior decisions, then removes the active Falkon tree, checks out Chromium, establishes a reproducible Chromium baseline, and rebuilds Prometheus on Chromium-native primitives: Views/browser UI, WebUI, browser-process services, WebContents/RenderFrameHost/page adapters, local MCP bridge, extension support, secure runtime storage, supervision, and release validation.
+
+## Active Phases
+
+- [x] **Phase 11: Preservation Contract and Falkon Freeze** — Save every v1 decision, behavior, asset, test, source reference, and legal boundary before removing the active Falkon tree. (completed 2026-06-23)
+- [x] **Phase 12: Chromium Checkout, Build, and Patch Discipline** — Bring in upstream Chromium with depot_tools, build it cleanly on macOS, and establish source/layout rules that keep the root repo clean. (completed 2026-06-24)
+- [x] **Phase 13: Product Identity, Branding, and Legal Baseline** — Turn the Chromium baseline into a Prometheus-owned app identity with correct attribution and no unwanted Chrome/Chromium/Falkon/KDE-facing product surfaces. (completed 2026-06-24)
+- [x] **Phase 14: Asset and Design System Port** — Port warm tokens, PM/FSB assets, Poppins, Space Mono, Font Awesome, dark/light themes, and visual state rules into Chromium resources. (completed 2026-07-07)
+- [x] **Phase 15: Chromium UI Shell, Compact Chrome, and Tab Model** — Rebuild the compact browser chrome and advanced tab workflows using Chromium-native UI architecture. (completed 2026-07-07)
+- [x] **Phase 16: Prometheus WebUI Surfaces and New Tab** — Build Prometheus start page, side panel surfaces, and FSB Control Panel as Chromium WebUI/browser-backed surfaces. (completed 2026-07-07)
+- [x] **Phase 17: Native Agent Command Service and Tab Ownership** — Rebuild the core native command router as a Chromium browser-process service with authenticated sessions and stable tab ownership. (completed 2026-07-07)
+- [x] **Phase 18: Page Adapter, DOM Snapshot, and Action Verification** — Rebuild page reads, DOM snapshots, JS execution, action tools, waits, and verification on Chromium WebContents/frame primitives. (completed 2026-07-12)
+- [x] **Phase 19: MCP Bridge and Multi-Agent Runtime Compatibility** — Reconnect existing FSB-style MCP clients to the Chromium-native service with multi-agent policy and typed compatibility errors. (completed 2026-07-13)
+- [x] **Phase 20: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel** — Restore provider-backed tasks, logs, memory/site guides, vault boundaries, diagnostics, and dense operator controls. (completed 2026-07-20)
+- [x] **Phase 21: Supervision, Pairing, and Remote Control** — Rebuild PhantomStream-style supervision and safe dashboard pairing on Chromium sessions. (completed 2026-07-25)
+- [ ] **Phase 22: Chrome Extension Ecosystem and Policy** — Preserve or enable Chromium extension support while separating extension permissions from Prometheus agent permissions.
+- [ ] **Phase 23: Migration Parity, Security Hardening, and De-Falkon Gate** — Prove v1/FSB parity, complete security review, retire Falkon assumptions, and fail the build on unreviewed legacy dependencies.
+- [ ] **Phase 24: Packaging, Release Validation, and Handoff** — Produce a reproducible macOS validation package with Chromium-based Prometheus identity, legal notices, docs, validation script, and next-milestone handoff.
 
 ## Phase Details
 
-### Phase 1: Baseline and Legal Inventory
-**Goal**: Establish a reliable browser fork baseline before rebrand or agent work.
-**Depends on**: Nothing (first phase)
-**Requirements**: BASE-01, BASE-02, BASE-03, BASE-04
-**Success Criteria** (what must be TRUE):
-  1. Developer can build and run the local browser from the workspace on the initial target platform.
-  2. Browser smoke test can open a page, navigate, create a tab, and exit cleanly.
-  3. Falkon/KDE/Qt identifiers, product strings, assets, packaging files, and required legal notices are inventoried.
-  4. Required GPL and third-party legal notices remain present and intentionally preserved.
-**Plans**: 3 plans
+### Phase 11: Preservation Contract and Falkon Freeze
+
+**Goal:** Make source removal recoverable and make the migration contract explicit.
+
+**Requirements:** PRES-01, PRES-02, PRES-03, PRES-04, PRES-05, PRES-06, PRES-07
+
+**Plans:** 3/3 plans complete
 
 Plans:
-- [x] 01-01: Build and smoke baseline for the local Falkon fork.
-- [x] 01-02: Product identity and packaging inventory.
-- [x] 01-03: License/legal notice inventory and preservation checks.
 
-### Phase 2: Prometheus Product Identity Shell
-**Goal**: Make the primary app experience look and feel like Prometheus, Powered by FSB, without breaking the native browser build.
-**Depends on**: Phase 1
-**Requirements**: BRAND-01, BRAND-02, BRAND-03, BRAND-04
-**Success Criteria** (what must be TRUE):
-  1. User sees Prometheus branding in app name, window title, icons, first-run/about surfaces, and main browser chrome, with "Powered by FSB" used as the affiliation/tagline where appropriate.
-  2. User does not see Falkon/KDE product branding in primary browser UI, default bookmarks, desktop/bundle metadata, or product docs.
-  3. Browser UI uses the FSB dark/orange operator visual language.
-  4. The browser still builds and packages after each rebrand layer.
-**Plans**: 4 plans
+- [x] 11-01-PLAN.md — Create the preservation evidence gate and canonical dossier evidence/license boundary.
+- [x] 11-02-PLAN.md — Complete the capability-first Falkon-to-Chromium migration map and verifier invariants.
+- [x] 11-03-PLAN.md — Add the deferred visual-check ledger, freeze checklist, and stale-doc cleanup gate.
 
-Plans:
-- [x] 02-01: App metadata, bundle IDs, executable labels, and platform files.
-- [x] 02-02: Icons, assets, default bookmarks, first-run/about surfaces.
-- [x] 02-03: FSB dark/orange browser chrome and operator styling baseline.
-- [x] 02-04: Product docs and rebrand verification pass.
+**Success criteria:**
 
-### Phase 3: Native Agent Control Spine
-**Goal**: Create the browser-native control layer that can target web pages and browser-owned surfaces safely.
-**Depends on**: Phase 2
-**Requirements**: AGENT-01, AGENT-02, AGENT-03, AGENT-04, AGENT-05, AGENT-06, PAGE-01, PAGE-02, PAGE-03, SEC-02, SEC-03
-**Success Criteria** (what must be TRUE):
-  1. Agent commands route through one validated native tool router with logs and structured results.
-  2. Agent can control tabs/navigation and read page text, DOM snapshots, and compact page snapshots.
-  3. Agent can execute audited JavaScript on normal web pages and receive normalized results.
-  4. Agent can control at least one browser-owned settings/internal surface through structured native commands.
-  5. Unsafe or unsupported actions return typed errors and audit entries.
-**Plans**: 5 plans
+1. `.context/falkon-preservation/falkon-prometheus-v1.bundle` restores the full Falkon-based v1 reference.
+2. Patch series from upstream Falkon to Prometheus v1 is available under `.context/falkon-preservation/patches/`.
+3. `.planning/preservation/FALKON-TO-CHROMIUM-PRESERVATION.md` captures decisions, assets, design tokens, behavior contracts, source references, and license boundaries.
+4. Source wipe checklist says exactly what can be removed and what must stay.
+5. v1 deferred human-visual checks are tagged for Chromium replacement or retirement.
 
-Plans:
-- [x] 03-01: Native tool router, result envelope, and audit log foundation.
-- [x] 03-02: Tab/window/navigation commands.
-- [x] 03-03: Page text, DOM snapshot, and compact page snapshot adapters.
-- [x] 03-04: Permissioned JavaScript execution with read-back verification.
-- [x] 03-05: Internal settings/native surface command proof.
+**Planned work:**
 
-### Phase 4: MCP Compatibility and Multi-Agent Control
-**Goal**: Let existing FSB-style MCP clients drive the native browser with safe action execution and multi-agent isolation.
-**Depends on**: Phase 3
-**Requirements**: PAGE-04, PAGE-05, PAGE-06, PAGE-07, MCP-01, MCP-02, MCP-03, MCP-04, MCP-05, MCP-06, MULTI-01, MULTI-02, MULTI-03, MULTI-04, MULTI-05, SUP-01, SUP-02
-**Success Criteria** (what must be TRUE):
-  1. Existing MCP clients can connect and use compatible FSB manual/read tools.
-  2. Agent can click, type, press keys, scroll, hover, select, clear, drag/drop, and verify changes on normal pages.
-  3. Browser enforces agent identity, tab ownership, concurrency caps, reconnect recovery, and safe background-tab execution.
-  4. Action tools support visual-session fields and show visible trusted-client/action state.
-  5. Diagnostics identify browser, MCP, tab, page adapter, and internal adapter health.
-**Plans**: 5 plans
+- Verify nested Falkon HEAD and remote.
+- Bundle nested repo and format patch series.
+- Inventory assets, themes, fonts, icons, HTML surfaces, C++ services, MCP scripts, smoke tests, UI specs, and parity matrix.
+- Add a GPL-to-Chromium license boundary note.
+- Freeze `falkon/` as reference-only; no further feature work lands there.
 
-Plans:
-- [x] 04-01: MCP server/bridge and canonical FSB tool schema adapter.
-- [x] 04-02: Manual action tools, waits, change reports, and stuck detection.
-- [x] 04-03: Read tools and diagnostics parity.
-- [x] 04-04: Multi-agent identity, ownership, cap, reconnect, and background-tab behavior.
-- [x] 04-05: Visual session compatibility and overlay/action feedback.
+### Phase 12: Chromium Checkout, Build, and Patch Discipline
 
-### Phase 5: FSB Runtime Parity Surfaces
-**Goal**: Rebuild the FSB automation product experience inside the browser.
-**Depends on**: Phase 4
-**Requirements**: FSB-01, FSB-02, FSB-03, FSB-04, FSB-05, FSB-06, SEC-01
-**Success Criteria** (what must be TRUE):
-  1. User can submit natural-language browser tasks from a Prometheus side panel or equivalent surface.
-  2. User can configure supported hosted, routed, local, and custom AI providers.
-  3. Browser can run autopilot tasks with progress, cancellation, final result, and failure reporting.
-  4. Browser stores and displays logs, diagnostics, action history, costs, memory/site guides, and task outcomes.
-  5. Vault and provider secrets use secure storage and do not cross MCP/remote transports.
-**Plans**: 5 plans
+**Goal:** Establish a clean upstream Chromium baseline that builds locally and can survive rebases.
+
+**Requirements:** CHROM-01, CHROM-02, CHROM-03, CHROM-04, CHROM-05, CHROM-06, CHROM-07, CHROM-08
+
+**Plans:** 4/4 plans complete
+
+**Success criteria:**
+
+1. Chromium source exists in an agreed source location and records an exact revision.
+2. `gn gen out/Default` succeeds with documented args.
+3. `autoninja -C out/Default chrome` succeeds on macOS.
+4. Unmodified Chromium launches before Prometheus patches are introduced.
+5. Root git ignores or isolates `.gclient`, Chromium source, `out/`, depot_tools, and generated artifacts according to the chosen layout.
+
+**Planned work:**
+
+- Install or locate `depot_tools`.
+- Use official Chromium checkout flow (`fetch chromium`; shallow/no-history if selected).
+- Exclude Chromium checkout from accidental root commits.
+- Add `.context` notes for local disk/time expectations.
+- Create run/build scripts that can be called from Conductor without relying on interactive shell state.
+
+### Phase 13: Product Identity, Branding, and Legal Baseline
+
+**Goal:** Make the Chromium app identify as Prometheus while preserving required attribution.
+
+**Requirements:** BRAND-01, BRAND-02, BRAND-03, BRAND-04, BRAND-05, BRAND-06, BRAND-07
+
+**Plans:** 4/4 plans complete
 
 Plans:
-- [x] 05-01: Agent side panel and task submission UI.
-- [x] 05-02: Provider configuration, model discovery, and secure key storage.
-- [x] 05-03: Autopilot loop, progress, cancellation, and final results.
-- [x] 05-04: Logs, diagnostics, analytics, costs, memory, and site guides.
-- [x] 05-05: Vault flows and sensitive autofill boundaries.
 
-### Phase 6: Supervision, Packaging, and Release Hardening
-**Goal**: Make the browser supervised, installable, and release-ready.
-**Depends on**: Phase 5
-**Requirements**: SUP-03, SUP-04, SUP-05, REL-01, REL-02, REL-03
-**Success Criteria** (what must be TRUE):
-  1. Browser can stream a live supervised web-page view using DOM-native snapshot/diff mirroring or equivalent PhantomStream-derived behavior.
-  2. Dashboard/sync pairing is session-stamped and rejects stale snapshots, diffs, and remote-control actions.
-  3. Browser produces a repeatable package/build artifact for the initial target platform.
-  4. Release artifact includes required legal notices and source/license guidance.
-  5. Release validation covers build, smoke, MCP compatibility, automation, internal surfaces, security, branding, and supervision.
-**Plans**: 4 plans
+- [x] 13-01-PLAN.md — Author Prometheus smoke-launch gate and GPL Falkon source guard script
+- [x] 13-02-PLAN.md — Author NOTICES.md, product identity inventory, legal notice inventory, and README update
+- [x] 13-03-PLAN.md — Apply BRANDING and GRD string patches to Chromium tree; rebuild Prometheus.app
+- [x] 13-04-PLAN.md — Run identity smoke gate, human visual verification, and phase handoff docs
 
-Plans:
-- [x] 06-01: PhantomStream-style DOM mirror and supervised viewer.
-- [x] 06-02: Safe dashboard/sync pairing and remote-control session identity.
-- [x] 06-03: Initial platform packaging and legal bundle.
-- [x] 06-04: Release validation suite and final hardening.
+**Success criteria:**
 
-### Phase 7: Compact Safari-style Browser Chrome and Advanced Tab Management
-**Goal**: Make Prometheus use a minimal compact browser chrome inspired by Safari's compact layout while preserving agent visibility and power-user tab workflows.
-**Depends on**: Phase 6
-**Requirements**: UX-01, UX-02, UX-03, UX-04, UX-05, UX-06
-**Success Criteria** (what must be TRUE):
-  1. Compact mode moves tabs into the toolbar, with the active tab acting as the unified address/search field.
-  2. Users can switch compact/separate layouts and keep titles or favicon-only tab display without layout instability.
-  3. Tab groups, tab overview/search, reorder, close/restore, unload, duplicate, detach, and quick-switch flows work from native UI.
-  4. Agent ownership, active automation, supervision, and tab health remain visible in compact chrome without visual clutter.
-  5. Keyboard shortcuts and mouse/trackpad interactions remain Mac-native and compatible with existing Falkon tab behavior.
-  6. Visual verification confirms compact chrome is minimal, readable, non-overlapping, and stable across narrow and wide windows.
-**Plans**: 10 plans
+1. App name, window title, app icon, bundle/profile identity, docs, and first-run/about surfaces use Prometheus.
+2. "Powered by FSB" appears in the agreed product surfaces.
+3. Chromium/Chrome branding is removed from product-facing surfaces where allowed by Chromium license and trademark constraints.
+4. Legal/about surface includes Chromium and third-party notices, plus Font Awesome/Poppins/Space Mono notices when assets are bundled.
+5. No GPL Falkon source is copied into the Chromium implementation without explicit review.
 
-Plans:
-- [x] 07-01-PLAN.md — Persist compact/separate layout and title/favicon tab display settings.
-- [x] 07-02-PLAN.md — Expose agent-aware tab state through native reads and TabModel roles.
-- [x] 07-03-PLAN.md — Build the compact tab strip, filter model, and delegate primitives.
-- [x] 07-04-PLAN.md — Integrate compact chrome into NavigationBar and preserve separate layout.
-- [x] 07-05-PLAN.md — Build the tab overview, search, and quick-switch popup foundation.
-- [x] 07-06-PLAN.md — Wire tab overview/search/quick-switch into chrome and menus.
-- [x] 07-07-PLAN.md — Add persistent native tab group metadata and model roles.
-- [x] 07-08-PLAN.md — Complete group actions, advanced tab operations, and MCP/native tab reads.
-- [x] 07-09-PLAN.md — Wire native tab group roles into compact chrome and grouped overview/search.
-- [x] 07-10-PLAN.md — Add compact-tab smoke validation and visual verification checkpoint.
+**Planned work:**
 
-### Phase 8: Native FSB-Plus Settings Side Panel and Feature Parity Matrix
-**Goal**: Build the four-mode Prometheus side panel (FSB Agent, Explorer, Tabs, Tools) as the fast everyday surface and the dense FSB Control Panel page as the operator center, both skinned to the canonical Prometheus design, with settings and a verified parity matrix against FSB.
-**Depends on**: Phase 7
-**Requirements**: FSBP-01, FSBP-02, FSBP-03, FSBP-04, FSBP-05, FSBP-06
-**Design reference**: `.planning/design/DESIGN-REFERENCE.md` (side panel four modes, control panel split, warm tokens)
-**Success Criteria** (what must be TRUE):
-  1. The native side panel provides the four modes (FSB Agent, Explorer, Tabs, Tools) per the canonical design, while the dense operator control center (tasks, providers, model discovery/fallbacks, MCP, permissions, vault, memory, site guides, logs, diagnostics, supervision, pairing) lives on the FSB Control Panel page.
-  2. The FSB Agent mode and control panel can run real provider-backed tasks when configured, while preserving local/offline and MCP-driven workflows.
-  3. Every FSB feature category is represented in a maintained parity matrix with native status, improvement target, and validation command.
-  4. Settings for internal-surface permissions, agent caps, tab ownership, visual feedback, telemetry, and vault boundaries are visible and auditable on the control panel.
-  5. Prometheus improves on FSB where native browser ownership helps: settings/internal page control, lower-latency tool routing, safer secrets, and richer tab/session state.
-  6. The side panel, control panel, and settings adopt the canonical Prometheus design system (warm dark and light tokens, Poppins plus Space Mono, FSB orange accent) per the design reference.
-  7. Verification exercises the four-mode side panel, the control panel sections, MCP bridge, browser-owned settings, provider config, memory/site guides, vault, diagnostics, and release validation.
-**Plans**: 0 plans
+- Identify Chromium branding surfaces and product constants.
+- Apply Prometheus app metadata and icon wiring.
+- Create legal notices page/surface.
+- Update README architecture language from Falkon/QtWebEngine to Chromium.
+- Add a product identity inventory equivalent to the v1 Falkon inventory.
 
-Plans:
-- [ ] TBD (run /gsd-plan-phase 8 to break down)
+### Phase 14: Asset and Design System Port
 
-### Phase 9: Offline Font Awesome Free Icon System and Minimal Themes
-**Goal**: Bundle a free offline Font Awesome icon system and the Poppins and Space Mono brand fonts, complete the logo pass to the real Prometheus mark and wordmark, and reduce Prometheus themes to the canonical warm minimal aesthetic (dark and light token sets).
-**Depends on**: Phase 8
-**Requirements**: ICON-01, ICON-02, ICON-03, ICON-04, THEME-01, THEME-02, THEME-03, FONT-01, LOGO-01
-**Design reference**: `.planning/design/DESIGN-REFERENCE.md` (typography, logo and brand mark, palette, theme tokens)
-**Success Criteria** (what must be TRUE):
-  1. A curated Font Awesome Free icon subset is bundled in Qt resources with license/attribution preserved and no network dependency.
-  2. Prometheus has a central native icon resolver that maps browser, agent, MCP, provider, vault, diagnostics, and tab-management actions to bundled SVG icons.
-  3. Existing `QIcon::fromTheme` call sites used by primary UI have deterministic Prometheus fallbacks.
-  4. The Poppins (display) and Space Mono (mono) brand fonts are bundled offline as Qt resources with license/attribution and no network font loading.
-  5. The logo pass wires the real Prometheus PM mark and the "Prometheus" / "Powered by FSB" wordmark per the brand sheet across app icon, side panel header, start page, and about/first-run surfaces, retiring placeholder marks with correct clear-space and minimum-size behavior.
-  6. Minimal themes implement the canonical warm dark and warm light token sets (and the accent recolor option) as pure token swaps, removing heavy inherited chrome while preserving focus, hover, active, disabled, warning, and supervised-action states.
-  7. Release packaging includes icon/font/theme assets and Font Awesome plus brand font license metadata.
-  8. Visual/resource validation fails if required icons or fonts are missing, remote-loaded, illegible, or inconsistent across light/dark/minimal modes.
-**Plans**: 6 plans
+**Goal:** Make Chromium-based Prometheus visually match the canonical warm design system.
 
-Plans:
-- [x] 09-01-PLAN.md — FA SVG resource subset (70 glyphs) + fonts.qrc + font TTF asset layout.
-- [x] 09-02-PLAN.md — PromethusFontLoader C++ class and MainApplication startup hook.
-- [x] 09-03-PLAN.md — PrometheusIconResolver service with 70+ action map and 3-step fallback.
-- [x] 09-04-PLAN.md — Prometheus warm dark + light + common QSS theme files and runtime switch.
-- [x] 09-05-PLAN.md — PrometheusMarkWidget (two-weight PM mark) and primary call site migration.
-- [x] 09-06-PLAN.md — FSB asset bundle, about/first-run logo wiring, ICON-04 gate, and visual approval.
+**Requirements:** DESIGN-01, DESIGN-02, DESIGN-03, DESIGN-04, DESIGN-05, DESIGN-06, DESIGN-07
 
-### Phase 10: New Tab Start Page
-**Goal**: Build the Prometheus New Tab start page — hero PM mark, omnibox with an Ask FSB handoff, favorites grid, and FSB suggested automations — skinned to the canonical Prometheus design.
-**Depends on**: Phase 8, Phase 9
-**Requirements**: START-01, START-02, START-03, START-04, START-05
-**Design reference**: `.planning/design/DESIGN-REFERENCE.md` (start page) and `.planning/design/prometheus-browser/prometheus/StartPage.jsx`
-**Success Criteria** (what must be TRUE):
-  1. Opening a New Tab shows the Prometheus start page with the hero PM mark, the Prometheus wordmark, and an omnibox.
-  2. The omnibox accepts a search or address, and an Ask FSB action hands a natural-language prompt to the FSB Agent side panel.
-  3. The start page shows a favorites grid that navigates to the chosen entry on click.
-  4. The start page shows FSB suggested automations that seed the agent panel when chosen.
-  5. The start page uses the canonical Prometheus design system (warm tokens, Poppins, Space Mono, Font Awesome) and renders correctly in both themes.
-**Plans**: 4 plans
+**Success criteria:**
+
+1. Dark and light token sets render in Chromium WebUI and native UI surfaces.
+2. Poppins and Space Mono load offline or through a deterministic packaged resource path.
+3. Font Awesome Free subset is packaged with attribution and no network dependency.
+4. PM mark, Prometheus wordmark, and FSB logos render correctly on dark/light surfaces.
+5. Visual checks cover fonts, icons, text fit, focus, hover, disabled, warning, private, active-agent, and supervised states.
+
+**Planned work:**
+
+- Convert QSS token decisions to Chromium CSS variables and Views/theme constants.
+- Create Chromium resource entries for assets and fonts.
+- Port icon resolver concept to Chromium resource IDs and helper APIs.
+- Add asset/license validation script.
+- Preserve accent swatches: FSB Orange, Indigo, Teal, Rose.
+
+**Plans:** 8/8 plans complete
 
 Plans:
 **Wave 1**
-- [x] 10-01-PLAN.md — Bundle 3 missing FA SVGs (inbox, cart-shopping, calendar-check) and repoint TabWidget new-tab default to `falkon:start`.
+
+- [x] 14-01-PLAN.md — Wave 0: Phase 14 branch, test scaffold (RED stubs), verify-asset-pipeline.sh, convert-fa-icons.sh
+- [x] 14-02-PLAN.md — Declare kColorPrometheus* ids in COMMON_CHROME_COLOR_IDS; register mixer last in AddChromeColorMixers
+- [x] 14-04-PLAN.md — Vendor font/FA license metadata; source Poppins/SpaceMono/mark assets; write prometheus_fonts.css
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [x] 10-02-PLAN.md — Write complete Prometheus start.html and update FalkonSchemeReply::startPage() two-stage cache.
-- [x] 10-03-PLAN.md — Create PrometheusStartBridge C++ class, add seedPromptAndOpen to AgentRuntimeSidebarWidget, wire URL-guarded registration in ExternalJsObject.
+
+- [x] 14-03-PLAN.md — Fill warm dark/light palette + accent derivations in prometheus_color_mixer.cc (token tests GREEN)
+- [x] 14-05-PLAN.md — Run FA icon conversion; declare prometheus_vector_icons GN target; write PrometheusAction resolver
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [x] 10-04-PLAN.md — Build, launch, and visual/functional sign-off checkpoint for all five START requirements.
+
+- [x] 14-06-PLAN.md — Write prometheus_resources.grd; wire pak into browser bundle; IDR resource tests GREEN
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 14-07-PLAN.md — Build chrome://prometheus-theme-preview WebUI dev surface + PrometheusTokenGalleryView
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [x] 14-08-PLAN.md — Full gate run; tag VIS satisfied-by-Ph14-harness; export Phase 14 patches
+
+### Phase 15: Chromium UI Shell, Compact Chrome, and Tab Model
+
+**Goal:** Rebuild the compact browser shell and advanced tab behavior on Chromium-native UI.
+
+**Requirements:** UX-01, UX-02, UX-03, UX-04, UX-05, UX-06, UX-07
+
+**Plans:** 6/6 plans complete
+
+**Success criteria:**
+
+1. Compact chrome places tabs in the toolbar and makes the active tab address/search field.
+2. Separate/conventional layout remains available.
+3. Tab groups, overview/search, quick switch, close/restore, unload/suspend, duplicate, detach, and reorder paths work.
+4. Agent ownership, automation, supervision, tab health, audio/private/security, and extension state are visible without clutter.
+5. Automated geometry, reachability, keyboard, and platform-behavior gates pass; human desktop screenshot UAT is consolidated into Phase 24 as non-blocking review.
+
+**Planned work:**
+
+- Map Falkon compact-tab concepts to Chromium Views/tab-strip architecture.
+- Add Prometheus chrome mode preference.
+- Add side panel toggle and FSB action button.
+- Add agent/supervision badges fed by the later agent service with temporary stub state.
+- Add focused visual tests/screenshots once UI exists.
+
+### Phase 16: Prometheus WebUI Surfaces and New Tab
+
+**Goal:** Build browser-backed Prometheus WebUI pages for start, side panel, and control center.
+
+**Requirements:** WEBUI-01, WEBUI-02, WEBUI-03, WEBUI-04, WEBUI-05, WEBUI-06, WEBUI-07
+
+**Plans:** 6/6 plans complete
+
+**Success criteria:**
+
+1. `chrome://prometheus-newtab` or equivalent renders the Prometheus start page.
+2. Ask FSB seeds the side panel without placing prompt content in URLs/history.
+3. Internal FSB Control Panel WebUI includes the nine operator sections.
+4. WebUI pages use browser-process data sources and Mojo/chrome-send style communication where appropriate.
+5. WebUI pages load no remote resources and do not expose secrets to renderers.
+
+**Planned work:**
+
+- Register Prometheus WebUI hosts/controllers.
+- Create WebUI resource targets and GRIT packaging.
+- Port start page HTML/CSS behavior to Chromium WebUI.
+- Build side panel shell with FSB Agent, Explorer, Tabs, Tools modes.
+- Build control panel shell with Tasks, Providers & Models, MCP Status, Permissions & Agents, Vault, Memory & Site Guides, Logs & Diagnostics, Supervision & Pairing, Parity Matrix.
+- Enable fast WebUI iteration docs using Chromium's `load_webui_from_disk` mode if practical.
+
+### Phase 17: Native Agent Command Service and Tab Ownership
+
+**Goal:** Rebuild Prometheus native routing inside Chromium's browser process.
+
+**Requirements:** AGENT-01, AGENT-02, AGENT-03, AGENT-04, AGENT-05, AGENT-06, AGENT-07, AGENT-08
+
+**Plans:** 6/6 plans complete
+
+**Success criteria:**
+
+1. Native service validates route input and returns structured route results.
+2. Agent can list and control tabs/windows through Chromium browser-owned APIs.
+3. Agent sessions are authenticated and browser-assigned.
+4. Tab ownership is keyed by stable WebContents/tab identity.
+5. Internal surfaces are behind explicit adapters and permission policies.
+6. Typed errors and recovery guidance match FSB/Prometheus expectations.
+
+**Planned work:**
+
+- Create Prometheus browser-process service and route schema.
+- Add route auth/session registry.
+- Add tab registry and ownership enforcement.
+- Add basic route logging/audit record.
+- Add unit/browser tests for auth, ownership, caps, and typed errors.
+
+### Phase 18: Page Adapter, DOM Snapshot, and Action Verification
+
+**Goal:** Restore page understanding and actions on Chromium content primitives.
+
+**Requirements:** PAGE-01, PAGE-02, PAGE-03, PAGE-04, PAGE-05, PAGE-06, PAGE-07, PAGE-08
+
+**Plans:** 8/8 plans complete
+
+Plans:
+
+- [x] 18-01-PLAN.md — Extend page-route contracts and harden content-safe audit metadata.
+- [x] 18-02-PLAN.md — Add deterministic page-adapter fixtures and browser-test harness.
+- [x] 18-03-PLAN.md — Implement frame policy and `read_page` over Chromium text extraction.
+- [x] 18-04-PLAN.md — Add the permissioned renderer/Mojo JavaScript execution seam.
+- [x] 18-05-PLAN.md — Build bounded DOM and compact snapshots from Annotated Page Content.
+- [x] 18-06-PLAN.md — Add renderer-side safe page actions and ref resolution.
+- [x] 18-07-PLAN.md — Add page-settle waiting and repeated-action detection.
+- [x] 18-08-PLAN.md — Wire action routes, verification reports, and typed drag/file-drop denials.
+
+**Success criteria:**
+
+1. Page text, DOM snapshot, and compact snapshot routes work on normal pages.
+2. JS execution route is permissioned, audited, result-capturing, and read-back verified.
+3. Page action routes support click/type/key/scroll/hover/select/clear/drag/drop where safe.
+4. Mutating actions wait for load/stability/visible change and return change reports.
+5. Cross-origin, sandbox, restricted, and unsupported target failures are explicit.
+
+**Planned work:**
+
+- Implement WebContents/frame targeting.
+- Add renderer helper where needed for DOM snapshots and element refs.
+- Implement action verification and wait logic.
+- Add stuck/repeated action detection.
+- Add tests against local fixtures with forms, frames, navigation, and dynamic DOM changes.
+
+### Phase 19: MCP Bridge and Multi-Agent Runtime Compatibility
+
+**Goal:** Make existing FSB-style MCP clients drive the Chromium-native service.
+
+**Requirements:** MCP-01, MCP-02, MCP-03, MCP-04, MCP-05, MCP-06, MCP-07
+
+**Plans:** 7/7 plans complete
+
+Plans:
+
+- [x] 19-01-PLAN.md — Freeze the clean-room 90-name compatibility catalog, schemas, typed errors, and Wave 0 fixtures.
+- [x] 19-02-PLAN.md — Add closed native route/result contracts and a strict bounded JSON transport codec.
+- [x] 19-03-PLAN.md — Add regular-profile keyed session lifetime, opaque resume, cap, expiry, and ownership cleanup.
+- [x] 19-04-PLAN.md — Add structured/background tab compatibility, safe internal surfaces, and exact-frame element reads.
+- [x] 19-05-PLAN.md — Add the authenticated loopback gateway, secure descriptor, and browser-process lifetime wiring.
+- [x] 19-06-PLAN.md — Implement the dependency-free external stdio MCP bridge and all manifest-backed tool behavior.
+- [x] 19-07-PLAN.md — Run live browser-to-stdio smoke, full automated gates, patch export, and truthful documentation closeout.
+
+**Success criteria:**
+
+1. Local stdio MCP bridge connects to Chromium-based Prometheus.
+2. Manual/read/runtime tools expose compatible names and schemas.
+3. Visual-session fields are accepted and preserved.
+4. Multi-agent ownership, caps, reconnect grace, and background tab routing are enforced.
+5. Diagnostics report health for browser, bridge, tab, page adapter, internal adapter, WebUI adapter, vault, provider, supervision, and extensions.
+
+**Planned work:**
+
+- Port or rewrite the dependency-light Node MCP bridge.
+- Map MCP tools to Chromium route server.
+- Add compatibility stubs for changed/unsupported tools.
+- Add smoke tests equivalent to `smoke-mcp-bridge.sh` and FSB reference tests.
+- Add diagnostics endpoint and output shape.
+
+### Phase 20: FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel
+
+**Goal:** Restore user-facing FSB runtime functionality inside Chromium-based Prometheus.
+
+**Requirements:** FSB-01, FSB-02, FSB-03, FSB-04, FSB-05, FSB-06, FSB-07, FSB-08
+
+**Plans:** 14/14 plans complete
+
+Plans:
+
+- [x] 20-01-PLAN.md — Define closed native runtime contracts, profile prefs, limits, and effective policy.
+- [x] 20-02-PLAN.md — Implement bounded task, log, action, diagnostic, outcome, and usage persistence.
+- [x] 20-03-PLAN.md — Implement bounded memory and exact-origin site-guide CRUD/search/apply.
+- [x] 20-04-PLAN.md — Add OSCrypt-backed exact-origin secret storage and the provider registry.
+- [x] 20-05-PLAN.md — Add three strict provider codec families and secure cancellable network transport.
+- [x] 20-06-PLAN.md — Add safe-title persistence plus native policy and Agent-session-cap primitives.
+- [x] 20-07-PLAN.md — Own the closed non-official provider bootstrap and assemble the regular-profile runtime, private local principal, safe tool loop, fallback, cancellation, and evaluation seam.
+- [x] 20-08-PLAN.md — Add vault metadata, private Agent-authority insertion, and fail-closed fresh target confirmation.
+- [x] 20-09-PLAN.md — Expose 27 closed runtime commands through the authenticated native gateway.
+- [x] 20-10-PLAN.md — Promote all 31 Phase 20 MCP names to 27 native routes plus four aliases and prove built-app external smoke.
+- [x] 20-11-PLAN.md — Migrate to exact-window side-panel ownership and wire the live task UI.
+- [x] 20-12-PLAN.md — Populate live control-panel Tasks, Providers & Models, and Logs & Diagnostics.
+- [x] 20-13-PLAN.md — Complete Memory, Site Guides, Vault, Settings, and exact-window native secret dialogs.
+- [x] 20-14-PLAN.md — Run the 32-case integration corpus, full gates, patch export, and evidence closeout.
+
+**Success criteria:**
+
+1. User can submit tasks from the side panel in Auto, Provider, or Local mode; tasks submitted by external MCP clients run in the same native runtime and appear with MCP-driven provenance, never as an embedded engine.
+2. Provider configuration supports OpenAI, Anthropic, Gemini, xAI, OpenRouter, LM Studio, hosted/routed/local/custom endpoints, and fallback order.
+3. Secrets never display after save and never cross MCP/remote transports.
+4. Logs, diagnostics, metrics, token/cost accounting, memory, site guides, and vault metadata are visible in the control panel.
+5. Settings expose enforced internal-surface permissions, caps, ownership, background actions, telemetry, and vault boundaries while supervision pairing remains truthfully `Not ready` for Phase 21.
+
+**Planned work:**
+
+- Build runtime model/service.
+- Add secure storage adapter for provider/vault secrets.
+- Wire side panel task composer to runtime service.
+- Populate control panel sections.
+- Add tests for provider config, secret redaction, memory/site-guide CRUD, logs, and runtime status.
+
+### Phase 21: Supervision, Pairing, and Remote Control
+
+**Goal:** Rebuild DOM-native supervision and safe dashboard pairing on Chromium sessions.
+
+**Requirements:** SUP-01, SUP-02, SUP-03, SUP-04, SUP-05
+
+**Plans:** 26/26 plans complete
+
+Plans:
+**Wave 1**
+
+- [x] 21-01-PLAN.md — Freeze closed native supervision types and the focused verification scaffold.
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 21-02-PLAN.md — Define the bounded dashboard supervision wire codec and privacy contract.
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 21-03-PLAN.md — Implement the transport-independent DOM baseline, diff, sequence, and resync model.
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 21-04-PLAN.md — Build pairing, viewer, controller, and Agent-owned tab-observation lifecycles.
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [x] 21-05-PLAN.md — Bind supervision safely to regular-profile Agent authority and teardown ordering.
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [x] 21-06-PLAN.md — Add the Blink document supplement and bidirectional dirty-signal Mojo path.
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [x] 21-07-PLAN.md — Create the sole browser-owned capture hub shared by all supervision consumers.
+
+**Wave 8** *(blocked on Wave 7 completion)*
+
+- [x] 21-08-PLAN.md — Attach independent dashboard viewers to exact-target capture-hub streams.
+
+**Wave 9** *(blocked on Wave 8 completion)*
+
+- [x] 21-09-PLAN.md — Add an abstract supervision dispatcher to the authenticated loopback gateway.
+
+**Wave 10** *(blocked on Wave 9 completion)*
+
+- [x] 21-10-PLAN.md — Promote the five closed supervision commands into the native route contract.
+
+**Wave 11** *(blocked on Wave 10 completion)*
+
+- [x] 21-11-PLAN.md — Wire the five commands through exact-browser Agent dispatch and composition.
+
+**Wave 12** *(blocked on Wave 11 completion)*
+
+- [x] 21-12-PLAN.md — Implement MCP supervision semantics as an independent shared-hub consumer.
+
+**Wave 13** *(blocked on Wave 12 completion)*
+
+- [x] 21-13-PLAN.md — Promote the five supervision tools in the dependency-free Node catalog.
+
+**Wave 14** *(blocked on Wave 13 completion)*
+
+- [x] 21-14-PLAN.md — Route remote control through the existing typed Agent action engine.
+
+**Wave 15** *(blocked on Wave 14 completion)*
+
+- [x] 21-15-PLAN.md — Add native consent and revalidation for control and consequential actions.
+
+**Wave 16** *(blocked on Wave 15 completion)*
+
+- [x] 21-16-PLAN.md — Project sanitized supervision state into browser-owned tab state.
+
+**Wave 17** *(blocked on Wave 16 completion)*
+
+- [x] 21-17-PLAN.md — Wire the existing native tab badge to live supervision state.
+
+**Wave 18** *(blocked on Wave 17 completion)*
+
+- [x] 21-18-PLAN.md — Add exact-tab native runtime and stop actions for the side-panel strip.
+
+**Wave 19** *(blocked on Wave 18 completion)*
+
+- [x] 21-19-PLAN.md — Render the persistent responsive supervision strip in the side panel.
+
+**Wave 20** *(blocked on Wave 19 completion)*
+
+- [x] 21-20-PLAN.md — Add strict Control Panel snapshots and one-shot pairing creation.
+
+**Wave 21** *(blocked on Wave 20 completion)*
+
+- [x] 21-21-PLAN.md — Complete Control Panel lifecycle actions, observation, and code erasure.
+
+**Wave 22** *(blocked on Wave 21 completion)*
+
+- [x] 21-22-PLAN.md — Finish the responsive Supervision & Pairing Control Panel UI.
+
+**Wave 23** *(blocked on Wave 22 completion)*
+
+- [x] 21-23-PLAN.md — Add the gated two-slot smoke bootstrap and conditional gateway contract path.
+
+**Wave 24** *(blocked on Wave 23 completion)*
+
+- [x] 21-24-PLAN.md — Bind the test handoff only from browser composition with fail-closed teardown.
+
+**Wave 25** *(blocked on Wave 24 completion)*
+
+- [x] 21-25-PLAN.md — Prove native dialogs and two-viewer/MCP supervision in the built app.
+
+**Wave 26** *(blocked on Wave 25 completion)*
+
+- [x] 21-26-PLAN.md — Run exact verification, export ordered patches, and publish closeout evidence.
+
+**Success criteria:**
+
+1. Browser shows visible active-agent and supervised-action state.
+2. Supervision stream emits structured snapshots/diffs or equivalent data with session identity.
+3. Dashboard pairing has visible state, expiration, revocation, audit logs, and target validation.
+4. Remote control honors ownership, permission, vault, and confirmation boundaries.
+5. Stale or mismatched supervision messages cannot affect the wrong tab.
+
+**Planned work:**
+
+- Port PhantomStream-style DOM snapshot/diff concepts to Chromium.
+- Add pairing/session model.
+- Add remote-control route gates.
+- Add visual supervised-state badges in chrome and side panel.
+- Add tests for stale sessions, target mismatch, expiration, and revocation.
+
+### Phase 22: Chrome Extension Ecosystem and Policy
+
+**Goal:** Use Chromium's extension ecosystem without giving extensions Prometheus agent privileges by accident.
+
+**Requirements:** EXT-01, EXT-02, EXT-03, EXT-04, EXT-05, EXT-06
+
+**Success criteria:**
+
+1. Chromium extension system is enabled or intentionally scoped with documented limitations.
+2. User can install/manage compatible extensions through an approved flow or documented developer/sideload path.
+3. Extension permissions are separate from agent permissions.
+4. Agent routing detects extension surfaces and applies explicit policy before reading or mutating.
+5. Representative extensions are tested across password manager, ad blocker, productivity/content script, side panel/tooling, and developer extension categories.
+
+**Planned work:**
+
+- Inventory Chromium extension features available in the chosen build.
+- Decide install/store/sideload/developer flow.
+- Add extension-surface policy to agent router.
+- Add diagnostics for extension subsystem.
+- Document disabled Google-service or store limitations.
+
+### Phase 23: Migration Parity, Security Hardening, and De-Falkon Gate
+
+**Goal:** Prove that Chromium Prometheus meets or consciously retires v1 behavior and is safe enough for a validation package.
+
+**Requirements:** REL-01, REL-02, REL-03, REL-04, REL-07
+
+**Success criteria:**
+
+1. Parity matrix maps every v1 capability and FSB category to Missing, Partial, Parity, Better, Blocked, or Verified.
+2. Security review covers route auth, tab ownership, JS execution, internal WebUI mutation, extension boundaries, vault, provider secrets, remote pairing, logs, and telemetry.
+3. Automated visual, layout, resource, and packaging verification covers chrome, side panel, control panel, start page, themes, fonts, icons, extension surfaces, and macOS packaging.
+4. Build or validation fails on active `falkon/`, Qt/Falkon build script dependency, Falkon product strings in primary UI, or unreviewed GPL-derived source.
+5. Migration blockers are either fixed or explicitly carried to v2.1.
+
+**Planned work:**
+
+- Build new `FSB-PARITY.md` for Chromium.
+- Port release validation checks and add de-Falkon static checks.
+- Run code review/security review.
+- Assemble automated visual/layout evidence for all major surfaces and carry remaining human screenshot review to Phase 24 as non-blocking.
+- Remove or quarantine leftover legacy assumptions.
+
+### Phase 24: Packaging, Release Validation, and Handoff
+
+**Goal:** Produce a coherent Chromium-based Prometheus validation package and next-step handoff.
+
+**Requirements:** REL-01, REL-04, REL-05, REL-06
+
+**Success criteria:**
+
+1. macOS package builds reproducibly with Prometheus identity and required notices.
+2. Package includes source/license guidance and excludes Falkon product artifacts.
+3. Release validation script passes build, smoke, chrome, WebUI, MCP, agent control, page adapters, extension support, security, branding, assets, legal notices, and parity gates.
+4. README and handoff docs explain Chromium base, revision, supported platforms, known limitations, extension support, MCP setup, and safety model.
+5. v2.1 backlog is explicit: Linux/Windows, Lattice, hosted/fleet control, notarization/update channel, enterprise policy.
+6. Remaining human visual UAT is offered as a consolidated, non-blocking release review; skipping screenshots does not block the local validation package when automated gates pass.
+
+**Planned work:**
+
+- Package Chromium-based app as Prometheus for local macOS validation.
+- Add release docs and source guidance.
+- Run all validation gates.
+- Offer the consolidated human visual review and record it as passed, skipped, or findings-reported without making it a packaging gate.
+- Resolve or explicitly disposition the Phase 20 UI audit carry-forward:
+  waiting-confirmation review, current-tab vault use, transactional vault-save
+  failure handling, control-panel detail/filter gaps, and token normalization.
+
+- Archive v2.0 milestone artifacts.
+- Prepare next milestone candidates.
 
 ## Progress
 
-**Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10
+| Phase | Milestone | Plans | Status | Completed |
+|-------|-----------|-------|--------|-----------|
+| 11. Preservation Contract and Falkon Freeze | v2.0 | 3/3 | Complete   | 2026-06-23 |
+| 12. Chromium Checkout, Build, and Patch Discipline | v2.0 | 4/4 | Complete    | 2026-06-24 |
+| 13. Product Identity, Branding, and Legal Baseline | v2.0 | 4/4 | Complete    | 2026-06-24 |
+| 14. Asset and Design System Port | v2.0 | 8/8 | Complete    | 2026-07-07 |
+| 15. Chromium UI Shell, Compact Chrome, and Tab Model | v2.0 | 6/6 | Complete   | 2026-07-07 |
+| 16. Prometheus WebUI Surfaces and New Tab | v2.0 | 6/6 | Complete | 2026-07-07 |
+| 17. Native Agent Command Service and Tab Ownership | v2.0 | 6/6 | Complete | 2026-07-07 |
+| 18. Page Adapter, DOM Snapshot, and Action Verification | v2.0 | 8/8 | Complete    | 2026-07-12 |
+| 19. MCP Bridge and Multi-Agent Runtime Compatibility | v2.0 | 7/7 | Complete    | 2026-07-13 |
+| 20. FSB Runtime, Providers, Vault, Memory, Logs, and Control Panel | v2.0 | 14/14 | Complete    | 2026-07-20 |
+| 21. Supervision, Pairing, and Remote Control | v2.0 | 26/26 | Complete | 2026-07-25 |
+| 22. Chrome Extension Ecosystem and Policy | v2.0 | 4/5 | In Progress|  |
+| 23. Migration Parity, Security Hardening, and De-Falkon Gate | v2.0 | 0 | Planned | — |
+| 24. Packaging, Release Validation, and Handoff | v2.0 | 0 | Planned | — |
 
-| Phase | Plans Complete | Status | Completed |
-|-------|----------------|--------|-----------|
-| 1. Baseline and Legal Inventory | 3/3 | Complete | 2026-06-16 |
-| 2. Prometheus Product Identity Shell | 4/4 | Complete | 2026-06-16 |
-| 3. Native Agent Control Spine | 5/5 | Complete | 2026-06-16 |
-| 4. MCP Compatibility and Multi-Agent Control | 5/5 | Complete | 2026-06-16 |
-| 5. FSB Runtime Parity Surfaces | 5/5 | Complete | 2026-06-16 |
-| 6. Supervision, Packaging, and Release Hardening | 4/4 | Complete | 2026-06-16 |
-| 7. Compact Safari-style Browser Chrome and Advanced Tab Management | 10/10 | Complete | 2026-06-16 |
-| 8. Native FSB-Plus Settings Side Panel and Feature Parity Matrix | 5/5 | Complete   | 2026-06-17 |
-| 9. Offline Font Awesome Free Icon System and Minimal Themes | 6/6 | Complete   | 2026-06-17 |
-| 10. New Tab Start Page | 4/4 | Complete    | 2026-06-17 |
+**Totals:** 14 phases, 11 complete; 92 of 92 existing v2.0 plans summarized.
+Phase 21 is complete. Phase 22 remains planned and `not_ready`.
+
+## Future Work Beyond Current Milestone
+
+- Linux and Windows Chromium-based builds after macOS-first validation.
+- Lattice integration if it materially simplifies provider routing, receipts, policy, or agent runtime.
+- Hosted/fleet control after local Chromium control and supervision are stable.
+- Signed/notarized public release and automatic update channel.
+- Enterprise policy templates.

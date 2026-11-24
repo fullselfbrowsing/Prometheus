@@ -1,0 +1,812 @@
+From 33714e77eea719b75963f152196945699f45f52b Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 17:33:59 -0500
+Subject: [PATCH] test(21-02): specify closed supervision transport
+
+- freeze seven exact dashboard operation schemas and typed params
+- cover authority injection, stale shapes, action and resource bounds
+- distinguish dashboard-only stamps from sanitized projections
+---
+ chrome/browser/prometheus/BUILD.gn            |  14 +
+ .../prometheus_supervision_transport_codec.cc |  86 ++++
+ .../prometheus_supervision_transport_codec.h  | 178 +++++++
+ ...us_supervision_transport_codec_unittest.cc | 470 ++++++++++++++++++
+ 4 files changed, 748 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_transport_codec.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_transport_codec.h
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_transport_codec_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 8b373f2f1f..8e9b3a03da 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -278,6 +278,18 @@ source_set("prometheus_supervision_types") {
+   ]
+ }
+ 
++source_set("prometheus_supervision_transport_codec") {
++  sources = [
++    "prometheus_supervision_transport_codec.cc",
++    "prometheus_supervision_transport_codec.h",
++  ]
++
++  deps = [
++    ":prometheus_supervision_types",
++    "//base",
++  ]
++}
++
+ source_set("prometheus_runtime_prefs") {
+   sources = [
+     "prometheus_runtime_prefs.cc",
+@@ -541,6 +553,7 @@ test("prometheus_unittests") {
+     "prometheus_runtime_transport_codec_unittest.cc",
+     "prometheus_runtime_types_unittest.cc",
+     "prometheus_secret_store_unittest.cc",
++    "prometheus_supervision_transport_codec_unittest.cc",
+     "prometheus_supervision_types_unittest.cc",
+     "prometheus_tab_state_unittest.cc",
+     "prometheus_vault_service_unittest.cc",
+@@ -579,6 +592,7 @@ test("prometheus_unittests") {
+     ":prometheus_runtime_transport_codec",
+     ":prometheus_runtime_types",
+     ":prometheus_secret_store",
++    ":prometheus_supervision_transport_codec",
+     ":prometheus_supervision_types",
+     ":prometheus_tab_state",
+     ":prometheus_vault_service",
+diff --git a/chrome/browser/prometheus/prometheus_supervision_transport_codec.cc b/chrome/browser/prometheus/prometheus_supervision_transport_codec.cc
+new file mode 100644
+index 0000000000..c7a923fc7a
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_transport_codec.cc
+@@ -0,0 +1,86 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_transport_codec.h"
++
++#include <utility>
++
++namespace prometheus {
++
++SupervisionTransportResult SupervisionTransportResult::Success(
++    SupervisionTransportOperation operation) {
++  SupervisionTransportResult result;
++  result.operation = operation;
++  result.ok = true;
++  return result;
++}
++
++SupervisionTransportResult SupervisionTransportResult::TransportFailure(
++    SupervisionTransportOperation operation,
++    SupervisionTransportErrorCode error_code,
++    std::string message,
++    std::string recovery) {
++  SupervisionTransportResult result;
++  result.operation = operation;
++  result.transport_error = error_code;
++  result.message = std::move(message);
++  result.recovery = std::move(recovery);
++  return result;
++}
++
++SupervisionTransportResult SupervisionTransportResult::SupervisionFailure(
++    SupervisionTransportOperation operation,
++    SupervisionErrorCode error_code,
++    std::string message,
++    std::string recovery) {
++  SupervisionTransportResult result;
++  result.operation = operation;
++  result.supervision_error = error_code;
++  result.message = std::move(message);
++  result.recovery = std::move(recovery);
++  return result;
++}
++
++std::optional<SupervisionTransportOperation>
++SupervisionTransportOperationFromString(std::string_view value) {
++  return std::nullopt;
++}
++
++std::optional<std::string_view> SupervisionTransportOperationToString(
++    SupervisionTransportOperation operation) {
++  return std::nullopt;
++}
++
++std::optional<std::string_view> SupervisionTransportErrorCodeToString(
++    SupervisionTransportErrorCode error_code) {
++  return std::nullopt;
++}
++
++base::expected<SupervisionTransportRequest, SupervisionTransportResult>
++ParseSupervisionTransportRequest(std::string_view json) {
++  return base::unexpected(SupervisionTransportResult::TransportFailure(
++      SupervisionTransportOperation::kRedeem,
++      SupervisionTransportErrorCode::kInvalidRequest,
++      "Supervision transport codec is not implemented",
++      "Use the closed dashboard request contract"));
++}
++
++base::expected<std::string, SupervisionTransportResult>
++SerializeSupervisionDashboardResult(const SupervisionTransportResult& result) {
++  return base::unexpected(SupervisionTransportResult::TransportFailure(
++      result.operation, SupervisionTransportErrorCode::kInternal,
++      "Supervision transport codec is not implemented",
++      "Retry after the native codec is available"));
++}
++
++base::expected<std::string, SupervisionTransportResult>
++SerializeSupervisionCompatibilityResult(
++    const SupervisionTransportResult& result) {
++  return base::unexpected(SupervisionTransportResult::TransportFailure(
++      result.operation, SupervisionTransportErrorCode::kInternal,
++      "Supervision transport codec is not implemented",
++      "Retry after the native codec is available"));
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_transport_codec.h b/chrome/browser/prometheus/prometheus_supervision_transport_codec.h
+new file mode 100644
+index 0000000000..76160ebe6b
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_transport_codec.h
+@@ -0,0 +1,178 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_TRANSPORT_CODEC_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_TRANSPORT_CODEC_H_
++
++#include <cstdint>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <variant>
++
++#include "base/types/expected.h"
++#include "chrome/browser/prometheus/prometheus_supervision_types.h"
++
++namespace prometheus {
++
++inline constexpr size_t kSupervisionTransportOperationCount = 7;
++inline constexpr size_t kMaxSupervisionTransportInputBytes = 1'048'576;
++inline constexpr size_t kMaxSupervisionTransportOutputBytes = 2'097'152;
++inline constexpr size_t kMaxSupervisionTransportSessionBytes = 128;
++inline constexpr size_t kMaxSupervisionTransportEpochBytes = 128;
++inline constexpr size_t kMaxSupervisionTransportElementRefBytes = 4096;
++inline constexpr size_t kMaxSupervisionTransportTextBytes = 20'000;
++inline constexpr size_t kMaxSupervisionTransportKeyBytes = 128;
++inline constexpr size_t kMaxSupervisionTransportOptionBytes = 4096;
++inline constexpr size_t kMaxSupervisionTransportNavigationBytes = 4096;
++inline constexpr size_t kMaxSupervisionTransportMessageBytes = 512;
++inline constexpr uint64_t kMaxSupervisionTransportSequence =
++    (uint64_t{1} << 53) - 1;
++inline constexpr int32_t kMaxSupervisionTransportScrollDelta = 100'000;
++
++enum class SupervisionTransportOperation {
++  kRedeem,
++  kBaseline,
++  kDiff,
++  kAck,
++  kAction,
++  kHeartbeat,
++  kEnd,
++};
++
++enum class SupervisionTransportErrorCode {
++  kNone,
++  kInvalidOperation,
++  kInvalidRequest,
++  kRequestTooLarge,
++  kForbiddenField,
++  kOutputNotSanitized,
++  kUnavailable,
++  kInternal,
++};
++
++struct SupervisionRedeemParams {
++  std::string pairing_code;
++  std::string client_label;
++};
++
++struct SupervisionBaselineParams {
++  std::string dashboard_session;
++};
++
++struct SupervisionDiffParams {
++  std::string dashboard_session;
++  std::string document_epoch;
++  uint64_t after_sequence = 0;
++};
++
++struct SupervisionAckParams {
++  std::string dashboard_session;
++  std::string document_epoch;
++  uint64_t sequence = 0;
++};
++
++struct SupervisionRemoteActionRequest {
++  SupervisionRemoteActionCategory category =
++      SupervisionRemoteActionCategory::kClick;
++  std::optional<std::string> element_ref;
++  std::optional<std::string> target_element_ref;
++  std::optional<std::string> text;
++  std::optional<std::string> key;
++  std::optional<std::string> option;
++  std::optional<int32_t> scroll_delta_x;
++  std::optional<int32_t> scroll_delta_y;
++  std::optional<std::string> navigation;
++};
++
++struct SupervisionActionParams {
++  std::string dashboard_session;
++  std::string document_epoch;
++  uint64_t sequence = 0;
++  SupervisionRemoteActionRequest action;
++};
++
++struct SupervisionHeartbeatParams {
++  std::string dashboard_session;
++};
++
++struct SupervisionEndParams {
++  std::string dashboard_session;
++};
++
++using SupervisionTransportParams = std::variant<SupervisionRedeemParams,
++                                                SupervisionBaselineParams,
++                                                SupervisionDiffParams,
++                                                SupervisionAckParams,
++                                                SupervisionActionParams,
++                                                SupervisionHeartbeatParams,
++                                                SupervisionEndParams>;
++
++static_assert(std::variant_size_v<SupervisionTransportParams> ==
++              kSupervisionTransportOperationCount);
++
++struct SupervisionTransportRequest {
++  SupervisionTransportOperation operation =
++      SupervisionTransportOperation::kRedeem;
++  SupervisionTransportParams params = SupervisionRedeemParams();
++};
++
++// Dashboard-only wire authority. This DTO may cross only the authenticated
++// dashboard transport. Compatibility/WebUI serializers intentionally have no
++// code path that projects it.
++struct SupervisionDashboardWireAuthority {
++  std::string dashboard_session;
++  std::optional<std::string> document_epoch;
++  std::optional<uint64_t> sequence;
++};
++
++struct SupervisionTransportResult {
++  SupervisionTransportOperation operation =
++      SupervisionTransportOperation::kRedeem;
++  bool ok = false;
++  SupervisionTransportErrorCode transport_error =
++      SupervisionTransportErrorCode::kNone;
++  SupervisionErrorCode supervision_error = SupervisionErrorCode::kNone;
++  std::string message;
++  std::string recovery;
++  std::optional<SupervisionDashboardWireAuthority> dashboard_authority;
++  std::optional<SanitizedSupervisionSnapshot> sanitized_snapshot;
++  std::optional<bool> no_change;
++  std::optional<bool> requires_baseline;
++  std::optional<bool> ended;
++
++  static SupervisionTransportResult Success(
++      SupervisionTransportOperation operation);
++  static SupervisionTransportResult TransportFailure(
++      SupervisionTransportOperation operation,
++      SupervisionTransportErrorCode error_code,
++      std::string message,
++      std::string recovery);
++  static SupervisionTransportResult SupervisionFailure(
++      SupervisionTransportOperation operation,
++      SupervisionErrorCode error_code,
++      std::string message,
++      std::string recovery);
++};
++
++std::optional<SupervisionTransportOperation>
++SupervisionTransportOperationFromString(std::string_view value);
++std::optional<std::string_view> SupervisionTransportOperationToString(
++    SupervisionTransportOperation operation);
++std::optional<std::string_view> SupervisionTransportErrorCodeToString(
++    SupervisionTransportErrorCode error_code);
++
++base::expected<SupervisionTransportRequest, SupervisionTransportResult>
++ParseSupervisionTransportRequest(std::string_view json);
++
++base::expected<std::string, SupervisionTransportResult>
++SerializeSupervisionDashboardResult(const SupervisionTransportResult& result);
++
++base::expected<std::string, SupervisionTransportResult>
++SerializeSupervisionCompatibilityResult(
++    const SupervisionTransportResult& result);
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_TRANSPORT_CODEC_H_
+diff --git a/chrome/browser/prometheus/prometheus_supervision_transport_codec_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_transport_codec_unittest.cc
+new file mode 100644
+index 0000000000..0ce46fbb5b
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_transport_codec_unittest.cc
+@@ -0,0 +1,470 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_transport_codec.h"
++
++#include <array>
++#include <set>
++#include <string>
++#include <string_view>
++#include <utility>
++#include <vector>
++
++#include "base/json/json_reader.h"
++#include "base/json/json_writer.h"
++#include "base/values.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++namespace {
++
++constexpr std::string_view kDashboardSession = "DASHBOARD-SESSION-7";
++constexpr std::string_view kDocumentEpoch = "DOCUMENT-EPOCH-9";
++
++struct SupervisionSchemaCase {
++  std::string_view operation;
++  std::string_view params;
++};
++
++constexpr std::array<SupervisionSchemaCase, 7> kSchemaCases = {{
++    {"redeem",
++     R"({"pairing_code":"ab cd-efgh","client_label":"Dashboard one"})"},
++    {"baseline", R"({"dashboard_session":"DASHBOARD-SESSION-7"})"},
++    {"diff",
++     R"({"dashboard_session":"DASHBOARD-SESSION-7","document_epoch":"DOCUMENT-EPOCH-9","after_sequence":7})"},
++    {"ack",
++     R"({"dashboard_session":"DASHBOARD-SESSION-7","document_epoch":"DOCUMENT-EPOCH-9","sequence":7})"},
++    {"action",
++     R"({"dashboard_session":"DASHBOARD-SESSION-7","document_epoch":"DOCUMENT-EPOCH-9","sequence":7,"action":{"category":"click","ref":"document:7/node:11"}})"},
++    {"heartbeat", R"({"dashboard_session":"DASHBOARD-SESSION-7"})"},
++    {"end", R"({"dashboard_session":"DASHBOARD-SESSION-7"})"},
++}};
++
++std::string RequestJson(std::string_view operation, std::string_view params) {
++  return "{\"operation\":\"" + std::string(operation) +
++         "\",\"params\":" + std::string(params) + "}";
++}
++
++SupervisionTransportResult ParseError(std::string_view json) {
++  auto parsed = ParseSupervisionTransportRequest(json);
++  EXPECT_FALSE(parsed.has_value());
++  return parsed.has_value()
++             ? SupervisionTransportResult::TransportFailure(
++                   SupervisionTransportOperation::kRedeem,
++                   SupervisionTransportErrorCode::kInternal,
++                   "Expected parse failure", "Fix the test fixture")
++             : std::move(parsed.error());
++}
++
++SanitizedSupervisionSnapshot MakeSanitizedSnapshot() {
++  SanitizedSupervisionSnapshot snapshot;
++  snapshot.pairing_state = SupervisionPairingState::kRedeemed;
++  snapshot.target.safe_title = "Release notes";
++  snapshot.target.safe_origin = "https://example.test";
++  snapshot.target.owner_label = "Agent one";
++  snapshot.target.eligible = true;
++  snapshot.target.agent_active = true;
++  snapshot.target.viewer_count = 1;
++  snapshot.target.controller_label = "Dashboard one";
++
++  SupervisionSessionSnapshot session;
++  session.client.display_label = "Dashboard one";
++  session.client.connected_at_ms = 100;
++  session.client.last_seen_at_ms = 120;
++  session.client.expires_at_ms = 1000;
++  session.viewer_state = SupervisionViewerState::kViewOnly;
++  session.stream_state = SupervisionStreamState::kLive;
++  snapshot.sessions.push_back(std::move(session));
++  return snapshot;
++}
++
++SupervisionTransportResult MakeDashboardResult(
++    SupervisionTransportOperation operation) {
++  SupervisionTransportResult result =
++      SupervisionTransportResult::Success(operation);
++  result.dashboard_authority = SupervisionDashboardWireAuthority{
++      .dashboard_session = std::string(kDashboardSession),
++      .document_epoch = std::string(kDocumentEpoch),
++      .sequence = 7,
++  };
++  result.sanitized_snapshot = MakeSanitizedSnapshot();
++  if (operation == SupervisionTransportOperation::kDiff) {
++    result.no_change = false;
++    result.requires_baseline = false;
++  }
++  return result;
++}
++
++TEST(PrometheusSupervisionTransportCodecTest,
++     ManifestContainsExactlySevenClosedOperations) {
++  static_assert(kSchemaCases.size() == kSupervisionTransportOperationCount);
++  std::set<std::string_view> names;
++  std::set<SupervisionTransportOperation> operations;
++  for (const auto& fixture : kSchemaCases) {
++    SCOPED_TRACE(fixture.operation);
++    auto operation = SupervisionTransportOperationFromString(fixture.operation);
++    ASSERT_TRUE(operation.has_value());
++    EXPECT_EQ(fixture.operation,
++              SupervisionTransportOperationToString(*operation));
++    EXPECT_TRUE(names.insert(fixture.operation).second);
++    EXPECT_TRUE(operations.insert(*operation).second);
++  }
++  EXPECT_EQ(7u, names.size());
++  EXPECT_EQ(7u, operations.size());
++  EXPECT_FALSE(SupervisionTransportOperationFromString("snapshot"));
++  EXPECT_FALSE(SupervisionTransportOperationFromString("execute_route"));
++}
++
++TEST(PrometheusSupervisionTransportCodecTest,
++     ParsesEveryExactOperationIntoDistinctTypedParams) {
++  std::set<size_t> variants;
++  for (size_t index = 0; index < kSchemaCases.size(); ++index) {
++    const auto& fixture = kSchemaCases[index];
++    SCOPED_TRACE(fixture.operation);
++    auto parsed = ParseSupervisionTransportRequest(
++        RequestJson(fixture.operation, fixture.params));
++    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
++    EXPECT_EQ(index, parsed->params.index());
++    EXPECT_TRUE(variants.insert(parsed->params.index()).second);
++  }
++  EXPECT_EQ(7u, variants.size());
++}
++
++TEST(PrometheusSupervisionTransportCodecTest,
++     NormalizesOneCodeAndDerivesOneSafeClientLabel) {
++  auto parsed = ParseSupervisionTransportRequest(RequestJson(
++      "redeem",
++      R"({"pairing_code":"ab cd-efgh","client_label":"  Dashboard\tone  "})"));
++  ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
++  const auto* params = std::get_if<SupervisionRedeemParams>(&parsed->params);
++  ASSERT_TRUE(params);
++  EXPECT_EQ("ABCDEFGH", params->pairing_code);
++  EXPECT_EQ("Dashboard one", params->client_label);
++
++  auto protected_label = ParseSupervisionTransportRequest(RequestJson(
++      "redeem",
++      R"({"pairing_code":"ABCDEFGH","client_label":"Bearer SESSION-AUTHORITY"})"));
++  ASSERT_TRUE(protected_label.has_value()) << protected_label.error().message;
++  EXPECT_EQ(
++      kSupervisionClientLabelFallback,
++      std::get<SupervisionRedeemParams>(protected_label->params).client_label);
++}
++
++TEST(PrometheusSupervisionTransportCodecTest,
++     RejectsUnknownTopLevelOperationAndActionKeys) {
++  EXPECT_EQ(
++      SupervisionTransportErrorCode::kInvalidRequest,
++      ParseError(
++          R"({"operation":"heartbeat","params":{"dashboard_session":"DASHBOARD-SESSION-7"},"extra":true})")
++          .transport_error);
++  EXPECT_EQ(
++      SupervisionTransportErrorCode::kInvalidRequest,
++      ParseError(
++          RequestJson(
++              "heartbeat",
++              R"({"dashboard_session":"DASHBOARD-SESSION-7","extra":true})"))
++          .transport_error);
++  EXPECT_EQ(
++      SupervisionTransportErrorCode::kInvalidRequest,
++      ParseError(
++          RequestJson(
++              "action",
++              R"({"dashboard_session":"DASHBOARD-SESSION-7","document_epoch":"DOCUMENT-EPOCH-9","sequence":7,"action":{"category":"click","ref":"node:1","extra":true}})"))
++          .transport_error);
++  EXPECT_EQ(
++      SupervisionTransportErrorCode::kInvalidOperation,
++      ParseError(RequestJson("eighth_operation", R"({})")).transport_error);
++}
++
++TEST(PrometheusSupervisionTransportCodecTest,
++     RejectsPrototypeStaleAndAuthorityInjectionAtEveryDepth) {
++  for (std::string_view field : {
++           "__proto__",
++           "constructor",
++           "prototype",
++           "profile_path",
++           "profile_id",
++           "browser_id",
++           "window_id",
++           "tab_id",
++           "tabId",
++           "tabIndex",
++           "tab_selector",
++           "owner",
++           "owner_session_id",
++           "controller",
++           "controller_lease",
++           "session_id",
++           "document_token",
++           "route",
++       }) {
++    SCOPED_TRACE(field);
++    const std::string params =
++        "{\"dashboard_session\":\"DASHBOARD-SESSION-7\",\"" +
++        std::string(field) + "\":\"injected\"}";
++    EXPECT_EQ(SupervisionTransportErrorCode::kForbiddenField,
++              ParseError(RequestJson("heartbeat", params)).transport_error);
++  }
++
++  for (std::string_view field :
++       {"script", "javascript", "execute_js", "vault", "secret", "bearer",
++        "authorization", "password", "token", "selector", "typed_value",
++        "page_content"}) {
++    SCOPED_TRACE(field);
++    const std::string action = "{\"category\":\"click\",\"ref\":\"node:1\",\"" +
++                               std::string(field) + "\":\"injected\"}";
++    const std::string params =
++        "{\"dashboard_session\":\"DASHBOARD-SESSION-7\","
++        "\"document_epoch\":\"DOCUMENT-EPOCH-9\",\"sequence\":7,"
++        "\"action\":" +
++        action + "}";
++    EXPECT_EQ(SupervisionTransportErrorCode::kForbiddenField,
++              ParseError(RequestJson("action", params)).transport_error);
++  }
++}
++
++TEST(PrometheusSupervisionTransportCodecTest,
++     RejectsMissingMalformedOversizedAndStaleShapes) {
++  for (
++      std::string_view json : {
++          "",
++          "[]",
++          R"({"operation":"heartbeat"})",
++          R"({"operation":7,"params":{}})",
++          R"({"operation":"heartbeat","params":[]})",
++          R"({"operation":"heartbeat","params":{"session":"old"}})",
++          R"({"operation":"diff","params":{"dashboard_session":"DASHBOARD-SESSION-7","epoch":"old","cursor":7}})",
++          R"({"operation":"action","params":{"dashboard_session":"DASHBOARD-SESSION-7","document_epoch":"DOCUMENT-EPOCH-9","sequence":7,"action":{"type":"click","ref":"node:1"}}})",
++      }) {
++    SCOPED_TRACE(json);
++    EXPECT_NE(SupervisionTransportErrorCode::kNone,
++              ParseError(json).transport_error);
++  }
++
++  const std::string oversized(kMaxSupervisionTransportInputBytes + 1, 'x');
++  EXPECT_EQ(SupervisionTransportErrorCode::kRequestTooLarge,
++            ParseError(oversized).transport_error);
++}
++
++TEST(PrometheusSupervisionTransportCodecTest,
++     EnforcesStringIntegerAndSequenceBoundsAtAndOverLimits) {
++  const std::string label_at(kMaxSupervisionSafeLabelBytes, 'a');
++  auto at_label = ParseSupervisionTransportRequest(RequestJson(
++      "redeem",
++      "{\"pairing_code\":\"ABCDEFGH\",\"client_label\":\"" + label_at + "\"}"));
++  EXPECT_TRUE(at_label.has_value()) << at_label.error().message;
++
++  const std::string label_over(kMaxSupervisionSafeLabelBytes + 1, 'a');
++  EXPECT_EQ(SupervisionTransportErrorCode::kInvalidRequest,
++            ParseError(RequestJson("redeem",
++                                   "{\"pairing_code\":\"ABCDEFGH\","
++                                   "\"client_label\":\"" +
++                                       label_over + "\"}"))
++                .transport_error);
++
++  const std::string session_at(kMaxSupervisionTransportSessionBytes, 'a');
++  EXPECT_TRUE(ParseSupervisionTransportRequest(
++                  RequestJson("heartbeat",
++                              "{\"dashboard_session\":\"" + session_at + "\"}"))
++                  .has_value());
++  const std::string session_over(kMaxSupervisionTransportSessionBytes + 1, 'a');
++  EXPECT_EQ(SupervisionTransportErrorCode::kInvalidRequest,
++            ParseError(RequestJson("heartbeat", "{\"dashboard_session\":\"" +
++                                                    session_over + "\"}"))
++                .transport_error);
++
++  EXPECT_TRUE(
++      ParseSupervisionTransportRequest(
++          RequestJson(
++              "ack",
++              R"({"dashboard_session":"DASHBOARD-SESSION-7","document_epoch":"DOCUMENT-EPOCH-9","sequence":9007199254740991})"))
++          .has_value());
++  for (std::string_view sequence :
++       {"0", "-1", "1.5", "9007199254740992", "\"7\"", "null"}) {
++    SCOPED_TRACE(sequence);
++    EXPECT_EQ(
++        SupervisionTransportErrorCode::kInvalidRequest,
++        ParseError(RequestJson("ack",
++                               "{\"dashboard_session\":\"DASHBOARD-SESSION-7\","
++                               "\"document_epoch\":\"DOCUMENT-EPOCH-9\","
++                               "\"sequence\":" +
++                                   std::string(sequence) + "}"))
++            .transport_error);
++  }
++}
++
++TEST(PrometheusSupervisionTransportCodecTest,
++     FreezesExactKeysForEveryOrdinaryActionCategory) {
++  constexpr std::array<std::pair<std::string_view, std::string_view>, 10>
++      kActions = {{
++          {"click", R"({"category":"click","ref":"node:1"})"},
++          {"type", R"({"category":"type","ref":"node:1","text":"hello"})"},
++          {"key_press", R"({"category":"key_press","key":"Enter"})"},
++          {"scroll", R"({"category":"scroll","delta_y":500})"},
++          {"hover", R"({"category":"hover","ref":"node:1"})"},
++          {"select", R"({"category":"select","ref":"node:1","option":"one"})"},
++          {"clear", R"({"category":"clear","ref":"node:1"})"},
++          {"drag",
++           R"({"category":"drag","ref":"node:1","target_ref":"node:2"})"},
++          {"drop", R"({"category":"drop","ref":"node:1"})"},
++          {"navigate",
++           R"({"category":"navigate","navigation":"https://example.test/next"})"},
++      }};
++
++  for (const auto& [name, action] : kActions) {
++    SCOPED_TRACE(name);
++    const std::string params =
++        "{\"dashboard_session\":\"DASHBOARD-SESSION-7\","
++        "\"document_epoch\":\"DOCUMENT-EPOCH-9\",\"sequence\":7,"
++        "\"action\":" +
++        std::string(action) + "}";
++    auto parsed =
++        ParseSupervisionTransportRequest(RequestJson("action", params));
++    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
++    const auto* action_params =
++        std::get_if<SupervisionActionParams>(&parsed->params);
++    ASSERT_TRUE(action_params);
++    EXPECT_EQ(name, SupervisionRemoteActionCategoryToString(
++                        action_params->action.category));
++  }
++
++  constexpr std::array<std::string_view, 8> kInvalidActions = {
++      R"({"category":"click"})",
++      R"({"category":"type","ref":"node:1"})",
++      R"({"category":"key_press","key":""})",
++      R"({"category":"scroll","delta_x":0,"delta_y":0})",
++      R"({"category":"select","ref":"node:1","text":"wrong"})",
++      R"({"category":"drag","ref":"node:1","target_ref":"node:1"})",
++      R"({"category":"navigate","navigation":""})",
++      R"json({"category":"execute_js","script":"alert(1)"})json",
++  };
++  for (std::string_view invalid : kInvalidActions) {
++    const std::string params =
++        "{\"dashboard_session\":\"DASHBOARD-SESSION-7\","
++        "\"document_epoch\":\"DOCUMENT-EPOCH-9\",\"sequence\":7,"
++        "\"action\":" +
++        std::string(invalid) + "}";
++    EXPECT_NE(SupervisionTransportErrorCode::kNone,
++              ParseError(RequestJson("action", params)).transport_error);
++  }
++}
++
++TEST(PrometheusSupervisionTransportCodecTest,
++     DashboardSerializationCarriesOnlyDedicatedWireAuthority) {
++  SupervisionTransportResult result =
++      MakeDashboardResult(SupervisionTransportOperation::kDiff);
++  auto first = SerializeSupervisionDashboardResult(result);
++  auto second = SerializeSupervisionDashboardResult(result);
++  ASSERT_TRUE(first.has_value()) << first.error().message;
++  ASSERT_TRUE(second.has_value()) << second.error().message;
++  EXPECT_EQ(*first, *second);
++
++  auto root = base::JSONReader::ReadDict(*first, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(root);
++  EXPECT_EQ(root->FindBool("ok"), true);
++  ASSERT_TRUE(root->FindString("operation"));
++  EXPECT_EQ("diff", *root->FindString("operation"));
++  const base::DictValue* payload = root->FindDict("result");
++  ASSERT_TRUE(payload);
++  EXPECT_EQ(kDashboardSession, *payload->FindString("dashboard_session"));
++  EXPECT_EQ(kDocumentEpoch, *payload->FindString("document_epoch"));
++  ASSERT_TRUE(payload->FindDouble("sequence"));
++  EXPECT_EQ(7, *payload->FindDouble("sequence"));
++  EXPECT_TRUE(payload->FindDict("snapshot"));
++}
++
++TEST(PrometheusSupervisionTransportCodecTest,
++     CompatibilitySerializationStructurallyOmitsDashboardAuthority) {
++  SupervisionTransportResult result =
++      MakeDashboardResult(SupervisionTransportOperation::kBaseline);
++  auto serialized = SerializeSupervisionCompatibilityResult(result);
++  ASSERT_TRUE(serialized.has_value()) << serialized.error().message;
++  constexpr std::array<std::string_view, 10> kForbidden = {
++      "dashboard_session", "document_epoch", "sequence",
++      kDashboardSession,   kDocumentEpoch,   "pairing_code",
++      "controller_lease",  "profile_path",   "browser_id",
++      "owner_id",
++  };
++  for (std::string_view forbidden : kForbidden) {
++    EXPECT_EQ(std::string::npos, serialized->find(forbidden)) << forbidden;
++  }
++  EXPECT_NE(std::string::npos, serialized->find("safe_title"));
++  EXPECT_NE(std::string::npos, serialized->find("Release notes"));
++}
++
++TEST(PrometheusSupervisionTransportCodecTest,
++     SanitizedProjectionRejectsAuthorityContentAndSecretSentinels) {
++  SupervisionTransportResult result =
++      MakeDashboardResult(SupervisionTransportOperation::kHeartbeat);
++  result.sanitized_snapshot->target.safe_title = "selector=#SECRET-NODE";
++  result.sanitized_snapshot->target.owner_label = "Bearer BEARER-AUTHORITY";
++  result.sanitized_snapshot->target.controller_label = "lease LEASE-AUTHORITY";
++  result.sanitized_snapshot->sessions[0].client.display_label =
++      "session SESSION-AUTHORITY";
++
++  auto serialized = SerializeSupervisionCompatibilityResult(result);
++  ASSERT_TRUE(serialized.has_value()) << serialized.error().message;
++  for (std::string_view sentinel : {
++           "SECRET-NODE",
++           "BEARER-AUTHORITY",
++           "LEASE-AUTHORITY",
++           "SESSION-AUTHORITY",
++           "selector",
++           "typed_value",
++           "page_content",
++       }) {
++    EXPECT_EQ(std::string::npos, serialized->find(sentinel)) << sentinel;
++  }
++}
++
++TEST(PrometheusSupervisionTransportCodecTest,
++     SerializesTransportAndSupervisionFailuresWithStableTypedCodes) {
++  auto transport = SerializeSupervisionDashboardResult(
++      SupervisionTransportResult::TransportFailure(
++          SupervisionTransportOperation::kRedeem,
++          SupervisionTransportErrorCode::kForbiddenField,
++          "Request contains a prohibited field", "Use documented fields"));
++  ASSERT_TRUE(transport.has_value()) << transport.error().message;
++  EXPECT_NE(std::string::npos, transport->find("FORBIDDEN_FIELD"));
++  EXPECT_EQ(std::string::npos, transport->find("DASHBOARD-SESSION-7"));
++
++  auto domain = SerializeSupervisionDashboardResult(
++      SupervisionTransportResult::SupervisionFailure(
++          SupervisionTransportOperation::kAction,
++          SupervisionErrorCode::kViewOnly, "Control is not enabled",
++          "Enable control locally and retry"));
++  ASSERT_TRUE(domain.has_value()) << domain.error().message;
++  EXPECT_NE(std::string::npos, domain->find("VIEW_ONLY"));
++  EXPECT_NE(std::string::npos, domain->find("action"));
++}
++
++TEST(PrometheusSupervisionTransportCodecTest,
++     EnforcesFieldProjectionAndTwoMiBResultCeiling) {
++  EXPECT_EQ(2'097'152u, kMaxSupervisionTransportOutputBytes);
++  SupervisionTransportResult at = SupervisionTransportResult::TransportFailure(
++      SupervisionTransportOperation::kHeartbeat,
++      SupervisionTransportErrorCode::kUnavailable,
++      std::string(kMaxSupervisionTransportMessageBytes, 'm'),
++      std::string(kMaxSupervisionTransportMessageBytes, 'r'));
++  EXPECT_TRUE(SerializeSupervisionDashboardResult(at).has_value());
++
++  SupervisionTransportResult over = at;
++  over.message.push_back('x');
++  auto oversized = SerializeSupervisionDashboardResult(over);
++  ASSERT_FALSE(oversized.has_value());
++  EXPECT_EQ(SupervisionTransportErrorCode::kRequestTooLarge,
++            oversized.error().transport_error);
++
++  SupervisionTransportResult invalid =
++      MakeDashboardResult(SupervisionTransportOperation::kBaseline);
++  invalid.sanitized_snapshot->target.safe_title =
++      std::string(kMaxSupervisionSafeTitleBytes + 1, 'x');
++  auto unsanitized = SerializeSupervisionCompatibilityResult(invalid);
++  ASSERT_FALSE(unsanitized.has_value());
++  EXPECT_EQ(SupervisionTransportErrorCode::kOutputNotSanitized,
++            unsanitized.error().transport_error);
++}
++
++}  // namespace
++}  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

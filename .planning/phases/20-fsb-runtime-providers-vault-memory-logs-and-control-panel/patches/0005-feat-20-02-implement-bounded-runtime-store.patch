@@ -1,0 +1,1342 @@
+From 720a7d98a70b0b673699d32d181f46d933e72c6a Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 15:54:31 -0500
+Subject: [PATCH] feat(20-02): implement bounded runtime store
+
+---
+ .../prometheus/prometheus_runtime_store.cc    | 943 +++++++++++++++++-
+ .../prometheus/prometheus_runtime_store.h     |  28 +
+ .../prometheus_runtime_store_unittest.cc      | 158 ++-
+ 3 files changed, 1111 insertions(+), 18 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_runtime_store.cc b/chrome/browser/prometheus/prometheus_runtime_store.cc
+index 4a72b21f88..44c07eca60 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_store.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_store.cc
+@@ -4,34 +4,583 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_runtime_store.h"
+ 
++#include <algorithm>
++#include <cmath>
++#include <optional>
++#include <set>
++#include <string>
+ #include <utility>
+ 
+ #include "base/check.h"
++#include "base/json/json_writer.h"
++#include "base/strings/string_util.h"
++#include "base/uuid.h"
++#include "base/values.h"
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
+ #include "components/prefs/pref_service.h"
+ 
+ namespace prometheus {
+ 
++namespace {
++
++constexpr int kRuntimeStoreSchemaVersion = 1;
++constexpr char kDataKey[] = "data";
++constexpr char kRuntimeStoreKey[] = "runtime_store";
++constexpr char kSchemaVersionKey[] = "schema_version";
++constexpr char kTasksKey[] = "tasks";
++constexpr char kEventsKey[] = "events";
++constexpr char kActionsKey[] = "actions";
++constexpr char kDiagnosticsKey[] = "diagnostics";
++constexpr size_t kMaxStoredRecordIdBytes = 128;
++
++bool IsValidTimestamp(double value) {
++  return std::isfinite(value) && value >= 0 && std::floor(value) == value &&
++         value <= 9'007'199'254'740'991.0;
++}
++
++bool IsValidCounter(double value) {
++  return std::isfinite(value) && value >= 1 && std::floor(value) == value &&
++         value <= 9'007'199'254'740'991.0;
++}
++
++bool IsEmptyUsage(const RuntimeUsage& usage) {
++  return usage.input_tokens == 0 && usage.output_tokens == 0 &&
++         usage.tool_calls == 0 && usage.duration_ms == 0 &&
++         !usage.cost_microunits.has_value();
++}
++
++RuntimeStoreBounds ClampStoreBounds(const RuntimeStoreBounds& bounds) {
++  return RuntimeStoreBounds{
++      .max_tasks =
++          std::clamp(bounds.max_tasks, size_t{1}, kMaxStoredRuntimeTasks),
++      .max_events =
++          std::clamp(bounds.max_events, size_t{1}, kMaxStoredRuntimeEvents),
++      .max_actions =
++          std::clamp(bounds.max_actions, size_t{1}, kMaxStoredRuntimeActions),
++      .max_diagnostics = std::clamp(bounds.max_diagnostics, size_t{1},
++                                    kMaxStoredRuntimeDiagnostics),
++      .max_total_utf8_bytes = std::clamp(bounds.max_total_utf8_bytes,
++                                         size_t{256}, kMaxRuntimeStoreBytes),
++      .max_safe_result_bytes =
++          std::clamp(bounds.max_safe_result_bytes, size_t{1},
++                     static_cast<size_t>(kHardRuntimeResultBytes)),
++  };
++}
++
++std::string NewOpaqueId() {
++  return base::Uuid::GenerateRandomV4().AsLowercaseString();
++}
++
++std::optional<RuntimeEventKind> RuntimeEventKindFromString(
++    std::string_view value) {
++  if (value == "task_created") {
++    return RuntimeEventKind::kTaskCreated;
++  }
++  if (value == "state_changed") {
++    return RuntimeEventKind::kStateChanged;
++  }
++  if (value == "provider_attempt") {
++    return RuntimeEventKind::kProviderAttempt;
++  }
++  if (value == "fallback") {
++    return RuntimeEventKind::kFallback;
++  }
++  if (value == "tool_dispatched") {
++    return RuntimeEventKind::kToolDispatched;
++  }
++  if (value == "confirmation") {
++    return RuntimeEventKind::kConfirmation;
++  }
++  if (value == "task_finished") {
++    return RuntimeEventKind::kTaskFinished;
++  }
++  if (value == "cancellation") {
++    return RuntimeEventKind::kCancellation;
++  }
++  if (value == "timeout") {
++    return RuntimeEventKind::kTimeout;
++  }
++  if (value == "shutdown") {
++    return RuntimeEventKind::kShutdown;
++  }
++  return std::nullopt;
++}
++
++std::optional<RuntimeActionKind> RuntimeActionKindFromString(
++    std::string_view value) {
++  if (value == "navigate") {
++    return RuntimeActionKind::kNavigate;
++  }
++  if (value == "click") {
++    return RuntimeActionKind::kClick;
++  }
++  if (value == "type_text") {
++    return RuntimeActionKind::kTypeText;
++  }
++  if (value == "press_key") {
++    return RuntimeActionKind::kPressKey;
++  }
++  if (value == "scroll") {
++    return RuntimeActionKind::kScroll;
++  }
++  if (value == "hover") {
++    return RuntimeActionKind::kHover;
++  }
++  if (value == "select_option") {
++    return RuntimeActionKind::kSelectOption;
++  }
++  if (value == "clear") {
++    return RuntimeActionKind::kClear;
++  }
++  if (value == "drag") {
++    return RuntimeActionKind::kDrag;
++  }
++  return std::nullopt;
++}
++
++std::optional<RuntimeDiagnosticKind> RuntimeDiagnosticKindFromString(
++    std::string_view value) {
++  if (value == "invalid_record_dropped") {
++    return RuntimeDiagnosticKind::kInvalidRecordDropped;
++  }
++  if (value == "eviction") {
++    return RuntimeDiagnosticKind::kEviction;
++  }
++  if (value == "stale_completion") {
++    return RuntimeDiagnosticKind::kStaleCompletion;
++  }
++  if (value == "duplicate_finish") {
++    return RuntimeDiagnosticKind::kDuplicateFinish;
++  }
++  if (value == "usage_rejected") {
++    return RuntimeDiagnosticKind::kUsageRejected;
++  }
++  return std::nullopt;
++}
++
++std::optional<RuntimeUsage> UsageFromValue(const base::DictValue* value) {
++  if (!value) {
++    return std::nullopt;
++  }
++  std::optional<int> input_tokens = value->FindInt("input_tokens");
++  std::optional<int> output_tokens = value->FindInt("output_tokens");
++  std::optional<int> tool_calls = value->FindInt("tool_calls");
++  std::optional<int> duration_ms = value->FindInt("duration_ms");
++  std::optional<bool> cost_known = value->FindBool("cost_known");
++  if (!input_tokens || !output_tokens || !tool_calls || !duration_ms ||
++      !cost_known) {
++    return std::nullopt;
++  }
++
++  RuntimeUsage usage{.input_tokens = *input_tokens,
++                     .output_tokens = *output_tokens,
++                     .tool_calls = *tool_calls,
++                     .duration_ms = *duration_ms};
++  if (*cost_known) {
++    std::optional<int> cost = value->FindInt("cost_microunits");
++    if (!cost) {
++      return std::nullopt;
++    }
++    usage.cost_microunits = *cost;
++  } else if (value->Find("cost_microunits")) {
++    return std::nullopt;
++  }
++  return IsValidRuntimeUsage(usage) ? std::optional(usage) : std::nullopt;
++}
++
++base::DictValue StoredTaskToValue(const RuntimeStoredTask& task) {
++  std::optional<base::DictValue> value =
++      RuntimeTaskSnapshotToValue(task.snapshot);
++  CHECK(value.has_value());
++  value->Set("generation", static_cast<double>(task.generation));
++  value->Set("access_sequence", static_cast<double>(task.access_sequence));
++  if (task.result.has_value()) {
++    base::DictValue result;
++    result.Set("text", task.result->text);
++    result.Set("truncated", task.result->truncated);
++    value->Set("result", std::move(result));
++  }
++  return std::move(*value);
++}
++
++std::optional<RuntimeStoredTask> StoredTaskFromValue(
++    const base::DictValue& value) {
++  const std::string* task_id = value.FindString("task_id");
++  const std::string* origin_string = value.FindString("origin");
++  const std::string* requested_string = value.FindString("requested_execution");
++  const std::string* state_string = value.FindString("state");
++  const std::string* error_string = value.FindString("error_code");
++  std::optional<double> created_at = value.FindDouble("created_at_ms");
++  std::optional<double> updated_at = value.FindDouble("updated_at_ms");
++  std::optional<double> generation = value.FindDouble("generation");
++  std::optional<double> access_sequence = value.FindDouble("access_sequence");
++  std::optional<RuntimeUsage> usage = UsageFromValue(value.FindDict("usage"));
++  if (!task_id || !origin_string || !requested_string || !state_string ||
++      !error_string || !created_at || !updated_at || !generation ||
++      !access_sequence || !usage || task_id->empty() ||
++      !IsBoundedRuntimeUtf8(*task_id, kMaxRuntimeTaskIdBytes) ||
++      !IsValidTimestamp(*created_at) || !IsValidTimestamp(*updated_at) ||
++      *updated_at < *created_at || !IsValidCounter(*generation) ||
++      !IsValidCounter(*access_sequence)) {
++    return std::nullopt;
++  }
++
++  std::optional<RuntimeTaskOrigin> origin =
++      RuntimeTaskOriginFromString(*origin_string);
++  std::optional<RequestedExecution> requested =
++      RequestedExecutionFromString(*requested_string);
++  std::optional<RuntimeTaskState> state =
++      RuntimeTaskStateFromString(*state_string);
++  std::optional<RuntimeErrorCode> error =
++      RuntimeErrorCodeFromString(*error_string);
++  if (!origin || !requested || !state || !error) {
++    return std::nullopt;
++  }
++
++  RuntimeStoredTask task;
++  task.snapshot.task_id = *task_id;
++  task.snapshot.origin = *origin;
++  task.snapshot.requested_execution = *requested;
++  if (const std::string* effective_string =
++          value.FindString("effective_execution")) {
++    task.snapshot.effective_execution =
++        EffectiveExecutionFromString(*effective_string);
++    if (!task.snapshot.effective_execution.has_value()) {
++      return std::nullopt;
++    }
++  }
++  task.snapshot.state = *state;
++  task.snapshot.error_code = *error;
++  task.snapshot.created_at_ms = static_cast<int64_t>(*created_at);
++  task.snapshot.updated_at_ms = static_cast<int64_t>(*updated_at);
++  task.snapshot.usage = *usage;
++  task.generation = static_cast<uint64_t>(*generation);
++  task.access_sequence = static_cast<uint64_t>(*access_sequence);
++
++  if (const base::DictValue* result = value.FindDict("result")) {
++    const std::string* text = result->FindString("text");
++    std::optional<bool> truncated = result->FindBool("truncated");
++    if (!text || !truncated || !base::IsStringUTF8(*text)) {
++      return std::nullopt;
++    }
++    task.result = RuntimeSafeResult{.text = *text, .truncated = *truncated};
++  } else if (value.Find("result")) {
++    return std::nullopt;
++  }
++  return task;
++}
++
++base::DictValue EventToValue(const RuntimeEventRecord& event) {
++  base::DictValue value;
++  value.Set("event_id", event.event_id);
++  value.Set("task_id", event.task_id);
++  value.Set("kind", RuntimeEventKindToString(event.kind));
++  value.Set("error_code", RuntimeErrorCodeToString(event.error_code));
++  value.Set("timestamp_ms", static_cast<double>(event.timestamp_ms));
++  value.Set("value", static_cast<double>(event.value));
++  return value;
++}
++
++std::optional<RuntimeEventRecord> EventFromValue(const base::DictValue& value) {
++  const std::string* event_id = value.FindString("event_id");
++  const std::string* task_id = value.FindString("task_id");
++  const std::string* kind_string = value.FindString("kind");
++  const std::string* error_string = value.FindString("error_code");
++  std::optional<double> timestamp = value.FindDouble("timestamp_ms");
++  std::optional<double> stored_value = value.FindDouble("value");
++  if (!event_id || !task_id || !kind_string || !error_string || !timestamp ||
++      !stored_value || event_id->empty() ||
++      !IsBoundedRuntimeUtf8(*event_id, kMaxStoredRecordIdBytes) ||
++      !IsBoundedRuntimeUtf8(*task_id, kMaxRuntimeTaskIdBytes) ||
++      !IsValidTimestamp(*timestamp) || !IsValidTimestamp(*stored_value)) {
++    return std::nullopt;
++  }
++  std::optional<RuntimeEventKind> kind =
++      RuntimeEventKindFromString(*kind_string);
++  std::optional<RuntimeErrorCode> error =
++      RuntimeErrorCodeFromString(*error_string);
++  if (!kind || !error) {
++    return std::nullopt;
++  }
++  return RuntimeEventRecord{.event_id = *event_id,
++                            .task_id = *task_id,
++                            .kind = *kind,
++                            .error_code = *error,
++                            .timestamp_ms = static_cast<int64_t>(*timestamp),
++                            .value = static_cast<int64_t>(*stored_value)};
++}
++
++base::DictValue ActionToValue(const RuntimeActionRecord& action) {
++  base::DictValue value;
++  value.Set("action_id", action.action_id);
++  value.Set("task_id", action.task_id);
++  value.Set("kind", RuntimeActionKindToString(action.kind));
++  value.Set("timestamp_ms", static_cast<double>(action.timestamp_ms));
++  value.Set("succeeded", action.succeeded);
++  return value;
++}
++
++std::optional<RuntimeActionRecord> ActionFromValue(
++    const base::DictValue& value) {
++  const std::string* action_id = value.FindString("action_id");
++  const std::string* task_id = value.FindString("task_id");
++  const std::string* kind_string = value.FindString("kind");
++  std::optional<double> timestamp = value.FindDouble("timestamp_ms");
++  std::optional<bool> succeeded = value.FindBool("succeeded");
++  if (!action_id || !task_id || !kind_string || !timestamp || !succeeded ||
++      action_id->empty() ||
++      !IsBoundedRuntimeUtf8(*action_id, kMaxStoredRecordIdBytes) ||
++      !IsBoundedRuntimeUtf8(*task_id, kMaxRuntimeTaskIdBytes) ||
++      !IsValidTimestamp(*timestamp)) {
++    return std::nullopt;
++  }
++  std::optional<RuntimeActionKind> kind =
++      RuntimeActionKindFromString(*kind_string);
++  if (!kind) {
++    return std::nullopt;
++  }
++  return RuntimeActionRecord{.action_id = *action_id,
++                             .task_id = *task_id,
++                             .kind = *kind,
++                             .timestamp_ms = static_cast<int64_t>(*timestamp),
++                             .succeeded = *succeeded};
++}
++
++base::DictValue DiagnosticToValue(const RuntimeDiagnosticRecord& diagnostic) {
++  base::DictValue value;
++  value.Set("diagnostic_id", diagnostic.diagnostic_id);
++  value.Set("kind", RuntimeDiagnosticKindToString(diagnostic.kind));
++  value.Set("timestamp_ms", static_cast<double>(diagnostic.timestamp_ms));
++  value.Set("count", static_cast<double>(diagnostic.count));
++  return value;
++}
++
++std::optional<RuntimeDiagnosticRecord> DiagnosticFromValue(
++    const base::DictValue& value) {
++  const std::string* diagnostic_id = value.FindString("diagnostic_id");
++  const std::string* kind_string = value.FindString("kind");
++  std::optional<double> timestamp = value.FindDouble("timestamp_ms");
++  std::optional<double> count = value.FindDouble("count");
++  if (!diagnostic_id || !kind_string || !timestamp || !count ||
++      diagnostic_id->empty() ||
++      !IsBoundedRuntimeUtf8(*diagnostic_id, kMaxStoredRecordIdBytes) ||
++      !IsValidTimestamp(*timestamp) || !IsValidTimestamp(*count)) {
++    return std::nullopt;
++  }
++  std::optional<RuntimeDiagnosticKind> kind =
++      RuntimeDiagnosticKindFromString(*kind_string);
++  if (!kind) {
++    return std::nullopt;
++  }
++  return RuntimeDiagnosticRecord{
++      .diagnostic_id = *diagnostic_id,
++      .kind = *kind,
++      .timestamp_ms = static_cast<int64_t>(*timestamp),
++      .count = static_cast<int64_t>(*count)};
++}
++
++template <typename Record, typename Parser>
++size_t LoadRecords(const base::ListValue* values,
++                   std::vector<Record>* output,
++                   Parser parser) {
++  if (!values) {
++    return 0;
++  }
++  size_t dropped = 0;
++  for (const base::Value& value : *values) {
++    if (!value.is_dict()) {
++      ++dropped;
++      continue;
++    }
++    std::optional<Record> record = parser(value.GetDict());
++    if (!record) {
++      ++dropped;
++      continue;
++    }
++    output->push_back(std::move(*record));
++  }
++  return dropped;
++}
++
++template <typename Record, typename IdGetter>
++size_t DropDuplicateRecords(std::vector<Record>* records, IdGetter id_getter) {
++  std::set<std::string> seen;
++  size_t dropped = 0;
++  std::erase_if(*records, [&seen, &dropped, &id_getter](const Record& record) {
++    if (seen.insert(id_getter(record)).second) {
++      return false;
++    }
++    ++dropped;
++    return true;
++  });
++  return dropped;
++}
++
++base::DictValue BuildStoreValue(
++    const std::vector<RuntimeStoredTask>& tasks,
++    const std::vector<RuntimeEventRecord>& events,
++    const std::vector<RuntimeActionRecord>& actions,
++    const std::vector<RuntimeDiagnosticRecord>& diagnostics) {
++  base::ListValue task_values;
++  for (const RuntimeStoredTask& task : tasks) {
++    task_values.Append(StoredTaskToValue(task));
++  }
++  base::ListValue event_values;
++  for (const RuntimeEventRecord& event : events) {
++    event_values.Append(EventToValue(event));
++  }
++  base::ListValue action_values;
++  for (const RuntimeActionRecord& action : actions) {
++    action_values.Append(ActionToValue(action));
++  }
++  base::ListValue diagnostic_values;
++  for (const RuntimeDiagnosticRecord& diagnostic : diagnostics) {
++    diagnostic_values.Append(DiagnosticToValue(diagnostic));
++  }
++
++  base::DictValue value;
++  value.Set(kSchemaVersionKey, kRuntimeStoreSchemaVersion);
++  value.Set(kTasksKey, std::move(task_values));
++  value.Set(kEventsKey, std::move(event_values));
++  value.Set(kActionsKey, std::move(action_values));
++  value.Set(kDiagnosticsKey, std::move(diagnostic_values));
++  return value;
++}
++
++size_t SerializedStoreBytes(const base::DictValue& value) {
++  return base::WriteJson(value).value_or(std::string()).size();
++}
++
++RuntimeSafeResult ClampSafeResult(RuntimeSafeResult result, size_t max_bytes) {
++  if (!base::IsStringUTF8(result.text)) {
++    result.text.clear();
++    result.truncated = true;
++    return result;
++  }
++  if (result.text.size() <= max_bytes) {
++    return result;
++  }
++  result.text.resize(max_bytes);
++  while (!result.text.empty() && !base::IsStringUTF8(result.text)) {
++    result.text.pop_back();
++  }
++  result.truncated = true;
++  return result;
++}
++
++bool IsCoherentTerminal(RuntimeTaskState state, RuntimeErrorCode error) {
++  if (state == RuntimeTaskState::kSucceeded) {
++    return error == RuntimeErrorCode::kNone;
++  }
++  if (state == RuntimeTaskState::kCancelled) {
++    return error == RuntimeErrorCode::kCancelled;
++  }
++  return state == RuntimeTaskState::kFailed && error != RuntimeErrorCode::kNone;
++}
++
++}  // namespace
++
+ std::string_view RuntimeStoreStatusToString(RuntimeStoreStatus status) {
++  switch (status) {
++    case RuntimeStoreStatus::kOk:
++      return "OK";
++    case RuntimeStoreStatus::kNotFound:
++      return "NOT_FOUND";
++    case RuntimeStoreStatus::kInvalidRecord:
++      return "INVALID_RECORD";
++    case RuntimeStoreStatus::kInvalidTransition:
++      return "INVALID_TRANSITION";
++    case RuntimeStoreStatus::kStaleGeneration:
++      return "STALE_GENERATION";
++    case RuntimeStoreStatus::kAlreadyFinished:
++      return "ALREADY_FINISHED";
++    case RuntimeStoreStatus::kInvalidUsage:
++      return "INVALID_USAGE";
++    case RuntimeStoreStatus::kStoreFull:
++      return "STORE_FULL";
++  }
+   return "INVALID_RECORD";
+ }
+ 
+ std::string_view RuntimeEventKindToString(RuntimeEventKind kind) {
+-  return "unknown";
++  switch (kind) {
++    case RuntimeEventKind::kTaskCreated:
++      return "task_created";
++    case RuntimeEventKind::kStateChanged:
++      return "state_changed";
++    case RuntimeEventKind::kProviderAttempt:
++      return "provider_attempt";
++    case RuntimeEventKind::kFallback:
++      return "fallback";
++    case RuntimeEventKind::kToolDispatched:
++      return "tool_dispatched";
++    case RuntimeEventKind::kConfirmation:
++      return "confirmation";
++    case RuntimeEventKind::kTaskFinished:
++      return "task_finished";
++    case RuntimeEventKind::kCancellation:
++      return "cancellation";
++    case RuntimeEventKind::kTimeout:
++      return "timeout";
++    case RuntimeEventKind::kShutdown:
++      return "shutdown";
++  }
++  return "task_created";
+ }
+ 
+ std::string_view RuntimeActionKindToString(RuntimeActionKind kind) {
+-  return "unknown";
++  switch (kind) {
++    case RuntimeActionKind::kNavigate:
++      return "navigate";
++    case RuntimeActionKind::kClick:
++      return "click";
++    case RuntimeActionKind::kTypeText:
++      return "type_text";
++    case RuntimeActionKind::kPressKey:
++      return "press_key";
++    case RuntimeActionKind::kScroll:
++      return "scroll";
++    case RuntimeActionKind::kHover:
++      return "hover";
++    case RuntimeActionKind::kSelectOption:
++      return "select_option";
++    case RuntimeActionKind::kClear:
++      return "clear";
++    case RuntimeActionKind::kDrag:
++      return "drag";
++  }
++  return "navigate";
+ }
+ 
+ std::string_view RuntimeDiagnosticKindToString(RuntimeDiagnosticKind kind) {
+-  return "unknown";
++  switch (kind) {
++    case RuntimeDiagnosticKind::kInvalidRecordDropped:
++      return "invalid_record_dropped";
++    case RuntimeDiagnosticKind::kEviction:
++      return "eviction";
++    case RuntimeDiagnosticKind::kStaleCompletion:
++      return "stale_completion";
++    case RuntimeDiagnosticKind::kDuplicateFinish:
++      return "duplicate_finish";
++    case RuntimeDiagnosticKind::kUsageRejected:
++      return "usage_rejected";
++  }
++  return "invalid_record_dropped";
+ }
+ 
+ PrometheusRuntimeStore::PrometheusRuntimeStore(PrefService* prefs,
+                                                RuntimeStoreBounds bounds)
+-    : prefs_(prefs), bounds_(bounds) {
++    : prefs_(prefs), bounds_(ClampStoreBounds(bounds)) {
+   CHECK(prefs_);
+   CHECK_GT(bounds_.max_tasks, 0u);
++  CHECK_GT(bounds_.max_events, 0u);
++  CHECK_GT(bounds_.max_actions, 0u);
++  CHECK_GT(bounds_.max_diagnostics, 0u);
++  CHECK_GT(bounds_.max_total_utf8_bytes, 0u);
++  CHECK_GT(bounds_.max_safe_result_bytes, 0u);
++  Load();
++  EnforceBounds();
++  Persist();
+ }
+ 
+ PrometheusRuntimeStore::~PrometheusRuntimeStore() = default;
+@@ -40,16 +589,51 @@ std::optional<RuntimeTaskHandle> PrometheusRuntimeStore::CreateTask(
+     RuntimeTaskOrigin origin,
+     RequestedExecution requested_execution,
+     int64_t timestamp_ms) {
+-  return RuntimeTaskHandle{.task_id = "red-scaffold", .generation = 1};
++  if (timestamp_ms < 0) {
++    return std::nullopt;
++  }
++  RuntimeStoredTask task;
++  do {
++    task.snapshot.task_id = NewOpaqueId();
++  } while (FindTask(task.snapshot.task_id));
++  task.snapshot.origin = origin;
++  task.snapshot.requested_execution = requested_execution;
++  task.snapshot.state = RuntimeTaskState::kQueued;
++  task.snapshot.created_at_ms = timestamp_ms;
++  task.snapshot.updated_at_ms = timestamp_ms;
++  task.generation = 1;
++  task.access_sequence = ++access_sequence_;
++  const RuntimeTaskHandle handle{.task_id = task.snapshot.task_id,
++                                 .generation = task.generation};
++
++  if (tasks_.size() >= bounds_.max_tasks) {
++    const auto oldest = std::ranges::min_element(
++        tasks_, {},
++        [](const RuntimeStoredTask& stored) { return stored.access_sequence; });
++    tasks_.erase(oldest);
++  }
++  tasks_.push_back(std::move(task));
++  AppendEventWithoutPersist(handle.task_id, RuntimeEventKind::kTaskCreated,
++                            RuntimeErrorCode::kNone, 0, timestamp_ms);
++  Persist();
++  NotifyObservers();
++  return handle;
+ }
+ 
+ std::optional<RuntimeStoredTask> PrometheusRuntimeStore::GetTask(
+     std::string_view task_id) {
+-  return std::nullopt;
++  RuntimeStoredTask* task = FindMutableTask(task_id);
++  if (!task) {
++    return std::nullopt;
++  }
++  task->access_sequence = ++access_sequence_;
++  RuntimeStoredTask copy = *task;
++  Persist();
++  return copy;
+ }
+ 
+ std::vector<RuntimeStoredTask> PrometheusRuntimeStore::ListTasks() const {
+-  return {};
++  return tasks_;
+ }
+ 
+ RuntimeStoreMutation PrometheusRuntimeStore::TransitionTask(
+@@ -57,7 +641,36 @@ RuntimeStoreMutation PrometheusRuntimeStore::TransitionTask(
+     uint64_t generation,
+     RuntimeTaskState next_state,
+     int64_t timestamp_ms) {
+-  return {.status = RuntimeStoreStatus::kNotFound};
++  RuntimeStoredTask* task = FindMutableTask(task_id);
++  if (!task) {
++    return {.status = RuntimeStoreStatus::kNotFound};
++  }
++  if (task->generation != generation) {
++    return {.status = RuntimeStoreStatus::kStaleGeneration,
++            .generation = task->generation};
++  }
++  if (IsTerminalRuntimeTaskState(task->snapshot.state)) {
++    return {.status = RuntimeStoreStatus::kAlreadyFinished,
++            .generation = task->generation};
++  }
++  if (IsTerminalRuntimeTaskState(next_state) || timestamp_ms < 0 ||
++      timestamp_ms < task->snapshot.updated_at_ms ||
++      !IsLegalRuntimeTaskTransition(task->snapshot.state, next_state)) {
++    return {.status = RuntimeStoreStatus::kInvalidTransition,
++            .generation = task->generation};
++  }
++
++  task->snapshot.state = next_state;
++  task->snapshot.updated_at_ms = timestamp_ms;
++  ++task->generation;
++  task->access_sequence = ++access_sequence_;
++  AppendEventWithoutPersist(task->snapshot.task_id,
++                            RuntimeEventKind::kStateChanged,
++                            RuntimeErrorCode::kNone, 0, timestamp_ms);
++  const uint64_t next_generation = task->generation;
++  Persist();
++  NotifyObservers();
++  return {.status = RuntimeStoreStatus::kOk, .generation = next_generation};
+ }
+ 
+ RuntimeStoreStatus PrometheusRuntimeStore::FinishTaskOnce(
+@@ -68,14 +681,82 @@ RuntimeStoreStatus PrometheusRuntimeStore::FinishTaskOnce(
+     RuntimeSafeResult result,
+     const RuntimeUsage& final_usage,
+     int64_t timestamp_ms) {
+-  return RuntimeStoreStatus::kNotFound;
++  RuntimeStoredTask* task = FindMutableTask(task_id);
++  if (!task) {
++    return RuntimeStoreStatus::kNotFound;
++  }
++  if (task->generation != generation) {
++    return RuntimeStoreStatus::kStaleGeneration;
++  }
++  if (IsTerminalRuntimeTaskState(task->snapshot.state)) {
++    return RuntimeStoreStatus::kAlreadyFinished;
++  }
++  if (!IsCoherentTerminal(terminal_state, error_code) || timestamp_ms < 0 ||
++      timestamp_ms < task->snapshot.updated_at_ms ||
++      !IsLegalRuntimeTaskTransition(task->snapshot.state, terminal_state)) {
++    return RuntimeStoreStatus::kInvalidTransition;
++  }
++  if (!IsValidRuntimeUsage(final_usage)) {
++    return RuntimeStoreStatus::kInvalidUsage;
++  }
++  if (!IsEmptyUsage(final_usage)) {
++    std::optional<RuntimeUsage> usage =
++        IsEmptyUsage(task->snapshot.usage)
++            ? std::optional<RuntimeUsage>(final_usage)
++            : AddRuntimeUsage(task->snapshot.usage, final_usage);
++    if (!usage) {
++      return RuntimeStoreStatus::kInvalidUsage;
++    }
++    task->snapshot.usage = *usage;
++  }
++
++  task->snapshot.state = terminal_state;
++  task->snapshot.error_code = error_code;
++  task->snapshot.updated_at_ms = timestamp_ms;
++  task->access_sequence = ++access_sequence_;
++  result = ClampSafeResult(std::move(result), bounds_.max_safe_result_bytes);
++  if (!result.text.empty() || result.truncated) {
++    task->result = std::move(result);
++  }
++  AppendEventWithoutPersist(task->snapshot.task_id,
++                            RuntimeEventKind::kTaskFinished, error_code, 0,
++                            timestamp_ms);
++  Persist();
++  NotifyObservers();
++  return RuntimeStoreStatus::kOk;
+ }
+ 
+ RuntimeStoreStatus PrometheusRuntimeStore::AddUsage(std::string_view task_id,
+                                                     uint64_t generation,
+                                                     const RuntimeUsage& delta,
+                                                     int64_t timestamp_ms) {
+-  return RuntimeStoreStatus::kNotFound;
++  RuntimeStoredTask* task = FindMutableTask(task_id);
++  if (!task) {
++    return RuntimeStoreStatus::kNotFound;
++  }
++  if (task->generation != generation) {
++    return RuntimeStoreStatus::kStaleGeneration;
++  }
++  if (IsTerminalRuntimeTaskState(task->snapshot.state)) {
++    return RuntimeStoreStatus::kAlreadyFinished;
++  }
++  if (!IsValidRuntimeUsage(delta) || timestamp_ms < 0 ||
++      timestamp_ms < task->snapshot.updated_at_ms) {
++    return RuntimeStoreStatus::kInvalidUsage;
++  }
++  std::optional<RuntimeUsage> total =
++      IsEmptyUsage(task->snapshot.usage)
++          ? std::optional<RuntimeUsage>(delta)
++          : AddRuntimeUsage(task->snapshot.usage, delta);
++  if (!total) {
++    return RuntimeStoreStatus::kInvalidUsage;
++  }
++  task->snapshot.usage = *total;
++  task->snapshot.updated_at_ms = timestamp_ms;
++  task->access_sequence = ++access_sequence_;
++  Persist();
++  NotifyObservers();
++  return RuntimeStoreStatus::kOk;
+ }
+ 
+ bool PrometheusRuntimeStore::AppendEvent(std::string task_id,
+@@ -83,26 +764,258 @@ bool PrometheusRuntimeStore::AppendEvent(std::string task_id,
+                                          RuntimeErrorCode error_code,
+                                          int64_t value,
+                                          int64_t timestamp_ms) {
+-  return false;
++  if (timestamp_ms < 0 || value < 0 ||
++      !IsBoundedRuntimeUtf8(task_id, kMaxRuntimeTaskIdBytes) ||
++      (!task_id.empty() && !FindTask(task_id))) {
++    return false;
++  }
++  AppendEventWithoutPersist(std::move(task_id), kind, error_code, value,
++                            timestamp_ms);
++  Persist();
++  NotifyObservers();
++  return true;
+ }
+ 
+ bool PrometheusRuntimeStore::AppendAction(std::string task_id,
+                                           RuntimeActionKind kind,
+                                           bool succeeded,
+                                           int64_t timestamp_ms) {
+-  return false;
++  if (timestamp_ms < 0 || task_id.empty() ||
++      !IsBoundedRuntimeUtf8(task_id, kMaxRuntimeTaskIdBytes) ||
++      !FindTask(task_id)) {
++    return false;
++  }
++  actions_.push_back(RuntimeActionRecord{.action_id = NewOpaqueId(),
++                                         .task_id = std::move(task_id),
++                                         .kind = kind,
++                                         .timestamp_ms = timestamp_ms,
++                                         .succeeded = succeeded});
++  while (actions_.size() > bounds_.max_actions) {
++    actions_.erase(actions_.begin());
++  }
++  Persist();
++  NotifyObservers();
++  return true;
+ }
+ 
+ bool PrometheusRuntimeStore::AppendDiagnostic(RuntimeDiagnosticKind kind,
+                                               int64_t count,
+                                               int64_t timestamp_ms) {
+-  return false;
++  if (timestamp_ms < 0 || count <= 0) {
++    return false;
++  }
++  diagnostics_.push_back(RuntimeDiagnosticRecord{.diagnostic_id = NewOpaqueId(),
++                                                 .kind = kind,
++                                                 .timestamp_ms = timestamp_ms,
++                                                 .count = count});
++  while (diagnostics_.size() > bounds_.max_diagnostics) {
++    diagnostics_.erase(diagnostics_.begin());
++  }
++  Persist();
++  NotifyObservers();
++  return true;
++}
++
++void PrometheusRuntimeStore::AddObserver(Observer* observer) {
++  observers_.AddObserver(observer);
++}
++
++void PrometheusRuntimeStore::RemoveObserver(Observer* observer) {
++  observers_.RemoveObserver(observer);
+ }
+ 
+ RuntimeStoreSnapshot PrometheusRuntimeStore::GetSnapshot() const {
+-  return {};
++  RuntimeStoreSnapshot snapshot{.tasks = tasks_,
++                                .events = events_,
++                                .actions = actions_,
++                                .diagnostics = diagnostics_};
++  bool has_usage = false;
++  bool cost_known = true;
++  int64_t aggregate_cost = 0;
++  for (const RuntimeStoredTask& task : tasks_) {
++    snapshot.aggregate_usage.input_tokens += task.snapshot.usage.input_tokens;
++    snapshot.aggregate_usage.output_tokens += task.snapshot.usage.output_tokens;
++    snapshot.aggregate_usage.tool_calls += task.snapshot.usage.tool_calls;
++    snapshot.aggregate_usage.duration_ms += task.snapshot.usage.duration_ms;
++    if (task.snapshot.usage.cost_microunits.has_value()) {
++      aggregate_cost += *task.snapshot.usage.cost_microunits;
++    } else {
++      cost_known = false;
++    }
++    has_usage = true;
++  }
++  if (has_usage && cost_known) {
++    snapshot.aggregate_usage.cost_microunits = aggregate_cost;
++  }
++  return snapshot;
+ }
+ 
+-void PrometheusRuntimeStore::Shutdown(int64_t timestamp_ms) {}
++void PrometheusRuntimeStore::Shutdown(int64_t timestamp_ms) {
++  if (timestamp_ms < 0) {
++    return;
++  }
++  for (RuntimeStoredTask& task : tasks_) {
++    if (IsTerminalRuntimeTaskState(task.snapshot.state)) {
++      continue;
++    }
++    ++task.generation;
++    task.snapshot.state = RuntimeTaskState::kFailed;
++    task.snapshot.error_code = RuntimeErrorCode::kInternal;
++    task.snapshot.updated_at_ms =
++        std::max(timestamp_ms, task.snapshot.updated_at_ms);
++    task.access_sequence = ++access_sequence_;
++    AppendEventWithoutPersist(
++        task.snapshot.task_id, RuntimeEventKind::kTaskFinished,
++        RuntimeErrorCode::kInternal, 0, task.snapshot.updated_at_ms);
++  }
++  AppendEventWithoutPersist(std::string(), RuntimeEventKind::kShutdown,
++                            RuntimeErrorCode::kNone, 0, timestamp_ms);
++  Persist();
++  NotifyObservers();
++}
++
++void PrometheusRuntimeStore::Load() {
++  tasks_.clear();
++  events_.clear();
++  actions_.clear();
++  diagnostics_.clear();
++  access_sequence_ = 0;
++
++  const base::DictValue& root = prefs_->GetDict(kPrometheusRuntimeProfileData);
++  const base::DictValue* data = root.FindDict(kDataKey);
++  const base::DictValue* store =
++      data ? data->FindDict(kRuntimeStoreKey) : nullptr;
++  if (!store ||
++      store->FindInt(kSchemaVersionKey) != kRuntimeStoreSchemaVersion) {
++    return;
++  }
++
++  size_t dropped = 0;
++  dropped +=
++      LoadRecords(store->FindList(kTasksKey), &tasks_, StoredTaskFromValue);
++  dropped += LoadRecords(store->FindList(kEventsKey), &events_, EventFromValue);
++  dropped +=
++      LoadRecords(store->FindList(kActionsKey), &actions_, ActionFromValue);
++  dropped += LoadRecords(store->FindList(kDiagnosticsKey), &diagnostics_,
++                         DiagnosticFromValue);
++  dropped += DropDuplicateRecords(
++      &tasks_, [](const RuntimeStoredTask& task) -> const std::string& {
++        return task.snapshot.task_id;
++      });
++  dropped += DropDuplicateRecords(
++      &events_, [](const RuntimeEventRecord& event) -> const std::string& {
++        return event.event_id;
++      });
++  dropped += DropDuplicateRecords(
++      &actions_, [](const RuntimeActionRecord& action) -> const std::string& {
++        return action.action_id;
++      });
++  dropped += DropDuplicateRecords(
++      &diagnostics_,
++      [](const RuntimeDiagnosticRecord& diagnostic) -> const std::string& {
++        return diagnostic.diagnostic_id;
++      });
++  for (const RuntimeStoredTask& task : tasks_) {
++    access_sequence_ = std::max(access_sequence_, task.access_sequence);
++  }
++  if (dropped > 0) {
++    diagnostics_.push_back(RuntimeDiagnosticRecord{
++        .diagnostic_id = NewOpaqueId(),
++        .kind = RuntimeDiagnosticKind::kInvalidRecordDropped,
++        .timestamp_ms = 0,
++        .count = static_cast<int64_t>(dropped)});
++  }
++}
++
++void PrometheusRuntimeStore::Persist() {
++  EnforceBounds();
++  base::DictValue root = prefs_->GetDict(kPrometheusRuntimeProfileData).Clone();
++  base::DictValue data = root.FindDict(kDataKey)
++                             ? root.FindDict(kDataKey)->Clone()
++                             : base::DictValue();
++  data.Set(kRuntimeStoreKey,
++           BuildStoreValue(tasks_, events_, actions_, diagnostics_));
++  root.Set(kDataKey, std::move(data));
++  prefs_->SetDict(kPrometheusRuntimeProfileData, std::move(root));
++}
++
++void PrometheusRuntimeStore::EnforceBounds() {
++  while (tasks_.size() > bounds_.max_tasks) {
++    const auto oldest = std::ranges::min_element(
++        tasks_, {},
++        [](const RuntimeStoredTask& task) { return task.access_sequence; });
++    tasks_.erase(oldest);
++  }
++  while (events_.size() > bounds_.max_events) {
++    events_.erase(events_.begin());
++  }
++  while (actions_.size() > bounds_.max_actions) {
++    actions_.erase(actions_.begin());
++  }
++  while (diagnostics_.size() > bounds_.max_diagnostics) {
++    diagnostics_.erase(diagnostics_.begin());
++  }
++
++  while (SerializedStoreBytes(
++             BuildStoreValue(tasks_, events_, actions_, diagnostics_)) >
++         bounds_.max_total_utf8_bytes) {
++    if (!events_.empty()) {
++      events_.erase(events_.begin());
++    } else if (!actions_.empty()) {
++      actions_.erase(actions_.begin());
++    } else if (!diagnostics_.empty()) {
++      diagnostics_.erase(diagnostics_.begin());
++    } else if (!tasks_.empty()) {
++      const auto oldest = std::ranges::min_element(
++          tasks_, {},
++          [](const RuntimeStoredTask& task) { return task.access_sequence; });
++      tasks_.erase(oldest);
++    } else {
++      break;
++    }
++  }
++}
++
++void PrometheusRuntimeStore::NotifyObservers() {
++  const RuntimeStoreSnapshot snapshot = GetSnapshot();
++  for (Observer& observer : observers_) {
++    observer.OnRuntimeStoreChanged(snapshot);
++  }
++}
++
++void PrometheusRuntimeStore::AppendEventWithoutPersist(
++    std::string task_id,
++    RuntimeEventKind kind,
++    RuntimeErrorCode error_code,
++    int64_t value,
++    int64_t timestamp_ms) {
++  events_.push_back(RuntimeEventRecord{.event_id = NewOpaqueId(),
++                                       .task_id = std::move(task_id),
++                                       .kind = kind,
++                                       .error_code = error_code,
++                                       .timestamp_ms = timestamp_ms,
++                                       .value = value});
++  while (events_.size() > bounds_.max_events) {
++    events_.erase(events_.begin());
++  }
++}
++
++RuntimeStoredTask* PrometheusRuntimeStore::FindMutableTask(
++    std::string_view task_id) {
++  const auto found =
++      std::ranges::find_if(tasks_, [task_id](const RuntimeStoredTask& task) {
++        return task.snapshot.task_id == task_id;
++      });
++  return found == tasks_.end() ? nullptr : &*found;
++}
++
++const RuntimeStoredTask* PrometheusRuntimeStore::FindTask(
++    std::string_view task_id) const {
++  const auto found =
++      std::ranges::find_if(tasks_, [task_id](const RuntimeStoredTask& task) {
++        return task.snapshot.task_id == task_id;
++      });
++  return found == tasks_.end() ? nullptr : &*found;
++}
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_runtime_store.h b/chrome/browser/prometheus/prometheus_runtime_store.h
+index b7170bd1b0..c548ee1741 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_store.h
++++ b/chrome/browser/prometheus/prometheus_runtime_store.h
+@@ -13,6 +13,8 @@
+ #include <vector>
+ 
+ #include "base/memory/raw_ptr.h"
++#include "base/observer_list.h"
++#include "base/observer_list_types.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_types.h"
+ 
+ class PrefService;
+@@ -141,6 +143,12 @@ std::string_view RuntimeDiagnosticKindToString(RuntimeDiagnosticKind kind);
+ 
+ class PrometheusRuntimeStore {
+  public:
++  class Observer : public base::CheckedObserver {
++   public:
++    virtual void OnRuntimeStoreChanged(
++        const RuntimeStoreSnapshot& snapshot) = 0;
++  };
++
+   explicit PrometheusRuntimeStore(
+       PrefService* prefs,
+       RuntimeStoreBounds bounds = RuntimeStoreBounds());
+@@ -185,12 +193,32 @@ class PrometheusRuntimeStore {
+                         int64_t count,
+                         int64_t timestamp_ms);
+ 
++  void AddObserver(Observer* observer);
++  void RemoveObserver(Observer* observer);
+   RuntimeStoreSnapshot GetSnapshot() const;
+   void Shutdown(int64_t timestamp_ms);
+ 
+  private:
++  void Load();
++  void Persist();
++  void EnforceBounds();
++  void NotifyObservers();
++  void AppendEventWithoutPersist(std::string task_id,
++                                 RuntimeEventKind kind,
++                                 RuntimeErrorCode error_code,
++                                 int64_t value,
++                                 int64_t timestamp_ms);
++  RuntimeStoredTask* FindMutableTask(std::string_view task_id);
++  const RuntimeStoredTask* FindTask(std::string_view task_id) const;
++
+   const raw_ptr<PrefService> prefs_;
+   const RuntimeStoreBounds bounds_;
++  std::vector<RuntimeStoredTask> tasks_;
++  std::vector<RuntimeEventRecord> events_;
++  std::vector<RuntimeActionRecord> actions_;
++  std::vector<RuntimeDiagnosticRecord> diagnostics_;
++  uint64_t access_sequence_ = 0;
++  base::ObserverList<Observer> observers_;
+ };
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_runtime_store_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_store_unittest.cc
+index 87e27685d6..d5e2f29829 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_store_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_store_unittest.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_runtime_store.h"
+ 
++#include <algorithm>
+ #include <cstdint>
+ #include <memory>
+ #include <optional>
+@@ -47,9 +48,26 @@ class PrometheusRuntimeStoreTest : public testing::Test {
+         .value_or(std::string());
+   }
+ 
++  std::string SerializedRuntimeStoreData() const {
++    const base::DictValue* data =
++        prefs_.GetDict(kPrometheusRuntimeProfileData).FindDict("data");
++    const base::DictValue* runtime_store =
++        data ? data->FindDict("runtime_store") : nullptr;
++    return runtime_store ? base::WriteJson(*runtime_store).value_or("") : "";
++  }
++
+   sync_preferences::TestingPrefServiceSyncable prefs_;
+ };
+ 
++class RecordingRuntimeStoreObserver : public PrometheusRuntimeStore::Observer {
++ public:
++  void OnRuntimeStoreChanged(const RuntimeStoreSnapshot& snapshot) override {
++    snapshots.push_back(snapshot);
++  }
++
++  std::vector<RuntimeStoreSnapshot> snapshots;
++};
++
+ TEST_F(PrometheusRuntimeStoreTest,
+        CreatesOpaqueStableTasksAndSanitizedSnapshots) {
+   auto store = MakeStore();
+@@ -100,6 +118,76 @@ TEST_F(PrometheusRuntimeStoreTest,
+   EXPECT_EQ(RuntimeStoreStatus::kInvalidTransition, illegal.status);
+ }
+ 
++TEST_F(PrometheusRuntimeStoreTest,
++       AcceptsEveryLegalEdgeThroughTheSingleFinishPath) {
++  struct Edge {
++    RuntimeTaskState from;
++    RuntimeTaskState to;
++  };
++  constexpr Edge kEdges[] = {
++      {RuntimeTaskState::kQueued, RuntimeTaskState::kRunning},
++      {RuntimeTaskState::kQueued, RuntimeTaskState::kCancelling},
++      {RuntimeTaskState::kQueued, RuntimeTaskState::kFailed},
++      {RuntimeTaskState::kRunning, RuntimeTaskState::kWaitingConfirmation},
++      {RuntimeTaskState::kRunning, RuntimeTaskState::kCancelling},
++      {RuntimeTaskState::kRunning, RuntimeTaskState::kSucceeded},
++      {RuntimeTaskState::kRunning, RuntimeTaskState::kFailed},
++      {RuntimeTaskState::kWaitingConfirmation, RuntimeTaskState::kRunning},
++      {RuntimeTaskState::kWaitingConfirmation, RuntimeTaskState::kCancelling},
++      {RuntimeTaskState::kWaitingConfirmation, RuntimeTaskState::kFailed},
++      {RuntimeTaskState::kCancelling, RuntimeTaskState::kCancelled},
++  };
++
++  auto store = MakeStore();
++  size_t i = 0;
++  for (const Edge edge : kEdges) {
++    SCOPED_TRACE(i);
++    const int64_t start = kNow + static_cast<int64_t>(i) * 10;
++    ++i;
++    RuntimeTaskHandle task = RequireTask(*store, start);
++    uint64_t generation = task.generation;
++
++    if (edge.from == RuntimeTaskState::kRunning ||
++        edge.from == RuntimeTaskState::kWaitingConfirmation) {
++      RuntimeStoreMutation running = store->TransitionTask(
++          task.task_id, generation, RuntimeTaskState::kRunning, start + 1);
++      ASSERT_TRUE(running.ok());
++      generation = running.generation;
++    }
++    if (edge.from == RuntimeTaskState::kWaitingConfirmation) {
++      RuntimeStoreMutation waiting = store->TransitionTask(
++          task.task_id, generation, RuntimeTaskState::kWaitingConfirmation,
++          start + 2);
++      ASSERT_TRUE(waiting.ok());
++      generation = waiting.generation;
++    }
++    if (edge.from == RuntimeTaskState::kCancelling) {
++      RuntimeStoreMutation cancelling = store->TransitionTask(
++          task.task_id, generation, RuntimeTaskState::kCancelling, start + 1);
++      ASSERT_TRUE(cancelling.ok());
++      generation = cancelling.generation;
++    }
++
++    ASSERT_TRUE(IsLegalRuntimeTaskTransition(edge.from, edge.to));
++    if (IsTerminalRuntimeTaskState(edge.to)) {
++      RuntimeErrorCode error = RuntimeErrorCode::kInternal;
++      if (edge.to == RuntimeTaskState::kSucceeded) {
++        error = RuntimeErrorCode::kNone;
++      } else if (edge.to == RuntimeTaskState::kCancelled) {
++        error = RuntimeErrorCode::kCancelled;
++      }
++      EXPECT_EQ(RuntimeStoreStatus::kOk,
++                store->FinishTaskOnce(task.task_id, generation, edge.to, error,
++                                      RuntimeSafeResult(), RuntimeUsage(),
++                                      start + 4));
++    } else {
++      EXPECT_TRUE(
++          store->TransitionTask(task.task_id, generation, edge.to, start + 4)
++              .ok());
++    }
++  }
++}
++
+ TEST_F(PrometheusRuntimeStoreTest,
+        FinishesExactlyOnceAcrossCancelProviderAndTimeoutRaces) {
+   auto store = MakeStore();
+@@ -170,7 +258,25 @@ TEST_F(PrometheusRuntimeStoreTest,
+   {
+     auto restarted = MakeStore();
+     EXPECT_TRUE(restarted->GetTask(task_id).has_value());
+-    EXPECT_EQ(1u, restarted->GetSnapshot().events.size());
++    ASSERT_EQ(2u, restarted->GetSnapshot().events.size());
++    EXPECT_EQ(RuntimeEventKind::kProviderAttempt,
++              restarted->GetSnapshot().events.back().kind);
++  }
++
++  base::DictValue duplicate_root =
++      prefs_.GetDict(kPrometheusRuntimeProfileData).Clone();
++  base::DictValue* duplicate_data = duplicate_root.FindDict("data");
++  ASSERT_NE(nullptr, duplicate_data);
++  base::DictValue* duplicate_store = duplicate_data->FindDict("runtime_store");
++  ASSERT_NE(nullptr, duplicate_store);
++  base::ListValue* duplicate_tasks = duplicate_store->FindList("tasks");
++  ASSERT_NE(nullptr, duplicate_tasks);
++  ASSERT_FALSE(duplicate_tasks->empty());
++  duplicate_tasks->Append(duplicate_tasks->front().Clone());
++  prefs_.SetUserPref(kPrometheusRuntimeProfileData, std::move(duplicate_root));
++  {
++    auto deduplicated = MakeStore();
++    EXPECT_EQ(1u, deduplicated->ListTasks().size());
+   }
+ 
+   base::DictValue root = prefs_.GetDict(kPrometheusRuntimeProfileData).Clone();
+@@ -178,6 +284,16 @@ TEST_F(PrometheusRuntimeStoreTest,
+   corrupt_task.Set("task_id", "corrupt");
+   corrupt_task.Set("state", "impossible");
+   corrupt_task.Set("prompt", "PROMPT_SENTINEL");
++  corrupt_task.Set("page_text", "PAGE_TEXT_SENTINEL");
++  corrupt_task.Set("selector", "SELECTOR_SENTINEL");
++  corrupt_task.Set("typed_text", "TYPED_TEXT_SENTINEL");
++  corrupt_task.Set("script", "JAVASCRIPT_SENTINEL");
++  corrupt_task.Set("url_query", "URL_QUERY_SENTINEL");
++  corrupt_task.Set("local_path", "LOCAL_PATH_SENTINEL");
++  corrupt_task.Set("authorization", "BEARER_SENTINEL");
++  corrupt_task.Set("secret", "PLAINTEXT_SENTINEL");
++  corrupt_task.Set("ciphertext", "CIPHERTEXT_SENTINEL");
++  corrupt_task.Set("provider_body", "PROVIDER_RAW_BODY_SENTINEL");
+   base::ListValue corrupt_tasks;
+   corrupt_tasks.Append(std::move(corrupt_task));
+   base::DictValue runtime_store;
+@@ -191,6 +307,13 @@ TEST_F(PrometheusRuntimeStoreTest,
+   auto repaired = MakeStore();
+   EXPECT_TRUE(repaired->ListTasks().empty());
+   EXPECT_EQ(std::string::npos, SerializedProfileData().find("PROMPT_SENTINEL"));
++  for (std::string_view sentinel :
++       {"PAGE_TEXT_SENTINEL", "SELECTOR_SENTINEL", "TYPED_TEXT_SENTINEL",
++        "JAVASCRIPT_SENTINEL", "URL_QUERY_SENTINEL", "LOCAL_PATH_SENTINEL",
++        "BEARER_SENTINEL", "PLAINTEXT_SENTINEL", "CIPHERTEXT_SENTINEL",
++        "PROVIDER_RAW_BODY_SENTINEL"}) {
++    EXPECT_EQ(std::string::npos, SerializedProfileData().find(sentinel));
++  }
+ }
+ 
+ TEST_F(PrometheusRuntimeStoreTest, EvictsTasksByLruAndStructuredRecordsByFifo) {
+@@ -230,7 +353,7 @@ TEST_F(PrometheusRuntimeStoreTest,
+        TruncatesSafeResultsAtUtf8BoundaryAndTotalByteCap) {
+   RuntimeStoreBounds bounds;
+   bounds.max_safe_result_bytes = 5;
+-  bounds.max_total_utf8_bytes = 300;
++  bounds.max_total_utf8_bytes = 1024;
+   auto store = MakeStore(bounds);
+   RuntimeTaskHandle task = RequireTask(*store);
+   RuntimeStoreMutation running = store->TransitionTask(
+@@ -248,7 +371,7 @@ TEST_F(PrometheusRuntimeStoreTest,
+   ASSERT_TRUE(stored->result.has_value());
+   EXPECT_EQ("1234", stored->result->text);
+   EXPECT_TRUE(stored->result->truncated);
+-  EXPECT_LE(SerializedProfileData().size(), bounds.max_total_utf8_bytes);
++  EXPECT_LE(SerializedRuntimeStoreData().size(), bounds.max_total_utf8_bytes);
+ }
+ 
+ TEST_F(PrometheusRuntimeStoreTest,
+@@ -262,6 +385,9 @@ TEST_F(PrometheusRuntimeStoreTest,
+                      .cost_microunits = 0};
+   EXPECT_EQ(RuntimeStoreStatus::kOk,
+             store->AddUsage(task.task_id, task.generation, first, kNow + 1));
++  std::optional<RuntimeStoredTask> measured_zero = store->GetTask(task.task_id);
++  ASSERT_TRUE(measured_zero.has_value());
++  EXPECT_EQ(0, measured_zero->snapshot.usage.cost_microunits);
+   RuntimeUsage second{.input_tokens = 2,
+                       .output_tokens = 3,
+                       .tool_calls = 1,
+@@ -283,6 +409,32 @@ TEST_F(PrometheusRuntimeStoreTest,
+   invalid.input_tokens = -1;
+   EXPECT_EQ(RuntimeStoreStatus::kInvalidUsage,
+             store->AddUsage(task.task_id, task.generation, invalid, kNow + 3));
++
++  auto restarted = MakeStore();
++  std::optional<RuntimeStoredTask> persisted = restarted->GetTask(task.task_id);
++  ASSERT_TRUE(persisted.has_value());
++  EXPECT_EQ(12, persisted->snapshot.usage.input_tokens);
++}
++
++TEST_F(PrometheusRuntimeStoreTest, NotifiesObserversWithFreshBoundedSnapshots) {
++  auto store = MakeStore();
++  RecordingRuntimeStoreObserver observer;
++  store->AddObserver(&observer);
++
++  RuntimeTaskHandle task = RequireTask(*store);
++  ASSERT_EQ(1u, observer.snapshots.size());
++  ASSERT_EQ(1u, observer.snapshots.back().tasks.size());
++  EXPECT_EQ(task.task_id,
++            observer.snapshots.back().tasks.front().snapshot.task_id);
++
++  EXPECT_TRUE(store->AppendDiagnostic(RuntimeDiagnosticKind::kStaleCompletion,
++                                      1, kNow + 1));
++  ASSERT_EQ(2u, observer.snapshots.size());
++  ASSERT_EQ(1u, observer.snapshots.back().diagnostics.size());
++  EXPECT_EQ(RuntimeDiagnosticKind::kStaleCompletion,
++            observer.snapshots.back().diagnostics.front().kind);
++
++  store->RemoveObserver(&observer);
+ }
+ 
+ TEST_F(PrometheusRuntimeStoreTest,
+-- 
+2.50.1 (Apple Git-155)
+

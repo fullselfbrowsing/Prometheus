@@ -1,0 +1,357 @@
+From dc4fd00d3ea22eaf4a48db4dc4412bcc766bb3a5 Mon Sep 17 00:00:00 2001
+From: Lakshman Turlapati <lakshmanturlapati@gmail.com>
+Date: Thu, 30 Jul 2026 07:27:46 -0500
+Subject: [PATCH] fix(22-05): drive the extension enable toggle only from
+ settled WebUI state
+
+The full-lifecycle smoke controller stalled at kReloaded: the real
+chrome.management.setEnabled() DOM click on the item card's #enableToggle
+reported "clicked" but no matching ExtensionRegistryObserver unload ever
+arrived. Root-caused by direct observation, not inference.
+
+ClickDisableToggle() ran synchronously from inside the browser-side
+ExtensionRegistryObserver callback for the preceding transition, 4.5 ms after
+the reload's native OnExtensionLoaded. chrome://extensions learns about a
+registry transition through its own independent
+developerPrivate.onItemStateChanged round trip, so the card still rendered the
+*previous* state. An instrumented run captured exactly that at the first
+disable click:
+
+  {"expect":true,"checked_before":false,"hidden":false,"disabled":false,
+   "state":"DISABLED","reasons":{... "reloading":true ...},"mgmt":"function"}
+
+A stale render is neither hidden nor disabled -- userCanChangeEnablement()
+ignores disableReasons.reloading and getEnableControl() still returns
+ENABLE_TOGGLE -- so the existing pre-checks passed and the click landed on a
+toggle whose checked was false. cr-toggle flipped it to true and
+extensions-item::onEnableToggleChange_() called
+chrome.management.setEnabled(id, /*enabled=*/true) on an already-enabled
+extension. ManagementSetEnabledFunction takes neither branch in that case,
+succeeds, and mutates nothing. The click genuinely happened; it just requested
+the state the extension was already in. Two things hid it:
+cr_toggle.ts::toggleState_() fires `change` only after `await
+this.updateComplete`, so the injected script's "clicked" return value is
+emitted before the API call is made, and service.ts::setItemEnabled() ends in
+`.catch(_ => {})`.
+
+- EnableToggleClickScript() now takes expect_checked and returns a new
+  retryable `toggle_state_not_settled` when the rendered checked value
+  disagrees, instead of clicking a stale toggle. Disable passes true, enable
+  passes false; both click-issued handlers fold the new status into their
+  existing bounded 10s retry. The retry 204 ms later saw state:"ENABLED",
+  checked:true, and the matching OnExtensionUnloaded (reason 1) arrived 0.9 ms
+  after the click. The enable stage reproduced the exact mirror image, so the
+  mechanism is direction-symmetric rather than a one-off.
+- Same root cause, newly reachable stage: ExercisePolicyGrants() no longer runs
+  inside OnExtensionLoaded. ExtensionRegistrar::ActivateExtension() calls
+  ExtensionRegistry::AddReady()/TriggerOnReady() only *after* the
+  TriggerOnLoaded() observer loop, and every PrometheusExtensionPolicyService
+  decision is gated on ready_extensions().Contains(id) -- a not-yet-ready
+  extension is inactive, so grant mutations are refused with
+  kInactiveExtension (the policy_read_only_mutation_denied hit next) and
+  GetEffectiveGrant() clamps to Blocked. New bounded PollExtensionReady() waits
+  for ExtensionSystem::is_ready() plus real ready-set membership first.
+- Retire the satisfied wait's pending_wait_generation_ at each transition, so a
+  completed stage's still-queued timeout cannot fail the smoke under the
+  previous stage's reason across the new retry loop.
+- Raise the browser test's assertion boundary kReloaded -> kEnabled, which is
+  what this commit actually verifies.
+
+No verification path weakened: no MV2 enablement, no install-verification
+bypass, no accept_dialog_for_testing_, no direct installer/registrar mutation.
+The verify script's static no-bypass guards pass.
+
+Verified: verify-phase-22-extension-smoke.sh --focused exits 0 (32 tests, zero
+retry, skip, or failure). 13 extra direct runs of
+FullLifecycleInstallsInspectsAndReloads: 11 pass; both failures are the
+pre-existing environment flakes already documented in 22-05-SUMMARY, each
+outside the test body (macOS WasLaunchedAsLoginItemRestoreState() BUS_ADRALN at
+startup, and the pre-existing DCHECK on PostMainMessageLoopRun()'s first line
+at shutdown). No run failed with "never reached kEnabled".
+
+Deliberately still not asserted past kEnabled, because two separate defects sit
+in the options/remove stretch and would fail this test on their own account
+rather than on this plan's contract: a renderer terminated for the bad Mojo
+message "Tried to manipulate an event listener for an unauthorized extension
+ID." shortly after the rapid disable/enable churn plus options-tab open, and a
+remove click that reports success and accepts the native confirmation dialog
+without any OnExtensionUninstalled arriving. Both are under active
+investigation in the same debug session; Plan 22-05 Tasks 3 and 4 remain
+unstarted.
+---
+ .../prometheus_extension_smoke_browsertest.cc |  26 ++--
+ .../prometheus_extension_smoke_controller.cc  | 111 +++++++++++++++---
+ .../prometheus_extension_smoke_controller.h   |   1 +
+ 3 files changed, 114 insertions(+), 24 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc b/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
+index c0c0bb4d19151955448c43f6d97416db16c168b4..9f7d3b1740168d6fcb7170610f75a8b7a441d27e 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
+@@ -120,13 +120,21 @@ class PrometheusExtensionSmokeControllerBrowserTest
+ // extensions manager, real developer-mode toggle, the real Load-unpacked
+ // click through the one-shot chooser answering the developer-private-copied
+ // committed caller into the ordinary UnpackedInstaller path, real inspect
+-// (best-effort), and a real native reload (unload+load) cycle. Stages after
+-// kReloaded (disable/enable/local-policy/options/remove) are implemented but
+-// not yet verified: the real chrome.management.setEnabled() DOM click is
+-// issued and reports success, but no matching ExtensionRegistryObserver
+-// unload is observed within this controller's bounded transition window, for
+-// a reason not yet root-caused. This assertion boundary is therefore
+-// intentionally kReloaded, not kComplete, until that is resolved.
++// (best-effort), a real native reload (unload+load) cycle, and -- since the
++// stale-toggle-direction fix -- the real chrome.management.setEnabled() disable
++// and re-enable clicks with both matching ExtensionRegistryObserver transitions
++// observed.
++//
++// The assertion boundary is deliberately kEnabled rather than kComplete: the
++// stages after it (local policy matrix / options routing / remove) are
++// implemented and were observed to run in an instrumented session, but the
++// options/remove stretch still trips two separate, unresolved defects -- a
++// renderer terminated for the bad Mojo message "Tried to manipulate an event
++// listener for an unauthorized extension ID." shortly after the rapid
++// disable/enable churn plus options-tab open, and a remove click that reports
++// success and accepts the native confirmation dialog without any
++// OnExtensionUninstalled ever arriving. Asserting past kEnabled would make this
++// test fail on those, not on this plan's own contract.
+ IN_PROC_BROWSER_TEST_F(PrometheusExtensionSmokeControllerBrowserTest,
+                        FullLifecycleInstallsInspectsAndReloads) {
+   std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap =
+@@ -141,8 +149,8 @@ IN_PROC_BROWSER_TEST_F(PrometheusExtensionSmokeControllerBrowserTest,
+ 
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+     return controller->stage_for_testing() >=
+-          PrometheusExtensionSmokeStage::kReloaded;
+-  })) << "smoke controller never reached kReloaded";
++          PrometheusExtensionSmokeStage::kEnabled;
++  })) << "smoke controller never reached kEnabled";
+ 
+   EXPECT_FALSE(controller->extension_id_for_testing().empty());
+ 
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+index 539467ba983992a723832f050e2ba5ab6efdcd7d..7d913ff39218c183026ddb408d8787826f55baaf 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+@@ -33,6 +33,7 @@
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/browser/web_contents_observer.h"
+ #include "extensions/browser/extension_registry.h"
++#include "extensions/browser/extension_system.h"
+ #include "extensions/common/extension.h"
+ #include "ui/base/l10n/l10n_util.h"
+ #include "ui/base/page_transition_types.h"
+@@ -55,6 +56,7 @@ constexpr base::TimeDelta kInstallObservedTimeout = base::Seconds(25);
+ constexpr base::TimeDelta kItemRenderedTimeout = base::Seconds(10);
+ constexpr base::TimeDelta kToggleActionableTimeout = base::Seconds(10);
+ constexpr base::TimeDelta kTransitionObservedTimeout = base::Seconds(20);
++constexpr base::TimeDelta kExtensionReadyTimeout = base::Seconds(15);
+ constexpr base::TimeDelta kRemoveConfirmationTimeout = base::Seconds(10);
+ 
+ bool IsWellFormedExtensionId(const std::string& id) {
+@@ -174,7 +176,33 @@ std::string ReloadClickScript(const std::string& extension_id) {
+         "})()";
+ }
+ 
+-std::string EnableToggleClickScript(const std::string& extension_id) {
++// Clicks the item card's `#enableToggle`, but only while the toggle's rendered
++// `checked` value still agrees with the native registry state this controller
++// last observed. `expect_checked` is that state: true right after a load (the
++// extension is enabled, so the next click must switch it off), false right
++// after an unload.
++//
++// chrome://extensions learns about a registry transition through its own
++// independent `developerPrivate.onItemStateChanged` round trip, so immediately
++// after a browser-side ExtensionRegistry notification the card can legitimately
++// still render the *previous* state. That stale render is neither hidden nor
++// disabled -- `userCanChangeEnablement()` ignores `disableReasons.reloading`
++// and `getEnableControl()` still returns ENABLE_TOGGLE -- it merely has the
++// wrong `checked` value. Since `cr-toggle` flips `checked` on click and
++// `extensions-item` then calls
++// `chrome.management.setEnabled(id, toggle.checked)`, clicking a stale toggle
++// requests the state the extension is *already* in, which the management API
++// answers successfully without any registry transition at all. Report that as
++// its own retryable status rather than clicking.
++//
++// Observed directly (Phase 22 Plan 22-05 instrumented run): the first disable
++// click, issued 4.5 ms after the reload's native OnExtensionLoaded, saw
++// `state:"DISABLED", disableReasons.reloading:true, hidden:false,
++// disabled:false, checked:false`; the retry 204 ms later saw
++// `state:"ENABLED", checked:true` and the matching OnExtensionUnloaded followed
++// 0.9 ms after the click. The enable stage showed the exact mirror image.
++std::string EnableToggleClickScript(const std::string& extension_id,
++                                    bool expect_checked) {
+   return "(function(){"
+         "var item=" +
+         ItemQueryExpression(extension_id) +
+@@ -184,6 +212,9 @@ std::string EnableToggleClickScript(const std::string& extension_id) {
+         "if(!toggle)return 'missing_toggle';"
+         "if(toggle.hidden)return 'hidden_toggle';"
+         "if(toggle.disabled)return 'disabled_toggle';"
++        "if(!!toggle.checked!==" +
++        std::string(expect_checked ? "true" : "false") +
++        ")return 'toggle_state_not_settled';"
+         "toggle.click();"
+         "return 'clicked';"
+         "})()";
+@@ -483,6 +514,11 @@ void PrometheusExtensionSmokeController::OnExtensionLoaded(
+   if (pending_transition_ == PrometheusExtensionSmokePendingTransition::kReload &&
+       awaiting_reload_reload_) {
+     pending_transition_ = PrometheusExtensionSmokePendingTransition::kNone;
++    // Retire the satisfied wait's generation so its still-queued timeout task
++    // can never fire against whatever wait replaces it. Without this, the
++    // reload timeout stays armed across the next stage's own bounded retry
++    // loop and can fail the smoke under the *previous* stage's reason.
++    ++pending_wait_generation_;
+     awaiting_reload_reload_ = false;
+     ++reload_transitions_seen_;
+     stage_ = PrometheusExtensionSmokeStage::kReloaded;
+@@ -491,8 +527,19 @@ void PrometheusExtensionSmokeController::OnExtensionLoaded(
+   }
+   if (pending_transition_ == PrometheusExtensionSmokePendingTransition::kEnable) {
+     pending_transition_ = PrometheusExtensionSmokePendingTransition::kNone;
++    ++pending_wait_generation_;
+     stage_ = PrometheusExtensionSmokeStage::kEnabled;
+-    ExercisePolicyGrants();
++    // "Loaded" and "ready" are distinct registry states, and the gap between
++    // them is not observable from inside this notification:
++    // ExtensionRegistrar::ActivateExtension() calls
++    // ExtensionRegistry::TriggerOnLoaded() (this callback) and only afterwards
++    // ExtensionRegistry::AddReady()/TriggerOnReady(). Every
++    // PrometheusExtensionPolicyService decision is gated on
++    // `ready_extensions().Contains(id)` -- a not-yet-ready extension is
++    // "inactive", so its effective grant clamps to Blocked and every grant
++    // mutation is refused with kInactiveExtension. Wait for the real ready
++    // state before exercising the policy matrix.
++    PollExtensionReady(base::TimeTicks::Now() + kExtensionReadyTimeout);
+   }
+ }
+ 
+@@ -511,6 +558,7 @@ void PrometheusExtensionSmokeController::OnExtensionUnloaded(
+   }
+   if (pending_transition_ == PrometheusExtensionSmokePendingTransition::kDisable) {
+     pending_transition_ = PrometheusExtensionSmokePendingTransition::kNone;
++    ++pending_wait_generation_;
+     stage_ = PrometheusExtensionSmokeStage::kDisabled;
+     ClickEnableToggle(base::TimeTicks::Now() + kToggleActionableTimeout);
+   }
+@@ -834,7 +882,7 @@ void PrometheusExtensionSmokeController::ClickDisableToggle(
+   }
+   pending_transition_ = PrometheusExtensionSmokePendingTransition::kDisable;
+   ExecuteInManager(
+-      EnableToggleClickScript(extension_id_),
++      EnableToggleClickScript(extension_id_, /*expect_checked=*/true),
+       base::BindOnce(&PrometheusExtensionSmokeController::OnDisableClickIssued,
+                      weak_ptr_factory_.GetWeakPtr(), deadline));
+ }
+@@ -853,9 +901,12 @@ void PrometheusExtensionSmokeController::OnDisableClickIssued(
+   }
+   // The item's card can render before its enable toggle becomes actionable
+   // (Lit re-renders the card, then the toggle's own disabled/hidden bindings
+-  // settle in a later update); retry the click until the bounded deadline
+-  // instead of treating a transient toggle state as a hard failure.
+-  if ((status == "disabled_toggle" || status == "hidden_toggle") &&
++  // settle in a later update), and its `checked` value can still reflect the
++  // pre-transition state until the WebUI's own developerPrivate round trip
++  // lands; retry the click until the bounded deadline instead of treating a
++  // transient toggle state as a hard failure.
++  if ((status == "disabled_toggle" || status == "hidden_toggle" ||
++       status == "toggle_state_not_settled") &&
+       base::TimeTicks::Now() < deadline) {
+     base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+         FROM_HERE,
+@@ -875,7 +926,7 @@ void PrometheusExtensionSmokeController::ClickEnableToggle(
+   }
+   pending_transition_ = PrometheusExtensionSmokePendingTransition::kEnable;
+   ExecuteInManager(
+-      EnableToggleClickScript(extension_id_),
++      EnableToggleClickScript(extension_id_, /*expect_checked=*/false),
+       base::BindOnce(&PrometheusExtensionSmokeController::OnEnableClickIssued,
+                      weak_ptr_factory_.GetWeakPtr(), deadline));
+ }
+@@ -892,7 +943,8 @@ void PrometheusExtensionSmokeController::OnEnableClickIssued(
+                                "enable_not_observed_timeout");
+     return;
+   }
+-  if ((status == "disabled_toggle" || status == "hidden_toggle") &&
++  if ((status == "disabled_toggle" || status == "hidden_toggle" ||
++       status == "toggle_state_not_settled") &&
+       base::TimeTicks::Now() < deadline) {
+     base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+         FROM_HERE,
+@@ -904,6 +956,32 @@ void PrometheusExtensionSmokeController::OnEnableClickIssued(
+   Fail(stage_, "enable_click_failed:" + status);
+ }
+ 
++void PrometheusExtensionSmokeController::PollExtensionReady(
++    base::TimeTicks deadline) {
++  if (shutdown_ || outcome_ != PrometheusExtensionSmokeOutcome::kRunning ||
++      stage_ != PrometheusExtensionSmokeStage::kEnabled) {
++    return;
++  }
++  extensions::ExtensionRegistry* registry =
++      extensions::ExtensionRegistry::Get(profile_);
++  extensions::ExtensionSystem* system =
++      extensions::ExtensionSystem::Get(profile_);
++  if (registry && system && system->is_ready() &&
++      registry->ready_extensions().Contains(extension_id_)) {
++    ExercisePolicyGrants();
++    return;
++  }
++  if (base::TimeTicks::Now() >= deadline) {
++    Fail(stage_, "extension_not_ready_timeout");
++    return;
++  }
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++      FROM_HERE,
++      base::BindOnce(&PrometheusExtensionSmokeController::PollExtensionReady,
++                     weak_ptr_factory_.GetWeakPtr(), deadline),
++      kPollInterval);
++}
++
+ void PrometheusExtensionSmokeController::ExercisePolicyGrants() {
+   if (stage_ != PrometheusExtensionSmokeStage::kEnabled) {
+     return;
+@@ -938,10 +1016,11 @@ void PrometheusExtensionSmokeController::ExercisePolicyGrants() {
+     return;
+   }
+ 
+-  if (policy->SetRequestedGrantForExtension(
++  const ExtensionPolicyMutationResult read_only_result =
++      policy->SetRequestedGrantForExtension(
+           *ordinal, before_mutation.generation, extension_id_,
+-          /*private_mode=*/false, ExtensionAgentGrant::kReadOnly) !=
+-      ExtensionPolicyMutationResult::kApplied) {
++          /*private_mode=*/false, ExtensionAgentGrant::kReadOnly);
++  if (read_only_result != ExtensionPolicyMutationResult::kApplied) {
+     Fail(stage_, "policy_read_only_mutation_denied");
+     return;
+   }
+@@ -950,10 +1029,12 @@ void PrometheusExtensionSmokeController::ExercisePolicyGrants() {
+       ExtensionAgentGrant::kReadOnly;
+ 
+   const ExtensionPolicySnapshot after_read_only = policy->GetSnapshot();
+-  if (policy->SetRequestedGrantForExtension(
+-          *ordinal, after_read_only.generation, extension_id_, false,
+-          ExtensionAgentGrant::kInteract) !=
+-      ExtensionPolicyMutationResult::kApplied) {
++  const ExtensionPolicyMutationResult interact_result =
++      policy->SetRequestedGrantForExtension(*ordinal,
++                                            after_read_only.generation,
++                                            extension_id_, false,
++                                            ExtensionAgentGrant::kInteract);
++  if (interact_result != ExtensionPolicyMutationResult::kApplied) {
+     Fail(stage_, "policy_interact_mutation_denied");
+     return;
+   }
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_controller.h b/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
+index 3813e92f51e4d0cfdc21947b7c57ddc2f5da0c6b..e2ac97be8fc66c6f92e714d20334996fde21feaa 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
+@@ -161,6 +161,7 @@ class PrometheusExtensionSmokeController
+   void OnDisableClickIssued(base::TimeTicks deadline, base::Value result);
+   void ClickEnableToggle(base::TimeTicks deadline);
+   void OnEnableClickIssued(base::TimeTicks deadline, base::Value result);
++  void PollExtensionReady(base::TimeTicks deadline);
+   void ExercisePolicyGrants();
+   void OpenOptionsTab();
+   void OnOptionsTabWatcherFired();

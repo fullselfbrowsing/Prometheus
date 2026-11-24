@@ -1,0 +1,156 @@
+From cb0d45633115913df4b1bd04bf3ef39cca1ac77c Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sat, 18 Jul 2026 16:15:18 -0500
+Subject: [PATCH] test(20-14): specify 32-case runtime evaluation corpus
+
+---
+ .../prometheus_mcp_integration_browsertest.cc | 109 ++++++++++++++++++
+ 1 file changed, 109 insertions(+)
+
+diff --git a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+index f416089b78..a2f09dff6b 100644
+--- a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+@@ -15,16 +15,20 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "base/base_paths.h"
+ #include "base/check.h"
++#include "base/files/file_util.h"
+ #include "base/files/scoped_temp_dir.h"
+ #include "base/functional/bind.h"
+ #include "base/json/json_reader.h"
+ #include "base/json/json_writer.h"
+ #include "base/message_loop/message_pump_type.h"
+ #include "base/numerics/safe_conversions.h"
++#include "base/path_service.h"
+ #include "base/run_loop.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
++#include "base/threading/thread_restrictions.h"
+ #include "base/test/run_until.h"
+ #include "base/test/test_future.h"
+ #include "base/threading/thread.h"
+@@ -262,6 +266,25 @@ const base::DictValue* FindSnapshotNode(const base::ListValue& nodes,
+   return nullptr;
+ }
+ 
++base::ListValue LoadRuntimeEvaluationCases() {
++  base::ScopedAllowBlockingForTesting allow_blocking;
++  base::FilePath source_root;
++  CHECK(base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &source_root));
++  const base::FilePath corpus_path =
++      source_root.AppendASCII("chrome")
++          .AppendASCII("test")
++          .AppendASCII("data")
++          .AppendASCII("prometheus")
++          .AppendASCII("runtime")
++          .AppendASCII("runtime_eval_cases.json");
++  std::string corpus_json;
++  CHECK(base::ReadFileToString(corpus_path, &corpus_json));
++  std::optional<base::ListValue> cases =
++      base::JSONReader::ReadList(corpus_json, base::JSON_PARSE_RFC);
++  CHECK(cases.has_value());
++  return std::move(*cases);
++}
++
+ class PrometheusMcpIntegrationBrowserTest : public InProcessBrowserTest {
+  public:
+   PrometheusMcpIntegrationBrowserTest() {
+@@ -427,6 +450,92 @@ class PrometheusMcpIntegrationBrowserTest : public InProcessBrowserTest {
+   base::Time now_ = base::Time::FromSecondsSinceUnixEpoch(1000);
+ };
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
++                       RuntimeEvaluationCorpusManifest) {
++  const base::ListValue cases = LoadRuntimeEvaluationCases();
++  ASSERT_EQ(32u, cases.size());
++
++  const std::map<std::string, size_t, std::less<>> expected_group_counts = {
++      {"verified_benign_outcomes", 6},
++      {"injection_authority_containment", 5},
++      {"vault_secret_containment", 5},
++      {"provider_codec_tool_call_conformance", 5},
++      {"lifecycle_recovery_races", 4},
++      {"endpoint_fallback_budget_accounting", 4},
++      {"memory_site_guide_origin_provenance", 3},
++  };
++  const std::set<std::string, std::less<>> allowed_case_keys = {
++      "id",
++      "group",
++      "rubric",
++      "requirement",
++      "scenario",
++      "initial",
++      "prompt",
++      "sentinel",
++      "provider_family",
++      "provider_fixture",
++      "real_provider_loop",
++      "provider_sequence",
++      "page_checkpoints",
++      "expected_route_trace",
++      "expected",
++  };
++  const std::set<std::string, std::less<>> allowed_provider_families = {
++      "none", "openai_responses", "openai_chat", "anthropic_messages",
++      "gemini_generate_content"};
++  std::map<std::string, size_t, std::less<>> group_counts;
++  std::set<std::string, std::less<>> ids;
++  std::set<std::string, std::less<>> real_loop_families;
++  size_t real_provider_loop_count = 0;
++
++  for (const base::Value& value : cases) {
++    const base::DictValue* eval_case = value.GetIfDict();
++    ASSERT_TRUE(eval_case);
++    ASSERT_EQ(allowed_case_keys.size(), eval_case->size());
++    for (const auto [key, ignored] : *eval_case) {
++      EXPECT_TRUE(allowed_case_keys.contains(key)) << key;
++    }
++    const std::string* id = eval_case->FindString("id");
++    const std::string* group = eval_case->FindString("group");
++    const std::string* provider_family =
++        eval_case->FindString("provider_family");
++    const std::string* provider_fixture =
++        eval_case->FindString("provider_fixture");
++    const std::optional<bool> real_provider_loop =
++        eval_case->FindBool("real_provider_loop");
++    ASSERT_TRUE(id);
++    ASSERT_TRUE(group);
++    ASSERT_TRUE(provider_family);
++    ASSERT_TRUE(provider_fixture);
++    ASSERT_TRUE(real_provider_loop.has_value());
++    SCOPED_TRACE(*id);
++    EXPECT_FALSE(id->empty());
++    EXPECT_TRUE(ids.insert(*id).second);
++    EXPECT_TRUE(expected_group_counts.contains(*group));
++    EXPECT_TRUE(allowed_provider_families.contains(*provider_family));
++    EXPECT_TRUE(eval_case->FindDict("initial"));
++    EXPECT_TRUE(eval_case->FindDict("expected"));
++    EXPECT_TRUE(eval_case->FindList("provider_sequence"));
++    EXPECT_TRUE(eval_case->FindList("page_checkpoints"));
++    EXPECT_TRUE(eval_case->FindList("expected_route_trace"));
++    ++group_counts[*group];
++    if (*real_provider_loop) {
++      ++real_provider_loop_count;
++      EXPECT_NE("none", *provider_family);
++      EXPECT_FALSE(provider_fixture->empty());
++      real_loop_families.insert(*provider_family);
++    }
++  }
++
++  EXPECT_EQ(expected_group_counts, group_counts);
++  EXPECT_EQ(32u, ids.size());
++  EXPECT_GE(real_provider_loop_count, 20u);
++  EXPECT_TRUE(real_loop_families.contains("openai_responses"));
++  EXPECT_TRUE(real_loop_families.contains("anthropic_messages"));
++  EXPECT_TRUE(real_loop_families.contains("gemini_generate_content"));
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
+                        TwoSessionsEnforceCapAndOwnership) {
+   ASSERT_TRUE(service());
+-- 
+2.50.1 (Apple Git-155)
+

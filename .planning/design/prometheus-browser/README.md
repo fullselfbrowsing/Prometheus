@@ -1,10 +1,47 @@
 # Prometheus — Browser Interface
 
-A minimal, agent-first browser concept. Compact-Safari chrome on the FSB
-design system (warm-dark surfaces + orange `#ff6b35`). Interactive React
-prototype, no build step — open the HTML directly.
+A preserved agent-first browser concept. Compact-Safari chrome on the FSB
+design system (warm-dark surfaces + orange `#ff6b35`). The interactive React
+prototype below remains design reference only; current production surfaces are
+Chromium-native Views and packaged dependency-free WebUI.
 
 Short name: **PM** · Full name: **Prometheus**
+
+---
+
+## Chromium implementation status
+
+Phase 21 completes the native supervision design contract across the existing
+three product surfaces:
+
+- native tab chrome renders compact sanitized Agent/viewer/controller/action
+  state and a complete accessible name without changing tab height or covering
+  the close target;
+- the four-mode side panel retains a persistent selected-tab supervision strip
+  with fresh state and zero-identity stop/end/manage intents;
+- the existing nine-section Control Panel replaces its placeholder with the
+  target, one-shot pairing, viewer/controller, stream, audit, lifecycle, error,
+  and recovery UI;
+- browser-owned Views dialogs preserve fresh local confirmation for control and
+  consequential actions, while vault confirmation remains separate.
+
+All state comes from browser-owned sanitized snapshots. WebUI retains no
+profile, Browser, tab, owner, session, controller, document, sequence, or
+pairing authority. Destructive Control Panel confirms carry only the
+browser-issued freshness generation of the rendered snapshot; native row
+bindings remain the sole target authority. Pairing presentation is confined to
+one intentional transient result and erased on terminal, clear, and reload
+boundaries.
+Resources remain packaged locally; no remote fonts, icons, styles, scripts, or
+component packages were added.
+
+Automated Phase 21 evidence includes 52/52 browser fixtures, 14/14 Blink
+fixtures, 190/190 native fixtures, 81/81 Node fixtures, packaged-resource
+checks, and built-app multi-viewer/MCP smoke. Responsive and interaction
+fixtures cover 320/480/720/1024 widths, 200-percent zoom, dark/light themes,
+keyboard focus, live regions, and accessible copy. Subjective desktop visual
+review is `not_run` and remains the consolidated non-blocking Phase 24 review.
+Extension health remains Phase 22 `not_ready`.
 
 ---
 
@@ -92,6 +129,8 @@ React state, persisted to `localStorage` under the `pm_` prefix:
 ---
 
 ## Notes / next steps
+- This prototype is not the production runtime and its CDN/mock-data behavior
+  is not evidence for the packaged Chromium implementation described above.
 - Page tabs render a striped **placeholder** — only the New-Tab start page is
   built out. Easy to drop in a real FSB control-panel page or a tab-grid.
 - FSB logo art is in `prometheus/assets/` but not yet wired into the chrome

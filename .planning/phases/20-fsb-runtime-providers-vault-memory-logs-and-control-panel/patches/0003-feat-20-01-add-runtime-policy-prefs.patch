@@ -1,0 +1,562 @@
+From 545dc040d7fa8fbfdae63aa7c1d06ff048e83d40 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 09:11:39 -0500
+Subject: [PATCH] feat(20-01): add runtime policy prefs
+
+---
+ chrome/browser/prefs/BUILD.gn                 |   1 +
+ chrome/browser/prefs/browser_prefs.cc         |   4 +
+ chrome/browser/prometheus/BUILD.gn            |  16 ++
+ .../prometheus/prometheus_runtime_prefs.cc    | 146 ++++++++++++++
+ .../prometheus/prometheus_runtime_prefs.h     |  47 +++++
+ .../prometheus/prometheus_runtime_types.h     |   5 +-
+ .../prometheus_runtime_types_unittest.cc      | 180 +++++++++++++++---
+ 7 files changed, 373 insertions(+), 26 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_runtime_prefs.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_runtime_prefs.h
+
+diff --git a/chrome/browser/prefs/BUILD.gn b/chrome/browser/prefs/BUILD.gn
+index f25c1d3322..2b63d057d4 100644
+--- a/chrome/browser/prefs/BUILD.gn
++++ b/chrome/browser/prefs/BUILD.gn
+@@ -371,6 +371,7 @@ source_set("impl") {
+       "//chrome/browser/desktop_to_mobile_promos:utils",
+       "//chrome/browser/device_identity",
+       "//chrome/browser/new_tab_page",
++      "//chrome/browser/prometheus:prometheus_runtime_prefs",
+       "//chrome/browser/screen_ai:prefs",
+       "//chrome/browser/search_engine_choice",
+       "//chrome/browser/search_engines",
+diff --git a/chrome/browser/prefs/browser_prefs.cc b/chrome/browser/prefs/browser_prefs.cc
+index f60a05f8c9..31b0085f7d 100644
+--- a/chrome/browser/prefs/browser_prefs.cc
++++ b/chrome/browser/prefs/browser_prefs.cc
+@@ -65,6 +65,9 @@
+ #include "chrome/browser/preloading/preloading_prefs.h"
+ #include "chrome/browser/printing/print_preview_sticky_settings.h"
+ #include "chrome/browser/privacy_sandbox/notice/notice_storage.h"
++#if !BUILDFLAG(IS_ANDROID)
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
++#endif
+ #include "chrome/browser/profiles/chrome_version_service.h"
+ #include "chrome/browser/profiles/profile_attributes_entry.h"
+ #include "chrome/browser/profiles/profile_attributes_storage.h"
+@@ -1896,6 +1899,7 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
+   promos_utils::RegisterProfilePrefs(registry);
+   PromoService::RegisterProfilePrefs(registry);
+   registry->RegisterStringPref(prefs::kPrometheusChromeMode, "separate");
++  prometheus::RegisterPrometheusRuntimeProfilePrefs(registry);
+   RegisterReadAnythingProfilePrefs(registry);
+   settings::SettingsUI::RegisterProfilePrefs(registry);
+   send_tab_to_self::RegisterProfilePrefs(registry);
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 14748c04fc..708c77404e 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -260,6 +260,20 @@ source_set("prometheus_runtime_types") {
+   deps = [ "//base" ]
+ }
+ 
++source_set("prometheus_runtime_prefs") {
++  sources = [
++    "prometheus_runtime_prefs.cc",
++    "prometheus_runtime_prefs.h",
++  ]
++
++  deps = [
++    ":prometheus_runtime_types",
++    "//base",
++    "//components/pref_registry",
++    "//components/prefs",
++  ]
++}
++
+ source_set("prometheus_agent_gateway_contract") {
+   sources = [
+     "prometheus_agent_gateway.h",
+@@ -340,6 +354,7 @@ test("prometheus_unittests") {
+     ":prometheus_page_action_history",
+     ":prometheus_page_adapter",
+     ":prometheus_page_waiter",
++    ":prometheus_runtime_prefs",
+     ":prometheus_runtime_types",
+     ":prometheus_tab_state",
+     "//base",
+@@ -352,6 +367,7 @@ test("prometheus_unittests") {
+     "//components/optimization_guide/content/browser",
+     "//components/optimization_guide/proto:optimization_guide_proto",
+     "//components/prefs:test_support",
++    "//components/sync_preferences:test_support",
+     "//components/tabs:test_support",
+     "//content/test:run_all_unittests",
+     "//content/test:test_support",
+diff --git a/chrome/browser/prometheus/prometheus_runtime_prefs.cc b/chrome/browser/prometheus/prometheus_runtime_prefs.cc
+new file mode 100644
+index 0000000000..871dd33648
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_runtime_prefs.cc
+@@ -0,0 +1,146 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
++
++#include <cstdint>
++
++#include "base/values.h"
++#include "components/pref_registry/pref_registry_syncable.h"
++#include "components/prefs/pref_service.h"
++
++namespace prometheus {
++
++namespace {
++
++constexpr char kSchemaVersionKey[] = "schema_version";
++constexpr char kDataKey[] = "data";
++constexpr char kEncryptedEnvelopesKey[] = "encrypted_envelopes";
++constexpr char kSettingsKey[] = "settings";
++
++constexpr char kAllowInternalSurfacesKey[] = "allow_internal_surfaces";
++constexpr char kLimitsKey[] = "limits";
++constexpr char kMaxPromptBytesKey[] = "max_prompt_bytes";
++constexpr char kMaxResultBytesKey[] = "max_result_bytes";
++constexpr char kMaxTurnsKey[] = "max_turns";
++constexpr char kMaxTotalTokensKey[] = "max_total_tokens";
++constexpr char kMaxDurationMsKey[] = "max_duration_ms";
++constexpr char kMaxConcurrentTasksKey[] = "max_concurrent_tasks";
++constexpr char kAllowBackgroundActionsKey[] = "allow_background_actions";
++constexpr char kTelemetryEnabledKey[] = "telemetry_enabled";
++constexpr char kTabOwnershipRequiredKey[] = "tab_ownership_required";
++constexpr char kVaultNativeOnlyKey[] = "vault_native_only";
++constexpr char kVaultConfirmEachUseKey[] = "vault_confirm_each_use";
++constexpr char kSupervisionReadyKey[] = "supervision_ready";
++
++int StoredLimitOrDefault(const base::DictValue& limits,
++                         std::string_view key,
++                         int64_t default_value) {
++  return limits.FindInt(key).value_or(static_cast<int>(default_value));
++}
++
++base::DictValue PolicyToValue(const RuntimePolicy& policy) {
++  base::DictValue limits;
++  limits.Set(kMaxPromptBytesKey,
++             static_cast<int>(policy.limits.max_prompt_bytes));
++  limits.Set(kMaxResultBytesKey,
++             static_cast<int>(policy.limits.max_result_bytes));
++  limits.Set(kMaxTurnsKey, static_cast<int>(policy.limits.max_turns));
++  limits.Set(kMaxTotalTokensKey,
++             static_cast<int>(policy.limits.max_total_tokens));
++  limits.Set(kMaxDurationMsKey,
++             static_cast<int>(policy.limits.max_duration_ms));
++  limits.Set(kMaxConcurrentTasksKey,
++             static_cast<int>(policy.limits.max_concurrent_tasks));
++
++  base::DictValue settings;
++  settings.Set(kAllowInternalSurfacesKey, policy.allow_internal_surfaces);
++  settings.Set(kLimitsKey, std::move(limits));
++  settings.Set(kAllowBackgroundActionsKey, policy.allow_background_actions);
++  settings.Set(kTelemetryEnabledKey, policy.telemetry_enabled);
++  settings.Set(kTabOwnershipRequiredKey, true);
++  settings.Set(kVaultNativeOnlyKey, true);
++  settings.Set(kVaultConfirmEachUseKey, true);
++  settings.Set(kSupervisionReadyKey, false);
++  return settings;
++}
++
++base::DictValue MakeDefaultProfileData() {
++  base::DictValue root;
++  root.Set(kSchemaVersionKey, kPrometheusRuntimeSchemaVersion);
++  root.Set(kDataKey, base::DictValue());
++  root.Set(kEncryptedEnvelopesKey, base::ListValue());
++  root.Set(kSettingsKey, PolicyToValue(RuntimePolicy()));
++  return root;
++}
++
++}  // namespace
++
++void RegisterPrometheusRuntimeProfilePrefs(
++    user_prefs::PrefRegistrySyncable* registry) {
++  registry->RegisterDictionaryPref(kPrometheusRuntimeProfileData,
++                                   MakeDefaultProfileData());
++}
++
++RuntimePolicy GetEffectivePrometheusRuntimePolicy(const PrefService& prefs) {
++  RuntimePolicy policy;
++  const base::DictValue& root = prefs.GetDict(kPrometheusRuntimeProfileData);
++  if (root.FindInt(kSchemaVersionKey) != kPrometheusRuntimeSchemaVersion) {
++    return policy;
++  }
++
++  const base::DictValue* settings = root.FindDict(kSettingsKey);
++  if (!settings) {
++    return policy;
++  }
++
++  policy.allow_internal_surfaces =
++      settings->FindBool(kAllowInternalSurfacesKey).value_or(false);
++  policy.allow_background_actions =
++      settings->FindBool(kAllowBackgroundActionsKey).value_or(false);
++  policy.telemetry_enabled =
++      settings->FindBool(kTelemetryEnabledKey).value_or(false);
++
++  if (const base::DictValue* limits = settings->FindDict(kLimitsKey)) {
++    policy.limits.max_prompt_bytes = StoredLimitOrDefault(
++        *limits, kMaxPromptBytesKey, kDefaultRuntimePromptBytes);
++    policy.limits.max_result_bytes = StoredLimitOrDefault(
++        *limits, kMaxResultBytesKey, kDefaultRuntimeResultBytes);
++    policy.limits.max_turns =
++        StoredLimitOrDefault(*limits, kMaxTurnsKey, kDefaultRuntimeTurns);
++    policy.limits.max_total_tokens = StoredLimitOrDefault(
++        *limits, kMaxTotalTokensKey, kDefaultRuntimeTokens);
++    policy.limits.max_duration_ms = StoredLimitOrDefault(
++        *limits, kMaxDurationMsKey, kDefaultRuntimeDurationMs);
++    policy.limits.max_concurrent_tasks = StoredLimitOrDefault(
++        *limits, kMaxConcurrentTasksKey, kDefaultRuntimeConcurrentTasks);
++    policy.limits = ClampRuntimeLimits(policy.limits);
++  }
++
++  // Never accept persisted values for native-only enforcement boundaries.
++  policy.tab_ownership_required = true;
++  policy.vault_native_only = true;
++  policy.vault_confirm_each_use = true;
++  policy.supervision_ready = false;
++  return policy;
++}
++
++void SetPrometheusRuntimePolicy(PrefService& prefs,
++                                const RuntimePolicy& requested_policy) {
++  RuntimePolicy effective = requested_policy;
++  effective.limits = ClampRuntimeLimits(requested_policy.limits);
++  effective.tab_ownership_required = true;
++  effective.vault_native_only = true;
++  effective.vault_confirm_each_use = true;
++  effective.supervision_ready = false;
++
++  base::DictValue root = prefs.GetDict(kPrometheusRuntimeProfileData).Clone();
++  if (root.FindInt(kSchemaVersionKey) != kPrometheusRuntimeSchemaVersion) {
++    root = MakeDefaultProfileData();
++  }
++  root.Set(kSettingsKey, PolicyToValue(effective));
++  prefs.SetDict(kPrometheusRuntimeProfileData, std::move(root));
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_runtime_prefs.h b/chrome/browser/prometheus/prometheus_runtime_prefs.h
+new file mode 100644
+index 0000000000..f3cd131547
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_runtime_prefs.h
+@@ -0,0 +1,47 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_RUNTIME_PREFS_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_RUNTIME_PREFS_H_
++
++#include "chrome/browser/prometheus/prometheus_runtime_types.h"
++
++class PrefService;
++
++namespace user_prefs {
++class PrefRegistrySyncable;
++}
++
++namespace prometheus {
++
++inline constexpr char kPrometheusRuntimeProfileData[] = "prometheus.runtime";
++inline constexpr int kPrometheusRuntimeSchemaVersion = 1;
++
++struct RuntimePolicy {
++  bool allow_internal_surfaces = false;
++  RuntimeLimits limits;
++  bool allow_background_actions = false;
++  bool telemetry_enabled = false;
++
++  // These are native enforcement boundaries, not user-configurable settings.
++  bool tab_ownership_required = true;
++  bool vault_native_only = true;
++  bool vault_confirm_each_use = true;
++  bool supervision_ready = false;
++
++  bool operator==(const RuntimePolicy&) const = default;
++};
++
++void RegisterPrometheusRuntimeProfilePrefs(
++    user_prefs::PrefRegistrySyncable* registry);
++
++RuntimePolicy GetEffectivePrometheusRuntimePolicy(const PrefService& prefs);
++
++// Persists user-adjustable settings while retaining all locked invariants.
++void SetPrometheusRuntimePolicy(PrefService& prefs,
++                                const RuntimePolicy& requested_policy);
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_RUNTIME_PREFS_H_
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types.h b/chrome/browser/prometheus/prometheus_runtime_types.h
+index f81ef4e7d8..8ea5c4ab51 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_types.h
++++ b/chrome/browser/prometheus/prometheus_runtime_types.h
+@@ -84,6 +84,8 @@ struct RuntimeLimits {
+   int64_t max_total_tokens = kDefaultRuntimeTokens;
+   int64_t max_duration_ms = kDefaultRuntimeDurationMs;
+   int64_t max_concurrent_tasks = kDefaultRuntimeConcurrentTasks;
++
++  bool operator==(const RuntimeLimits&) const = default;
+ };
+ 
+ struct RuntimeUsage {
+@@ -126,8 +128,7 @@ std::optional<RuntimeErrorCode> RuntimeErrorCodeFromString(
+     std::string_view value);
+ std::string_view RuntimeErrorCodeToString(RuntimeErrorCode value);
+ 
+-bool IsLegalRuntimeTaskTransition(RuntimeTaskState from,
+-                                  RuntimeTaskState to);
++bool IsLegalRuntimeTaskTransition(RuntimeTaskState from, RuntimeTaskState to);
+ bool IsTerminalRuntimeTaskState(RuntimeTaskState state);
+ 
+ RuntimeLimits ClampRuntimeLimits(const RuntimeLimits& limits);
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
+index 873236575b..1f59bccb59 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
+@@ -11,6 +11,9 @@
+ #include <vector>
+ 
+ #include "base/values.h"
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
++#include "components/pref_registry/pref_registry_syncable.h"
++#include "components/sync_preferences/testing_pref_service_syncable.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ 
+ namespace prometheus {
+@@ -29,19 +32,19 @@ TEST_F(PrometheusRuntimeTypesTest, RoundTripsClosedEnums) {
+     EXPECT_EQ(name, RuntimeTaskOriginToString(value));
+   }
+ 
+-  const std::vector<std::pair<std::string_view, RequestedExecution>>
+-      requested = {{"auto", RequestedExecution::kAuto},
+-                   {"provider", RequestedExecution::kProvider},
+-                   {"local", RequestedExecution::kLocal}};
++  const std::vector<std::pair<std::string_view, RequestedExecution>> requested =
++      {{"auto", RequestedExecution::kAuto},
++       {"provider", RequestedExecution::kProvider},
++       {"local", RequestedExecution::kLocal}};
+   for (const auto& [name, value] : requested) {
+     ASSERT_EQ(value, RequestedExecutionFromString(name));
+     EXPECT_EQ(name, RequestedExecutionToString(value));
+   }
+ 
+-  const std::vector<std::pair<std::string_view, EffectiveExecution>>
+-      effective = {{"hosted", EffectiveExecution::kHosted},
+-                   {"routed", EffectiveExecution::kRouted},
+-                   {"local", EffectiveExecution::kLocal}};
++  const std::vector<std::pair<std::string_view, EffectiveExecution>> effective =
++      {{"hosted", EffectiveExecution::kHosted},
++       {"routed", EffectiveExecution::kRouted},
++       {"local", EffectiveExecution::kLocal}};
+   for (const auto& [name, value] : effective) {
+     ASSERT_EQ(value, EffectiveExecutionFromString(name));
+     EXPECT_EQ(name, EffectiveExecutionToString(value));
+@@ -75,8 +78,7 @@ TEST_F(PrometheusRuntimeTypesTest, RoundTripsClosedEnums) {
+       {"PROVIDER_UNAVAILABLE", RuntimeErrorCode::kProviderUnavailable},
+       {"PROVIDER_AUTH", RuntimeErrorCode::kProviderAuth},
+       {"PROVIDER_RATE_LIMITED", RuntimeErrorCode::kProviderRateLimited},
+-      {"PROVIDER_INVALID_RESPONSE",
+-       RuntimeErrorCode::kProviderInvalidResponse},
++      {"PROVIDER_INVALID_RESPONSE", RuntimeErrorCode::kProviderInvalidResponse},
+       {"TOOL_DENIED", RuntimeErrorCode::kToolDenied},
+       {"TARGET_LOST", RuntimeErrorCode::kTargetLost},
+       {"CONFIRMATION_REQUIRED", RuntimeErrorCode::kConfirmationRequired},
+@@ -117,15 +119,15 @@ TEST_F(PrometheusRuntimeTypesTest, EnforcesLegalStateGraph) {
+ }
+ 
+ TEST_F(PrometheusRuntimeTypesTest, TerminalStatesAreImmutable) {
+-  for (RuntimeTaskState state : {RuntimeTaskState::kSucceeded,
+-                                 RuntimeTaskState::kFailed,
+-                                 RuntimeTaskState::kCancelled}) {
++  for (RuntimeTaskState state :
++       {RuntimeTaskState::kSucceeded, RuntimeTaskState::kFailed,
++        RuntimeTaskState::kCancelled}) {
+     EXPECT_TRUE(IsTerminalRuntimeTaskState(state));
+-    for (RuntimeTaskState next : {
+-             RuntimeTaskState::kQueued, RuntimeTaskState::kRunning,
+-             RuntimeTaskState::kWaitingConfirmation,
+-             RuntimeTaskState::kCancelling, RuntimeTaskState::kSucceeded,
+-             RuntimeTaskState::kFailed, RuntimeTaskState::kCancelled}) {
++    for (RuntimeTaskState next :
++         {RuntimeTaskState::kQueued, RuntimeTaskState::kRunning,
++          RuntimeTaskState::kWaitingConfirmation, RuntimeTaskState::kCancelling,
++          RuntimeTaskState::kSucceeded, RuntimeTaskState::kFailed,
++          RuntimeTaskState::kCancelled}) {
+       EXPECT_FALSE(IsLegalRuntimeTaskTransition(state, next));
+     }
+   }
+@@ -206,8 +208,7 @@ TEST_F(PrometheusRuntimeTypesTest, SerializesOnlyClosedMetadata) {
+                                 .duration_ms = 25,
+                                 .cost_microunits = std::nullopt};
+ 
+-  std::optional<base::DictValue> value =
+-      RuntimeTaskSnapshotToValue(snapshot);
++  std::optional<base::DictValue> value = RuntimeTaskSnapshotToValue(snapshot);
+   ASSERT_TRUE(value.has_value());
+   const std::string* task_id = value->FindString("task_id");
+   ASSERT_NE(nullptr, task_id);
+@@ -221,10 +222,10 @@ TEST_F(PrometheusRuntimeTypesTest, SerializesOnlyClosedMetadata) {
+   ASSERT_NE(nullptr, value->FindString("state"));
+   EXPECT_EQ("running", *value->FindString("state"));
+ 
+-  for (std::string_view forbidden : {
+-           "prompt", "page_text", "selector", "script", "typed_text",
+-           "secret", "ciphertext", "authorization", "profile_path",
+-           "gateway_session_id", "provider_body"}) {
++  for (std::string_view forbidden :
++       {"prompt", "page_text", "selector", "script", "typed_text", "secret",
++        "ciphertext", "authorization", "profile_path", "gateway_session_id",
++        "provider_body"}) {
+     EXPECT_EQ(nullptr, value->Find(forbidden)) << forbidden;
+   }
+ 
+@@ -248,6 +249,137 @@ TEST_F(PrometheusRuntimeTypesTest, RejectsInvalidSnapshots) {
+   EXPECT_EQ(std::nullopt, RuntimeTaskSnapshotToValue(snapshot));
+ }
+ 
++TEST_F(PrometheusRuntimeTypesTest,
++       RegistersVersionedNonSyncableProfileNamespace) {
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusRuntimeProfilePrefs(prefs.registry());
++
++  ASSERT_NE(nullptr, prefs.FindPreference(kPrometheusRuntimeProfileData));
++  EXPECT_EQ(0u, prefs.registry()->GetRegistrationFlags(
++                    kPrometheusRuntimeProfileData));
++
++  const base::DictValue& root = prefs.GetDict(kPrometheusRuntimeProfileData);
++  EXPECT_EQ(kPrometheusRuntimeSchemaVersion, root.FindInt("schema_version"));
++  EXPECT_NE(nullptr, root.FindDict("data"));
++  EXPECT_NE(nullptr, root.FindList("encrypted_envelopes"));
++  EXPECT_NE(nullptr, root.FindDict("settings"));
++}
++
++TEST_F(PrometheusRuntimeTypesTest, UsesSafePolicyDefaults) {
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusRuntimeProfilePrefs(prefs.registry());
++
++  RuntimePolicy policy = GetEffectivePrometheusRuntimePolicy(prefs);
++  EXPECT_FALSE(policy.allow_internal_surfaces);
++  EXPECT_EQ(RuntimeLimits(), policy.limits);
++  EXPECT_FALSE(policy.allow_background_actions);
++  EXPECT_FALSE(policy.telemetry_enabled);
++  EXPECT_TRUE(policy.tab_ownership_required);
++  EXPECT_TRUE(policy.vault_native_only);
++  EXPECT_TRUE(policy.vault_confirm_each_use);
++  EXPECT_FALSE(policy.supervision_ready);
++}
++
++TEST_F(PrometheusRuntimeTypesTest, RejectsCorruptPolicyValues) {
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusRuntimeProfilePrefs(prefs.registry());
++
++  base::DictValue root;
++  root.Set("schema_version", kPrometheusRuntimeSchemaVersion);
++  base::DictValue settings;
++  settings.Set("allow_internal_surfaces", "yes");
++  settings.Set("allow_background_actions", 1);
++  settings.Set("telemetry_enabled", base::ListValue());
++  settings.Set("limits", "unbounded");
++  root.Set("settings", std::move(settings));
++  prefs.SetUserPref(kPrometheusRuntimeProfileData, std::move(root));
++
++  EXPECT_EQ(RuntimePolicy(), GetEffectivePrometheusRuntimePolicy(prefs));
++
++  base::DictValue wrong_version;
++  wrong_version.Set("schema_version", kPrometheusRuntimeSchemaVersion + 1);
++  wrong_version.Set("settings",
++                    base::DictValue().Set("allow_internal_surfaces", true));
++  prefs.SetUserPref(kPrometheusRuntimeProfileData, std::move(wrong_version));
++  EXPECT_EQ(RuntimePolicy(), GetEffectivePrometheusRuntimePolicy(prefs));
++}
++
++TEST_F(PrometheusRuntimeTypesTest, ClampsCapsAndLocksNativeBoundaries) {
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusRuntimeProfilePrefs(prefs.registry());
++
++  base::DictValue limits;
++  limits.Set("max_prompt_bytes", static_cast<int>(kHardRuntimePromptBytes + 1));
++  limits.Set("max_result_bytes", -1);
++  limits.Set("max_turns", static_cast<int>(kHardRuntimeTurns + 1));
++  limits.Set("max_total_tokens", 0);
++  limits.Set("max_duration_ms", static_cast<int>(kHardRuntimeDurationMs + 1));
++  limits.Set("max_concurrent_tasks", -10);
++
++  base::DictValue settings;
++  settings.Set("allow_internal_surfaces", true);
++  settings.Set("allow_background_actions", true);
++  settings.Set("telemetry_enabled", true);
++  settings.Set("tab_ownership_required", false);
++  settings.Set("vault_native_only", false);
++  settings.Set("vault_confirm_each_use", false);
++  settings.Set("supervision_ready", true);
++  settings.Set("limits", std::move(limits));
++
++  base::DictValue root = prefs.GetDict(kPrometheusRuntimeProfileData).Clone();
++  root.Set("settings", std::move(settings));
++  prefs.SetUserPref(kPrometheusRuntimeProfileData, std::move(root));
++
++  RuntimePolicy policy = GetEffectivePrometheusRuntimePolicy(prefs);
++  EXPECT_TRUE(policy.allow_internal_surfaces);
++  EXPECT_EQ(kHardRuntimePromptBytes, policy.limits.max_prompt_bytes);
++  EXPECT_EQ(kDefaultRuntimeResultBytes, policy.limits.max_result_bytes);
++  EXPECT_EQ(kHardRuntimeTurns, policy.limits.max_turns);
++  EXPECT_EQ(kDefaultRuntimeTokens, policy.limits.max_total_tokens);
++  EXPECT_EQ(kHardRuntimeDurationMs, policy.limits.max_duration_ms);
++  EXPECT_EQ(kDefaultRuntimeConcurrentTasks, policy.limits.max_concurrent_tasks);
++  EXPECT_TRUE(policy.allow_background_actions);
++  EXPECT_TRUE(policy.telemetry_enabled);
++  EXPECT_TRUE(policy.tab_ownership_required);
++  EXPECT_TRUE(policy.vault_native_only);
++  EXPECT_TRUE(policy.vault_confirm_each_use);
++  EXPECT_FALSE(policy.supervision_ready);
++}
++
++TEST_F(PrometheusRuntimeTypesTest, WritesOnlyClampedEffectivePolicy) {
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusRuntimeProfilePrefs(prefs.registry());
++
++  RuntimePolicy requested;
++  requested.allow_internal_surfaces = true;
++  requested.allow_background_actions = true;
++  requested.telemetry_enabled = true;
++  requested.limits.max_concurrent_tasks = kHardRuntimeConcurrentTasks + 1;
++  requested.tab_ownership_required = false;
++  requested.vault_native_only = false;
++  requested.vault_confirm_each_use = false;
++  requested.supervision_ready = true;
++  SetPrometheusRuntimePolicy(prefs, requested);
++
++  RuntimePolicy effective = GetEffectivePrometheusRuntimePolicy(prefs);
++  EXPECT_TRUE(effective.allow_internal_surfaces);
++  EXPECT_TRUE(effective.allow_background_actions);
++  EXPECT_TRUE(effective.telemetry_enabled);
++  EXPECT_EQ(kHardRuntimeConcurrentTasks, effective.limits.max_concurrent_tasks);
++  EXPECT_TRUE(effective.tab_ownership_required);
++  EXPECT_TRUE(effective.vault_native_only);
++  EXPECT_TRUE(effective.vault_confirm_each_use);
++  EXPECT_FALSE(effective.supervision_ready);
++
++  const base::DictValue* stored =
++      prefs.GetDict(kPrometheusRuntimeProfileData).FindDict("settings");
++  ASSERT_NE(nullptr, stored);
++  EXPECT_TRUE(stored->FindBool("tab_ownership_required").value_or(false));
++  EXPECT_TRUE(stored->FindBool("vault_native_only").value_or(false));
++  EXPECT_TRUE(stored->FindBool("vault_confirm_each_use").value_or(false));
++  EXPECT_FALSE(stored->FindBool("supervision_ready").value_or(true));
++}
++
+ }  // namespace
+ 
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

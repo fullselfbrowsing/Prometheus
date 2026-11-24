@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-10T06:14:33Z",
+  "chromium_revision": "d76947ab3ef99ff929978fb4d3a057e476b06591",
+  "manifest_version": 2,
+  "fixture": "mv2_observation",
+  "result": "rejected",
+  "reason": "unpacked_load_failed",
+  "evidence_artifact": "chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc:PrometheusExtensionFixturesBrowserTest.ManifestV2PinnedPolicyObservation"
+}

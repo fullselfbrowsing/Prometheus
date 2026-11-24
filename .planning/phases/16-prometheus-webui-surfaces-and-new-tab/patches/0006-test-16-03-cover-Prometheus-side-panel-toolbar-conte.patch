@@ -1,0 +1,144 @@
+From a378be0513cadbd4160a93f5a72088be17f949d2 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 02:48:24 -0500
+Subject: [PATCH 6/9] test(16-03): cover Prometheus side panel toolbar content
+
+---
+ chrome/browser/ui/views/prometheus/BUILD.gn   |  1 +
+ ...ometheus_toolbar_entrypoint_browsertest.cc | 87 ++++++++++++++++++-
+ 2 files changed, 84 insertions(+), 4 deletions(-)
+
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 9bdacd68b6..6494d8d2e4 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -71,6 +71,7 @@ source_set("browser_tests") {
+     "//chrome/browser/ui/browser_window",
+     "//chrome/browser/ui/views/bubble",
+     "//chrome/browser/ui/views/frame",
++    "//chrome/browser/ui/views/side_panel",
+     "//chrome/browser/ui/views/toolbar",
+     "//chrome/browser/ui/webui/prometheus",
+     "//chrome/test:test_support",
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_toolbar_entrypoint_browsertest.cc b/chrome/browser/ui/views/prometheus/prometheus_toolbar_entrypoint_browsertest.cc
+index 1534c2bb10..80f0d28829 100644
+--- a/chrome/browser/ui/views/prometheus/prometheus_toolbar_entrypoint_browsertest.cc
++++ b/chrome/browser/ui/views/prometheus/prometheus_toolbar_entrypoint_browsertest.cc
+@@ -2,21 +2,70 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+-
++#include "base/test/run_until.h"
++#include "base/test/scoped_feature_list.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
++#include "chrome/browser/ui/side_panel/side_panel_entry_key.h"
++#include "chrome/browser/ui/side_panel/side_panel_ui.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/side_panel/side_panel.h"
+ #include "chrome/browser/ui/views/toolbar/prometheus_toolbar_button.h"
++#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
++#include "chrome/common/chrome_features.h"
+ #include "chrome/test/base/in_process_browser_test.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/common/content_features.h"
+ #include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
+ #include "testing/gtest/include/gtest/gtest.h"
++#include "ui/events/test/test_event.h"
+ #include "ui/gfx/geometry/size.h"
+ #include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/controls/webview/webview.h"
++#include "ui/views/test/button_test_api.h"
++#include "ui/views/view_utils.h"
++
++namespace {
++
++views::WebView* FindWebView(views::View* view) {
++  if (!view) {
++    return nullptr;
++  }
++  if (auto* const web_view = views::AsViewClass<views::WebView>(view)) {
++    return web_view;
++  }
++  for (views::View* child : view->children()) {
++    if (auto* const web_view = FindWebView(child)) {
++      return web_view;
++    }
++  }
++  return nullptr;
++}
++
++}  // namespace
+ 
+ class PrometheusToolbarEntryPointBrowserTest : public InProcessBrowserTest {
+  public:
++  PrometheusToolbarEntryPointBrowserTest() {
++    scoped_feature_list_.InitWithFeatures(
++        {}, {features::kInitialWebUI,
++             features::kWebUIToolbarProcessOverheadExperiment});
++  }
++
+   ToolbarView* toolbar() {
+     return BrowserView::GetBrowserViewForBrowser(browser())->toolbar();
+   }
++
++  content::WebContents* visible_side_panel_web_contents() {
++    SidePanel* const side_panel =
++        BrowserView::GetBrowserViewForBrowser(browser())->side_panel();
++    views::WebView* const web_view =
++        side_panel ? FindWebView(side_panel->GetContentParentView()) : nullptr;
++    return web_view ? web_view->web_contents() : nullptr;
++  }
++
++ private:
++  base::test::ScopedFeatureList scoped_feature_list_;
+ };
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusToolbarEntryPointBrowserTest,
+@@ -40,9 +89,39 @@ IN_PROC_BROWSER_TEST_F(PrometheusToolbarEntryPointBrowserTest,
+   ASSERT_TRUE(ask_fsb_button);
+   EXPECT_TRUE(ask_fsb_button->GetVisible());
+   EXPECT_EQ(u"Ask FSB", ask_fsb_button->GetTooltipText());
+-  EXPECT_EQ(u"Ask FSB",
+-            ask_fsb_button->GetViewAccessibility().GetCachedName());
++  EXPECT_EQ(u"Ask FSB", ask_fsb_button->GetViewAccessibility().GetCachedName());
+   EXPECT_EQ(gfx::Size(PrometheusToolbarButton::kVisualSize,
+                       PrometheusToolbarButton::kVisualSize),
+             ask_fsb_button->GetPreferredSize());
+ }
++
++IN_PROC_BROWSER_TEST_F(PrometheusToolbarEntryPointBrowserTest,
++                       SidePanelButtonShowsPrometheusWebUIContent) {
++  ASSERT_TRUE(toolbar());
++  PrometheusToolbarButton* const side_panel_button =
++      toolbar()->prometheus_side_panel_button_for_testing();
++  ASSERT_TRUE(side_panel_button);
++
++  SidePanelUI* const side_panel_ui =
++      browser()->browser_window_features()->side_panel_ui();
++  ASSERT_TRUE(side_panel_ui);
++  side_panel_ui->SetNoDelaysForTesting(true);
++
++  views::test::ButtonTestApi(side_panel_button)
++      .NotifyClick(ui::test::TestEvent());
++
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return side_panel_ui->IsSidePanelShowing(); }));
++  EXPECT_TRUE(side_panel_ui->IsSidePanelEntryShowing(
++      SidePanelEntryKey(SidePanelEntryId::kAssistant)));
++
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return visible_side_panel_web_contents(); }));
++  content::WebContents* const side_panel_contents =
++      visible_side_panel_web_contents();
++  ASSERT_TRUE(side_panel_contents);
++  EXPECT_TRUE(content::WaitForLoadStop(side_panel_contents));
++  EXPECT_TRUE(content::EvalJs(side_panel_contents,
++                              "document.body.innerText.includes('FSB Agent')")
++                  .ExtractBool());
++}
+-- 
+2.50.1 (Apple Git-155)
+

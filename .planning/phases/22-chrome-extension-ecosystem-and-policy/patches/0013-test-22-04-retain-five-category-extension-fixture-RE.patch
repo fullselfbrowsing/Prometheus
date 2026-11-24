@@ -1,0 +1,624 @@
+From 8ba88e08c124b24be42c8575c5284cefecdd9697 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 29 Jul 2026 08:28:02 -0500
+Subject: [PATCH 13/13] test(22-04): retain five-category extension fixture RED
+ gate
+
+---
+ ...ometheus_extension_fixtures_browsertest.cc | 297 ++++++++++++++++++
+ chrome/browser/ui/views/prometheus/BUILD.gn   |   2 +
+ .../extensions/ad_blocker/manifest.json       |  17 +
+ .../extensions/ad_blocker/rules.json          |  15 +
+ .../developer_workflow/manifest.json          |  12 +
+ .../developer_workflow/options.html           |  12 +
+ .../extensions/developer_workflow/options.js  |   3 +
+ .../developer_workflow/service_worker.js      |   3 +
+ .../password_manager_like/manifest.json       |  12 +
+ .../password_manager_like/options.html        |  14 +
+ .../password_manager_like/options.js          |   3 +
+ .../password_manager_like/popup.html          |  16 +
+ .../extensions/password_manager_like/popup.js |   5 +
+ .../productivity_content_script/content.js    |   4 +
+ .../productivity_content_script/manifest.json |  16 +
+ .../side_panel_tooling/manifest.json          |  11 +
+ .../side_panel_tooling/side_panel.html        |  12 +
+ .../side_panel_tooling/side_panel.js          |   3 +
+ 18 files changed, 457 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc
+ create mode 100644 chrome/test/data/prometheus/extensions/ad_blocker/manifest.json
+ create mode 100644 chrome/test/data/prometheus/extensions/ad_blocker/rules.json
+ create mode 100644 chrome/test/data/prometheus/extensions/developer_workflow/manifest.json
+ create mode 100644 chrome/test/data/prometheus/extensions/developer_workflow/options.html
+ create mode 100644 chrome/test/data/prometheus/extensions/developer_workflow/options.js
+ create mode 100644 chrome/test/data/prometheus/extensions/developer_workflow/service_worker.js
+ create mode 100644 chrome/test/data/prometheus/extensions/password_manager_like/manifest.json
+ create mode 100644 chrome/test/data/prometheus/extensions/password_manager_like/options.html
+ create mode 100644 chrome/test/data/prometheus/extensions/password_manager_like/options.js
+ create mode 100644 chrome/test/data/prometheus/extensions/password_manager_like/popup.html
+ create mode 100644 chrome/test/data/prometheus/extensions/password_manager_like/popup.js
+ create mode 100644 chrome/test/data/prometheus/extensions/productivity_content_script/content.js
+ create mode 100644 chrome/test/data/prometheus/extensions/productivity_content_script/manifest.json
+ create mode 100644 chrome/test/data/prometheus/extensions/side_panel_tooling/manifest.json
+ create mode 100644 chrome/test/data/prometheus/extensions/side_panel_tooling/side_panel.html
+ create mode 100644 chrome/test/data/prometheus/extensions/side_panel_tooling/side_panel.js
+
+diff --git a/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc b/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc
+new file mode 100644
+index 0000000000..40acc4ec29
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc
+@@ -0,0 +1,297 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <initializer_list>
++#include <string>
++#include <string_view>
++
++#include "base/base_paths.h"
++#include "base/files/file_path.h"
++#include "base/path_service.h"
++#include "chrome/browser/extensions/chrome_test_extension_loader.h"
++#include "chrome/browser/prometheus/prometheus_extension_page_adapter.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_service.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_service_factory.h"
++#include "chrome/browser/prometheus/prometheus_extension_surface_resolver.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "extensions/browser/disable_reason.h"
++#include "extensions/browser/extension_registrar.h"
++#include "extensions/browser/extension_registry.h"
++#include "extensions/browser/test_extension_registry_observer.h"
++#include "extensions/browser/uninstall_reason.h"
++#include "extensions/common/extension.h"
++#include "extensions/test/extension_test_message_listener.h"
++#include "extensions/test/test_extension_dir.h"
++#include "net/dns/mock_host_resolver.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++
++namespace {
++
++bool FixtureMatrixImplementedForTesting() {
++  return false;
++}
++
++}  // namespace
++
++class PrometheusExtensionFixturesBrowserTest : public InProcessBrowserTest {
++ public:
++  void SetUpOnMainThread() override {
++    InProcessBrowserTest::SetUpOnMainThread();
++    host_resolver()->AddRule("*", "127.0.0.1");
++    embedded_test_server()->ServeFilesFromSourceDirectory(
++        GetChromeTestDataDir());
++  }
++
++ protected:
++  base::FilePath ChromeTestDataRoot() const {
++    return base::PathService::CheckedGet(base::DIR_SRC_TEST_DATA_ROOT)
++        .Append(GetChromeTestDataDir());
++  }
++
++  base::FilePath FixtureRoot() const {
++    return ChromeTestDataRoot()
++        .AppendASCII("prometheus")
++        .AppendASCII("extensions");
++  }
++
++  void CopyFixture(extensions::TestExtensionDir* destination,
++                   std::string_view fixture_name,
++                   std::initializer_list<const char*> files) {
++    const base::FilePath source =
++        FixtureRoot().AppendASCII(std::string(fixture_name));
++    for (const char* file : files) {
++      destination->CopyFileTo(
++          source.AppendASCII(file), base::FilePath::FromASCII(file).value());
++    }
++  }
++
++  scoped_refptr<const extensions::Extension> LoadFixture(
++      extensions::TestExtensionDir* fixture,
++      extensions::ChromeTestExtensionLoader* loader) {
++    scoped_refptr<const extensions::Extension> extension =
++        loader->LoadExtension(fixture->UnpackedPath());
++    EXPECT_TRUE(extension);
++    if (extension) {
++      EXPECT_EQ(3, extension->manifest_version());
++    }
++    return extension;
++  }
++
++  content::WebContents* active_web_contents() {
++    return browser()->tab_strip_model()->GetActiveWebContents();
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionFixturesBrowserTest,
++                       PasswordManagerLikeLifecycleAndIsolation) {
++  extensions::TestExtensionDir fixture;
++  CopyFixture(&fixture, "password_manager_like",
++              {"manifest.json", "popup.html", "popup.js", "options.html",
++               "options.js"});
++  extensions::ChromeTestExtensionLoader loader(browser()->profile());
++  scoped_refptr<const extensions::Extension> extension =
++      LoadFixture(&fixture, &loader);
++  ASSERT_TRUE(extension);
++
++  ASSERT_TRUE(NavigateToURL(active_web_contents(),
++                            extension->GetResourceURL("options.html")));
++  EXPECT_EQ("Prometheus synthetic helper options",
++            content::EvalJs(active_web_contents(), "document.title"));
++  EXPECT_EQ("", content::EvalJs(active_web_contents(),
++                                "document.querySelector('#fixture-label').value"));
++
++  PrometheusExtensionAdmissionEvidence evidence;
++  EXPECT_FALSE(PrometheusExtensionPageAdapter::EvaluateAdmissionForTesting(
++                   AgentRouteName::kReadPage, ExtensionAgentGrant::kBlocked,
++                   evidence)
++                   .allowed);
++  EXPECT_TRUE(PrometheusExtensionPageAdapter::EvaluateAdmissionForTesting(
++                  AgentRouteName::kReadPage, ExtensionAgentGrant::kReadOnly,
++                  evidence)
++                  .allowed);
++  EXPECT_TRUE(PrometheusExtensionPageAdapter::EvaluateAdmissionForTesting(
++                  AgentRouteName::kTypeText, ExtensionAgentGrant::kInteract,
++                  evidence)
++                  .allowed);
++  const auto script =
++      PrometheusExtensionPageAdapter::EvaluateAdmissionForTesting(
++          AgentRouteName::kExecuteJs, ExtensionAgentGrant::kInteract, evidence);
++  EXPECT_FALSE(script.allowed);
++  EXPECT_EQ(PrometheusExtensionAdmissionDenial::kScriptDenied, script.denial);
++
++  EXPECT_TRUE(FixtureMatrixImplementedForTesting())
++      << "retained RED: password-manager-like lifecycle and isolation";
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionFixturesBrowserTest,
++                       AdBlockerLifecycleAndPermissionIsolation) {
++  extensions::TestExtensionDir fixture;
++  CopyFixture(&fixture, "ad_blocker", {"manifest.json", "rules.json"});
++  extensions::ChromeTestExtensionLoader loader(browser()->profile());
++  scoped_refptr<const extensions::Extension> extension =
++      LoadFixture(&fixture, &loader);
++  ASSERT_TRUE(extension);
++
++  ASSERT_TRUE(embedded_test_server()->Start());
++  ASSERT_TRUE(NavigateToURL(
++      active_web_contents(),
++      embedded_test_server()->GetURL("/empty.html")));
++  EXPECT_EQ("blocked",
++            content::EvalJs(
++                active_web_contents(),
++                R"(
++                  fetch('/prometheus-fixture-blocked')
++                    .then(() => 'allowed')
++                    .catch(() => 'blocked')
++                )"));
++
++  auto* policy =
++      PrometheusExtensionPolicyServiceFactory::GetForProfile(
++          browser()->profile());
++  ASSERT_TRUE(policy);
++  EXPECT_EQ(ExtensionAgentGrant::kBlocked,
++            policy->GetEffectiveGrant(extension->id(), browser()->profile(),
++                                      false));
++  EXPECT_EQ(ExtensionAgentGrant::kBlocked,
++            policy->GetEffectiveGrant(extension->id(), browser()->profile(),
++                                      true));
++
++  EXPECT_TRUE(FixtureMatrixImplementedForTesting())
++      << "retained RED: DNR behavior and manifest-permission isolation";
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionFixturesBrowserTest,
++                       ProductivityContentScriptRoutingAndIsolation) {
++  extensions::TestExtensionDir fixture;
++  CopyFixture(&fixture, "productivity_content_script",
++              {"manifest.json", "content.js"});
++  extensions::ChromeTestExtensionLoader loader(browser()->profile());
++  scoped_refptr<const extensions::Extension> extension =
++      LoadFixture(&fixture, &loader);
++  ASSERT_TRUE(extension);
++
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const GURL page_url = embedded_test_server()->GetURL("/empty.html");
++  ASSERT_TRUE(NavigateToURL(active_web_contents(), page_url));
++  EXPECT_EQ("content-script-active",
++            content::EvalJs(
++                active_web_contents(),
++                "document.querySelector('#prometheus-productivity-marker')"
++                ".textContent"));
++  EXPECT_FALSE(
++      PrometheusExtensionPageAdapter::ShouldUseExtensionAdapterForTesting(
++          false, active_web_contents()->GetLastCommittedURL()));
++
++  EXPECT_TRUE(FixtureMatrixImplementedForTesting())
++      << "retained RED: content-script DOM remains ordinary HTTP page data";
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionFixturesBrowserTest,
++                       SidePanelToolingVisibilityAndIsolation) {
++  extensions::TestExtensionDir fixture;
++  CopyFixture(&fixture, "side_panel_tooling",
++              {"manifest.json", "side_panel.html", "side_panel.js"});
++  extensions::ChromeTestExtensionLoader loader(browser()->profile());
++  scoped_refptr<const extensions::Extension> extension =
++      LoadFixture(&fixture, &loader);
++  ASSERT_TRUE(extension);
++
++  ASSERT_TRUE(NavigateToURL(active_web_contents(),
++                            extension->GetResourceURL("side_panel.html")));
++  EXPECT_EQ("Prometheus side panel fixture",
++            content::EvalJs(active_web_contents(), "document.title"));
++
++  PrometheusExtensionSurfaceEvidence evidence;
++  evidence.selector = AgentExtensionSurfaceSelector::kSidePanel;
++  evidence.observed_context =
++      PrometheusExtensionObservedContext::kSidePanel;
++  EXPECT_TRUE(
++      PrometheusExtensionSurfaceResolver::ClassifyEvidenceForTesting(evidence)
++          .accepted());
++  evidence.visible = false;
++  const auto hidden =
++      PrometheusExtensionSurfaceResolver::ClassifyEvidenceForTesting(evidence);
++  EXPECT_FALSE(hidden.accepted());
++  EXPECT_EQ(PrometheusExtensionSurfaceDenial::kHiddenSurface, hidden.denial);
++  evidence.visible = true;
++  evidence.observed_context =
++      PrometheusExtensionObservedContext::kDeveloperTools;
++  EXPECT_FALSE(
++      PrometheusExtensionSurfaceResolver::ClassifyEvidenceForTesting(evidence)
++          .accepted());
++
++  EXPECT_TRUE(FixtureMatrixImplementedForTesting())
++      << "retained RED: only an active visible side panel is routable";
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionFixturesBrowserTest,
++                       DeveloperWorkflowLifecycleAndWorkerIsolation) {
++  ExtensionTestMessageListener ready("prometheus-developer-ready");
++  extensions::TestExtensionDir fixture;
++  CopyFixture(&fixture, "developer_workflow",
++              {"manifest.json", "service_worker.js", "options.html",
++               "options.js"});
++  extensions::ChromeTestExtensionLoader loader(browser()->profile());
++  scoped_refptr<const extensions::Extension> extension =
++      LoadFixture(&fixture, &loader);
++  ASSERT_TRUE(extension);
++  EXPECT_TRUE(ready.WaitUntilSatisfied());
++
++  const std::string extension_id = extension->id();
++  auto* registry =
++      extensions::ExtensionRegistry::Get(browser()->profile());
++  auto* registrar =
++      extensions::ExtensionRegistrar::Get(browser()->profile());
++  ASSERT_TRUE(registry);
++  ASSERT_TRUE(registrar);
++
++  {
++    extensions::TestExtensionRegistryObserver observer(registry, extension_id);
++    registrar->ReloadExtension(extension_id);
++    EXPECT_TRUE(observer.WaitForExtensionLoaded());
++  }
++  {
++    extensions::TestExtensionRegistryObserver observer(registry, extension_id);
++    registrar->DisableExtension(
++        extension_id,
++        {extensions::disable_reason::DISABLE_USER_ACTION});
++    EXPECT_TRUE(observer.WaitForExtensionUnloaded());
++    EXPECT_TRUE(registry->disabled_extensions().Contains(extension_id));
++  }
++  {
++    extensions::TestExtensionRegistryObserver observer(registry, extension_id);
++    registrar->EnableExtension(extension_id);
++    EXPECT_TRUE(observer.WaitForExtensionLoaded());
++    EXPECT_TRUE(registry->enabled_extensions().Contains(extension_id));
++  }
++
++  PrometheusExtensionSurfaceEvidence worker_evidence;
++  worker_evidence.observed_context =
++      PrometheusExtensionObservedContext::kBackgroundContents;
++  EXPECT_FALSE(PrometheusExtensionSurfaceResolver::ClassifyEvidenceForTesting(
++                   worker_evidence)
++                   .accepted());
++
++  {
++    extensions::TestExtensionRegistryObserver observer(registry, extension_id);
++    std::u16string error;
++    EXPECT_TRUE(registrar->UninstallExtension(
++        extension_id, extensions::UNINSTALL_REASON_FOR_TESTING, &error));
++    EXPECT_TRUE(observer.WaitForExtensionUninstalled());
++    EXPECT_FALSE(registry->GetInstalledExtension(extension_id));
++  }
++
++  EXPECT_TRUE(FixtureMatrixImplementedForTesting())
++      << "retained RED: developer lifecycle and worker isolation";
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 6d9639bbd1..7dd90de8f1 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -88,6 +88,7 @@ source_set("browser_tests") {
+     "../../../prometheus/prometheus_agent_profile_service_browsertest.cc",
+     "../../../prometheus/prometheus_agent_service_browsertest.cc",
+     "../../../prometheus/prometheus_extension_agent_browsertest.cc",
++    "../../../prometheus/prometheus_extension_fixtures_browsertest.cc",
+     "../../../prometheus/prometheus_extension_surface_browsertest.cc",
+     "../../../prometheus/prometheus_mcp_integration_browsertest.cc",
+     "../../../prometheus/prometheus_page_adapter_browsertest.cc",
+@@ -109,6 +110,7 @@ source_set("browser_tests") {
+     ":side_panel",
+     "//base/test:test_support",
+     "//chrome/browser/profiles:test_support",
++    "//chrome/browser/extensions:test_support",
+     "//chrome/browser/prometheus:prometheus_agent_gateway",
+     "//chrome/browser/prometheus:prometheus_agent_profile_service",
+     "//chrome/browser/prometheus:prometheus_agent_route",
+diff --git a/chrome/test/data/prometheus/extensions/ad_blocker/manifest.json b/chrome/test/data/prometheus/extensions/ad_blocker/manifest.json
+new file mode 100644
+index 0000000000..f402b583df
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/ad_blocker/manifest.json
+@@ -0,0 +1,17 @@
++{
++  "name": "Prometheus DNR Ad Blocking Fixture",
++  "version": "1.0.0",
++  "manifest_version": 3,
++  "permissions": [
++    "declarativeNetRequest"
++  ],
++  "declarative_net_request": {
++    "rule_resources": [
++      {
++        "id": "prometheus_fixture_rules",
++        "enabled": true,
++        "path": "rules.json"
++      }
++    ]
++  }
++}
+diff --git a/chrome/test/data/prometheus/extensions/ad_blocker/rules.json b/chrome/test/data/prometheus/extensions/ad_blocker/rules.json
+new file mode 100644
+index 0000000000..2893786f41
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/ad_blocker/rules.json
+@@ -0,0 +1,15 @@
++[
++  {
++    "id": 1,
++    "priority": 1,
++    "action": {
++      "type": "block"
++    },
++    "condition": {
++      "url_filter": "prometheus-fixture-blocked",
++      "resource_types": [
++        "xmlhttprequest"
++      ]
++    }
++  }
++]
+diff --git a/chrome/test/data/prometheus/extensions/developer_workflow/manifest.json b/chrome/test/data/prometheus/extensions/developer_workflow/manifest.json
+new file mode 100644
+index 0000000000..0525afbebf
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/developer_workflow/manifest.json
+@@ -0,0 +1,12 @@
++{
++  "name": "Prometheus Developer Workflow Fixture",
++  "version": "1.0.0",
++  "manifest_version": 3,
++  "background": {
++    "service_worker": "service_worker.js"
++  },
++  "options_page": "options.html",
++  "permissions": [
++    "storage"
++  ]
++}
+diff --git a/chrome/test/data/prometheus/extensions/developer_workflow/options.html b/chrome/test/data/prometheus/extensions/developer_workflow/options.html
+new file mode 100644
+index 0000000000..988d56fa60
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/developer_workflow/options.html
+@@ -0,0 +1,12 @@
++<!doctype html>
++<html>
++  <head>
++    <meta charset="utf-8">
++    <title>Prometheus developer workflow options</title>
++  </head>
++  <body>
++    <button id="fixture-refresh" type="button">Refresh local state</button>
++    <output id="fixture-refresh-status">idle</output>
++    <script src="options.js"></script>
++  </body>
++</html>
+diff --git a/chrome/test/data/prometheus/extensions/developer_workflow/options.js b/chrome/test/data/prometheus/extensions/developer_workflow/options.js
+new file mode 100644
+index 0000000000..69851cfcb5
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/developer_workflow/options.js
+@@ -0,0 +1,3 @@
++document.querySelector('#fixture-refresh').addEventListener('click', () => {
++  document.querySelector('#fixture-refresh-status').textContent = 'refreshed';
++});
+diff --git a/chrome/test/data/prometheus/extensions/developer_workflow/service_worker.js b/chrome/test/data/prometheus/extensions/developer_workflow/service_worker.js
+new file mode 100644
+index 0000000000..2119dc5e45
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/developer_workflow/service_worker.js
+@@ -0,0 +1,3 @@
++chrome.runtime.onInstalled.addListener(() => {
++  chrome.test.sendMessage('prometheus-developer-ready');
++});
+diff --git a/chrome/test/data/prometheus/extensions/password_manager_like/manifest.json b/chrome/test/data/prometheus/extensions/password_manager_like/manifest.json
+new file mode 100644
+index 0000000000..8b0e2fabe3
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/password_manager_like/manifest.json
+@@ -0,0 +1,12 @@
++{
++  "name": "Prometheus Password Manager Fixture",
++  "version": "1.0.0",
++  "manifest_version": 3,
++  "action": {
++    "default_popup": "popup.html"
++  },
++  "options_page": "options.html",
++  "permissions": [
++    "activeTab"
++  ]
++}
+diff --git a/chrome/test/data/prometheus/extensions/password_manager_like/options.html b/chrome/test/data/prometheus/extensions/password_manager_like/options.html
+new file mode 100644
+index 0000000000..a206bcbc96
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/password_manager_like/options.html
+@@ -0,0 +1,14 @@
++<!doctype html>
++<html>
++  <head>
++    <meta charset="utf-8">
++    <title>Prometheus synthetic helper options</title>
++  </head>
++  <body>
++    <label for="fixture-label">Synthetic profile label</label>
++    <input id="fixture-label" value="">
++    <button id="fixture-save" type="button">Save local test label</button>
++    <output id="fixture-options-status">idle</output>
++    <script src="options.js"></script>
++  </body>
++</html>
+diff --git a/chrome/test/data/prometheus/extensions/password_manager_like/options.js b/chrome/test/data/prometheus/extensions/password_manager_like/options.js
+new file mode 100644
+index 0000000000..b08013ae44
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/password_manager_like/options.js
+@@ -0,0 +1,3 @@
++document.querySelector('#fixture-save').addEventListener('click', () => {
++  document.querySelector('#fixture-options-status').textContent = 'saved';
++});
+diff --git a/chrome/test/data/prometheus/extensions/password_manager_like/popup.html b/chrome/test/data/prometheus/extensions/password_manager_like/popup.html
+new file mode 100644
+index 0000000000..7ef0c6559d
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/password_manager_like/popup.html
+@@ -0,0 +1,16 @@
++<!doctype html>
++<html>
++  <head>
++    <meta charset="utf-8">
++    <title>Prometheus synthetic sign-in helper</title>
++  </head>
++  <body>
++    <label for="fixture-account">Synthetic account</label>
++    <input id="fixture-account" value="">
++    <label for="fixture-note">Synthetic note</label>
++    <input id="fixture-note" value="">
++    <button id="fixture-fill" type="button">Fill synthetic values</button>
++    <output id="fixture-status">idle</output>
++    <script src="popup.js"></script>
++  </body>
++</html>
+diff --git a/chrome/test/data/prometheus/extensions/password_manager_like/popup.js b/chrome/test/data/prometheus/extensions/password_manager_like/popup.js
+new file mode 100644
+index 0000000000..3c37ebdb8f
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/password_manager_like/popup.js
+@@ -0,0 +1,5 @@
++document.querySelector('#fixture-fill').addEventListener('click', () => {
++  document.querySelector('#fixture-account').value = 'demo-user';
++  document.querySelector('#fixture-note').value = 'demo-note';
++  document.querySelector('#fixture-status').textContent = 'filled';
++});
+diff --git a/chrome/test/data/prometheus/extensions/productivity_content_script/content.js b/chrome/test/data/prometheus/extensions/productivity_content_script/content.js
+new file mode 100644
+index 0000000000..48b5252dff
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/productivity_content_script/content.js
+@@ -0,0 +1,4 @@
++const marker = document.createElement('output');
++marker.id = 'prometheus-productivity-marker';
++marker.textContent = 'content-script-active';
++document.body.appendChild(marker);
+diff --git a/chrome/test/data/prometheus/extensions/productivity_content_script/manifest.json b/chrome/test/data/prometheus/extensions/productivity_content_script/manifest.json
+new file mode 100644
+index 0000000000..04a5769b3b
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/productivity_content_script/manifest.json
+@@ -0,0 +1,16 @@
++{
++  "name": "Prometheus Productivity Content Script Fixture",
++  "version": "1.0.0",
++  "manifest_version": 3,
++  "content_scripts": [
++    {
++      "matches": [
++        "http://127.0.0.1/*"
++      ],
++      "js": [
++        "content.js"
++      ],
++      "run_at": "document_end"
++    }
++  ]
++}
+diff --git a/chrome/test/data/prometheus/extensions/side_panel_tooling/manifest.json b/chrome/test/data/prometheus/extensions/side_panel_tooling/manifest.json
+new file mode 100644
+index 0000000000..dd7895b939
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/side_panel_tooling/manifest.json
+@@ -0,0 +1,11 @@
++{
++  "name": "Prometheus Side Panel Tooling Fixture",
++  "version": "1.0.0",
++  "manifest_version": 3,
++  "permissions": [
++    "sidePanel"
++  ],
++  "side_panel": {
++    "default_path": "side_panel.html"
++  }
++}
+diff --git a/chrome/test/data/prometheus/extensions/side_panel_tooling/side_panel.html b/chrome/test/data/prometheus/extensions/side_panel_tooling/side_panel.html
+new file mode 100644
+index 0000000000..666802080f
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/side_panel_tooling/side_panel.html
+@@ -0,0 +1,12 @@
++<!doctype html>
++<html>
++  <head>
++    <meta charset="utf-8">
++    <title>Prometheus side panel fixture</title>
++  </head>
++  <body>
++    <button id="fixture-tool" type="button">Run local tool</button>
++    <output id="fixture-tool-status">idle</output>
++    <script src="side_panel.js"></script>
++  </body>
++</html>
+diff --git a/chrome/test/data/prometheus/extensions/side_panel_tooling/side_panel.js b/chrome/test/data/prometheus/extensions/side_panel_tooling/side_panel.js
+new file mode 100644
+index 0000000000..67de8dd164
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/side_panel_tooling/side_panel.js
+@@ -0,0 +1,3 @@
++document.querySelector('#fixture-tool').addEventListener('click', () => {
++  document.querySelector('#fixture-tool-status').textContent = 'complete';
++});
+-- 
+2.50.1 (Apple Git-155)
+

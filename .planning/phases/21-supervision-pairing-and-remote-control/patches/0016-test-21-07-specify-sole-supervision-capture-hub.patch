@@ -1,0 +1,877 @@
+From 5fd340b3931811c9a1e9e02644af765cbb2aec98 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 22:52:21 -0500
+Subject: [PATCH] test(21-07): specify sole supervision capture hub
+
+- freeze one renderer binding and APC capture shared by consumers
+- require independent bounded cursor, lifecycle, and resync state
+- register retained native and real-browser RED fixtures
+---
+ chrome/browser/prometheus/BUILD.gn            |  20 ++
+ .../prometheus_supervision_capture_hub.cc     | 176 ++++++++++
+ .../prometheus_supervision_capture_hub.h      | 187 +++++++++++
+ ...eus_supervision_capture_hub_browsertest.cc |  86 +++++
+ ...etheus_supervision_capture_hub_unittest.cc | 315 ++++++++++++++++++
+ chrome/browser/ui/views/prometheus/BUILD.gn   |   2 +
+ 6 files changed, 786 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 9e475d8f8c..f9dbb01812 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -317,6 +317,24 @@ source_set("prometheus_supervision_diff") {
+   ]
+ }
+ 
++source_set("prometheus_supervision_capture_hub") {
++  sources = [
++    "prometheus_supervision_capture_hub.cc",
++    "prometheus_supervision_capture_hub.h",
++  ]
++
++  deps = [
++    ":prometheus_supervision_diff",
++    ":prometheus_supervision_projection",
++    ":prometheus_supervision_types",
++    "//base",
++    "//components/optimization_guide/content/browser",
++    "//content/public/browser",
++    "//content/public/common",
++    "//mojo/public/cpp/bindings",
++  ]
++}
++
+ source_set("prometheus_supervision_profile_service") {
+   sources = [
+     "prometheus_supervision_profile_service.cc",
+@@ -604,6 +622,7 @@ test("prometheus_unittests") {
+     "prometheus_runtime_transport_codec_unittest.cc",
+     "prometheus_runtime_types_unittest.cc",
+     "prometheus_secret_store_unittest.cc",
++    "prometheus_supervision_capture_hub_unittest.cc",
+     "prometheus_supervision_diff_unittest.cc",
+     "prometheus_supervision_profile_service_unittest.cc",
+     "prometheus_supervision_projection_unittest.cc",
+@@ -646,6 +665,7 @@ test("prometheus_unittests") {
+     ":prometheus_runtime_transport_codec",
+     ":prometheus_runtime_types",
+     ":prometheus_secret_store",
++    ":prometheus_supervision_capture_hub",
+     ":prometheus_supervision_diff",
+     ":prometheus_supervision_profile_service",
+     ":prometheus_supervision_projection",
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc b/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
+new file mode 100644
+index 0000000000..001b5119ee
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
+@@ -0,0 +1,176 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_capture_hub.h"
++
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "base/memory/raw_ptr.h"
++#include "content/public/browser/navigation_handle.h"
++#include "content/public/browser/page.h"
++#include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/web_contents.h"
++#include "mojo/public/cpp/bindings/receiver.h"
++#include "mojo/public/cpp/bindings/remote.h"
++#include "third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom.h"
++
++namespace prometheus {
++
++// The retained RED scaffold fixes the endpoint ownership in this private hub
++// entry. Task 2 completes binding and lifecycle behavior.
++class PrometheusSupervisionCaptureHub::FrameEntry
++    : public blink::mojom::PrometheusSupervisionDocumentHost {
++ public:
++  FrameEntry(PrometheusSupervisionCaptureHub* owner,
++             content::RenderFrameHost* render_frame_host,
++             uint64_t generation)
++      : owner_(owner),
++        render_frame_host_(render_frame_host),
++        generation_(generation),
++        host_receiver_(this) {}
++  ~FrameEntry() override = default;
++
++  void OnDocumentDirty(
++      blink::mojom::PrometheusSupervisionDirtySignal signal) override {}
++
++ private:
++  raw_ptr<PrometheusSupervisionCaptureHub> owner_;
++  raw_ptr<content::RenderFrameHost> render_frame_host_;
++  [[maybe_unused]] uint64_t generation_ = 0;
++  mojo::Remote<blink::mojom::PrometheusSupervisionDocument> document_remote_;
++  mojo::Receiver<blink::mojom::PrometheusSupervisionDocumentHost>
++      host_receiver_;
++};
++
++PrometheusSupervisionCaptureHub::PrometheusSupervisionCaptureHub(
++    content::WebContents* web_contents,
++    int32_t stable_tab_id,
++    const SupervisionLimits& limits)
++    : content::WebContentsObserver(web_contents),
++      stable_tab_id_(stable_tab_id),
++      limits_(ClampSupervisionLimits(limits)),
++      now_callback_(base::BindRepeating(&base::Time::Now)) {}
++
++PrometheusSupervisionCaptureHub::PrometheusSupervisionCaptureHub(
++    int32_t stable_tab_id,
++    const SupervisionLimits& limits,
++    CaptureForTestingCallback capture_for_testing)
++    : content::WebContentsObserver(nullptr),
++      stable_tab_id_(stable_tab_id),
++      limits_(ClampSupervisionLimits(limits)),
++      capture_for_testing_(std::move(capture_for_testing)),
++      now_callback_(base::BindRepeating(&base::Time::Now)) {}
++
++PrometheusSupervisionCaptureHub::~PrometheusSupervisionCaptureHub() = default;
++
++std::optional<SupervisionCaptureConsumerId>
++PrometheusSupervisionCaptureHub::AttachConsumer(
++    SupervisionCaptureConsumerKind kind,
++    base::Time expiry) {
++  return std::nullopt;
++}
++
++std::optional<SupervisionCaptureBaselineDelivery>
++PrometheusSupervisionCaptureHub::ReadBaseline(
++    SupervisionCaptureConsumerId consumer_id) {
++  return std::nullopt;
++}
++
++std::optional<SupervisionCaptureDiffDelivery>
++PrometheusSupervisionCaptureHub::ReadNext(
++    SupervisionCaptureConsumerId consumer_id) {
++  return std::nullopt;
++}
++
++bool PrometheusSupervisionCaptureHub::Ack(
++    SupervisionCaptureConsumerId consumer_id,
++    const SupervisionStreamStamp& stamp) {
++  return false;
++}
++
++bool PrometheusSupervisionCaptureHub::RevokeConsumer(
++    SupervisionCaptureConsumerId consumer_id) {
++  return false;
++}
++
++bool PrometheusSupervisionCaptureHub::DetachConsumer(
++    SupervisionCaptureConsumerId consumer_id) {
++  return false;
++}
++
++void PrometheusSupervisionCaptureHub::SweepExpiredConsumers() {}
++
++bool PrometheusSupervisionCaptureHub::ConsumerNeedsBaseline(
++    SupervisionCaptureConsumerId consumer_id) const {
++  return true;
++}
++
++void PrometheusSupervisionCaptureHub::SetNowCallbackForTesting(
++    NowCallback now_callback) {
++  now_callback_ = std::move(now_callback);
++}
++
++void PrometheusSupervisionCaptureHub::NotifyDirtyForTesting(bool overflow) {}
++
++void PrometheusSupervisionCaptureHub::ReplaceDocumentForTesting() {}
++
++void PrometheusSupervisionCaptureHub::DisconnectRendererForTesting() {}
++
++void PrometheusSupervisionCaptureHub::RenderFrameCreated(
++    content::RenderFrameHost* render_frame_host) {}
++
++void PrometheusSupervisionCaptureHub::RenderFrameDeleted(
++    content::RenderFrameHost* render_frame_host) {}
++
++void PrometheusSupervisionCaptureHub::PrimaryPageChanged(content::Page& page) {}
++
++void PrometheusSupervisionCaptureHub::DidFinishNavigation(
++    content::NavigationHandle* navigation_handle) {}
++
++void PrometheusSupervisionCaptureHub::WebContentsDestroyed() {}
++
++base::Time PrometheusSupervisionCaptureHub::Now() const {
++  return now_callback_.Run();
++}
++
++void PrometheusSupervisionCaptureHub::StartObservation() {}
++
++void PrometheusSupervisionCaptureHub::StopObservation() {}
++
++void PrometheusSupervisionCaptureHub::StartNewDocumentEpoch() {}
++
++void PrometheusSupervisionCaptureHub::BindCurrentFrames() {}
++
++void PrometheusSupervisionCaptureHub::BindFrame(
++    content::RenderFrameHost* render_frame_host) {}
++
++void PrometheusSupervisionCaptureHub::OnFrameDirty(
++    content::RenderFrameHost* render_frame_host,
++    uint64_t frame_generation,
++    bool overflow) {}
++
++void PrometheusSupervisionCaptureHub::OnFrameDisconnected(
++    content::RenderFrameHost* render_frame_host,
++    uint64_t frame_generation) {}
++
++void PrometheusSupervisionCaptureHub::RequestCapture(bool force_baseline) {}
++
++void PrometheusSupervisionCaptureHub::OnCapturedForTesting(
++    uint64_t capture_generation,
++    bool force_baseline,
++    SupervisionBaseline baseline) {}
++
++void PrometheusSupervisionCaptureHub::RequireBaselineForAll() {}
++
++void PrometheusSupervisionCaptureHub::RequireBaseline(ConsumerState& consumer) {}
++
++void PrometheusSupervisionCaptureHub::PruneHistory() {}
++
++bool PrometheusSupervisionCaptureHub::HasCurrentConsumer(
++    SupervisionCaptureConsumerId consumer_id) const {
++  return false;
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub.h b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+new file mode 100644
+index 0000000000..65210d9d76
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+@@ -0,0 +1,187 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_CAPTURE_HUB_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_CAPTURE_HUB_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <deque>
++#include <map>
++#include <memory>
++#include <optional>
++#include <string>
++
++#include "base/functional/callback.h"
++#include "base/memory/weak_ptr.h"
++#include "base/time/time.h"
++#include "chrome/browser/prometheus/prometheus_supervision_diff.h"
++#include "chrome/browser/prometheus/prometheus_supervision_projection.h"
++#include "chrome/browser/prometheus/prometheus_supervision_types.h"
++#include "content/public/browser/web_contents_observer.h"
++
++namespace content {
++class NavigationHandle;
++class Page;
++class RenderFrameHost;
++class WebContents;
++}  // namespace content
++
++namespace prometheus {
++
++enum class SupervisionCaptureConsumerKind {
++  kDashboard,
++  kAgentCompatibility,
++};
++
++using SupervisionCaptureConsumerId = uint64_t;
++
++// Consumer-facing deliveries carry only browser-created stream stamps and
++// privacy-filtered projection output. Mojo endpoints and renderer identity are
++// intentionally not representable in this API.
++struct SupervisionCaptureBaselineDelivery {
++  SupervisionStreamStamp stamp;
++  SupervisionBaseline baseline;
++};
++
++struct SupervisionCaptureDiffDelivery {
++  SupervisionStreamStamp stamp;
++  SupervisionDiff diff;
++};
++
++// One hub is bound to one stable target and its current primary page. It is the
++// sole owner of renderer control pipes, dirty-host receivers, APC capture,
++// normalized tree/history, document epoch, and sequence for that target.
++class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
++ public:
++  using CaptureForTestingCallback = base::RepeatingCallback<void(
++      base::OnceCallback<void(SupervisionBaseline)>)>;
++  using NowCallback = base::RepeatingCallback<base::Time()>;
++
++  PrometheusSupervisionCaptureHub(
++      content::WebContents* web_contents,
++      int32_t stable_tab_id,
++      const SupervisionLimits& limits = SupervisionLimits());
++
++  // State-machine-only construction for deterministic unit tests. Production
++  // callers must use the exact-WebContents constructor above.
++  PrometheusSupervisionCaptureHub(
++      int32_t stable_tab_id,
++      const SupervisionLimits& limits,
++      CaptureForTestingCallback capture_for_testing);
++
++  ~PrometheusSupervisionCaptureHub() override;
++
++  PrometheusSupervisionCaptureHub(
++      const PrometheusSupervisionCaptureHub&) = delete;
++  PrometheusSupervisionCaptureHub& operator=(
++      const PrometheusSupervisionCaptureHub&) = delete;
++
++  std::optional<SupervisionCaptureConsumerId> AttachConsumer(
++      SupervisionCaptureConsumerKind kind,
++      base::Time expiry);
++  std::optional<SupervisionCaptureBaselineDelivery> ReadBaseline(
++      SupervisionCaptureConsumerId consumer_id);
++  std::optional<SupervisionCaptureDiffDelivery> ReadNext(
++      SupervisionCaptureConsumerId consumer_id);
++  bool Ack(SupervisionCaptureConsumerId consumer_id,
++           const SupervisionStreamStamp& stamp);
++  bool RevokeConsumer(SupervisionCaptureConsumerId consumer_id);
++  bool DetachConsumer(SupervisionCaptureConsumerId consumer_id);
++  void SweepExpiredConsumers();
++
++  size_t consumer_count() const { return consumers_.size(); }
++  bool ConsumerNeedsBaseline(
++      SupervisionCaptureConsumerId consumer_id) const;
++
++  // Deterministic lifecycle hooks and counters. They expose no endpoint or
++  // document identity and are used only by native/browser verification.
++  void SetNowCallbackForTesting(NowCallback now_callback);
++  void NotifyDirtyForTesting(bool overflow);
++  void ReplaceDocumentForTesting();
++  void DisconnectRendererForTesting();
++  size_t enable_count_for_testing() const { return enable_count_; }
++  size_t disable_count_for_testing() const { return disable_count_; }
++  size_t capture_count_for_testing() const { return capture_count_; }
++  size_t retained_batch_count_for_testing() const { return history_.size(); }
++  size_t retained_bytes_for_testing() const { return retained_bytes_; }
++  bool capture_in_flight_for_testing() const { return capture_in_flight_; }
++
++ private:
++  class FrameEntry;
++
++  struct SharedBatch {
++    uint64_t sequence = 0;
++    SupervisionDiff diff;
++  };
++
++  struct ConsumerState {
++    SupervisionCaptureConsumerKind kind =
++        SupervisionCaptureConsumerKind::kDashboard;
++    base::UnguessableToken session;
++    base::Time expiry;
++    uint64_t acknowledged_sequence = 0;
++    uint64_t next_sequence = 0;
++    bool needs_baseline = true;
++  };
++
++  // content::WebContentsObserver:
++  void RenderFrameCreated(content::RenderFrameHost* render_frame_host) override;
++  void RenderFrameDeleted(content::RenderFrameHost* render_frame_host) override;
++  void PrimaryPageChanged(content::Page& page) override;
++  void DidFinishNavigation(
++      content::NavigationHandle* navigation_handle) override;
++  void WebContentsDestroyed() override;
++
++  base::Time Now() const;
++  void StartObservation();
++  void StopObservation();
++  void StartNewDocumentEpoch();
++  void BindCurrentFrames();
++  void BindFrame(content::RenderFrameHost* render_frame_host);
++  void OnFrameDirty(content::RenderFrameHost* render_frame_host,
++                    uint64_t frame_generation,
++                    bool overflow);
++  void OnFrameDisconnected(content::RenderFrameHost* render_frame_host,
++                           uint64_t frame_generation);
++  void RequestCapture(bool force_baseline);
++  void OnCapturedForTesting(uint64_t capture_generation,
++                            bool force_baseline,
++                            SupervisionBaseline baseline);
++  void RequireBaselineForAll();
++  void RequireBaseline(ConsumerState& consumer);
++  void PruneHistory();
++  bool HasCurrentConsumer(SupervisionCaptureConsumerId consumer_id) const;
++
++  [[maybe_unused]] const int32_t stable_tab_id_;
++  const SupervisionLimits limits_;
++  CaptureForTestingCallback capture_for_testing_;
++  NowCallback now_callback_;
++
++  std::map<content::RenderFrameHost*, std::unique_ptr<FrameEntry>> frames_;
++  std::map<SupervisionCaptureConsumerId, ConsumerState> consumers_;
++  std::deque<SharedBatch> history_;
++  size_t retained_bytes_ = 0;
++  SupervisionBaseline baseline_;
++  base::UnguessableToken document_epoch_;
++  [[maybe_unused]] uint64_t sequence_ = 0;
++  [[maybe_unused]] uint64_t document_generation_ = 0;
++  [[maybe_unused]] uint64_t capture_generation_ = 0;
++  [[maybe_unused]] uint64_t next_frame_generation_ = 0;
++  [[maybe_unused]] SupervisionCaptureConsumerId next_consumer_id_ = 0;
++  [[maybe_unused]] bool observing_ = false;
++  bool capture_in_flight_ = false;
++  [[maybe_unused]] bool dirty_while_capturing_ = false;
++  [[maybe_unused]] bool force_baseline_after_capture_ = false;
++  [[maybe_unused]] bool destroyed_ = false;
++  size_t enable_count_ = 0;
++  size_t disable_count_ = 0;
++  size_t capture_count_ = 0;
++
++  base::WeakPtrFactory<PrometheusSupervisionCaptureHub> weak_factory_{this};
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_CAPTURE_HUB_H_
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc b/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc
+new file mode 100644
+index 0000000000..54a7412d34
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc
+@@ -0,0 +1,86 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_capture_hub.h"
++
++#include "base/time/time.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/browser_test.h"
++#include "net/dns/mock_host_resolver.h"
++
++namespace prometheus {
++
++class PrometheusSupervisionCaptureHubBrowserTest
++    : public InProcessBrowserTest {
++ public:
++  void SetUpOnMainThread() override {
++    InProcessBrowserTest::SetUpOnMainThread();
++    host_resolver()->AddRule("*", "127.0.0.1");
++    ASSERT_TRUE(embedded_test_server()->Start());
++    ASSERT_TRUE(ui_test_utils::NavigateToURL(
++        browser(), embedded_test_server()->GetURL("/title1.html")));
++  }
++
++  content::WebContents* contents() {
++    return browser()->tab_strip_model()->GetActiveWebContents();
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
++                       TwoConsumersUseOneRendererEnableAndApcCapture) {
++  ASSERT_TRUE(contents());
++  PrometheusSupervisionCaptureHub hub(contents(), 23);
++
++  const auto first = hub.AttachConsumer(
++      SupervisionCaptureConsumerKind::kDashboard,
++      base::Time::Now() + base::Minutes(5));
++  const auto second = hub.AttachConsumer(
++      SupervisionCaptureConsumerKind::kAgentCompatibility,
++      base::Time::Now() + base::Minutes(5));
++
++  EXPECT_TRUE(first.has_value());
++  EXPECT_TRUE(second.has_value());
++  EXPECT_EQ(1u, hub.enable_count_for_testing());
++  EXPECT_EQ(1u, hub.capture_count_for_testing());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
++                       NavigationTearsDownOldDocumentBeforeRebinding) {
++  ASSERT_TRUE(contents());
++  PrometheusSupervisionCaptureHub hub(contents(), 24);
++  EXPECT_TRUE(hub.AttachConsumer(SupervisionCaptureConsumerKind::kDashboard,
++                                 base::Time::Now() + base::Minutes(5))
++                  .has_value());
++
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("/title2.html")));
++  EXPECT_EQ(2u, hub.enable_count_for_testing());
++  EXPECT_EQ(1u, hub.disable_count_for_testing());
++  EXPECT_EQ(2u, hub.capture_count_for_testing());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
++                       LastDetachDisablesTheOnlyRendererGeneration) {
++  ASSERT_TRUE(contents());
++  PrometheusSupervisionCaptureHub hub(contents(), 25);
++  const auto first = hub.AttachConsumer(
++      SupervisionCaptureConsumerKind::kDashboard,
++      base::Time::Now() + base::Minutes(5));
++  const auto second = hub.AttachConsumer(
++      SupervisionCaptureConsumerKind::kDashboard,
++      base::Time::Now() + base::Minutes(5));
++  ASSERT_TRUE(first.has_value());
++  ASSERT_TRUE(second.has_value());
++
++  EXPECT_TRUE(hub.DetachConsumer(*first));
++  EXPECT_EQ(0u, hub.disable_count_for_testing());
++  EXPECT_TRUE(hub.DetachConsumer(*second));
++  EXPECT_EQ(1u, hub.disable_count_for_testing());
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc
+new file mode 100644
+index 0000000000..ad70f3352c
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc
+@@ -0,0 +1,315 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_capture_hub.h"
++
++#include <deque>
++#include <memory>
++#include <optional>
++#include <string>
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "base/time/time.h"
++#include "base/unguessable_token.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++namespace {
++
++SupervisionBaseline MakeBaseline(std::string name,
++                                 size_t serialized_bytes = 32u) {
++  SupervisionNormalizedNode node;
++  node.ref = "document:1";
++  node.tag = "root";
++  node.name = std::move(name);
++
++  SupervisionBaseline baseline;
++  baseline.state = SupervisionProjectionState::kAuthoritative;
++  baseline.nodes.push_back(std::move(node));
++  baseline.serialized_json.assign(serialized_bytes, 'b');
++  return baseline;
++}
++
++class TestCaptureSource {
++ public:
++  void Capture(base::OnceCallback<void(SupervisionBaseline)> callback) {
++    pending_.push_back(std::move(callback));
++  }
++
++  size_t pending_count() const { return pending_.size(); }
++
++  void CompleteNext(SupervisionBaseline baseline) {
++    ASSERT_FALSE(pending_.empty());
++    auto callback = std::move(pending_.front());
++    pending_.pop_front();
++    std::move(callback).Run(std::move(baseline));
++  }
++
++ private:
++  std::deque<base::OnceCallback<void(SupervisionBaseline)>> pending_;
++};
++
++class PrometheusSupervisionCaptureHubTest : public testing::Test {
++ protected:
++  std::unique_ptr<PrometheusSupervisionCaptureHub> CreateHub(
++      const SupervisionLimits& limits = SupervisionLimits()) {
++    auto hub = std::make_unique<PrometheusSupervisionCaptureHub>(
++        17, limits,
++        base::BindRepeating(&TestCaptureSource::Capture,
++                            base::Unretained(&capture_source_)));
++    hub->SetNowCallbackForTesting(base::BindRepeating(
++        [](base::Time* now) { return *now; }, base::Unretained(&now_)));
++    return hub;
++  }
++
++  std::pair<SupervisionCaptureConsumerId, SupervisionCaptureConsumerId>
++  AttachTwo(PrometheusSupervisionCaptureHub& hub) {
++    const auto first = hub.AttachConsumer(
++        SupervisionCaptureConsumerKind::kDashboard, now_ + base::Minutes(10));
++    const auto second = hub.AttachConsumer(
++        SupervisionCaptureConsumerKind::kAgentCompatibility,
++        now_ + base::Minutes(10));
++    EXPECT_TRUE(first.has_value());
++    EXPECT_TRUE(second.has_value());
++    return {first.value_or(0u), second.value_or(0u)};
++  }
++
++  void CompleteAndAckBaseline(PrometheusSupervisionCaptureHub& hub,
++                              SupervisionCaptureConsumerId first,
++                              SupervisionCaptureConsumerId second,
++                              std::string name = "initial") {
++    capture_source_.CompleteNext(MakeBaseline(std::move(name)));
++    const auto first_baseline = hub.ReadBaseline(first);
++    const auto second_baseline = hub.ReadBaseline(second);
++    ASSERT_TRUE(first_baseline.has_value());
++    ASSERT_TRUE(second_baseline.has_value());
++    EXPECT_EQ(first_baseline->stamp.document_epoch,
++              second_baseline->stamp.document_epoch);
++    EXPECT_EQ(first_baseline->stamp.sequence,
++              second_baseline->stamp.sequence);
++    EXPECT_NE(first_baseline->stamp.session, second_baseline->stamp.session);
++    ASSERT_TRUE(hub.Ack(first, first_baseline->stamp));
++    ASSERT_TRUE(hub.Ack(second, second_baseline->stamp));
++  }
++
++  base::Time now_ = base::Time::UnixEpoch() + base::Hours(1);
++  TestCaptureSource capture_source_;
++};
++
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       TwoConsumersShareOneEnableAndInitialCapture) {
++  auto hub = CreateHub();
++  const auto [first, second] = AttachTwo(*hub);
++
++  EXPECT_EQ(2u, hub->consumer_count());
++  EXPECT_EQ(1u, hub->enable_count_for_testing());
++  EXPECT_EQ(1u, hub->capture_count_for_testing());
++  EXPECT_EQ(1u, capture_source_.pending_count());
++
++  capture_source_.CompleteNext(MakeBaseline("initial"));
++  const auto first_baseline = hub->ReadBaseline(first);
++  const auto second_baseline = hub->ReadBaseline(second);
++  ASSERT_TRUE(first_baseline.has_value());
++  ASSERT_TRUE(second_baseline.has_value());
++  EXPECT_EQ(first_baseline->baseline, second_baseline->baseline);
++  EXPECT_EQ(first_baseline->stamp.document_epoch,
++            second_baseline->stamp.document_epoch);
++  EXPECT_EQ(1u, first_baseline->stamp.sequence);
++}
++
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       IndependentAcknowledgementsAndReadsDoNotAdvancePeers) {
++  auto hub = CreateHub();
++  const auto [first, second] = AttachTwo(*hub);
++  CompleteAndAckBaseline(*hub, first, second);
++
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  EXPECT_EQ(2u, hub->capture_count_for_testing());
++  EXPECT_EQ(1u, capture_source_.pending_count());
++  capture_source_.CompleteNext(MakeBaseline("changed"));
++
++  const auto first_diff = hub->ReadNext(first);
++  const auto second_diff = hub->ReadNext(second);
++  ASSERT_TRUE(first_diff.has_value());
++  ASSERT_TRUE(second_diff.has_value());
++  EXPECT_EQ(first_diff->stamp.sequence, second_diff->stamp.sequence);
++  EXPECT_EQ(first_diff->diff, second_diff->diff);
++  EXPECT_TRUE(hub->Ack(first, first_diff->stamp));
++  EXPECT_FALSE(hub->ReadNext(first).has_value());
++  ASSERT_TRUE(hub->ReadNext(second).has_value());
++  EXPECT_EQ(second_diff->stamp.sequence,
++            hub->ReadNext(second)->stamp.sequence);
++}
++
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       ExpiryRevokeAndDetachRemainConsumerLocal) {
++  auto hub = CreateHub();
++  const auto expiring = hub->AttachConsumer(
++      SupervisionCaptureConsumerKind::kDashboard, now_ + base::Seconds(1));
++  const auto surviving = hub->AttachConsumer(
++      SupervisionCaptureConsumerKind::kDashboard, now_ + base::Minutes(1));
++  ASSERT_TRUE(expiring.has_value());
++  ASSERT_TRUE(surviving.has_value());
++  capture_source_.CompleteNext(MakeBaseline("initial"));
++
++  now_ += base::Seconds(2);
++  hub->SweepExpiredConsumers();
++  EXPECT_EQ(1u, hub->consumer_count());
++  EXPECT_FALSE(hub->ReadBaseline(*expiring).has_value());
++  EXPECT_TRUE(hub->ReadBaseline(*surviving).has_value());
++  EXPECT_TRUE(hub->RevokeConsumer(*surviving));
++  EXPECT_EQ(0u, hub->consumer_count());
++  EXPECT_EQ(1u, hub->disable_count_for_testing());
++}
++
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       LaggingConsumerAloneRequiresBaselineAtHistoryCap) {
++  SupervisionLimits limits;
++  limits.retained_batches = 1;
++  auto hub = CreateHub(limits);
++  const auto [lagging, current] = AttachTwo(*hub);
++  CompleteAndAckBaseline(*hub, lagging, current);
++
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  capture_source_.CompleteNext(MakeBaseline("change-one"));
++  const auto current_first = hub->ReadNext(current);
++  ASSERT_TRUE(current_first.has_value());
++  ASSERT_TRUE(hub->Ack(current, current_first->stamp));
++
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  capture_source_.CompleteNext(MakeBaseline("change-two"));
++
++  EXPECT_TRUE(hub->ConsumerNeedsBaseline(lagging));
++  EXPECT_FALSE(hub->ConsumerNeedsBaseline(current));
++  ASSERT_TRUE(hub->ReadNext(current).has_value());
++  EXPECT_FALSE(hub->ReadNext(lagging).has_value());
++}
++
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       OverflowForcesFreshBaselineWithoutPartialDiff) {
++  auto hub = CreateHub();
++  const auto [first, second] = AttachTwo(*hub);
++  CompleteAndAckBaseline(*hub, first, second);
++
++  hub->NotifyDirtyForTesting(/*overflow=*/true);
++  capture_source_.CompleteNext(MakeBaseline("overflow replacement"));
++
++  EXPECT_TRUE(hub->ConsumerNeedsBaseline(first));
++  EXPECT_TRUE(hub->ConsumerNeedsBaseline(second));
++  EXPECT_EQ(0u, hub->retained_batch_count_for_testing());
++  EXPECT_TRUE(hub->ReadBaseline(first).has_value());
++  EXPECT_TRUE(hub->ReadBaseline(second).has_value());
++}
++
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       IdenticalCaptureEmitsNoSequenceOrBatch) {
++  auto hub = CreateHub();
++  const auto [first, second] = AttachTwo(*hub);
++  CompleteAndAckBaseline(*hub, first, second, "same");
++
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  capture_source_.CompleteNext(MakeBaseline("same"));
++
++  EXPECT_FALSE(hub->ReadNext(first).has_value());
++  EXPECT_FALSE(hub->ReadNext(second).has_value());
++  EXPECT_EQ(0u, hub->retained_batch_count_for_testing());
++}
++
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       LastDetachDisablesAndReleasesSharedHistory) {
++  auto hub = CreateHub();
++  const auto [first, second] = AttachTwo(*hub);
++  CompleteAndAckBaseline(*hub, first, second);
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  capture_source_.CompleteNext(MakeBaseline("changed"));
++  ASSERT_EQ(1u, hub->retained_batch_count_for_testing());
++
++  EXPECT_TRUE(hub->DetachConsumer(first));
++  EXPECT_EQ(0u, hub->disable_count_for_testing());
++  EXPECT_TRUE(hub->DetachConsumer(second));
++  EXPECT_EQ(1u, hub->disable_count_for_testing());
++  EXPECT_EQ(0u, hub->retained_batch_count_for_testing());
++  EXPECT_EQ(0u, hub->retained_bytes_for_testing());
++}
++
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       DocumentReplacementRotatesEpochAndRejectsStaleCapture) {
++  auto hub = CreateHub();
++  const auto [first, second] = AttachTwo(*hub);
++  ASSERT_EQ(1u, capture_source_.pending_count());
++
++  hub->ReplaceDocumentForTesting();
++  EXPECT_EQ(2u, capture_source_.pending_count());
++  capture_source_.CompleteNext(MakeBaseline("stale"));
++  EXPECT_FALSE(hub->ReadBaseline(first).has_value());
++  capture_source_.CompleteNext(MakeBaseline("current"));
++
++  const auto first_baseline = hub->ReadBaseline(first);
++  const auto second_baseline = hub->ReadBaseline(second);
++  ASSERT_TRUE(first_baseline.has_value());
++  ASSERT_TRUE(second_baseline.has_value());
++  EXPECT_EQ(first_baseline->stamp.document_epoch,
++            second_baseline->stamp.document_epoch);
++  EXPECT_EQ(2u, hub->enable_count_for_testing());
++  EXPECT_EQ(1u, hub->disable_count_for_testing());
++}
++
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       RendererDisconnectRequiresBaselineAndRebindsOnce) {
++  auto hub = CreateHub();
++  const auto [first, second] = AttachTwo(*hub);
++  CompleteAndAckBaseline(*hub, first, second);
++
++  hub->DisconnectRendererForTesting();
++  EXPECT_TRUE(hub->ConsumerNeedsBaseline(first));
++  EXPECT_TRUE(hub->ConsumerNeedsBaseline(second));
++  EXPECT_EQ(2u, hub->enable_count_for_testing());
++  EXPECT_EQ(1u, hub->disable_count_for_testing());
++  EXPECT_EQ(1u, capture_source_.pending_count());
++}
++
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       WrongSessionTargetEpochOrSequenceAcksFailConsumerLocal) {
++  auto hub = CreateHub();
++  const auto [first, second] = AttachTwo(*hub);
++  capture_source_.CompleteNext(MakeBaseline("initial"));
++  const auto first_baseline = hub->ReadBaseline(first);
++  const auto second_baseline = hub->ReadBaseline(second);
++  ASSERT_TRUE(first_baseline.has_value());
++  ASSERT_TRUE(second_baseline.has_value());
++
++  SupervisionStreamStamp stale = first_baseline->stamp;
++  stale.session = base::UnguessableToken::Create();
++  EXPECT_FALSE(hub->Ack(first, stale));
++  EXPECT_TRUE(hub->ConsumerNeedsBaseline(first));
++  EXPECT_FALSE(hub->Ack(first, first_baseline->stamp));
++  EXPECT_TRUE(hub->Ack(second, second_baseline->stamp));
++  EXPECT_FALSE(hub->ConsumerNeedsBaseline(second));
++}
++
++TEST_F(PrometheusSupervisionCaptureHubTest,
++       ConsumerAdmissionIsBoundedWithoutExtraEnableOrCapture) {
++  SupervisionLimits limits;
++  limits.viewers_per_tab = 2;
++  auto hub = CreateHub(limits);
++
++  EXPECT_TRUE(hub->AttachConsumer(SupervisionCaptureConsumerKind::kDashboard,
++                                  now_ + base::Minutes(1))
++                  .has_value());
++  EXPECT_TRUE(hub->AttachConsumer(
++                      SupervisionCaptureConsumerKind::kAgentCompatibility,
++                      now_ + base::Minutes(1))
++                  .has_value());
++  EXPECT_FALSE(hub->AttachConsumer(
++                       SupervisionCaptureConsumerKind::kDashboard,
++                       now_ + base::Minutes(1))
++                   .has_value());
++  EXPECT_EQ(1u, hub->enable_count_for_testing());
++  EXPECT_EQ(1u, hub->capture_count_for_testing());
++}
++
++}  // namespace
++}  // namespace prometheus
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 491bda20df..ea0b3e210e 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -83,6 +83,7 @@ source_set("browser_tests") {
+     "../../../prometheus/prometheus_agent_service_browsertest.cc",
+     "../../../prometheus/prometheus_mcp_integration_browsertest.cc",
+     "../../../prometheus/prometheus_page_adapter_browsertest.cc",
++    "../../../prometheus/prometheus_supervision_capture_hub_browsertest.cc",
+     "../../../prometheus/prometheus_tab_commands_browsertest.cc",
+     "../../../prometheus/prometheus_vault_confirmation_browsertest.cc",
+     "../../webui/prometheus/prometheus_web_ui_browsertest.cc",
+@@ -111,6 +112,7 @@ source_set("browser_tests") {
+     "//chrome/browser/prometheus:prometheus_runtime_profile_service",
+     "//chrome/browser/prometheus:prometheus_runtime_transport_codec",
+     "//chrome/browser/prometheus:prometheus_secret_store",
++    "//chrome/browser/prometheus:prometheus_supervision_capture_hub",
+     "//chrome/browser/prometheus:prometheus_tab_commands",
+     "//chrome/browser/prometheus:prometheus_vault_service",
+     "//chrome/browser/themes",
+-- 
+2.50.1 (Apple Git-155)
+

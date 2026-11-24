@@ -1,0 +1,269 @@
+From cba6d36ddd44e159fa926b48f409a96b79ea7a7c Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 29 Jul 2026 07:38:18 -0500
+Subject: [PATCH] test(22-03): retain live extension health RED gate
+
+---
+ .../prometheus/prometheus_agent_gateway.h     |   2 +
+ .../prometheus_agent_gateway_browsertest.cc   |  73 ++++++++++
+ .../prometheus_agent_gateway_unittest.cc      | 126 ++++++++++++++++++
+ 3 files changed, 201 insertions(+)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.h b/chrome/browser/prometheus/prometheus_agent_gateway.h
+index fd8b878a20..84a09ae74a 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.h
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.h
+@@ -22,6 +22,7 @@
+ #include "base/time/time.h"
+ #include "chrome/browser/prometheus/prometheus_agent_gateway_contract.h"
+ #include "chrome/browser/prometheus/prometheus_agent_route.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_types.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_transport_codec.h"
+ #include "net/base/ip_endpoint.h"
+ 
+@@ -40,6 +41,7 @@ struct RuntimeGatewayHealthState {
+   std::string provider_next_action;
+   std::string vault_reason;
+   std::string vault_next_action;
++  ExtensionPolicyHealth extension_health;
+ };
+ 
+ using RuntimeGatewayDispatchCallback = base::RepeatingCallback<
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+index c81f683893..9fa2622728 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+@@ -39,6 +39,8 @@
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_browser_main_extra_parts.h"
+ #include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_service.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"
+@@ -793,6 +795,77 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+   EXPECT_EQ("not_ready", read_status(absent, "extensions"));
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
++                       ExtensionHealthIsLiveBoundedAndInventoryFree) {
++  PrometheusExtensionPolicyService* const service =
++      PrometheusExtensionPolicyServiceFactory::GetForProfile(
++          browser()->profile());
++  ASSERT_TRUE(service);
++  service->SetInventoryForTesting({ExtensionPolicyInventoryEntry{
++      .extension_id = "abcdefghijklmnopabcdefghijklmnop",
++      .name = "Installed extension inventory sentinel",
++      .source = ExtensionPolicySource::kUnpacked,
++      .enabled = true,
++      .ready = true,
++      .manifest_version = 3,
++      .native_private_eligible = true,
++      .browser_context = browser()->profile(),
++  }});
++
++  auto expect_extension_health = [&](std::string_view expected_status,
++                                     std::string_view expected_reason) {
++    HttpResult response = Authorized("GET", "/v1/health", "");
++    ASSERT_EQ(200, response.status);
++    auto root = base::JSONReader::ReadDict(response.body, base::JSON_PARSE_RFC);
++    ASSERT_TRUE(root.has_value()) << response.body;
++    const base::ListValue* diagnostics = root->FindList("diagnostics");
++    ASSERT_TRUE(diagnostics);
++    ASSERT_EQ(10u, diagnostics->size());
++    constexpr std::array<std::string_view, 10> kExpectedKeys = {
++        "browser",          "bridge",        "active_tab", "content_adapter",
++        "internal_adapter", "webui_adapter", "vault",      "provider",
++        "supervision",      "extensions"};
++    std::set<std::string> unique_keys;
++    for (size_t index = 0; index < diagnostics->size(); ++index) {
++      const base::DictValue* component = (*diagnostics)[index].GetIfDict();
++      ASSERT_TRUE(component);
++      const std::string* key = component->FindString("key");
++      ASSERT_TRUE(key);
++      EXPECT_EQ(kExpectedKeys[index], *key);
++      EXPECT_TRUE(unique_keys.insert(*key).second);
++    }
++
++    const base::DictValue* extension = diagnostics->back().GetIfDict();
++    ASSERT_TRUE(extension);
++    const std::string* status = extension->FindString("status");
++    const std::string* reason = extension->FindString("reason");
++    const std::string* recovery = extension->FindString("next_action");
++    ASSERT_TRUE(status);
++    ASSERT_TRUE(reason);
++    ASSERT_TRUE(recovery);
++    EXPECT_EQ(expected_status, *status);
++    EXPECT_EQ(expected_reason, *reason);
++    EXPECT_LE(reason->size(), kMaxExtensionPolicyReasonBytes);
++    EXPECT_LE(recovery->size(), kMaxExtensionPolicyRecoveryBytes);
++    for (std::string_view sentinel :
++         {"abcdefghijklmnopabcdefghijklmnop",
++          "Installed extension inventory sentinel", "manifest_permissions",
++          "https://private-origin.example", "page-content-sentinel",
++          "form-value-sentinel", "script-source-sentinel",
++          "/Users/private/profile", "browser-session-sentinel",
++          "bearer-authority-sentinel", "Interact"}) {
++      EXPECT_EQ(std::string::npos, response.body.find(sentinel)) << sentinel;
++    }
++  };
++
++  service->SetSystemReadyForTesting(true);
++  expect_extension_health("ready", "extension_policy_ready");
++  service->SetSystemReadyForTesting(false);
++  expect_extension_health("degraded", "extension_system_not_ready");
++  service->Shutdown();
++  expect_extension_health("unavailable", "extension_policy_unavailable");
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+                        RejectsHostOriginMethodPathContentBodyAndMalformedJson) {
+   const int port = gateway_->port_for_testing();
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+index 55bfae4c49..563d587d49 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+@@ -8,6 +8,7 @@
+ #include <array>
+ #include <map>
+ #include <optional>
++#include <set>
+ #include <string>
+ #include <string_view>
+ #include <utility>
+@@ -1289,6 +1290,131 @@ TEST(PrometheusAgentGatewayTest,
+   }
+ }
+ 
++TEST(PrometheusGatewayHealthTest,
++     LiveExtensionStateIsOrderedBoundedAndInventoryFree) {
++  constexpr std::array<std::string_view, 10> kExpectedKeys = {
++      "browser",          "bridge",        "active_tab", "content_adapter",
++      "internal_adapter", "webui_adapter", "vault",      "provider",
++      "supervision",      "extensions"};
++  struct ExtensionHealthCase {
++    ExtensionPolicyHealthStatus input_status;
++    AgentDiagnosticStatus expected_status;
++    std::string_view reason;
++    std::string_view recovery;
++  };
++  constexpr std::array<ExtensionHealthCase, 3> kCases = {{
++      {
++          .input_status = ExtensionPolicyHealthStatus::kReady,
++          .expected_status = AgentDiagnosticStatus::kReady,
++          .reason = "extension_policy_ready",
++          .recovery = "No recovery action is required.",
++      },
++      {
++          .input_status = ExtensionPolicyHealthStatus::kDegraded,
++          .expected_status = AgentDiagnosticStatus::kDegraded,
++          .reason = "extension_system_not_ready",
++          .recovery = "Wait for extension startup and try again.",
++      },
++      {
++          .input_status = ExtensionPolicyHealthStatus::kUnavailable,
++          .expected_status = AgentDiagnosticStatus::kUnavailable,
++          .reason = "extension_policy_unavailable",
++          .recovery = "Open Extension policy and try again.",
++      },
++  }};
++
++  for (const ExtensionHealthCase& test_case : kCases) {
++    SCOPED_TRACE(test_case.reason);
++    RuntimeGatewayHealthState runtime_health;
++    runtime_health.extension_health = ExtensionPolicyHealth{
++        test_case.input_status,
++        std::string(test_case.reason),
++        std::string(test_case.recovery),
++    };
++    AgentRouteResult result = BuildPrometheusGatewayHealthForTesting(
++        /*active_regular=*/true, runtime_health);
++    ASSERT_TRUE(result.ok);
++    ASSERT_EQ(kExpectedKeys.size(), result.diagnostics.size());
++
++    std::vector<std::string_view> actual_keys;
++    actual_keys.reserve(result.diagnostics.size());
++    for (const AgentDiagnosticComponent& component : result.diagnostics) {
++      actual_keys.push_back(component.key);
++    }
++    EXPECT_TRUE(std::ranges::equal(actual_keys, kExpectedKeys));
++    EXPECT_EQ(actual_keys.size(),
++              std::set<std::string_view>(actual_keys.begin(), actual_keys.end())
++                  .size());
++
++    const AgentDiagnosticComponent& extension = result.diagnostics.back();
++    ASSERT_EQ("extensions", extension.key);
++    EXPECT_EQ(test_case.expected_status, extension.status);
++    EXPECT_EQ(test_case.reason, extension.reason);
++    EXPECT_EQ(test_case.recovery, extension.next_action);
++    EXPECT_LE(extension.reason.size(), kMaxExtensionPolicyReasonBytes);
++    EXPECT_LE(extension.next_action.size(), kMaxExtensionPolicyRecoveryBytes);
++
++    auto serialized = SerializeAgentTransportResult(result);
++    ASSERT_TRUE(serialized.has_value());
++    auto parsed = base::JSONReader::Read(*serialized, base::JSON_PARSE_RFC);
++    ASSERT_TRUE(parsed.has_value());
++    for (std::string_view sentinel :
++         {"abcdefghijklmnopabcdefghijklmnop",
++          "Installed extension inventory sentinel", "manifest_permissions",
++          "https://private-origin.example", "page-content-sentinel",
++          "form-value-sentinel", "script-source-sentinel",
++          "/Users/private/profile", "browser-session-sentinel",
++          "bearer-authority-sentinel", "Interact"}) {
++      EXPECT_FALSE(ContainsStringRecursively(*parsed, sentinel)) << sentinel;
++    }
++  }
++
++  RuntimeGatewayHealthState bounded;
++  bounded.extension_health = ExtensionPolicyHealth{
++      ExtensionPolicyHealthStatus::kReady,
++      std::string(kMaxExtensionPolicyReasonBytes, 'r'),
++      std::string(kMaxExtensionPolicyRecoveryBytes, 'x'),
++  };
++  AgentRouteResult at_limit = BuildPrometheusGatewayHealthForTesting(
++      /*active_regular=*/true, bounded);
++  ASSERT_EQ(10u, at_limit.diagnostics.size());
++  EXPECT_EQ(bounded.extension_health.reason,
++            at_limit.diagnostics.back().reason);
++  EXPECT_EQ(bounded.extension_health.recovery,
++            at_limit.diagnostics.back().next_action);
++
++  bounded.extension_health.reason.push_back('r');
++  bounded.extension_health.recovery.push_back('x');
++  AgentRouteResult over_limit = BuildPrometheusGatewayHealthForTesting(
++      /*active_regular=*/true, bounded);
++  ASSERT_EQ(10u, over_limit.diagnostics.size());
++  EXPECT_LE(over_limit.diagnostics.back().reason.size(),
++            kMaxExtensionPolicyReasonBytes);
++  EXPECT_LE(over_limit.diagnostics.back().next_action.size(),
++            kMaxExtensionPolicyRecoveryBytes);
++
++  bounded.extension_health = ExtensionPolicyHealth{
++      static_cast<ExtensionPolicyHealthStatus>(255),
++      "Bearer bearer-authority-sentinel",
++      "Reveal extension id abcdefghijklmnopabcdefghijklmnop",
++  };
++  AgentRouteResult malformed = BuildPrometheusGatewayHealthForTesting(
++      /*active_regular=*/true, bounded);
++  ASSERT_EQ(10u, malformed.diagnostics.size());
++  EXPECT_EQ(AgentDiagnosticStatus::kUnavailable,
++            malformed.diagnostics.back().status);
++  EXPECT_EQ(kExtensionPolicyReasonFallback,
++            malformed.diagnostics.back().reason);
++  EXPECT_EQ(kExtensionPolicyRecoveryFallback,
++            malformed.diagnostics.back().next_action);
++  auto malformed_serialized = SerializeAgentTransportResult(malformed);
++  ASSERT_TRUE(malformed_serialized.has_value());
++  EXPECT_EQ(std::string::npos,
++            malformed_serialized->find("bearer-authority-sentinel"));
++  EXPECT_EQ(std::string::npos,
++            malformed_serialized->find("abcdefghijklmnopabcdefghijklmnop"));
++}
++
+ TEST(PrometheusAgentGatewayTest,
+      LiveRuntimeHealthDecisionMatrixIsClosedAndContentFree) {
+   struct HealthCase {
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,364 @@
+From 35edc573cb52104e86541a47c792b0bf7976a974 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sun, 12 Jul 2026 21:16:38 -0500
+Subject: [PATCH 07/19] feat(19-03): add profile-keyed Prometheus agent service
+
+- own sessions and route authority per regular profile
+- sweep expired sessions before every lifecycle and dispatch operation
+- pin browser routing to the service profile and reject OTR authority
+---
+ chrome/browser/prometheus/BUILD.gn            |  19 ++++
+ .../prometheus_agent_profile_service.cc       | 102 ++++++++++++++++++
+ .../prometheus_agent_profile_service.h        |  55 ++++++++++
+ ...theus_agent_profile_service_browsertest.cc |   6 ++
+ ...rometheus_agent_profile_service_factory.cc |  54 ++++++++++
+ ...prometheus_agent_profile_service_factory.h |  45 ++++++++
+ chrome/browser/ui/views/prometheus/BUILD.gn   |   1 +
+ 7 files changed, 282 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_profile_service.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_profile_service.h
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_profile_service_factory.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_profile_service_factory.h
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 4d3f084e3e..0ad900c7db 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -217,6 +217,25 @@ source_set("prometheus_agent_service") {
+   ]
+ }
+ 
++source_set("prometheus_agent_profile_service") {
++  sources = [
++    "prometheus_agent_profile_service.cc",
++    "prometheus_agent_profile_service.h",
++    "prometheus_agent_profile_service_factory.cc",
++    "prometheus_agent_profile_service_factory.h",
++  ]
++
++  deps = [
++    ":prometheus_agent_service",
++    ":prometheus_agent_session",
++    "//base",
++    "//chrome/browser/profiles",
++    "//chrome/browser/ui/browser_window",
++    "//components/keyed_service/core",
++    "//content/public/browser",
++  ]
++}
++
+ test("prometheus_unittests") {
+   sources = [
+     "prometheus_action_unittest.cc",
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.cc b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+new file mode 100644
+index 0000000000..b3102afe9a
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+@@ -0,0 +1,102 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
++
++#include <utility>
++
++#include "base/check.h"
++#include "base/functional/bind.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
++
++namespace prometheus {
++
++namespace {
++
++AgentRouteResult MissingBrowserResult() {
++  return AgentRouteResult::Failure(
++      AgentErrorCode::kInvalidTarget,
++      "No live tabbed browser is available for the agent profile",
++      "Open a browser window for this profile and retry");
++}
++
++}  // namespace
++
++PrometheusAgentProfileService::PrometheusAgentProfileService(Profile* profile)
++    : profile_(profile),
++      sessions_(kDefaultMaxAgentSessions, kAgentReconnectGrace),
++      agent_service_(&sessions_,
++                     base::BindRepeating(&PrometheusAgentProfileService::Now,
++                                         base::Unretained(this))),
++      now_callback_(base::BindRepeating(&base::Time::Now)) {
++  CHECK(profile_);
++  CHECK(!profile_->IsOffTheRecord());
++}
++
++PrometheusAgentProfileService::~PrometheusAgentProfileService() = default;
++
++AgentSessionResult PrometheusAgentProfileService::CreateSession(
++    std::string display_label) {
++  SweepExpiredSessions();
++  return agent_service_.CreateSession(std::move(display_label));
++}
++
++AgentSessionResult PrometheusAgentProfileService::ResumeSession(
++    std::string_view session_id) {
++  SweepExpiredSessions();
++  return sessions_.ResumeSession(session_id, Now());
++}
++
++AgentRouteResult PrometheusAgentProfileService::TouchSession(
++    std::string_view session_id) {
++  SweepExpiredSessions();
++  return sessions_.TouchSession(session_id, Now());
++}
++
++AgentRouteResult PrometheusAgentProfileService::CloseSession(
++    std::string_view session_id) {
++  SweepExpiredSessions();
++  return agent_service_.CloseSession(session_id);
++}
++
++void PrometheusAgentProfileService::ExecuteRoute(
++    const AgentRouteRequest& request,
++    PrometheusAgentService::RouteCallback callback) {
++  SweepExpiredSessions();
++  ProfileBrowserCollection* const browsers =
++      ProfileBrowserCollection::GetForProfile(profile_);
++  BrowserWindowInterface* const browser =
++      browsers ? browsers->FindTabbedBrowser(/*match_original_profiles=*/false)
++               : nullptr;
++  if (!browser) {
++    std::move(callback).Run(MissingBrowserResult());
++    return;
++  }
++  agent_service_.ExecuteRoute(browser, request, std::move(callback));
++}
++
++void PrometheusAgentProfileService::SetNowCallbackForTesting(
++    NowCallback now_callback) {
++  CHECK(now_callback);
++  now_callback_ = std::move(now_callback);
++}
++
++void PrometheusAgentProfileService::SetMaxAgentSessionsForTesting(
++    size_t max_active_sessions) {
++  sessions_.set_max_active_sessions_for_testing(max_active_sessions);
++}
++
++base::Time PrometheusAgentProfileService::Now() const {
++  return now_callback_.Run();
++}
++
++void PrometheusAgentProfileService::SweepExpiredSessions() {
++  for (const std::string& session_id : sessions_.ExpireSessions(Now())) {
++    agent_service_.ReleaseSessionOwnership(session_id);
++  }
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.h b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+new file mode 100644
+index 0000000000..879ec931ba
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+@@ -0,0 +1,55 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_PROFILE_SERVICE_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_PROFILE_SERVICE_H_
++
++#include <string>
++#include <string_view>
++
++#include "base/functional/callback.h"
++#include "base/memory/raw_ptr.h"
++#include "base/time/time.h"
++#include "chrome/browser/prometheus/prometheus_agent_service.h"
++#include "chrome/browser/prometheus/prometheus_agent_session.h"
++#include "components/keyed_service/core/keyed_service.h"
++
++class Profile;
++
++namespace prometheus {
++
++// Owns the browser-process agent authority for exactly one regular profile.
++class PrometheusAgentProfileService : public KeyedService {
++ public:
++  using NowCallback = base::RepeatingCallback<base::Time()>;
++
++  explicit PrometheusAgentProfileService(Profile* profile);
++  PrometheusAgentProfileService(const PrometheusAgentProfileService&) = delete;
++  PrometheusAgentProfileService& operator=(
++      const PrometheusAgentProfileService&) = delete;
++  ~PrometheusAgentProfileService() override;
++
++  AgentSessionResult CreateSession(std::string display_label);
++  AgentSessionResult ResumeSession(std::string_view session_id);
++  AgentRouteResult TouchSession(std::string_view session_id);
++  AgentRouteResult CloseSession(std::string_view session_id);
++  void ExecuteRoute(const AgentRouteRequest& request,
++                    PrometheusAgentService::RouteCallback callback);
++
++  void SetNowCallbackForTesting(NowCallback now_callback);
++  void SetMaxAgentSessionsForTesting(size_t max_active_sessions);
++
++ private:
++  base::Time Now() const;
++  void SweepExpiredSessions();
++
++  raw_ptr<Profile> profile_;
++  AgentSessionRegistry sessions_;
++  PrometheusAgentService agent_service_;
++  NowCallback now_callback_;
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_PROFILE_SERVICE_H_
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_profile_service_browsertest.cc
+index 0229e8f3b0..c7cc81ecea 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service_browsertest.cc
+@@ -46,6 +46,12 @@ AgentTarget TargetFor(Browser* browser, tabs::TabInterface* tab) {
+ 
+ class PrometheusAgentProfileServiceBrowserTest : public InProcessBrowserTest {
+  public:
++  PrometheusAgentProfileServiceBrowserTest() {
++    // Production startup registers this factory globally. This test-only
++    // target must register it before InProcessBrowserTest starts profiles.
++    PrometheusAgentProfileServiceFactory::GetInstance();
++  }
++
+   PrometheusAgentProfileService* service(Profile* profile) {
+     return PrometheusAgentProfileServiceFactory::GetForProfile(profile);
+   }
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service_factory.cc b/chrome/browser/prometheus/prometheus_agent_profile_service_factory.cc
+new file mode 100644
+index 0000000000..dee7f97099
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service_factory.cc
+@@ -0,0 +1,54 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
++
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
++#include "content/public/browser/browser_context.h"
++
++namespace prometheus {
++
++// static
++PrometheusAgentProfileService*
++PrometheusAgentProfileServiceFactory::GetForProfile(Profile* profile) {
++  if (!profile || profile->IsOffTheRecord()) {
++    return nullptr;
++  }
++  return static_cast<PrometheusAgentProfileService*>(
++      GetInstance()->GetServiceForBrowserContext(profile, /*create=*/true));
++}
++
++// static
++PrometheusAgentProfileServiceFactory*
++PrometheusAgentProfileServiceFactory::GetInstance() {
++  static base::NoDestructor<PrometheusAgentProfileServiceFactory> factory{
++      base::PassKey<PrometheusAgentProfileServiceFactory>()};
++  return factory.get();
++}
++
++PrometheusAgentProfileServiceFactory::PrometheusAgentProfileServiceFactory(
++    base::PassKey<PrometheusAgentProfileServiceFactory>)
++    : ProfileKeyedServiceFactory("PrometheusAgentProfileService",
++                                 ProfileSelections::BuildForRegularProfile()) {}
++
++PrometheusAgentProfileServiceFactory::~PrometheusAgentProfileServiceFactory() =
++    default;
++
++bool PrometheusAgentProfileServiceFactory::ServiceIsCreatedWithBrowserContext()
++    const {
++  return true;
++}
++
++std::unique_ptr<KeyedService>
++PrometheusAgentProfileServiceFactory::BuildServiceInstanceForBrowserContext(
++    content::BrowserContext* context) const {
++  Profile* const profile = Profile::FromBrowserContext(context);
++  if (!profile || profile->IsOffTheRecord()) {
++    return nullptr;
++  }
++  return std::make_unique<PrometheusAgentProfileService>(profile);
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service_factory.h b/chrome/browser/prometheus/prometheus_agent_profile_service_factory.h
+new file mode 100644
+index 0000000000..6fb7b1584c
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service_factory.h
+@@ -0,0 +1,45 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_PROFILE_SERVICE_FACTORY_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_PROFILE_SERVICE_FACTORY_H_
++
++#include "base/no_destructor.h"
++#include "base/types/pass_key.h"
++#include "chrome/browser/profiles/profile_keyed_service_factory.h"
++
++class Profile;
++
++namespace content {
++class BrowserContext;
++}
++
++namespace prometheus {
++
++class PrometheusAgentProfileService;
++
++class PrometheusAgentProfileServiceFactory : public ProfileKeyedServiceFactory {
++ public:
++  explicit PrometheusAgentProfileServiceFactory(
++      base::PassKey<PrometheusAgentProfileServiceFactory>);
++
++  static PrometheusAgentProfileServiceFactory* GetInstance();
++  static PrometheusAgentProfileService* GetForProfile(Profile* profile);
++
++  PrometheusAgentProfileServiceFactory(
++      const PrometheusAgentProfileServiceFactory&) = delete;
++  PrometheusAgentProfileServiceFactory& operator=(
++      const PrometheusAgentProfileServiceFactory&) = delete;
++
++  bool ServiceIsCreatedWithBrowserContext() const override;
++  std::unique_ptr<KeyedService> BuildServiceInstanceForBrowserContext(
++      content::BrowserContext* context) const override;
++
++ private:
++  ~PrometheusAgentProfileServiceFactory() override;
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_PROFILE_SERVICE_FACTORY_H_
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index dd526d35f4..857fa24d92 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -74,6 +74,7 @@ source_set("browser_tests") {
+     "//chrome/browser/prometheus:prometheus_agent_tab_data",
+     "//chrome/browser/prometheus:prometheus_chrome_mode",
+     "//chrome/browser/prometheus:prometheus_tab_commands",
++    "//chrome/browser/profiles:test_support",
+     "//chrome/browser/themes",
+     "//chrome/browser/ui",
+     "//chrome/browser/ui/browser_window",
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,844 @@
+From 914ee49be9ccaec83cfd02c29aae95d3b0d5c4a7 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 12:19:03 -0500
+Subject: [PATCH] test(21-21): freeze supervision lifecycle boundaries
+
+---
+ .../prometheus_side_panel_runtime.cc          |  30 +
+ .../prometheus_side_panel_runtime.h           |  10 +
+ .../ui/webui/prometheus/prometheus_web_ui.cc  | 176 ++++++
+ .../ui/webui/prometheus/prometheus_web_ui.h   |   5 +
+ .../prometheus_web_ui_browsertest.cc          | 531 ++++++++++++++++++
+ 5 files changed, 752 insertions(+)
+
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+index a070fb269d..ab89dd002b 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+@@ -290,6 +290,36 @@ PrometheusControlPanelRuntime::CancelSupervisionPairingPresentation(
+   return UnavailableControlSupervisionOperation();
+ }
+ 
++PrometheusControlSupervisionOperationResult
++PrometheusControlPanelRuntime::EnableSupervisionControl(size_t ordinal) {
++  (void)ordinal;
++  return UnavailableControlSupervisionOperation();
++}
++
++PrometheusControlSupervisionOperationResult
++PrometheusControlPanelRuntime::StopSupervisionControl(size_t ordinal) {
++  (void)ordinal;
++  return UnavailableControlSupervisionOperation();
++}
++
++PrometheusControlSupervisionOperationResult
++PrometheusControlPanelRuntime::RevokeSupervisionSession(size_t ordinal) {
++  (void)ordinal;
++  return UnavailableControlSupervisionOperation();
++}
++
++PrometheusControlSupervisionOperationResult
++PrometheusControlPanelRuntime::EndTargetSupervision(size_t ordinal) {
++  (void)ordinal;
++  return UnavailableControlSupervisionOperation();
++}
++
++PrometheusControlSupervisionOperationResult
++PrometheusControlPanelRuntime::RetrySupervisionBaseline(size_t ordinal) {
++  (void)ordinal;
++  return UnavailableControlSupervisionOperation();
++}
++
+ void SetPrometheusSidePanelRuntimeFactory(
+     PrometheusSidePanelRuntimeFactory factory) {
+   RuntimeFactory() = std::move(factory);
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+index fd70525c23..85f943ebc2 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+@@ -294,6 +294,16 @@ class PrometheusControlPanelRuntime {
+       size_t ordinal);
+   virtual PrometheusControlSupervisionOperationResult
+   CancelSupervisionPairingPresentation(size_t ordinal);
++  virtual PrometheusControlSupervisionOperationResult EnableSupervisionControl(
++      size_t ordinal);
++  virtual PrometheusControlSupervisionOperationResult StopSupervisionControl(
++      size_t ordinal);
++  virtual PrometheusControlSupervisionOperationResult RevokeSupervisionSession(
++      size_t ordinal);
++  virtual PrometheusControlSupervisionOperationResult EndTargetSupervision(
++      size_t ordinal);
++  virtual PrometheusControlSupervisionOperationResult RetrySupervisionBaseline(
++      size_t ordinal);
+ };
+ 
+ using PrometheusControlPanelRuntimeFactory =
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index cd5ef83b98..b07b0424b6 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -262,6 +262,31 @@ class PrometheusControlMessageHandler : public content::WebUIMessageHandler {
+             &PrometheusControlMessageHandler::
+                 HandleCancelSupervisionPairingPresentation,
+             base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlEnableSupervisionControl",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleEnableSupervisionControl,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlStopSupervisionControl",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleStopSupervisionControl,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlRevokeSupervisionSession",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleRevokeSupervisionSession,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlEndTargetSupervision",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleEndTargetSupervision,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlRetrySupervisionBaseline",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleRetrySupervisionBaseline,
++            base::Unretained(this)));
+   }
+ 
+   void Reject(std::string recovery) {
+@@ -752,6 +777,102 @@ class PrometheusControlMessageHandler : public content::WebUIMessageHandler {
+     owner_->HandleControlCancelSupervisionPairingPresentationForWebUI(*ordinal);
+   }
+ 
++  std::optional<size_t> ParseSupervisionConnectedOrdinal(
++      const base::ListValue& args) const {
++    const std::optional<int> ordinal =
++        args.size() == 1u ? args[0].GetIfInt() : std::nullopt;
++    if (!ordinal || *ordinal < 0 ||
++        *ordinal >=
++            static_cast<int>(prometheus::kMaxControlSupervisionConnectedRows)) {
++      return std::nullopt;
++    }
++    return static_cast<size_t>(*ordinal);
++  }
++
++  std::optional<size_t> ParseConfirmedSupervisionOrdinal(
++      const base::ListValue& args,
++      size_t maximum) const {
++    const std::optional<int> ordinal =
++        args.size() == 2u ? args[0].GetIfInt() : std::nullopt;
++    const std::optional<bool> confirmed =
++        args.size() == 2u ? args[1].GetIfBool() : std::nullopt;
++    if (!ordinal || !confirmed || !*confirmed || *ordinal < 0 ||
++        static_cast<size_t>(*ordinal) >= maximum) {
++      return std::nullopt;
++    }
++    return static_cast<size_t>(*ordinal);
++  }
++
++  void HandleEnableSupervisionControl(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    const std::optional<size_t> ordinal =
++        ParseSupervisionConnectedOrdinal(args);
++    if (!ordinal) {
++      Reject("Refresh the dashboard list before enabling control");
++      return;
++    }
++    owner_->HandleControlEnableSupervisionControlForWebUI(*ordinal);
++  }
++
++  void HandleStopSupervisionControl(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    const std::optional<size_t> ordinal =
++        ParseSupervisionConnectedOrdinal(args);
++    if (!ordinal) {
++      Reject("Refresh the dashboard list before stopping control");
++      return;
++    }
++    owner_->HandleControlStopSupervisionControlForWebUI(*ordinal);
++  }
++
++  void HandleRevokeSupervisionSession(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    const std::optional<size_t> ordinal = ParseConfirmedSupervisionOrdinal(
++        args, prometheus::kMaxControlSupervisionConnectedRows);
++    if (!ordinal) {
++      Reject("Confirm access revocation from a fresh dashboard row");
++      return;
++    }
++    owner_->HandleControlRevokeSupervisionSessionForWebUI(*ordinal);
++  }
++
++  void HandleEndTargetSupervision(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    const std::optional<size_t> ordinal = ParseConfirmedSupervisionOrdinal(
++        args, prometheus::kMaxControlSupervisionTargets);
++    if (!ordinal) {
++      Reject("Confirm ending supervision from a fresh target row");
++      return;
++    }
++    owner_->HandleControlEndTargetSupervisionForWebUI(*ordinal);
++  }
++
++  void HandleRetrySupervisionBaseline(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    const std::optional<size_t> ordinal =
++        ParseSupervisionConnectedOrdinal(args);
++    if (!ordinal) {
++      Reject("Refresh the dashboard list before retrying supervision");
++      return;
++    }
++    owner_->HandleControlRetrySupervisionBaselineForWebUI(*ordinal);
++  }
++
+   base::WeakPtr<PrometheusControlPanelUI> owner_;
+ };
+ 
+@@ -1419,6 +1540,61 @@ void PrometheusControlPanelUI::
+   SendFreshControlSnapshot();
+ }
+ 
++void PrometheusControlPanelUI::HandleControlEnableSupervisionControlForWebUI(
++    size_t ordinal) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? prometheus::ControlSupervisionOperationValue(
++                control_runtime_->EnableSupervisionControl(ordinal))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlStopSupervisionControlForWebUI(
++    size_t ordinal) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? prometheus::ControlSupervisionOperationValue(
++                control_runtime_->StopSupervisionControl(ordinal))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlRevokeSupervisionSessionForWebUI(
++    size_t ordinal) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? prometheus::ControlSupervisionOperationValue(
++                control_runtime_->RevokeSupervisionSession(ordinal))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlEndTargetSupervisionForWebUI(
++    size_t ordinal) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? prometheus::ControlSupervisionOperationValue(
++                control_runtime_->EndTargetSupervision(ordinal))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlRetrySupervisionBaselineForWebUI(
++    size_t ordinal) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? prometheus::ControlSupervisionOperationValue(
++                control_runtime_->RetrySupervisionBaseline(ordinal))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
+ void PrometheusControlPanelUI::HandleInvalidControlMessageForWebUI(
+     std::string recovery) {
+   SendControlOperation(ControlErrorValue(std::move(recovery)));
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+index 3a1cb33597..e3e7c832af 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+@@ -166,6 +166,11 @@ class PrometheusControlPanelUI : public content::WebUIController {
+   void HandleControlReplaceSupervisionPairingForWebUI(size_t ordinal);
+   void HandleControlCancelSupervisionPairingPresentationForWebUI(
+       size_t ordinal);
++  void HandleControlEnableSupervisionControlForWebUI(size_t ordinal);
++  void HandleControlStopSupervisionControlForWebUI(size_t ordinal);
++  void HandleControlRevokeSupervisionSessionForWebUI(size_t ordinal);
++  void HandleControlEndTargetSupervisionForWebUI(size_t ordinal);
++  void HandleControlRetrySupervisionBaselineForWebUI(size_t ordinal);
+   void HandleInvalidControlMessageForWebUI(std::string recovery);
+ 
+   Profile* profile_for_testing() const { return profile_; }
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 15abc086fc..0fc8569057 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -13,6 +13,7 @@
+ #include "base/command_line.h"
+ #include "base/files/file_util.h"
+ #include "base/path_service.h"
++#include "base/run_loop.h"
+ #include "base/test/run_until.h"
+ #include "base/test/scoped_feature_list.h"
+ #include "base/test/test_future.h"
+@@ -622,6 +623,536 @@ IN_PROC_BROWSER_TEST_F(
+   EXPECT_EQ(0u, supervision_service()->pending_pairing_count_for_testing());
+ }
+ 
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    SupervisionRuntimeLifecycleActionsAreExactBoundedAndCodeFree) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const GURL target_url =
++      embedded_test_server()->GetURL("a.test", "/title1.html");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), target_url));
++  ASSERT_FALSE(ClaimSelectedTabForAgent("Lifecycle owner").empty());
++  tabs::TabInterface* const target = browser()->GetActiveTabInterface();
++  ASSERT_TRUE(target);
++  auto* const service = supervision_service();
++  ASSERT_TRUE(service);
++  prometheus::SupervisionRedemptionResult first =
++      RedeemSelectedTab("Lifecycle alpha");
++  ASSERT_TRUE(first.ok);
++
++  ASSERT_TRUE(AddTabAtIndexToBrowser(
++      browser(), 1, GURL(chrome::kChromeUIPrometheusControlPanelURL),
++      ui::PAGE_TRANSITION_TYPED));
++  content::WebContents* const control_contents =
++      browser()->tab_strip_model()->GetActiveWebContents();
++  ASSERT_TRUE(control_contents);
++  ASSERT_TRUE(content::WaitForLoadStop(control_contents));
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlLifecycleEventsForTesting = [];
++    window.prometheusControlReceiveSnapshot = snapshot => {
++      window.prometheusControlSnapshotForTesting = snapshot;
++      window.prometheusControlLifecycleEventsForTesting.push({
++        kind: 'snapshot',
++        value: structuredClone(snapshot),
++      });
++    };
++    window.prometheusControlReceiveOperation = operation => {
++      window.prometheusControlOperationForTesting = operation;
++      window.prometheusControlLifecycleEventsForTesting.push({
++        kind: 'operation',
++        value: structuredClone(operation),
++      });
++    };
++    chrome.send('prometheusControlInitialize');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlSnapshotForTesting?.supervision?.connected
++          ?.length === 1
++    )")
++        .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    const malformed = [
++      ['prometheusControlEnableSupervisionControl', [0, 'forged']],
++      ['prometheusControlStopSupervisionControl', []],
++      ['prometheusControlRevokeSupervisionSession', [0, false]],
++      ['prometheusControlEndTargetSupervision', [0, false]],
++      ['prometheusControlRetrySupervisionBaseline', [0, 7]],
++    ];
++    for (const [message, args] of malformed) {
++      chrome.send(message, args);
++    }
++  )"));
++  EXPECT_EQ(1u, service->viewer_count_for_testing(first.stable_tab_id));
++  EXPECT_EQ(0u, service->controller_count_for_testing());
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlOperationForTesting = undefined;
++    chrome.send('prometheusControlEnableSupervisionControl', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true
++    )")
++        .ExtractBool();
++  }));
++  views::Widget* const enable_dialog =
++      prometheus::PrometheusRuntimeDialogWidgetForTesting();
++  ASSERT_TRUE(enable_dialog);
++  views::DialogDelegate* const enable_delegate =
++      enable_dialog->widget_delegate()->AsDialogDelegate();
++  ASSERT_TRUE(enable_delegate);
++  enable_delegate->AcceptDialog();
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->controller_count_for_testing() == 1u &&
++           content::EvalJs(control_contents, R"(
++             window.prometheusControlSnapshotForTesting?.supervision
++                 ?.connected?.[0]?.access === 'controller'
++           )")
++               .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlOperationForTesting = undefined;
++    chrome.send('prometheusControlStopSupervisionControl', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->controller_count_for_testing() == 0u &&
++           content::EvalJs(control_contents, R"(
++             window.prometheusControlOperationForTesting?.accepted === true &&
++                 window.prometheusControlSnapshotForTesting?.supervision
++                     ?.connected?.[0]?.access === 'view_only'
++           )")
++               .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlOperationForTesting = undefined;
++    chrome.send('prometheusControlRetrySupervisionBaseline', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true &&
++          window.prometheusControlSnapshotForTesting?.supervision
++              ?.connected?.[0]?.stream_state === 'resyncing'
++    )")
++        .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlOperationForTesting = undefined;
++    chrome.send('prometheusControlRevokeSupervisionSession', [0, true]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->viewer_count_for_testing(first.stable_tab_id) == 0u &&
++           content::EvalJs(control_contents, R"(
++             window.prometheusControlOperationForTesting?.accepted === true &&
++                 window.prometheusControlSnapshotForTesting?.supervision
++                     ?.connected?.length === 0 &&
++                 window.prometheusControlSnapshotForTesting?.supervision
++                     ?.recent?.some(row => row.state === 'revoked')
++           )")
++               .ExtractBool();
++  }));
++
++  prometheus::SupervisionPairingCreationResult second_creation =
++      service->CreatePairing(browser(), target);
++  ASSERT_TRUE(second_creation.ok);
++  prometheus::SupervisionRedemptionResult second =
++      service->RedeemPairing(second_creation.pairing_code, "Lifecycle beta");
++  ASSERT_TRUE(second.ok);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlSnapshotForTesting?.supervision?.connected
++          ?.length === 1
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlOperationForTesting = undefined;
++    chrome.send('prometheusControlEndTargetSupervision', [0, true]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->viewer_count_for_testing(second.stable_tab_id) == 0u &&
++           content::EvalJs(control_contents, R"(
++             window.prometheusControlOperationForTesting?.accepted === true &&
++                 window.prometheusControlSnapshotForTesting?.supervision
++                     ?.connected?.length === 0
++           )")
++               .ExtractBool();
++  }));
++
++  const std::string serialized = content::EvalJs(control_contents, R"(
++    JSON.stringify({
++      snapshot: window.prometheusControlSnapshotForTesting,
++      events: window.prometheusControlLifecycleEventsForTesting,
++    })
++  )")
++                                     .ExtractString();
++  for (const std::string& forbidden : std::vector<std::string>{
++           "formatted_code", "pairing_code", "session_id", "lease_id",
++           "owner_id", "profile_path", "browser_id", "tab_id", "document_",
++           "epoch", "sequence", "bearer", "address", "content", "raw_value"}) {
++    EXPECT_EQ(std::string::npos, serialized.find(forbidden)) << forbidden;
++  }
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    SupervisionRuntimeLifecycleObserversInvalidateBeforeFreshSnapshots) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("a.test", "/title1.html")));
++  ASSERT_FALSE(ClaimSelectedTabForAgent("Observer owner").empty());
++  auto* const service = supervision_service();
++  ASSERT_TRUE(service);
++  prometheus::SupervisionRedemptionResult alpha =
++      RedeemSelectedTab("Observer alpha");
++  ASSERT_TRUE(alpha.ok);
++  tabs::TabInterface* const target = browser()->GetActiveTabInterface();
++  ASSERT_TRUE(target);
++  prometheus::SupervisionPairingCreationResult beta_creation =
++      service->CreatePairing(browser(), target);
++  ASSERT_TRUE(beta_creation.ok);
++  prometheus::SupervisionRedemptionResult beta =
++      service->RedeemPairing(beta_creation.pairing_code, "Observer beta");
++  ASSERT_TRUE(beta.ok);
++
++  ASSERT_TRUE(AddTabAtIndexToBrowser(
++      browser(), 1, GURL(chrome::kChromeUIPrometheusControlPanelURL),
++      ui::PAGE_TRANSITION_TYPED));
++  content::WebContents* const control_contents =
++      browser()->tab_strip_model()->GetActiveWebContents();
++  ASSERT_TRUE(control_contents);
++  ASSERT_TRUE(content::WaitForLoadStop(control_contents));
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlLifecycleEventsForTesting = [];
++    window.prometheusControlReceiveSnapshot = snapshot => {
++      window.prometheusControlSnapshotForTesting = snapshot;
++      window.prometheusControlLifecycleEventsForTesting.push({
++        kind: 'snapshot',
++        connected: snapshot.supervision?.connected?.map(
++            row => `${row.display_label}:${row.access}`) || [],
++        recent: snapshot.supervision?.recent?.map(
++            row => `${row.display_label}:${row.state}`) || [],
++      });
++    };
++    window.prometheusControlReceiveOperation = operation => {
++      window.prometheusControlOperationForTesting = operation;
++      window.prometheusControlLifecycleEventsForTesting.push({
++        kind: 'operation',
++        status: operation.status,
++      });
++    };
++    chrome.send('prometheusControlInitialize');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlSnapshotForTesting?.supervision?.connected
++          ?.length === 2
++    )")
++        .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlEnableSupervisionControl', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return prometheus::PrometheusRuntimeDialogWidgetForTesting() != nullptr;
++  }));
++  views::Widget* dialog = prometheus::PrometheusRuntimeDialogWidgetForTesting();
++  ASSERT_TRUE(dialog);
++  ASSERT_TRUE(dialog->widget_delegate()->AsDialogDelegate());
++  dialog->widget_delegate()->AsDialogDelegate()->AcceptDialog();
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return service->controller_count_for_testing() == 1u; }));
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlLifecycleEventsForTesting = [];
++    chrome.send('prometheusControlStopSupervisionControl', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->controller_count_for_testing() == 0u &&
++           content::EvalJs(control_contents, R"(
++             window.prometheusControlLifecycleEventsForTesting.some(
++                 event => event.kind === 'operation')
++           )")
++               .ExtractBool();
++  }));
++  EXPECT_TRUE(content::EvalJs(control_contents, R"(
++    (() => {
++      const events = window.prometheusControlLifecycleEventsForTesting;
++      const operation = events.findIndex(event => event.kind === 'operation');
++      return operation > 0 &&
++          events.slice(0, operation).some(event =>
++              event.kind === 'snapshot' &&
++              event.connected.includes('Observer alpha:view_only'));
++    })()
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlLifecycleEventsForTesting = [];
++    chrome.send('prometheusControlEnableSupervisionControl', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return prometheus::PrometheusRuntimeDialogWidgetForTesting() != nullptr;
++  }));
++  dialog = prometheus::PrometheusRuntimeDialogWidgetForTesting();
++  ASSERT_TRUE(dialog);
++  views::DialogDelegate* const stale_delegate =
++      dialog->widget_delegate()->AsDialogDelegate();
++  ASSERT_TRUE(stale_delegate);
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlRevokeSupervisionSession', [0, true]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->viewer_count_for_testing(alpha.stable_tab_id) == 1u;
++  }));
++  stale_delegate->AcceptDialog();
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ(0u, service->controller_count_for_testing());
++  EXPECT_TRUE(content::EvalJs(control_contents, R"(
++    (() => {
++      const events = window.prometheusControlLifecycleEventsForTesting;
++      const operation = events.findIndex(event => event.kind === 'operation');
++      return operation > 0 &&
++          events.slice(0, operation).some(event =>
++              event.kind === 'snapshot' &&
++              !event.connected.some(
++                  row => row.startsWith('Observer alpha:')) &&
++              event.recent.includes('Observer alpha:revoked'));
++    })()
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlLifecycleEventsForTesting = [];
++    chrome.send('prometheusControlEndTargetSupervision', [0, true]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->viewer_count_for_testing(beta.stable_tab_id) == 0u;
++  }));
++  EXPECT_EQ(0u, service->controller_count_for_testing());
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    SupervisionRuntimeLifecyclePresentationErasesAtEveryBoundary) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("a.test", "/title1.html")));
++  tabs::TabInterface* const target = browser()->GetActiveTabInterface();
++  ASSERT_TRUE(target);
++  const int32_t stable_tab_id = target->GetHandle().raw_value();
++  auto* const service = supervision_service();
++  ASSERT_TRUE(service);
++
++  ASSERT_TRUE(AddTabAtIndexToBrowser(
++      browser(), 1, GURL(chrome::kChromeUIPrometheusControlPanelURL),
++      ui::PAGE_TRANSITION_TYPED));
++  content::WebContents* const control_contents =
++      browser()->tab_strip_model()->GetActiveWebContents();
++  ASSERT_TRUE(control_contents);
++  ASSERT_TRUE(content::WaitForLoadStop(control_contents));
++  const auto install_callbacks = [&]() {
++    ASSERT_TRUE(content::ExecJs(control_contents, R"(
++      window.prometheusControlPresentationForTesting = '';
++      window.prometheusControlPresentationEraseCountForTesting = 0;
++      window.prometheusControlReceiveSnapshot = snapshot => {
++        window.prometheusControlSnapshotForTesting = snapshot;
++      };
++      window.prometheusControlReceivePairingCreateResult = result => {
++        window.prometheusControlPairingCreateResultForTesting = result;
++        window.prometheusControlPresentationForTesting =
++            result.formatted_code || '';
++      };
++      window.prometheusControlClearPairingPresentation = () => {
++        if (window.prometheusControlPresentationForTesting) {
++          window.prometheusControlPresentationEraseCountForTesting++;
++        }
++        window.prometheusControlPresentationForTesting = '';
++        window.prometheusControlPairingCreateResultForTesting = undefined;
++      };
++      chrome.send('prometheusControlInitialize');
++    )"));
++    ASSERT_TRUE(base::test::RunUntil([&]() {
++      return content::EvalJs(control_contents, R"(
++        window.prometheusControlSnapshotForTesting?.supervision?.targets
++            ?.length === 1
++      )")
++          .ExtractBool();
++    }));
++  };
++  install_callbacks();
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlCreatePairing', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      !!window.prometheusControlPresentationForTesting
++    )")
++        .ExtractBool();
++  }));
++  const std::string redeemed_code = content::EvalJs(control_contents, R"(
++    window.prometheusControlPresentationForTesting
++  )")
++                                        .ExtractString();
++  prometheus::SupervisionRedemptionResult redeemed =
++      service->RedeemPairing(redeemed_code, "Erasure redemption");
++  ASSERT_TRUE(redeemed.ok);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlPresentationForTesting === '' &&
++          window.prometheusControlPresentationEraseCountForTesting === 1
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_FALSE(service->MatchesPendingPairingForComposition(redeemed_code));
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlCreatePairing', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      !!window.prometheusControlPresentationForTesting
++    )")
++        .ExtractBool();
++  }));
++  const std::string cancelled_code = content::EvalJs(control_contents, R"(
++    window.prometheusControlPresentationForTesting
++  )")
++                                         .ExtractString();
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlCancelPairingPresentation', [0]);
++    chrome.send('prometheusControlCancelPairingPresentation', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlPresentationForTesting === '' &&
++          window.prometheusControlPresentationEraseCountForTesting === 2
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_FALSE(service->MatchesPendingPairingForComposition(cancelled_code));
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlCreatePairing', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      !!window.prometheusControlPresentationForTesting
++    )")
++        .ExtractBool();
++  }));
++  const std::string reload_code = content::EvalJs(control_contents, R"(
++    window.prometheusControlPresentationForTesting
++  )")
++                                      .ExtractString();
++  control_contents->GetController().Reload(content::ReloadType::NORMAL, false);
++  ASSERT_TRUE(content::WaitForLoadStop(control_contents));
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return service->pending_pairing_count_for_testing() == 0u; }));
++  EXPECT_FALSE(service->MatchesPendingPairingForComposition(reload_code));
++  install_callbacks();
++  EXPECT_TRUE(content::EvalJs(control_contents, R"(
++    window.prometheusControlPresentationForTesting === '' &&
++        !Object.hasOwn(
++            window, 'prometheusControlPairingCreateResultForTesting')
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlCreatePairing', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      !!window.prometheusControlPresentationForTesting
++    )")
++        .ExtractBool();
++  }));
++  const std::string replaced_code = content::EvalJs(control_contents, R"(
++    window.prometheusControlPresentationForTesting
++  )")
++                                        .ExtractString();
++  ASSERT_TRUE(
++      content::ExecJs(control_contents, content::JsReplace(R"(
++    window.replacedCodeForTesting = $1;
++    chrome.send('prometheusControlReplacePairing', [0]);
++  )",
++                                                           replaced_code)));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlPresentationEraseCountForTesting === 1 &&
++          !!window.prometheusControlPresentationForTesting &&
++          window.prometheusControlPresentationForTesting !==
++              window.replacedCodeForTesting
++    )")
++        .ExtractBool();
++  }));
++  const std::string target_lost_code = content::EvalJs(control_contents, R"(
++    window.prometheusControlPresentationForTesting
++  )")
++                                           .ExtractString();
++  EXPECT_FALSE(service->MatchesPendingPairingForComposition(replaced_code));
++  EXPECT_TRUE(service->MatchesPendingPairingForComposition(target_lost_code));
++
++  browser()->tab_strip_model()->CloseWebContentsAt(
++      0, TabCloseTypes::CLOSE_USER_GESTURE);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->pending_pairing_count_for_testing() == 0u &&
++           content::EvalJs(control_contents, R"(
++             window.prometheusControlPresentationForTesting === '' &&
++                 window.prometheusControlPresentationEraseCountForTesting ===
++                     2
++           )")
++               .ExtractBool();
++  }));
++  EXPECT_FALSE(service->MatchesPendingPairingForComposition(target_lost_code));
++  EXPECT_EQ(0u, service->viewer_count_for_testing(stable_tab_id));
++
++  ASSERT_TRUE(AddTabAtIndexToBrowser(
++      browser(), 0, embedded_test_server()->GetURL("b.test", "/title2.html"),
++      ui::PAGE_TRANSITION_TYPED));
++  browser()->tab_strip_model()->ActivateTabAt(1);
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlInitialize');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlSnapshotForTesting?.supervision?.targets
++          ?.length === 1
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlCreatePairing', [0]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      !!window.prometheusControlPresentationForTesting
++    )")
++        .ExtractBool();
++  }));
++  const std::string shutdown_code = content::EvalJs(control_contents, R"(
++    window.prometheusControlPresentationForTesting
++  )")
++                                        .ExtractString();
++  service->Shutdown();
++  service->Shutdown();
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      window.prometheusControlPresentationForTesting === '' &&
++          window.prometheusControlPresentationEraseCountForTesting === 3
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_EQ(0u, service->pending_pairing_count_for_testing());
++  EXPECT_FALSE(service->MatchesPendingPairingForComposition(shutdown_code));
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+                        NewTabCreatesControllerAndRendersRequiredCopy) {
+   content::WebContents* const web_contents =
+-- 
+2.50.1 (Apple Git-155)
+

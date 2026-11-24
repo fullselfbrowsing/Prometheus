@@ -1,0 +1,184 @@
+From 46e2f05ccc1ffd28c67fd8390525d11bffe889cd Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 01:09:45 -0500
+Subject: [PATCH 08/11] feat(15-04): add Prometheus tab state defaults
+
+---
+ chrome/browser/prometheus/BUILD.gn            | 16 +++++-
+ .../prometheus/prometheus_tab_state.cc        | 13 +++++
+ .../browser/prometheus/prometheus_tab_state.h | 31 ++++++++++
+ .../prometheus_tab_state_unittest.cc          | 56 +++++++++++++++++++
+ 4 files changed, 115 insertions(+), 1 deletion(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_tab_state.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_tab_state.h
+ create mode 100644 chrome/browser/prometheus/prometheus_tab_state_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 7f647e37fa..a1521b744d 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -38,6 +38,17 @@ source_set("prometheus_chrome_mode") {
+   ]
+ }
+ 
++source_set("prometheus_tab_state") {
++  sources = [
++    "prometheus_tab_state.cc",
++    "prometheus_tab_state.h",
++  ]
++
++  deps = [
++    "//content/public/browser",
++  ]
++}
++
+ test("prometheus_unittests") {
+   sources = [
+     "prometheus_action_unittest.cc",
+@@ -45,6 +56,7 @@ test("prometheus_unittests") {
+     "prometheus_chrome_mode_unittest.cc",
+     "prometheus_color_mixer_unittest.cc",
+     "prometheus_css_emission_unittest.cc",
++    "prometheus_tab_state_unittest.cc",
+   ]
+ 
+   data = [ "$root_out_dir/prometheus_resources.pak" ]
+@@ -55,14 +67,16 @@ test("prometheus_unittests") {
+   deps = [
+     ":prometheus_action",
+     ":prometheus_chrome_mode",
++    ":prometheus_tab_state",
+     "//base",
+-    "//base/test:run_all_unittests",
+     "//chrome/common:constants",
+     "//chrome/browser/resources/prometheus:prometheus_resources",
+     "//chrome/browser/resources/prometheus:prometheus_vector_icons",
+     "//chrome/browser/ui/color:color_headers",
+     "//chrome/browser/ui/color:mixers",
+     "//components/prefs:test_support",
++    "//content/test:run_all_unittests",
++    "//content/test:test_support",
+     "//skia",
+     "//testing/gtest",
+     "//ui/base",
+diff --git a/chrome/browser/prometheus/prometheus_tab_state.cc b/chrome/browser/prometheus/prometheus_tab_state.cc
+new file mode 100644
+index 0000000000..e58ad9f465
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_tab_state.cc
+@@ -0,0 +1,13 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_tab_state.h"
++
++PrometheusTabState PrometheusTabState::SafeDefault() {
++  return PrometheusTabState();
++}
++
++PrometheusTabState GetPrometheusTabStateForWebContents(content::WebContents*) {
++  return PrometheusTabState::SafeDefault();
++}
+diff --git a/chrome/browser/prometheus/prometheus_tab_state.h b/chrome/browser/prometheus/prometheus_tab_state.h
+new file mode 100644
+index 0000000000..45073b9e56
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_tab_state.h
+@@ -0,0 +1,31 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_TAB_STATE_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_TAB_STATE_H_
++
++#include <string>
++
++namespace content {
++class WebContents;
++}  // namespace content
++
++struct PrometheusTabState {
++  enum class Health {
++    kOk,
++    kNeedsAttention,
++  };
++
++  static PrometheusTabState SafeDefault();
++
++  std::string owner_label;
++  bool automation_active = false;
++  bool supervision_active = false;
++  Health health = Health::kOk;
++};
++
++PrometheusTabState GetPrometheusTabStateForWebContents(
++    content::WebContents* web_contents);
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_TAB_STATE_H_
+diff --git a/chrome/browser/prometheus/prometheus_tab_state_unittest.cc b/chrome/browser/prometheus/prometheus_tab_state_unittest.cc
+new file mode 100644
+index 0000000000..af5c20735a
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_tab_state_unittest.cc
+@@ -0,0 +1,56 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_tab_state.h"
++
++#include <memory>
++#include <string>
++#include <utility>
++
++#include "base/supports_user_data.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/test_renderer_host.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace {
++
++class CallerProvidedLabelUserData : public base::SupportsUserData::Data {
++ public:
++  explicit CallerProvidedLabelUserData(std::string label)
++      : label_(std::move(label)) {}
++
++  const std::string& label() const { return label_; }
++
++ private:
++  std::string label_;
++};
++
++}  // namespace
++
++TEST(PrometheusTabStateTest, SafeDefaultHasNoOwner) {
++  const PrometheusTabState state = PrometheusTabState::SafeDefault();
++
++  EXPECT_TRUE(state.owner_label.empty());
++  EXPECT_FALSE(state.automation_active);
++  EXPECT_FALSE(state.supervision_active);
++  EXPECT_EQ(PrometheusTabState::Health::kOk, state.health);
++}
++
++class PrometheusTabStateWebContentsTest
++    : public content::RenderViewHostTestHarness {};
++
++TEST_F(PrometheusTabStateWebContentsTest, DoesNotTrustCallerProvidedLabel) {
++  constexpr int kCallerProvidedLabelKey = 0;
++  web_contents()->SetUserData(
++      &kCallerProvidedLabelKey,
++      std::make_unique<CallerProvidedLabelUserData>("Injected owner"));
++
++  const PrometheusTabState state =
++      GetPrometheusTabStateForWebContents(web_contents());
++
++  EXPECT_TRUE(state.owner_label.empty());
++  EXPECT_FALSE(state.automation_active);
++  EXPECT_FALSE(state.supervision_active);
++  EXPECT_EQ(PrometheusTabState::Health::kOk, state.health);
++}
+-- 
+2.50.1 (Apple Git-155)
+

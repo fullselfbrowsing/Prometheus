@@ -1,0 +1,369 @@
+From c8cc042cc2905c19afa3763bdeb45463e4c02061 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 08:15:05 -0500
+Subject: [PATCH 47/47] feat(21-18): end exact-tab supervision in bulk
+
+---
+ .../prometheus_browser_main_extra_parts.cc    |  36 ++++
+ .../prometheus_supervision_profile_service.cc |  60 +++++++
+ .../prometheus_supervision_profile_service.h  |   3 +
+ .../ui/webui/prometheus/prometheus_web_ui.cc  |   8 +-
+ .../ui/webui/prometheus/prometheus_web_ui.h   |   1 +
+ .../prometheus_web_ui_browsertest.cc          | 167 ++++++++++++++++++
+ 6 files changed, 274 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index fb0095e32a..2dd25e8ee3 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -438,6 +438,42 @@ class NativePrometheusSidePanelRuntime final
+             exact_browser_.get(), selected_tab));
+   }
+ 
++  base::DictValue EndSelectedTabSupervision() override {
++    if (ending_supervision_) {
++      return SupervisionOperationValue(SupervisionServiceResult::Failure(
++          SupervisionErrorCode::kControllerConflict,
++          "An end request is already running",
++          "Wait for the selected-tab state to refresh"));
++    }
++    tabs::TabInterface* selected_tab = ResolveSelectedTab();
++    PrometheusSupervisionProfileService* supervision_service =
++        ResolveSupervisionService();
++    if (!selected_tab || !supervision_service || !exact_browser_) {
++      return SupervisionOperationValue(SupervisionServiceResult::Failure(
++          SupervisionErrorCode::kStaleTarget,
++          "The selected supervision target is unavailable",
++          "Select the intended supervised tab in this window"));
++    }
++
++    ending_supervision_ = true;
++    PublishSnapshot();
++    selected_tab = ResolveSelectedTab();
++    supervision_service = ResolveSupervisionService();
++    SupervisionServiceResult result;
++    if (!selected_tab || !supervision_service || !exact_browser_) {
++      result = SupervisionServiceResult::Failure(
++          SupervisionErrorCode::kStaleTarget,
++          "The selected supervision target changed before end",
++          "Refresh the selected-tab supervision state");
++    } else {
++      result = supervision_service->EndSelectedTabSupervision(
++          exact_browser_.get(), selected_tab);
++    }
++    ending_supervision_ = false;
++    PublishSnapshot();
++    return SupervisionOperationValue(std::move(result));
++  }
++
+   void HandleTargetLost() override {
+     if (!principal_) {
+       return;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+index 97df639cee..60ddb4624d 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+@@ -1270,6 +1270,66 @@ PrometheusSupervisionProfileService::OpenManagementForSelectedTab(
+   return SupervisionServiceResult::Success();
+ }
+ 
++SupervisionServiceResult
++PrometheusSupervisionProfileService::EndSelectedTabSupervision(
++    BrowserWindowInterface* exact_browser,
++    tabs::TabInterface* exact_tab) {
++  if (shutdown_) {
++    return UnavailableResult();
++  }
++  SweepExpired();
++  if (!IsEligibleTarget(profile_, exact_browser, exact_tab) ||
++      exact_browser->GetActiveTabInterface() != exact_tab) {
++    return ServiceFailure(
++        SupervisionErrorCode::kStaleTarget,
++        "The selected supervision target is no longer live",
++        "Select the intended supervised tab in this window and retry");
++  }
++
++  const int32_t stable_tab_id = exact_tab->GetHandle().raw_value();
++  std::vector<base::UnguessableToken> sessions;
++  for (const auto& [dashboard_session, viewer] : viewers_) {
++    if (viewer->stable_tab_id == stable_tab_id &&
++        viewer->exact_browser.get() == exact_browser &&
++        ResolveExactTarget(*viewer) == exact_tab) {
++      sessions.push_back(dashboard_session);
++    }
++  }
++  if (sessions.empty()) {
++    return ServiceFailure(SupervisionErrorCode::kUnknownSession,
++                          "No live supervision remains for this tab",
++                          "Refresh the selected-tab supervision state");
++  }
++
++  for (const base::UnguessableToken& dashboard_session : sessions) {
++    if (!RevalidateViewerOwner(dashboard_session)) {
++      return ServiceFailure(
++          SupervisionErrorCode::kViewOnly,
++          "Supervision ended because the Agent owner is no longer live",
++          "Create a new supervised session from the intended tab");
++    }
++  }
++  for (const base::UnguessableToken& dashboard_session : sessions) {
++    auto viewer = viewers_.find(dashboard_session);
++    if (viewer == viewers_.end() ||
++        viewer->second->stable_tab_id != stable_tab_id ||
++        viewer->second->exact_browser.get() != exact_browser ||
++        ResolveExactTarget(*viewer->second) != exact_tab) {
++      return ServiceFailure(
++          SupervisionErrorCode::kStaleTarget,
++          "The selected supervision authority changed before end",
++          "Refresh the selected-tab supervision state");
++    }
++  }
++  for (const base::UnguessableToken& dashboard_session : sessions) {
++    TerminateViewer(dashboard_session, SupervisionViewerState::kEnded,
++                    SupervisionTerminalReason::kNone,
++                    SupervisionAuditEvent::kControlStopped,
++                    SupervisionErrorCode::kNone);
++  }
++  return SupervisionServiceResult::Success();
++}
++
+ void PrometheusSupervisionProfileService::ExecuteDashboardAction(
+     const base::UnguessableToken& dashboard_session,
+     std::string_view document_epoch,
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.h b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+index 234cf050de..0bf83b87d0 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+@@ -170,6 +170,9 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+   SupervisionServiceResult OpenManagementForSelectedTab(
+       BrowserWindowInterface* exact_browser,
+       tabs::TabInterface* exact_tab);
++  SupervisionServiceResult EndSelectedTabSupervision(
++      BrowserWindowInterface* exact_browser,
++      tabs::TabInterface* exact_tab);
+   void ExecuteDashboardAction(const base::UnguessableToken& dashboard_session,
+                               std::string_view document_epoch,
+                               uint64_t sequence,
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index 70a887165c..b52e5e6f28 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -919,7 +919,9 @@ void PrometheusSidePanelUI::SetBrowserWindowInterface(
+     runtime_->SetSnapshotCallback(
+         base::BindRepeating(&PrometheusSidePanelUI::SendRuntimeSnapshot,
+                             weak_factory_.GetWeakPtr()));
+-    SendFreshRuntimeSnapshot();
++    if (runtime_initialized_) {
++      SendFreshRuntimeSnapshot();
++    }
+   }
+ }
+ 
+@@ -936,6 +938,7 @@ void PrometheusSidePanelUI::HandleRequestAskFsbSeedForWebUI() {
+ }
+ 
+ void PrometheusSidePanelUI::HandleRuntimeInitializeForWebUI() {
++  runtime_initialized_ = true;
+   SendFreshRuntimeSnapshot();
+ }
+ 
+@@ -989,6 +992,9 @@ void PrometheusSidePanelUI::HandleInvalidRuntimeMessageForWebUI(
+ }
+ 
+ void PrometheusSidePanelUI::SendRuntimeSnapshot(base::DictValue snapshot) {
++  if (!runtime_initialized_) {
++    return;
++  }
+   ++runtime_observer_delivery_count_;
+   web_ui()->CallJavascriptFunctionUnsafe("prometheusRuntimeReceiveSnapshot",
+                                          base::Value(std::move(snapshot)));
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+index 516785ad76..2ec67957b2 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+@@ -119,6 +119,7 @@ class PrometheusSidePanelUI : public TopChromeWebUIController {
+   int32_t stable_tab_id_ = 0;
+   size_t principal_acquisition_count_ = 0;
+   size_t runtime_observer_delivery_count_ = 0;
++  bool runtime_initialized_ = false;
+   std::unique_ptr<prometheus::PrometheusSidePanelRuntime> runtime_;
+   base::CallbackListSubscription tab_will_detach_subscription_;
+   base::WeakPtrFactory<PrometheusSidePanelUI> weak_factory_{this};
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 522ba6f3e1..cf4a4ebe10 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -3579,3 +3579,170 @@ IN_PROC_BROWSER_TEST_F(
+   }));
+   EXPECT_EQ(0u, service->controller_count_for_testing());
+ }
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    SidePanelSupervisionRuntimeEndIsZeroArgumentBulkExactAndTeardownSafe) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const GURL target_url =
++      embedded_test_server()->GetURL("a.test", "/title1.html");
++  const GURL other_url =
++      embedded_test_server()->GetURL("b.test", "/title2.html");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), target_url));
++
++  PrometheusSidePanelUI* const controller = ShowSidePanel(browser());
++  ASSERT_TRUE(controller);
++  content::WebContents* const side_panel_contents =
++      visible_side_panel_web_contents();
++  ASSERT_TRUE(side_panel_contents);
++  auto* const service = supervision_service();
++  ASSERT_TRUE(service);
++  ASSERT_FALSE(ClaimSelectedTabForAgent("Bulk end owner").empty());
++  prometheus::SupervisionRedemptionResult first_viewer =
++      RedeemSelectedTab("First reviewer");
++  prometheus::SupervisionRedemptionResult second_viewer =
++      RedeemSelectedTab("Second reviewer");
++  ASSERT_TRUE(first_viewer.ok);
++  ASSERT_TRUE(second_viewer.ok);
++  ASSERT_EQ(first_viewer.stable_tab_id, second_viewer.stable_tab_id);
++  const int32_t stable_tab_id = first_viewer.stable_tab_id;
++  EnableControlAndAccept(first_viewer.dashboard_session);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->viewer_count_for_testing(stable_tab_id) == 2u &&
++           content::EvalJs(side_panel_contents, R"(
++             const state =
++                 window.prometheusRuntimeSnapshotForTesting?.supervision;
++             state?.viewer_count === 2 && state.controlled === true;
++           )")
++               .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    window.prometheusRuntimeOperationForTesting = null;
++    chrome.send('prometheusEndSelectedTabSupervision', [{
++      dashboard_session: 'FORGED_SESSION',
++      result: 'FORGED_RESULT',
++      title: 'FORGED_TITLE',
++    }]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      window.prometheusRuntimeOperationForTesting?.status ===
++          'INVALID_REQUEST';
++    )")
++        .ExtractBool();
++  }));
++  const std::string rejected_operation =
++      content::EvalJs(side_panel_contents, R"(
++        JSON.stringify(window.prometheusRuntimeOperationForTesting);
++      )")
++          .ExtractString();
++  EXPECT_EQ(std::string::npos, rejected_operation.find("FORGED_SESSION"));
++  EXPECT_EQ(std::string::npos, rejected_operation.find("FORGED_RESULT"));
++  EXPECT_EQ(std::string::npos, rejected_operation.find("FORGED_TITLE"));
++  EXPECT_EQ(2u, service->viewer_count_for_testing(stable_tab_id));
++  EXPECT_EQ(1u, service->controller_count_for_testing());
++
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    window.prometheusSawEndingForTesting = false;
++    const receiveSnapshot = window.prometheusRuntimeReceiveSnapshot;
++    window.prometheusRuntimeReceiveSnapshot = snapshot => {
++      if (snapshot?.supervision?.ending === true) {
++        window.prometheusSawEndingForTesting = true;
++      }
++      receiveSnapshot(snapshot);
++    };
++    window.prometheusRuntimeOperationForTesting = null;
++    chrome.send('prometheusEndSelectedTabSupervision');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->viewer_count_for_testing(stable_tab_id) == 0u &&
++           service->controller_count_for_testing() == 0u &&
++           content::EvalJs(side_panel_contents, R"(
++             const state =
++                 window.prometheusRuntimeSnapshotForTesting?.supervision;
++             window.prometheusSawEndingForTesting === true &&
++                 window.prometheusRuntimeOperationForTesting?.accepted ===
++                     true &&
++                 state?.viewer_count === 0 && state.controlled === false &&
++                 state.ending === false;
++           )")
++               .ExtractBool();
++  }));
++
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    window.prometheusRuntimeOperationForTesting = null;
++    chrome.send('prometheusEndSelectedTabSupervision');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      window.prometheusRuntimeOperationForTesting?.accepted === false;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_EQ(0u, service->viewer_count_for_testing(stable_tab_id));
++
++  first_viewer = RedeemSelectedTab("Third reviewer");
++  second_viewer = RedeemSelectedTab("Fourth reviewer");
++  ASSERT_TRUE(first_viewer.ok);
++  ASSERT_TRUE(second_viewer.ok);
++  ASSERT_EQ(stable_tab_id, first_viewer.stable_tab_id);
++  ASSERT_EQ(stable_tab_id, second_viewer.stable_tab_id);
++  ASSERT_TRUE(
++      AddTabAtIndexToBrowser(browser(), 1, other_url, ui::PAGE_TRANSITION_TYPED));
++  browser()->tab_strip_model()->ActivateTabAt(1);
++  ASSERT_TRUE(content::WaitForLoadStop(
++      browser()->tab_strip_model()->GetActiveWebContents()));
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    window.prometheusRuntimeOperationForTesting = null;
++    chrome.send('prometheusEndSelectedTabSupervision');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      window.prometheusRuntimeOperationForTesting?.accepted === false;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_EQ(2u, service->viewer_count_for_testing(stable_tab_id));
++
++  browser()->tab_strip_model()->ActivateTabAt(0);
++  ASSERT_TRUE(content::ExecJs(side_panel_contents, R"(
++    window.prometheusRuntimeOperationForTesting = null;
++    chrome.send('prometheusEndSelectedTabSupervision');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->viewer_count_for_testing(stable_tab_id) == 0u &&
++           content::EvalJs(side_panel_contents, R"(
++             window.prometheusRuntimeOperationForTesting?.accepted === true;
++           )")
++               .ExtractBool();
++  }));
++
++  prometheus::SupervisionRedemptionResult teardown_viewer =
++      RedeemSelectedTab("Reload reviewer");
++  ASSERT_TRUE(teardown_viewer.ok);
++  ASSERT_EQ(stable_tab_id, teardown_viewer.stable_tab_id);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->viewer_count_for_testing(stable_tab_id) == 1u;
++  }));
++  side_panel_contents->GetController().Reload(content::ReloadType::NORMAL,
++                                               false);
++  ASSERT_TRUE(content::WaitForLoadStop(side_panel_contents));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(side_panel_contents, R"(
++      window.prometheusRuntimeSnapshotForTesting?.supervision?.viewer_count ===
++          1;
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(service->EndSession(teardown_viewer.dashboard_session).ok);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return service->viewer_count_for_testing(stable_tab_id) == 0u &&
++           content::EvalJs(side_panel_contents, R"(
++             window.prometheusRuntimeSnapshotForTesting?.supervision
++                     ?.viewer_count === 0 &&
++                 window.prometheusRuntimeOperationForTesting === null;
++           )")
++               .ExtractBool();
++  }));
++}
+-- 
+2.50.1 (Apple Git-155)
+

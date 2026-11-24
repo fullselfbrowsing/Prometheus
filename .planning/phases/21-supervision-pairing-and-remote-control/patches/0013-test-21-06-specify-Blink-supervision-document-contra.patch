@@ -1,0 +1,487 @@
+From fdb388d8b3fcc40fe47d0d47897c700d7808fc1e Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 21:47:42 -0500
+Subject: [PATCH 13/13] test(21-06): specify Blink supervision document
+ contract
+
+---
+ third_party/blink/public/mojom/BUILD.gn       |   1 +
+ .../prometheus_supervision_document.mojom     |  22 ++
+ third_party/blink/renderer/modules/BUILD.gn   |   1 +
+ .../modules/content_extraction/BUILD.gn       |   2 +
+ ...metheus_supervision_document_supplement.cc |  79 ++++++
+ ...ometheus_supervision_document_supplement.h |  65 +++++
+ ...upervision_document_supplement_unittest.cc | 237 ++++++++++++++++++
+ 7 files changed, 407 insertions(+)
+ create mode 100644 third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom
+ create mode 100644 third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc
+ create mode 100644 third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h
+ create mode 100644 third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc
+
+diff --git a/third_party/blink/public/mojom/BUILD.gn b/third_party/blink/public/mojom/BUILD.gn
+index 71be079d2c..f55494b490 100644
+--- a/third_party/blink/public/mojom/BUILD.gn
++++ b/third_party/blink/public/mojom/BUILD.gn
+@@ -64,6 +64,7 @@ mojom("mojom_platform") {
+     "content_extraction/frame_metadata_observer_registry.mojom",
+     "content_extraction/inner_html.mojom",
+     "content_extraction/inner_text.mojom",
++    "content_extraction/prometheus_supervision_document.mojom",
+     "content_extraction/script_tools.mojom",
+     "content_index/content_index.mojom",
+     "context_menu/context_menu.mojom",
+diff --git a/third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom b/third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom
+new file mode 100644
+index 0000000000..b3aea2e2f6
+--- /dev/null
++++ b/third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom
+@@ -0,0 +1,22 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++module blink.mojom;
++
++// A content-free notification that the browser should recapture the document.
++enum PrometheusSupervisionDirtySignal {
++  kDirty,
++  kOverflow,
++};
++
++// Browser endpoint receiving bounded document invalidation signals.
++interface PrometheusSupervisionDocumentHost {
++  OnDocumentDirty(PrometheusSupervisionDirtySignal signal);
++};
++
++// Document-scoped renderer endpoint controlling invalidation observation.
++interface PrometheusSupervisionDocument {
++  Enable(pending_remote<PrometheusSupervisionDocumentHost> host);
++  Disable();
++};
+diff --git a/third_party/blink/renderer/modules/BUILD.gn b/third_party/blink/renderer/modules/BUILD.gn
+index dbc87ff667..e1915e7b2b 100644
+--- a/third_party/blink/renderer/modules/BUILD.gn
++++ b/third_party/blink/renderer/modules/BUILD.gn
+@@ -448,6 +448,7 @@ source_set("unit_tests") {
+     "content_extraction/frame_metadata_observer_registry_unittest.cc",
+     "content_extraction/inner_html_builder_unittest.cc",
+     "content_extraction/inner_text_builder_unittest.cc",
++    "content_extraction/prometheus_supervision_document_supplement_unittest.cc",
+     "content_index/content_description_type_converter_test.cc",
+     "cookie_store/cookie_store_unittest.cc",
+     "credentialmanagement/authentication_credentials_container_test.cc",
+diff --git a/third_party/blink/renderer/modules/content_extraction/BUILD.gn b/third_party/blink/renderer/modules/content_extraction/BUILD.gn
+index 4c25c6f9b8..6fe78b6c68 100644
+--- a/third_party/blink/renderer/modules/content_extraction/BUILD.gn
++++ b/third_party/blink/renderer/modules/content_extraction/BUILD.gn
+@@ -24,6 +24,8 @@ blink_modules_sources("content_extraction") {
+     "inner_text_builder.h",
+     "paid_content.cc",
+     "paid_content.h",
++    "prometheus_supervision_document_supplement.cc",
++    "prometheus_supervision_document_supplement.h",
+   ]
+ 
+   deps = [
+diff --git a/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc
+new file mode 100644
+index 0000000000..a7d87f9328
+--- /dev/null
++++ b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc
+@@ -0,0 +1,79 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h"
++
++#include "third_party/blink/renderer/core/dom/document.h"
++#include "third_party/blink/renderer/core/frame/local_dom_window.h"
++#include "third_party/blink/renderer/core/frame/local_frame.h"
++
++namespace blink {
++
++const char PrometheusSupervisionDocumentSupplement::kSupplementName[] =
++    "PrometheusSupervisionDocumentSupplement";
++
++// static
++PrometheusSupervisionDocumentSupplement*
++PrometheusSupervisionDocumentSupplement::From(Document& document) {
++  return Supplement<Document>::From<PrometheusSupervisionDocumentSupplement>(
++      document);
++}
++
++// static
++void PrometheusSupervisionDocumentSupplement::BindReceiver(
++    LocalFrame* frame,
++    mojo::PendingReceiver<mojom::blink::PrometheusSupervisionDocument>
++        receiver) {
++  CHECK(frame && frame->GetDocument() && frame->DomWindow());
++  Document& document = *frame->GetDocument();
++  auto* supplement = From(document);
++  if (!supplement) {
++    supplement =
++        MakeGarbageCollected<PrometheusSupervisionDocumentSupplement>(
++            base::PassKey<PrometheusSupervisionDocumentSupplement>(), *frame);
++    Supplement<Document>::ProvideTo(document, supplement);
++  }
++  supplement->Bind(std::move(receiver));
++}
++
++PrometheusSupervisionDocumentSupplement::
++    PrometheusSupervisionDocumentSupplement(
++        base::PassKey<PrometheusSupervisionDocumentSupplement>,
++        LocalFrame& frame)
++    : Supplement<Document>(*frame.GetDocument()),
++      receiver_(this, frame.DomWindow()),
++      host_(frame.DomWindow()) {}
++
++PrometheusSupervisionDocumentSupplement::
++    ~PrometheusSupervisionDocumentSupplement() = default;
++
++void PrometheusSupervisionDocumentSupplement::Bind(
++    mojo::PendingReceiver<mojom::blink::PrometheusSupervisionDocument>
++        receiver) {
++  Disable();
++  receiver_.reset();
++  receiver_.Bind(
++      std::move(receiver),
++      GetSupplementable()->GetTaskRunner(TaskType::kInternalUserInteraction));
++}
++
++void PrometheusSupervisionDocumentSupplement::Enable(
++    mojo::PendingRemote<mojom::blink::PrometheusSupervisionDocumentHost> host) {
++  Disable();
++  host_.Bind(
++      std::move(host),
++      GetSupplementable()->GetTaskRunner(TaskType::kInternalUserInteraction));
++}
++
++void PrometheusSupervisionDocumentSupplement::Disable() {
++  host_.reset();
++}
++
++void PrometheusSupervisionDocumentSupplement::Trace(Visitor* visitor) const {
++  Supplement<Document>::Trace(visitor);
++  visitor->Trace(receiver_);
++  visitor->Trace(host_);
++}
++
++}  // namespace blink
+diff --git a/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h
+new file mode 100644
+index 0000000000..23a41b5565
+--- /dev/null
++++ b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h
+@@ -0,0 +1,65 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_CONTENT_EXTRACTION_PROMETHEUS_SUPERVISION_DOCUMENT_SUPPLEMENT_H_
++#define THIRD_PARTY_BLINK_RENDERER_MODULES_CONTENT_EXTRACTION_PROMETHEUS_SUPERVISION_DOCUMENT_SUPPLEMENT_H_
++
++#include "base/types/pass_key.h"
++#include "mojo/public/cpp/bindings/pending_receiver.h"
++#include "third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom-blink.h"
++#include "third_party/blink/renderer/modules/modules_export.h"
++#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
++#include "third_party/blink/renderer/platform/mojo/heap_mojo_receiver.h"
++#include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
++#include "third_party/blink/renderer/platform/supplementable.h"
++
++namespace blink {
++
++class Document;
++class LocalFrame;
++
++// Document-owned renderer endpoint for content-free supervision invalidation.
++class MODULES_EXPORT PrometheusSupervisionDocumentSupplement final
++    : public GarbageCollected<PrometheusSupervisionDocumentSupplement>,
++      public mojom::blink::PrometheusSupervisionDocument,
++      public Supplement<Document> {
++ public:
++  static const char kSupplementName[];
++  static PrometheusSupervisionDocumentSupplement* From(Document&);
++  static void BindReceiver(
++      LocalFrame* frame,
++      mojo::PendingReceiver<mojom::blink::PrometheusSupervisionDocument>
++          receiver);
++
++  PrometheusSupervisionDocumentSupplement(
++      base::PassKey<PrometheusSupervisionDocumentSupplement>,
++      LocalFrame& frame);
++  PrometheusSupervisionDocumentSupplement(
++      const PrometheusSupervisionDocumentSupplement&) = delete;
++  PrometheusSupervisionDocumentSupplement& operator=(
++      const PrometheusSupervisionDocumentSupplement&) = delete;
++  ~PrometheusSupervisionDocumentSupplement() override;
++
++  void Trace(Visitor* visitor) const override;
++
++  // mojom::blink::PrometheusSupervisionDocument:
++  void Enable(
++      mojo::PendingRemote<mojom::blink::PrometheusSupervisionDocumentHost>
++          host) override;
++  void Disable() override;
++
++ private:
++  void Bind(
++      mojo::PendingReceiver<mojom::blink::PrometheusSupervisionDocument>
++          receiver);
++
++  HeapMojoReceiver<mojom::blink::PrometheusSupervisionDocument,
++                   PrometheusSupervisionDocumentSupplement>
++      receiver_;
++  HeapMojoRemote<mojom::blink::PrometheusSupervisionDocumentHost> host_;
++};
++
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_CONTENT_EXTRACTION_PROMETHEUS_SUPERVISION_DOCUMENT_SUPPLEMENT_H_
+diff --git a/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc
+new file mode 100644
+index 0000000000..abbf818280
+--- /dev/null
++++ b/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc
+@@ -0,0 +1,237 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h"
++
++#include "base/test/task_environment.h"
++#include "base/time/time.h"
++#include "mojo/public/cpp/bindings/receiver.h"
++#include "mojo/public/cpp/bindings/remote.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "third_party/blink/renderer/core/dom/document.h"
++#include "third_party/blink/renderer/core/frame/frame_test_helpers.h"
++#include "third_party/blink/renderer/core/frame/local_frame.h"
++#include "third_party/blink/renderer/core/html/html_div_element.h"
++#include "third_party/blink/renderer/core/html_names.h"
++#include "third_party/blink/renderer/platform/testing/task_environment.h"
++#include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
++#include "third_party/blink/renderer/platform/testing/url_test_helpers.h"
++
++namespace blink {
++
++namespace {
++
++using DirtySignal = mojom::blink::PrometheusSupervisionDirtySignal;
++
++class RecordingHost final
++    : public mojom::blink::PrometheusSupervisionDocumentHost {
++ public:
++  mojo::PendingRemote<mojom::blink::PrometheusSupervisionDocumentHost>
++  BindNewPipeAndPassRemote() {
++    return receiver_.BindNewPipeAndPassRemote();
++  }
++
++  void OnDocumentDirty(DirtySignal signal) override {
++    signals_.push_back(signal);
++  }
++
++  const Vector<DirtySignal>& signals() const { return signals_; }
++  void Disconnect() { receiver_.reset(); }
++
++ private:
++  mojo::Receiver<mojom::blink::PrometheusSupervisionDocumentHost> receiver_{
++      this};
++  Vector<DirtySignal> signals_;
++};
++
++class PrometheusSupervisionDocumentSupplementTest : public testing::Test {
++ public:
++  void SetUp() override {
++    helper_.Initialize();
++    LoadHTML("<html><body></body></html>");
++    BindDocument();
++  }
++
++ protected:
++  void LoadHTML(const std::string& html) {
++    frame_test_helpers::LoadHTMLString(
++        helper_.LocalMainFrame(), html,
++        url_test_helpers::ToKURL("https://example.test/"));
++  }
++
++  Document& GetDocument() {
++    return *helper_.LocalMainFrame()->GetFrame()->GetDocument();
++  }
++
++  void BindDocument() {
++    document_remote_.reset();
++    PrometheusSupervisionDocumentSupplement::BindReceiver(
++        helper_.LocalMainFrame()->GetFrame(),
++        document_remote_.BindNewPipeAndPassReceiver());
++    document_remote_.FlushForTesting();
++  }
++
++  void Enable(RecordingHost& host) {
++    document_remote_->Enable(host.BindNewPipeAndPassRemote());
++    document_remote_.FlushForTesting();
++  }
++
++  void MutateAttribute(const char* value) {
++    GetDocument().documentElement()->setAttribute(html_names::kClassAttr,
++                                                  AtomicString(value));
++    test::RunPendingTasks();
++  }
++
++  void AppendMutations(size_t count) {
++    for (size_t i = 0; i < count; ++i) {
++      GetDocument().body()->AppendChild(
++          MakeGarbageCollected<HTMLDivElement>(GetDocument()));
++    }
++    test::RunPendingTasks();
++  }
++
++  void AdvanceDebounce() {
++    task_environment_.FastForwardBy(base::Milliseconds(50));
++    test::RunPendingTasks();
++  }
++
++  test::TaskEnvironment task_environment_{
++      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
++  frame_test_helpers::WebViewHelper helper_;
++  mojo::Remote<mojom::blink::PrometheusSupervisionDocument> document_remote_;
++};
++
++TEST_F(PrometheusSupervisionDocumentSupplementTest, DirtyAfterDebounce) {
++  RecordingHost host;
++  Enable(host);
++
++  MutateAttribute("one");
++  EXPECT_TRUE(host.signals().empty());
++  task_environment_.FastForwardBy(base::Milliseconds(49));
++  test::RunPendingTasks();
++  EXPECT_TRUE(host.signals().empty());
++  task_environment_.FastForwardBy(base::Milliseconds(1));
++  test::RunPendingTasks();
++
++  ASSERT_EQ(host.signals().size(), 1u);
++  EXPECT_EQ(host.signals()[0], DirtySignal::kDirty);
++}
++
++TEST_F(PrometheusSupervisionDocumentSupplementTest, DirtyBurstCoalesces) {
++  RecordingHost host;
++  Enable(host);
++
++  MutateAttribute("one");
++  MutateAttribute("two");
++  MutateAttribute("three");
++  AdvanceDebounce();
++
++  ASSERT_EQ(host.signals().size(), 1u);
++  EXPECT_EQ(host.signals()[0], DirtySignal::kDirty);
++}
++
++TEST_F(PrometheusSupervisionDocumentSupplementTest, OverflowCollapsesBurst) {
++  RecordingHost host;
++  Enable(host);
++
++  AppendMutations(1024u);
++  AdvanceDebounce();
++
++  ASSERT_EQ(host.signals().size(), 1u);
++  EXPECT_EQ(host.signals()[0], DirtySignal::kOverflow);
++}
++
++TEST_F(PrometheusSupervisionDocumentSupplementTest, DisableCancelsSignal) {
++  RecordingHost host;
++  Enable(host);
++  MutateAttribute("one");
++
++  document_remote_->Disable();
++  document_remote_.FlushForTesting();
++  AdvanceDebounce();
++
++  EXPECT_TRUE(host.signals().empty());
++}
++
++TEST_F(PrometheusSupervisionDocumentSupplementTest,
++       RepeatedEnableReplacesHost) {
++  RecordingHost first_host;
++  RecordingHost second_host;
++  Enable(first_host);
++  Enable(second_host);
++
++  MutateAttribute("one");
++  AdvanceDebounce();
++
++  EXPECT_TRUE(first_host.signals().empty());
++  ASSERT_EQ(second_host.signals().size(), 1u);
++  EXPECT_EQ(second_host.signals()[0], DirtySignal::kDirty);
++}
++
++TEST_F(PrometheusSupervisionDocumentSupplementTest,
++       ReceiverDisconnectCancelsSignal) {
++  RecordingHost host;
++  Enable(host);
++  MutateAttribute("one");
++
++  document_remote_.reset();
++  test::RunPendingTasks();
++  AdvanceDebounce();
++
++  EXPECT_TRUE(host.signals().empty());
++}
++
++TEST_F(PrometheusSupervisionDocumentSupplementTest,
++       HostDisconnectCancelsSignal) {
++  RecordingHost host;
++  Enable(host);
++  MutateAttribute("one");
++
++  host.Disconnect();
++  test::RunPendingTasks();
++  AdvanceDebounce();
++
++  EXPECT_TRUE(host.signals().empty());
++}
++
++TEST_F(PrometheusSupervisionDocumentSupplementTest,
++       DocumentReplacementDropsOldSignal) {
++  RecordingHost old_host;
++  Enable(old_host);
++  MutateAttribute("old");
++
++  Document* old_document = &GetDocument();
++  auto* old_supplement =
++      PrometheusSupervisionDocumentSupplement::From(*old_document);
++  ASSERT_TRUE(old_supplement);
++  LoadHTML("<html><body>replacement</body></html>");
++  EXPECT_NE(old_document, &GetDocument());
++  BindDocument();
++  auto* new_supplement =
++      PrometheusSupervisionDocumentSupplement::From(GetDocument());
++  ASSERT_TRUE(new_supplement);
++  EXPECT_NE(old_supplement, new_supplement);
++
++  AdvanceDebounce();
++  EXPECT_TRUE(old_host.signals().empty());
++}
++
++TEST_F(PrometheusSupervisionDocumentSupplementTest,
++       RepeatedTeardownIsIdempotent) {
++  RecordingHost host;
++  Enable(host);
++
++  document_remote_->Disable();
++  document_remote_->Disable();
++  document_remote_.FlushForTesting();
++  document_remote_.reset();
++  host.Disconnect();
++  test::RunPendingTasks();
++
++  SUCCEED();
++}
++
++}  // namespace
++
++}  // namespace blink
+-- 
+2.50.1 (Apple Git-155)
+

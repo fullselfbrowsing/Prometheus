@@ -1,0 +1,353 @@
+From 2a99bf234c42cfee314421927c342c50ab95afe1 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 28 Jul 2026 17:39:19 -0500
+Subject: [PATCH 3/3] test(22-01): retain extension lifecycle RED contract
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   1 +
+ .../prometheus_extension_policy_service.cc    |   4 +
+ .../prometheus_extension_policy_service.h     |   3 +
+ ...theus_extension_policy_service_unittest.cc | 275 ++++++++++++++++++
+ 4 files changed, 283 insertions(+)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 9a30fbcd0a..14de6a7e65 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -817,6 +817,7 @@ test("prometheus_unittests") {
+     "//components/tabs:test_support",
+     "//content/test:run_all_unittests",
+     "//content/test:test_support",
++    "//extensions:test_support",
+     "//services/network:test_support",
+     "//skia",
+     "//testing/gmock",
+diff --git a/chrome/browser/prometheus/prometheus_extension_policy_service.cc b/chrome/browser/prometheus/prometheus_extension_policy_service.cc
+index 8930d902ba..f9c5df34d7 100644
+--- a/chrome/browser/prometheus/prometheus_extension_policy_service.cc
++++ b/chrome/browser/prometheus/prometheus_extension_policy_service.cc
+@@ -376,4 +376,8 @@ void PrometheusExtensionPolicyService::ReconcileAndNotify() {
+   }
+ }
+ 
++bool ExtensionPolicyLifecycleImplementedForTesting() {
++  return false;
++}
++
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_policy_service.h b/chrome/browser/prometheus/prometheus_extension_policy_service.h
+index 1202dfca6b..230d72c743 100644
+--- a/chrome/browser/prometheus/prometheus_extension_policy_service.h
++++ b/chrome/browser/prometheus/prometheus_extension_policy_service.h
+@@ -117,6 +117,9 @@ class PrometheusExtensionPolicyService
+   base::ObserverList<PrometheusExtensionPolicyServiceObserver> observers_;
+ };
+ 
++// Retained seam for the registry lifecycle RED/GREEN contract.
++bool ExtensionPolicyLifecycleImplementedForTesting();
++
+ }  // namespace prometheus
+ 
+ #endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_POLICY_SERVICE_H_
+diff --git a/chrome/browser/prometheus/prometheus_extension_policy_service_unittest.cc b/chrome/browser/prometheus/prometheus_extension_policy_service_unittest.cc
+index 49cc5364d8..788c3debae 100644
+--- a/chrome/browser/prometheus/prometheus_extension_policy_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_extension_policy_service_unittest.cc
+@@ -14,6 +14,8 @@
+ #include "chrome/browser/prometheus/prometheus_extension_policy_service_factory.h"
+ #include "components/crx_file/id_util.h"
+ #include "components/sync_preferences/testing_pref_service_syncable.h"
++#include "extensions/browser/unloaded_extension_reason.h"
++#include "extensions/common/extension_builder.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ 
+ namespace prometheus {
+@@ -37,6 +39,60 @@ ExtensionPolicyInventoryEntry MakeInventoryEntry(
+   return entry;
+ }
+ 
++scoped_refptr<const extensions::Extension> MakeExtension(
++    std::string name,
++    std::string extension_id) {
++  return extensions::ExtensionBuilder(std::move(name))
++      .SetID(std::move(extension_id))
++      .Build();
++}
++
++class RecordingPolicyObserver
++    : public PrometheusExtensionPolicyServiceObserver {
++ public:
++  RecordingPolicyObserver(PrometheusExtensionPolicyService* service,
++                          PrefService* prefs = nullptr,
++                          std::string extension_id = std::string())
++      : service_(service),
++        prefs_(prefs),
++        extension_id_(std::move(extension_id)) {
++    service_->AddObserver(this);
++  }
++
++  RecordingPolicyObserver(const RecordingPolicyObserver&) = delete;
++  RecordingPolicyObserver& operator=(const RecordingPolicyObserver&) = delete;
++
++  ~RecordingPolicyObserver() override { service_->RemoveObserver(this); }
++
++  void OnPrometheusExtensionPolicyChanged(
++      const ExtensionPolicySnapshot& snapshot) override {
++    snapshots.push_back(snapshot);
++    if (prefs_ && !extension_id_.empty()) {
++      choice_present_during_notification.push_back(
++          ReadPrometheusExtensionPolicyChoices(*prefs_).contains(
++              extension_id_));
++    }
++    if (!extension_id_.empty()) {
++      private_grants_during_notification.push_back(
++          service_->GetEffectiveGrant(extension_id_, nullptr,
++                                      /*private_mode=*/true));
++    }
++    if (reenter_once && snapshots.size() == 1u) {
++      service_->ReconcileForTesting();
++    }
++  }
++
++  bool reenter_once = false;
++  std::vector<ExtensionPolicySnapshot> snapshots;
++  std::vector<bool> choice_present_during_notification;
++  std::vector<ExtensionAgentGrant> private_grants_during_notification;
++
++ private:
++  raw_ptr<PrometheusExtensionPolicyService> service_;
++  raw_ptr<PrefService> prefs_;
++  std::string extension_id_;
++};
++
+ void RequireGreenContract() {
+   ASSERT_TRUE(ExtensionPolicyContractImplementedForTesting())
+       << "retained RED: bounded extension policy behavior is not implemented";
+@@ -378,5 +434,224 @@ TEST(PrometheusExtensionPolicyFactoryTest,
+                   HasExtensionRegistryDependencyForTesting());
+ }
+ 
++TEST(PrometheusExtensionPolicyRegistryTest,
++     ReadyInstallEnableDisableTerminateAndReloadRequeryById) {
++  ASSERT_TRUE(ExtensionPolicyLifecycleImplementedForTesting())
++      << "retained RED: registry lifecycle reconciliation is not implemented";
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusExtensionPolicyProfilePrefs(prefs.registry());
++  PrometheusExtensionPolicyService service(nullptr, &prefs, nullptr);
++  service.SetSystemReadyForTesting(true);
++  service.SetInventoryForTesting({MakeInventoryEntry(kFirstExtensionId)});
++  scoped_refptr<const extensions::Extension> extension =
++      MakeExtension("First extension", kFirstExtensionId);
++
++  ExtensionPolicySnapshot snapshot = service.GetSnapshot();
++  ASSERT_EQ(
++      ExtensionPolicyMutationResult::kApplied,
++      service.SetRequestedGrant(0, snapshot.generation, /*private_mode=*/false,
++                                ExtensionAgentGrant::kInteract));
++  const size_t lookup_count = service.registry_lookup_count_for_testing();
++
++  ExtensionPolicyInventoryEntry inactive =
++      MakeInventoryEntry(kFirstExtensionId);
++  inactive.enabled = false;
++  inactive.ready = false;
++  service.SetInventoryForTesting({inactive});
++  service.OnExtensionUnloaded(nullptr, extension.get(),
++                              extensions::UnloadedExtensionReason::DISABLE);
++  EXPECT_EQ(ExtensionAgentGrant::kBlocked,
++            service.GetEffectiveGrant(kFirstExtensionId, nullptr,
++                                      /*private_mode=*/false));
++  EXPECT_GT(service.registry_lookup_count_for_testing(), lookup_count);
++  EXPECT_EQ(ExtensionAgentGrant::kInteract,
++            ReadPrometheusExtensionPolicyChoices(prefs)
++                .at(kFirstExtensionId)
++                .regular);
++
++  service.OnExtensionUnloaded(nullptr, extension.get(),
++                              extensions::UnloadedExtensionReason::TERMINATE);
++  service.SetInventoryForTesting({MakeInventoryEntry(kFirstExtensionId)});
++  service.OnExtensionLoaded(nullptr, extension.get());
++  service.OnExtensionReady(nullptr, extension.get());
++  EXPECT_EQ(ExtensionAgentGrant::kInteract,
++            service.GetEffectiveGrant(kFirstExtensionId, nullptr,
++                                      /*private_mode=*/false));
++
++  scoped_refptr<const extensions::Extension> second =
++      MakeExtension("Second extension", kSecondExtensionId);
++  service.SetInventoryForTesting({MakeInventoryEntry(kFirstExtensionId),
++                                  MakeInventoryEntry(kSecondExtensionId)});
++  service.OnExtensionInstalled(nullptr, second.get(), /*is_update=*/false);
++  EXPECT_EQ(2u, service.GetSnapshot().rows.size());
++
++  service.SetSystemReadyForTesting(false);
++  service.ReconcileForTesting();
++  EXPECT_EQ(ExtensionAgentGrant::kBlocked,
++            service.GetEffectiveGrant(kFirstExtensionId, nullptr,
++                                      /*private_mode=*/false));
++}
++
++TEST(PrometheusExtensionPolicyRegistryTest,
++     UninstallErasesPersistedChoiceBeforeNotification) {
++  ASSERT_TRUE(ExtensionPolicyLifecycleImplementedForTesting())
++      << "retained RED: registry lifecycle reconciliation is not implemented";
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusExtensionPolicyProfilePrefs(prefs.registry());
++  PrometheusExtensionPolicyService service(nullptr, &prefs, nullptr);
++  service.SetSystemReadyForTesting(true);
++  service.SetInventoryForTesting({MakeInventoryEntry(kFirstExtensionId)});
++  scoped_refptr<const extensions::Extension> extension =
++      MakeExtension("First extension", kFirstExtensionId);
++
++  ExtensionPolicySnapshot snapshot = service.GetSnapshot();
++  ASSERT_EQ(
++      ExtensionPolicyMutationResult::kApplied,
++      service.SetRequestedGrant(0, snapshot.generation, /*private_mode=*/false,
++                                ExtensionAgentGrant::kInteract));
++  RecordingPolicyObserver observer(&service, &prefs, kFirstExtensionId);
++
++  service.SetInventoryForTesting({});
++  service.OnExtensionUninstalled(nullptr, extension.get(),
++                                 extensions::UNINSTALL_REASON_FOR_TESTING);
++
++  ASSERT_EQ(1u, observer.snapshots.size());
++  ASSERT_EQ(1u, observer.choice_present_during_notification.size());
++  EXPECT_FALSE(observer.choice_present_during_notification.front());
++  EXPECT_TRUE(ReadPrometheusExtensionPolicyChoices(prefs).empty());
++  EXPECT_TRUE(observer.snapshots.front().rows.empty());
++}
++
++TEST(PrometheusExtensionPolicyRegistryTest,
++     ReplacementAndReorderRejectStaleOrdinalGeneration) {
++  ASSERT_TRUE(ExtensionPolicyLifecycleImplementedForTesting())
++      << "retained RED: registry lifecycle reconciliation is not implemented";
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusExtensionPolicyProfilePrefs(prefs.registry());
++  PrometheusExtensionPolicyService service(nullptr, &prefs, nullptr);
++  service.SetSystemReadyForTesting(true);
++  service.SetInventoryForTesting({MakeInventoryEntry(kFirstExtensionId),
++                                  MakeInventoryEntry(kSecondExtensionId)});
++
++  const ExtensionPolicySnapshot old_snapshot = service.GetSnapshot();
++  service.SetInventoryForTesting(
++      {MakeInventoryEntry(kSecondExtensionId),
++       MakeInventoryEntry(
++           crx_file::id_util::GenerateId("replacement-extension"))});
++  service.ReconcileForTesting();
++
++  EXPECT_EQ(ExtensionPolicyMutationResult::kStaleGeneration,
++            service.SetRequestedGrant(0, old_snapshot.generation,
++                                      /*private_mode=*/false,
++                                      ExtensionAgentGrant::kInteract));
++  EXPECT_EQ(ExtensionAgentGrant::kBlocked,
++            service.GetEffectiveGrant(kSecondExtensionId, nullptr,
++                                      /*private_mode=*/false));
++
++  const ExtensionPolicySnapshot fresh_snapshot = service.GetSnapshot();
++  ASSERT_EQ("bbbbbb", fresh_snapshot.rows.front().id_suffix);
++  EXPECT_EQ(ExtensionPolicyMutationResult::kApplied,
++            service.SetRequestedGrant(0, fresh_snapshot.generation,
++                                      /*private_mode=*/false,
++                                      ExtensionAgentGrant::kReadOnly));
++  EXPECT_EQ(ExtensionAgentGrant::kReadOnly,
++            service.GetEffectiveGrant(kSecondExtensionId, nullptr,
++                                      /*private_mode=*/false));
++}
++
++TEST(PrometheusExtensionPolicyLifecycleTest,
++     NativePrivateEligibilityLossBlocksBeforeObserverNotification) {
++  ASSERT_TRUE(ExtensionPolicyLifecycleImplementedForTesting())
++      << "retained RED: registry lifecycle reconciliation is not implemented";
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusExtensionPolicyProfilePrefs(prefs.registry());
++  PrometheusExtensionPolicyService service(nullptr, &prefs, nullptr);
++  service.SetSystemReadyForTesting(true);
++  service.SetInventoryForTesting({MakeInventoryEntry(kFirstExtensionId)});
++
++  ExtensionPolicySnapshot snapshot = service.GetSnapshot();
++  ASSERT_EQ(
++      ExtensionPolicyMutationResult::kApplied,
++      service.SetRequestedGrant(0, snapshot.generation, /*private_mode=*/false,
++                                ExtensionAgentGrant::kInteract));
++  snapshot = service.GetSnapshot();
++  ASSERT_EQ(
++      ExtensionPolicyMutationResult::kApplied,
++      service.SetRequestedGrant(0, snapshot.generation, /*private_mode=*/true,
++                                ExtensionAgentGrant::kInteract));
++  RecordingPolicyObserver observer(&service, &prefs, kFirstExtensionId);
++
++  service.SetInventoryForTesting(
++      {MakeInventoryEntry(kFirstExtensionId, "First extension",
++                          /*native_private_eligible=*/false)});
++  service.ReconcileForTesting();
++
++  ASSERT_EQ(1u, observer.snapshots.size());
++  ASSERT_EQ(1u, observer.private_grants_during_notification.size());
++  EXPECT_EQ(ExtensionAgentGrant::kBlocked,
++            observer.private_grants_during_notification.front());
++  EXPECT_EQ(ExtensionAgentGrant::kBlocked,
++            observer.snapshots.front().rows.front().effective_private);
++  EXPECT_EQ(ExtensionAgentGrant::kBlocked,
++            ReadPrometheusExtensionPolicyChoices(prefs)
++                .at(kFirstExtensionId)
++                .private_mode);
++}
++
++TEST(PrometheusExtensionPolicyLifecycleTest,
++     ObserverReentrancyAdvancesGenerationBeforeEveryNotification) {
++  ASSERT_TRUE(ExtensionPolicyLifecycleImplementedForTesting())
++      << "retained RED: registry lifecycle reconciliation is not implemented";
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusExtensionPolicyProfilePrefs(prefs.registry());
++  PrometheusExtensionPolicyService service(nullptr, &prefs, nullptr);
++  service.SetSystemReadyForTesting(true);
++  service.SetInventoryForTesting({MakeInventoryEntry(kFirstExtensionId)});
++  RecordingPolicyObserver observer(&service);
++  observer.reenter_once = true;
++
++  const uint64_t old_generation = service.GetSnapshot().generation;
++  service.ReconcileForTesting();
++
++  ASSERT_EQ(2u, observer.snapshots.size());
++  EXPECT_GT(observer.snapshots[0].generation, old_generation);
++  EXPECT_GT(observer.snapshots[1].generation, observer.snapshots[0].generation);
++}
++
++TEST(PrometheusExtensionPolicyLifecycleTest,
++     ProfileShutdownMakesLateCallbacksHarmless) {
++  ASSERT_TRUE(ExtensionPolicyLifecycleImplementedForTesting())
++      << "retained RED: registry lifecycle reconciliation is not implemented";
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusExtensionPolicyProfilePrefs(prefs.registry());
++  PrometheusExtensionPolicyService service(nullptr, &prefs, nullptr);
++  service.SetSystemReadyForTesting(true);
++  service.SetInventoryForTesting({MakeInventoryEntry(kFirstExtensionId)});
++  scoped_refptr<const extensions::Extension> extension =
++      MakeExtension("First extension", kFirstExtensionId);
++  RecordingPolicyObserver observer(&service);
++
++  const ExtensionPolicySnapshot snapshot = service.GetSnapshot();
++  service.Shutdown();
++  service.OnExtensionLoaded(nullptr, extension.get());
++  service.OnExtensionReady(nullptr, extension.get());
++  service.OnExtensionUnloaded(nullptr, extension.get(),
++                              extensions::UnloadedExtensionReason::DISABLE);
++  service.OnExtensionInstalled(nullptr, extension.get(), /*is_update=*/false);
++  service.OnExtensionUninstalled(nullptr, extension.get(),
++                                 extensions::UNINSTALL_REASON_FOR_TESTING);
++  service.ReconcileForTesting();
++
++  EXPECT_TRUE(observer.snapshots.empty());
++  EXPECT_TRUE(service.GetSnapshot().rows.empty());
++  EXPECT_EQ(ExtensionAgentGrant::kBlocked,
++            service.GetEffectiveGrant(kFirstExtensionId, nullptr,
++                                      /*private_mode=*/false));
++  EXPECT_EQ(
++      ExtensionPolicyMutationResult::kUnavailable,
++      service.SetRequestedGrant(0, snapshot.generation, /*private_mode=*/false,
++                                ExtensionAgentGrant::kInteract));
++}
++
+ }  // namespace
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

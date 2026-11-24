@@ -1,0 +1,596 @@
+From 8f9ed92f99db937715fcf05ecd54ab33bbe4db01 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 25 Jun 2026 06:22:21 -0500
+Subject: [PATCH 10/15] feat(14-05): implement PrometheusAction resolver (.cc +
+ GN target + tests)
+
+- Add prometheus_action.cc with GetPrometheusActionIconMap() (72-entry flat_map
+  via base::NoDestructor) and GetPrometheusActionSvgPath() switch statement
+- Add prometheus_action_unittest.cc: 3 tests verifying map size = 72, every
+  action maps to a non-null VectorIcon, every action maps to a .svg path (D-08)
+- Wire prometheus_action source_set in chrome/browser/prometheus/BUILD.gn
+  depending on :prometheus_vector_icons; add :prometheus_action dep to test
+- Fix prometheus_unittests: remove duplicate prometheus_color_mixer.cc source
+  that caused duplicate symbol with //chrome/browser/ui/color:mixers dep
+- Add prometheus-specific vector_icons.cc.template and vector_icons.h.template
+  to avoid -Wunused-const-variable and wrong-module header inclusion
+- All 3 PrometheusActionTest tests pass; all 6 verify-asset-pipeline assertions pass
+- Satisfies DESIGN-04, D-08
+---
+ chrome/browser/prometheus/BUILD.gn            |  25 +-
+ .../browser/prometheus/prometheus_action.cc   | 262 ++++++++++++++++++
+ .../prometheus/prometheus_action_unittest.cc  | 138 +++++++++
+ chrome/browser/resources/prometheus/BUILD.gn  |  20 +-
+ .../vector_icons/vector_icons.cc.template     |  11 +-
+ .../vector_icons/vector_icons.h.template      |  16 +-
+ 6 files changed, 450 insertions(+), 22 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_action.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_action_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 93148c0cd8..9abdea6da5 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -2,21 +2,42 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
+-# Wave 0: Prometheus unit test target.
+-# All tests start RED — populated incrementally by Plans 14-02 through 14-06.
++# Prometheus Chromium browser target: action resolver + unit tests.
+ # Modeled on chrome/browser/ui/color/BUILD.gn source_set pattern.
+ 
+ import("//testing/test.gni")
+ 
++# PrometheusAction resolver source set (D-08).
++# Maps PrometheusAction enum values to gfx::VectorIcon (Views) and SVG path (WebUI).
++# Depends on prometheus_vector_icons for the generated icon symbols.
++source_set("prometheus_action") {
++  sources = [
++    "prometheus_action.cc",
++    "prometheus_action.h",
++  ]
++
++  deps = [
++    "//base",
++    "//chrome/browser/resources/prometheus:prometheus_vector_icons",
++    "//ui/gfx",
++  ]
++
++  # The generated vector_icons.h is in the gen directory; add it to include path.
++  # GN resolves this via the prometheus_vector_icons dep's output.
++}
++
+ test("prometheus_unittests") {
+   sources = [
++    "prometheus_action_unittest.cc",
+     "prometheus_asset_resource_unittest.cc",
+     "prometheus_color_mixer_unittest.cc",
+     "prometheus_css_emission_unittest.cc",
+   ]
+ 
+   deps = [
++    ":prometheus_action",
+     "//base",
++    "//chrome/browser/resources/prometheus:prometheus_vector_icons",
+     "//chrome/browser/ui/color:color_headers",
+     "//chrome/browser/ui/color:mixers",
+     "//skia",
+diff --git a/chrome/browser/prometheus/prometheus_action.cc b/chrome/browser/prometheus/prometheus_action.cc
+new file mode 100644
+index 0000000000..264bb1b7e0
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_action.cc
+@@ -0,0 +1,262 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Implementation of PrometheusAction resolver functions (D-08).
++// Maps each of the 72 PrometheusAction values to:
++//   - A generated gfx::VectorIcon from prometheus_vector_icons (Views)
++//   - A WebUI SVG resource path (chrome://prometheus/ resource root)
++
++#include "chrome/browser/prometheus/prometheus_action.h"
++
++#include "base/containers/flat_map.h"
++#include "base/no_destructor.h"
++// Generated header from aggregate_vector_icons("prometheus_vector_icons").
++// Exposes kFaBoltIcon, kFaCompassIcon, etc. in namespace vector_icons.
++// Generated at build time to:
++//   out/Default/gen/chrome/browser/resources/prometheus/vector_icons.h
++#include "chrome/browser/resources/prometheus/vector_icons.h"
++#include "ui/gfx/vector_icon_types.h"
++
++const base::flat_map<PrometheusAction, const gfx::VectorIcon*>&
++GetPrometheusActionIconMap() {
++  static const base::NoDestructor<
++      base::flat_map<PrometheusAction, const gfx::VectorIcon*>>
++      kIconMap({
++          {PrometheusAction::kArrowDownToLine,
++           &kFaArrowDownToLineIcon},
++          {PrometheusAction::kArrowLeft, &kFaArrowLeftIcon},
++          {PrometheusAction::kArrowRight, &kFaArrowRightIcon},
++          {PrometheusAction::kArrowUp, &kFaArrowUpIcon},
++          {PrometheusAction::kArrowUpFromBracket,
++           &kFaArrowUpFromBracketIcon},
++          {PrometheusAction::kBars, &kFaBarsIcon},
++          {PrometheusAction::kBolt, &kFaBoltIcon},
++          {PrometheusAction::kBookOpen, &kFaBookOpenIcon},
++          {PrometheusAction::kCalendarCheck,
++           &kFaCalendarCheckIcon},
++          {PrometheusAction::kCamera, &kFaCameraIcon},
++          {PrometheusAction::kCartShopping,
++           &kFaCartShoppingIcon},
++          {PrometheusAction::kCheckDouble, &kFaCheckDoubleIcon},
++          {PrometheusAction::kCircleCheck, &kFaCircleCheckIcon},
++          {PrometheusAction::kCircleHalfStroke,
++           &kFaCircleHalfStrokeIcon},
++          {PrometheusAction::kCircleInfo, &kFaCircleInfoIcon},
++          {PrometheusAction::kCircleMinus, &kFaCircleMinusIcon},
++          {PrometheusAction::kCircleNodes, &kFaCircleNodesIcon},
++          {PrometheusAction::kCirclePlus, &kFaCirclePlusIcon},
++          {PrometheusAction::kCircleQuestion,
++           &kFaCircleQuestionIcon},
++          {PrometheusAction::kCircleXmark, &kFaCircleXmarkIcon},
++          {PrometheusAction::kCompass, &kFaCompassIcon},
++          {PrometheusAction::kCopy, &kFaCopyIcon},
++          {PrometheusAction::kEye, &kFaEyeIcon},
++          {PrometheusAction::kFolderPlus, &kFaFolderPlusIcon},
++          {PrometheusAction::kHeartPulse, &kFaHeartPulseIcon},
++          {PrometheusAction::kHighlighter, &kFaHighlighterIcon},
++          {PrometheusAction::kHouse, &kFaHouseIcon},
++          {PrometheusAction::kInbox, &kFaInboxIcon},
++          {PrometheusAction::kKey, &kFaKeyIcon},
++          {PrometheusAction::kKeyboard, &kFaKeyboardIcon},
++          {PrometheusAction::kLanguage, &kFaLanguageIcon},
++          {PrometheusAction::kLayerGroup, &kFaLayerGroupIcon},
++          {PrometheusAction::kLink, &kFaLinkIcon},
++          {PrometheusAction::kLinkSlash, &kFaLinkSlashIcon},
++          {PrometheusAction::kLock, &kFaLockIcon},
++          {PrometheusAction::kLockOpen, &kFaLockOpenIcon},
++          {PrometheusAction::kMagnifyingGlass,
++           &kFaMagnifyingGlassIcon},
++          {PrometheusAction::kMicrochip, &kFaMicrochipIcon},
++          {PrometheusAction::kMicrophone, &kFaMicrophoneIcon},
++          {PrometheusAction::kMoon, &kFaMoonIcon},
++          {PrometheusAction::kNoteSticky, &kFaNoteStickyIcon},
++          {PrometheusAction::kPalette, &kFaPaletteIcon},
++          {PrometheusAction::kPaste, &kFaPasteIcon},
++          {PrometheusAction::kPen, &kFaPenIcon},
++          {PrometheusAction::kPlug, &kFaPlugIcon},
++          {PrometheusAction::kPlugCircleXmark,
++           &kFaPlugCircleXmarkIcon},
++          {PrometheusAction::kPlus, &kFaPlusIcon},
++          {PrometheusAction::kPuzzlePiece, &kFaPuzzlePieceIcon},
++          {PrometheusAction::kRotateLeft, &kFaRotateLeftIcon},
++          {PrometheusAction::kRotateRight, &kFaRotateRightIcon},
++          {PrometheusAction::kScissors, &kFaScissorsIcon},
++          {PrometheusAction::kScroll, &kFaScrollIcon},
++          {PrometheusAction::kServer, &kFaServerIcon},
++          {PrometheusAction::kShield, &kFaShieldIcon},
++          {PrometheusAction::kSidebarFlip,
++           &kFaSidebarFlipIcon},  // placeholder icon (D-08)
++          {PrometheusAction::kSliders, &kFaSlidersIcon},
++          {PrometheusAction::kStar, &kFaStarIcon},
++          {PrometheusAction::kStarHalfStroke,
++           &kFaStarHalfStrokeIcon},
++          {PrometheusAction::kStop, &kFaStopIcon},
++          {PrometheusAction::kTable, &kFaTableIcon},
++          {PrometheusAction::kTableCellsLarge,
++           &kFaTableCellsLargeIcon},
++          {PrometheusAction::kTag, &kFaTagIcon},
++          {PrometheusAction::kThumbtack, &kFaThumbtackIcon},
++          {PrometheusAction::kTrash, &kFaTrashIcon},
++          {PrometheusAction::kTriangleExclamation,
++           &kFaTriangleExclamationIcon},
++          {PrometheusAction::kUserSecret, &kFaUserSecretIcon},
++          {PrometheusAction::kVault, &kFaVaultIcon},
++          {PrometheusAction::kVolumeHigh, &kFaVolumeHighIcon},
++          {PrometheusAction::kVolumeXmark, &kFaVolumeXmarkIcon},
++          {PrometheusAction::kWandMagicSparkles,
++           &kFaWandMagicSparklesIcon},
++          {PrometheusAction::kWrench, &kFaWrenchIcon},
++          {PrometheusAction::kXmark, &kFaXmarkIcon},
++      });
++  return *kIconMap;
++}
++
++const char* GetPrometheusActionSvgPath(PrometheusAction action) {
++  switch (action) {
++    case PrometheusAction::kArrowDownToLine:
++      return "fa_arrow_down_to_line.svg";
++    case PrometheusAction::kArrowLeft:
++      return "fa_arrow_left.svg";
++    case PrometheusAction::kArrowRight:
++      return "fa_arrow_right.svg";
++    case PrometheusAction::kArrowUp:
++      return "fa_arrow_up.svg";
++    case PrometheusAction::kArrowUpFromBracket:
++      return "fa_arrow_up_from_bracket.svg";
++    case PrometheusAction::kBars:
++      return "fa_bars.svg";
++    case PrometheusAction::kBolt:
++      return "fa_bolt.svg";
++    case PrometheusAction::kBookOpen:
++      return "fa_book_open.svg";
++    case PrometheusAction::kCalendarCheck:
++      return "fa_calendar_check.svg";
++    case PrometheusAction::kCamera:
++      return "fa_camera.svg";
++    case PrometheusAction::kCartShopping:
++      return "fa_cart_shopping.svg";
++    case PrometheusAction::kCheckDouble:
++      return "fa_check_double.svg";
++    case PrometheusAction::kCircleCheck:
++      return "fa_circle_check.svg";
++    case PrometheusAction::kCircleHalfStroke:
++      return "fa_circle_half_stroke.svg";
++    case PrometheusAction::kCircleInfo:
++      return "fa_circle_info.svg";
++    case PrometheusAction::kCircleMinus:
++      return "fa_circle_minus.svg";
++    case PrometheusAction::kCircleNodes:
++      return "fa_circle_nodes.svg";
++    case PrometheusAction::kCirclePlus:
++      return "fa_circle_plus.svg";
++    case PrometheusAction::kCircleQuestion:
++      return "fa_circle_question.svg";
++    case PrometheusAction::kCircleXmark:
++      return "fa_circle_xmark.svg";
++    case PrometheusAction::kCompass:
++      return "fa_compass.svg";
++    case PrometheusAction::kCopy:
++      return "fa_copy.svg";
++    case PrometheusAction::kEye:
++      return "fa_eye.svg";
++    case PrometheusAction::kFolderPlus:
++      return "fa_folder_plus.svg";
++    case PrometheusAction::kHeartPulse:
++      return "fa_heart_pulse.svg";
++    case PrometheusAction::kHighlighter:
++      return "fa_highlighter.svg";
++    case PrometheusAction::kHouse:
++      return "fa_house.svg";
++    case PrometheusAction::kInbox:
++      return "fa_inbox.svg";
++    case PrometheusAction::kKey:
++      return "fa_key.svg";
++    case PrometheusAction::kKeyboard:
++      return "fa_keyboard.svg";
++    case PrometheusAction::kLanguage:
++      return "fa_language.svg";
++    case PrometheusAction::kLayerGroup:
++      return "fa_layer_group.svg";
++    case PrometheusAction::kLink:
++      return "fa_link.svg";
++    case PrometheusAction::kLinkSlash:
++      return "fa_link_slash.svg";
++    case PrometheusAction::kLock:
++      return "fa_lock.svg";
++    case PrometheusAction::kLockOpen:
++      return "fa_lock_open.svg";
++    case PrometheusAction::kMagnifyingGlass:
++      return "fa_magnifying_glass.svg";
++    case PrometheusAction::kMicrochip:
++      return "fa_microchip.svg";
++    case PrometheusAction::kMicrophone:
++      return "fa_microphone.svg";
++    case PrometheusAction::kMoon:
++      return "fa_moon.svg";
++    case PrometheusAction::kNoteSticky:
++      return "fa_note_sticky.svg";
++    case PrometheusAction::kPalette:
++      return "fa_palette.svg";
++    case PrometheusAction::kPaste:
++      return "fa_paste.svg";
++    case PrometheusAction::kPen:
++      return "fa_pen.svg";
++    case PrometheusAction::kPlug:
++      return "fa_plug.svg";
++    case PrometheusAction::kPlugCircleXmark:
++      return "fa_plug_circle_xmark.svg";
++    case PrometheusAction::kPlus:
++      return "fa_plus.svg";
++    case PrometheusAction::kPuzzlePiece:
++      return "fa_puzzle_piece.svg";
++    case PrometheusAction::kRotateLeft:
++      return "fa_rotate_left.svg";
++    case PrometheusAction::kRotateRight:
++      return "fa_rotate_right.svg";
++    case PrometheusAction::kScissors:
++      return "fa_scissors.svg";
++    case PrometheusAction::kScroll:
++      return "fa_scroll.svg";
++    case PrometheusAction::kServer:
++      return "fa_server.svg";
++    case PrometheusAction::kShield:
++      return "fa_shield.svg";
++    case PrometheusAction::kSidebarFlip:
++      return "fa_sidebar_flip.svg";  // placeholder (Pro-only, D-08)
++    case PrometheusAction::kSliders:
++      return "fa_sliders.svg";
++    case PrometheusAction::kStar:
++      return "fa_star.svg";
++    case PrometheusAction::kStarHalfStroke:
++      return "fa_star_half_stroke.svg";
++    case PrometheusAction::kStop:
++      return "fa_stop.svg";
++    case PrometheusAction::kTable:
++      return "fa_table.svg";
++    case PrometheusAction::kTableCellsLarge:
++      return "fa_table_cells_large.svg";
++    case PrometheusAction::kTag:
++      return "fa_tag.svg";
++    case PrometheusAction::kThumbtack:
++      return "fa_thumbtack.svg";
++    case PrometheusAction::kTrash:
++      return "fa_trash.svg";
++    case PrometheusAction::kTriangleExclamation:
++      return "fa_triangle_exclamation.svg";
++    case PrometheusAction::kUserSecret:
++      return "fa_user_secret.svg";
++    case PrometheusAction::kVault:
++      return "fa_vault.svg";
++    case PrometheusAction::kVolumeHigh:
++      return "fa_volume_high.svg";
++    case PrometheusAction::kVolumeXmark:
++      return "fa_volume_xmark.svg";
++    case PrometheusAction::kWandMagicSparkles:
++      return "fa_wand_magic_sparkles.svg";
++    case PrometheusAction::kWrench:
++      return "fa_wrench.svg";
++    case PrometheusAction::kXmark:
++      return "fa_xmark.svg";
++  }
++}
+diff --git a/chrome/browser/prometheus/prometheus_action_unittest.cc b/chrome/browser/prometheus/prometheus_action_unittest.cc
+new file mode 100644
+index 0000000000..7db13ea69d
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_action_unittest.cc
+@@ -0,0 +1,138 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Unit tests for PrometheusAction resolver (D-08).
++// Verifies that every PrometheusAction value maps to:
++//   - A non-null gfx::VectorIcon (Views rendering)
++//   - A non-empty SVG resource path string (WebUI rendering)
++// Also asserts the map has exactly 72 entries (parity with the 72-glyph manifest).
++
++#include "chrome/browser/prometheus/prometheus_action.h"
++
++#include <cstring>
++#include <string>
++#include <vector>
++
++#include "base/containers/flat_map.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "ui/gfx/vector_icon_types.h"
++
++namespace {
++
++// The complete list of all 72 PrometheusAction values.
++// This list must stay in sync with the PrometheusAction enum in prometheus_action.h.
++constexpr PrometheusAction kAllActions[] = {
++    PrometheusAction::kArrowDownToLine,
++    PrometheusAction::kArrowLeft,
++    PrometheusAction::kArrowRight,
++    PrometheusAction::kArrowUp,
++    PrometheusAction::kArrowUpFromBracket,
++    PrometheusAction::kBars,
++    PrometheusAction::kBolt,
++    PrometheusAction::kBookOpen,
++    PrometheusAction::kCalendarCheck,
++    PrometheusAction::kCamera,
++    PrometheusAction::kCartShopping,
++    PrometheusAction::kCheckDouble,
++    PrometheusAction::kCircleCheck,
++    PrometheusAction::kCircleHalfStroke,
++    PrometheusAction::kCircleInfo,
++    PrometheusAction::kCircleMinus,
++    PrometheusAction::kCircleNodes,
++    PrometheusAction::kCirclePlus,
++    PrometheusAction::kCircleQuestion,
++    PrometheusAction::kCircleXmark,
++    PrometheusAction::kCompass,
++    PrometheusAction::kCopy,
++    PrometheusAction::kEye,
++    PrometheusAction::kFolderPlus,
++    PrometheusAction::kHeartPulse,
++    PrometheusAction::kHighlighter,
++    PrometheusAction::kHouse,
++    PrometheusAction::kInbox,
++    PrometheusAction::kKey,
++    PrometheusAction::kKeyboard,
++    PrometheusAction::kLanguage,
++    PrometheusAction::kLayerGroup,
++    PrometheusAction::kLink,
++    PrometheusAction::kLinkSlash,
++    PrometheusAction::kLock,
++    PrometheusAction::kLockOpen,
++    PrometheusAction::kMagnifyingGlass,
++    PrometheusAction::kMicrochip,
++    PrometheusAction::kMicrophone,
++    PrometheusAction::kMoon,
++    PrometheusAction::kNoteSticky,
++    PrometheusAction::kPalette,
++    PrometheusAction::kPaste,
++    PrometheusAction::kPen,
++    PrometheusAction::kPlug,
++    PrometheusAction::kPlugCircleXmark,
++    PrometheusAction::kPlus,
++    PrometheusAction::kPuzzlePiece,
++    PrometheusAction::kRotateLeft,
++    PrometheusAction::kRotateRight,
++    PrometheusAction::kScissors,
++    PrometheusAction::kScroll,
++    PrometheusAction::kServer,
++    PrometheusAction::kShield,
++    PrometheusAction::kSidebarFlip,
++    PrometheusAction::kSliders,
++    PrometheusAction::kStar,
++    PrometheusAction::kStarHalfStroke,
++    PrometheusAction::kStop,
++    PrometheusAction::kTable,
++    PrometheusAction::kTableCellsLarge,
++    PrometheusAction::kTag,
++    PrometheusAction::kThumbtack,
++    PrometheusAction::kTrash,
++    PrometheusAction::kTriangleExclamation,
++    PrometheusAction::kUserSecret,
++    PrometheusAction::kVault,
++    PrometheusAction::kVolumeHigh,
++    PrometheusAction::kVolumeXmark,
++    PrometheusAction::kWandMagicSparkles,
++    PrometheusAction::kWrench,
++    PrometheusAction::kXmark,
++};
++
++}  // namespace
++
++// Test that the icon map has exactly 72 entries.
++TEST(PrometheusActionTest, PrometheusActionMapSizeIs72) {
++  const auto& icon_map = GetPrometheusActionIconMap();
++  EXPECT_EQ(icon_map.size(), 72u)
++      << "Map should contain exactly 72 entries (one per PrometheusAction value)";
++}
++
++// Test that every PrometheusAction maps to a non-null gfx::VectorIcon.
++// This verifies D-08: the icon map covers the full 72-glyph set for Views rendering.
++TEST(PrometheusActionTest, PrometheusActionMapsEveryActionToVectorIcon) {
++  const auto& icon_map = GetPrometheusActionIconMap();
++  for (PrometheusAction action : kAllActions) {
++    auto it = icon_map.find(action);
++    ASSERT_NE(it, icon_map.end())
++        << "PrometheusAction value not found in icon map";
++    EXPECT_NE(it->second, nullptr)
++        << "PrometheusAction maps to a null gfx::VectorIcon";
++  }
++}
++
++// Test that every PrometheusAction maps to a non-empty SVG path.
++// The path should name a fa_*.svg WebUI resource file.
++// This verifies D-08: the SVG resolver covers the full 72-glyph set for WebUI rendering.
++TEST(PrometheusActionTest, PrometheusActionMapsEveryActionToSvgPath) {
++  for (PrometheusAction action : kAllActions) {
++    const char* path = GetPrometheusActionSvgPath(action);
++    ASSERT_NE(path, nullptr) << "GetPrometheusActionSvgPath returned null";
++    EXPECT_GT(std::strlen(path), 0u)
++        << "GetPrometheusActionSvgPath returned empty string";
++    // Verify path follows the fa_*.svg naming convention
++    std::string path_str(path);
++    EXPECT_EQ(path_str.substr(0, 3), "fa_")
++        << "SVG path should start with 'fa_': " << path_str;
++    EXPECT_EQ(path_str.substr(path_str.size() - 4), ".svg")
++        << "SVG path should end with '.svg': " << path_str;
++  }
++}
+diff --git a/chrome/browser/resources/prometheus/BUILD.gn b/chrome/browser/resources/prometheus/BUILD.gn
+index 0eccfcb3da..c56abf549d 100644
+--- a/chrome/browser/resources/prometheus/BUILD.gn
++++ b/chrome/browser/resources/prometheus/BUILD.gn
+@@ -10,8 +10,10 @@
+ import("//components/vector_icons/vector_icons.gni")
+ 
+ # Aggregate all 72 FA icon files into generated vector_icons.{cc,h}.
+-# Consumers dep on :prometheus_vector_icons and include the generated header.
+-aggregate_vector_icons("prometheus_vector_icons") {
++# This is a GN action target; its visibility is restricted to this BUILD file
++# by the aggregate_vector_icons template (visibility = [":*"]).
++# Consumers should dep on :prometheus_vector_icons_source_set instead.
++aggregate_vector_icons("_prometheus_vector_icons_action") {
+   icon_directory = "vector_icons"
+ 
+   sources = [
+@@ -89,3 +91,17 @@ aggregate_vector_icons("prometheus_vector_icons") {
+     "fa_xmark.icon",
+   ]
+ }
++
++# Public wrapper source_set that exposes the generated icons with open visibility.
++# Consumers (e.g. chrome/browser/prometheus:prometheus_action) dep on THIS target.
++# Following the pattern from chrome/app/vector_icons/BUILD.gn.
++source_set("prometheus_vector_icons") {
++  sources = get_target_outputs(":_prometheus_vector_icons_action")
++
++  deps = [
++    ":_prometheus_vector_icons_action",
++    "//base",
++    "//skia",
++    "//ui/gfx",
++  ]
++}
+diff --git a/chrome/browser/resources/prometheus/vector_icons/vector_icons.cc.template b/chrome/browser/resources/prometheus/vector_icons/vector_icons.cc.template
+index 4456cc0089..eb49b7be84 100644
+--- a/chrome/browser/resources/prometheus/vector_icons/vector_icons.cc.template
++++ b/chrome/browser/resources/prometheus/vector_icons/vector_icons.cc.template
+@@ -1,11 +1,14 @@
+-// Copyright 2017 The Chromium Authors
++// Copyright 2026 The Chromium Authors
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+ // vector_icons.cc.template is used to generate vector_icons.cc. Edit the former
+ // rather than the latter.
++// Prometheus-specific: includes the prometheus-generated header so constexpr
++// definitions satisfy extern declarations in the same module (avoids
++// -Wunused-const-variable errors from the generic components template).
+ 
+-#include "components/vector_icons/vector_icons.h"
++#include "chrome/browser/resources/prometheus/vector_icons.h"
+ 
+ #include "components/vector_icons/cc_macros.h"
+ #include "ui/gfx/vector_icon_types.h"
+@@ -13,8 +16,4 @@
+ #define DECLARE_VECTOR_COMMAND(x) using gfx::x;
+ DECLARE_VECTOR_COMMANDS
+ 
+-namespace vector_icons {
+-
+ TEMPLATE_PLACEHOLDER
+-
+-}  // namespace vector_icons
+diff --git a/chrome/browser/resources/prometheus/vector_icons/vector_icons.h.template b/chrome/browser/resources/prometheus/vector_icons/vector_icons.h.template
+index 0045cc8e20..55d9395f69 100644
+--- a/chrome/browser/resources/prometheus/vector_icons/vector_icons.h.template
++++ b/chrome/browser/resources/prometheus/vector_icons/vector_icons.h.template
+@@ -1,12 +1,12 @@
+-// Copyright 2017 The Chromium Authors
++// Copyright 2026 The Chromium Authors
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+ // vector_icons.h.template is used to generate vector_icons.h. Edit the former
+ // rather than the latter.
+ 
+-#ifndef COMPONENTS_VECTOR_ICONS_VECTOR_ICONS_H_
+-#define COMPONENTS_VECTOR_ICONS_VECTOR_ICONS_H_
++#ifndef CHROME_BROWSER_RESOURCES_PROMETHEUS_VECTOR_ICONS_H_
++#define CHROME_BROWSER_RESOURCES_PROMETHEUS_VECTOR_ICONS_H_
+ 
+ namespace gfx {
+ struct VectorIcon;
+@@ -15,16 +15,8 @@ struct VectorIcon;
+ #define VECTOR_ICON_TEMPLATE_H(icon_name) \
+ extern const gfx::VectorIcon icon_name;
+ 
+-#if defined(FEATURE_MODULES) && defined(COMPONENTS_VECTOR_ICONS_IMPL)
+-#define VECTOR_ICON_EXPORT __attribute__((visibility("default")))
+-#endif
+-
+-namespace vector_icons {
+-
+ TEMPLATE_PLACEHOLDER
+ 
+-}  // namespace vector_icons
+-
+ #undef VECTOR_ICON_TEMPLATE_H
+ 
+-#endif  // COMPONENTS_VECTOR_ICONS_VECTOR_ICONS_H_
++#endif  // CHROME_BROWSER_RESOURCES_PROMETHEUS_VECTOR_ICONS_H_
+-- 
+2.50.1 (Apple Git-155)
+

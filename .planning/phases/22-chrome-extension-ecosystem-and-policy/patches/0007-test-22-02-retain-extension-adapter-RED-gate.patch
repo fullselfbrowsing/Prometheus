@@ -1,0 +1,617 @@
+From 889fdfd77863ad7bb3720a5e6924063f07b51dd6 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 29 Jul 2026 04:59:11 -0500
+Subject: [PATCH] test(22-02): retain extension adapter RED gate
+
+- Freeze the closed read/interact and script-denial matrix
+- Retain service, audit, browser, and provenance contract tests
+- Register the dedicated adapter target without implementation
+---
+ chrome/browser/prometheus/BUILD.gn            |  21 +++
+ .../prometheus_agent_audit_unittest.cc        |  25 +++
+ .../prometheus_agent_service_unittest.cc      |  24 +++
+ .../prometheus_extension_agent_browsertest.cc |  48 +++++
+ .../prometheus_extension_page_adapter.cc      |  75 ++++++++
+ .../prometheus_extension_page_adapter.h       | 119 ++++++++++++
+ ...metheus_extension_page_adapter_unittest.cc | 177 ++++++++++++++++++
+ chrome/browser/ui/views/prometheus/BUILD.gn   |   2 +
+ 8 files changed, 491 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_agent_browsertest.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_page_adapter.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_page_adapter.h
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_page_adapter_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 908da23681..300cf731b2 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -340,6 +340,25 @@ source_set("prometheus_extension_surface_resolver") {
+   ]
+ }
+ 
++source_set("prometheus_extension_page_adapter") {
++  sources = [
++    "prometheus_extension_page_adapter.cc",
++    "prometheus_extension_page_adapter.h",
++  ]
++
++  deps = [
++    ":prometheus_agent_route",
++    ":prometheus_agent_session",
++    ":prometheus_extension_policy_service",
++    ":prometheus_extension_policy_types",
++    ":prometheus_extension_surface_resolver",
++    "//base",
++    "//chrome/browser/ui",
++    "//components/tabs:public",
++    "//url",
++  ]
++}
++
+ source_set("prometheus_supervision_types") {
+   sources = [
+     "prometheus_supervision_types.cc",
+@@ -751,6 +770,7 @@ test("prometheus_unittests") {
+     "prometheus_color_mixer_unittest.cc",
+     "prometheus_css_emission_unittest.cc",
+     "prometheus_extension_policy_service_unittest.cc",
++    "prometheus_extension_page_adapter_unittest.cc",
+     "prometheus_extension_surface_resolver_unittest.cc",
+     "prometheus_memory_store_unittest.cc",
+     "prometheus_page_action_dispatcher_unittest.cc",
+@@ -802,6 +822,7 @@ test("prometheus_unittests") {
+     ":prometheus_endpoint_descriptor",
+     ":prometheus_extension_policy_prefs",
+     ":prometheus_extension_policy_service",
++    ":prometheus_extension_page_adapter",
+     ":prometheus_extension_policy_types",
+     ":prometheus_extension_surface_resolver",
+     ":prometheus_memory_store",
+diff --git a/chrome/browser/prometheus/prometheus_agent_audit_unittest.cc b/chrome/browser/prometheus/prometheus_agent_audit_unittest.cc
+index 875cab2be3..12eb960c7f 100644
+--- a/chrome/browser/prometheus/prometheus_agent_audit_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_audit_unittest.cc
+@@ -5,6 +5,7 @@
+ #include "chrome/browser/prometheus/prometheus_agent_audit.h"
+ 
+ #include "base/time/time.h"
++#include "chrome/browser/prometheus/prometheus_extension_page_adapter.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ 
+ namespace prometheus {
+@@ -159,4 +160,28 @@ TEST_F(PrometheusAgentAuditTest, StoresStableErrorAndTargetMetadata) {
+   EXPECT_EQ(base::Milliseconds(7), records[0].elapsed);
+ }
+ 
++TEST(PrometheusExtensionAgentAuditTest,
++     ProjectionRejectsContentFullIdentityAndAuthoritySentinels) {
++  ASSERT_TRUE(ExtensionAgentDispatchContractImplementedForTesting())
++      << "retained RED: extension audit projection is not implemented";
++  const auto safe =
++      PrometheusExtensionPageAdapter::BuildAuditProjectionForTesting(
++          "aaaaaaaaaaaaaaaaaaaaaaaaaabc123",
++          PrometheusExtensionSurfaceKind::kSidePanel,
++          ExtensionAgentGrant::kInteract, "allowed");
++  EXPECT_TRUE(
++      PrometheusExtensionPageAdapter::IsAuditProjectionSafeForTesting(safe));
++
++  for (const std::string& sentinel :
++       {"page_content", "form_value", "script", "profile_path",
++        "browser-issued-session", "gateway_bearer", "vault",
++        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}) {
++    auto unsafe = safe;
++    unsafe.result = sentinel;
++    EXPECT_FALSE(
++        PrometheusExtensionPageAdapter::IsAuditProjectionSafeForTesting(
++            unsafe));
++  }
++}
++
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_service_unittest.cc b/chrome/browser/prometheus/prometheus_agent_service_unittest.cc
+index a3bf70b9bd..09f17c101d 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service_unittest.cc
+@@ -15,6 +15,7 @@
+ #include "base/test/task_environment.h"
+ #include "base/test/test_future.h"
+ #include "chrome/browser/prometheus/prometheus_agent_session.h"
++#include "chrome/browser/prometheus/prometheus_extension_page_adapter.h"
+ #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
+ #include "components/sessions/core/session_id.h"
+ #include "components/tabs/public/mock_tab_interface.h"
+@@ -664,5 +665,28 @@ TEST_F(PrometheusAgentServiceObservationTest,
+   EXPECT_EQ(1, observer_.destroying_count);
+ }
+ 
++TEST(PrometheusExtensionAgentServiceContractTest,
++     CommittedExtensionIsClassifiedBeforeNormalPageDispatch) {
++  ASSERT_TRUE(ExtensionAgentDispatchContractImplementedForTesting())
++      << "retained RED: Agent service needs extension-first classification";
++  EXPECT_TRUE(
++      PrometheusExtensionPageAdapter::ShouldUseExtensionAdapterForTesting(
++          false, GURL("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
++                      "visible.html")));
++  EXPECT_FALSE(
++      PrometheusExtensionPageAdapter::ShouldUseExtensionAdapterForTesting(
++          false, GURL("https://example.test/ordinary")));
++}
++
++TEST(PrometheusExtensionAgentServiceContractTest,
++     SelectorResolutionPrecedesExtensionAdapterDispatch) {
++  ASSERT_TRUE(ExtensionAgentDispatchContractImplementedForTesting())
++      << "retained RED: selected popup and side-panel resolution must precede "
++         "adapter dispatch";
++  EXPECT_TRUE(
++      PrometheusExtensionPageAdapter::ShouldUseExtensionAdapterForTesting(
++          true, GURL("https://example.test/stable-tab-anchor")));
++}
++
+ }  // namespace
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_agent_browsertest.cc b/chrome/browser/prometheus/prometheus_extension_agent_browsertest.cc
+new file mode 100644
+index 0000000000..e99ebb8e89
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_agent_browsertest.cc
+@@ -0,0 +1,48 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_extension_page_adapter.h"
++
++#include "chrome/test/base/in_process_browser_test.h"
++#include "content/public/test/browser_test.h"
++
++namespace prometheus {
++
++class PrometheusExtensionAgentBrowserTest : public InProcessBrowserTest {};
++
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionAgentBrowserTest,
++                       ExactNonTabSurfaceRoutingContract) {
++  ASSERT_TRUE(ExtensionAgentDispatchContractImplementedForTesting())
++      << "retained RED: popup and side-panel routes need exact browser-owned "
++         "dispatch";
++  EXPECT_TRUE(
++      PrometheusExtensionPageAdapter::ShouldUseExtensionAdapterForTesting(
++          true, GURL("https://example.test/anchor")));
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionAgentBrowserTest,
++                       ContentScriptProvenanceRemainsNormalPage) {
++  ASSERT_TRUE(ExtensionAgentDispatchContractImplementedForTesting())
++      << "retained RED: HTTP content-script hosts must stay normal-page "
++         "targets";
++  EXPECT_FALSE(
++      PrometheusExtensionPageAdapter::ShouldUseExtensionAdapterForTesting(
++          false, GURL("https://example.test/content-script-host")));
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionAgentBrowserTest,
++                       ReverseAuthorityAndScriptRemainUnreachable) {
++  ASSERT_TRUE(ExtensionAgentDispatchContractImplementedForTesting())
++      << "retained RED: extension dispatch needs the reverse-authority and "
++         "script denial boundary";
++  const auto decision =
++      PrometheusExtensionPageAdapter::EvaluateAdmissionForTesting(
++          AgentRouteName::kExecuteJs, ExtensionAgentGrant::kInteract,
++          PrometheusExtensionAdmissionEvidence());
++  EXPECT_FALSE(decision.allowed);
++  EXPECT_EQ(PrometheusExtensionAdmissionDenial::kScriptDenied,
++            decision.denial);
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_page_adapter.cc b/chrome/browser/prometheus/prometheus_extension_page_adapter.cc
+new file mode 100644
+index 0000000000..066124e9fc
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_page_adapter.cc
+@@ -0,0 +1,75 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_extension_page_adapter.h"
++
++#include <utility>
++
++#include "chrome/browser/prometheus/prometheus_agent_session.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_service.h"
++
++namespace prometheus {
++
++PrometheusExtensionPageAdapter::PrometheusExtensionPageAdapter(
++    PrometheusExtensionPolicyService* policy_service)
++    : policy_service_(policy_service) {}
++
++PrometheusExtensionPageAdapter::~PrometheusExtensionPageAdapter() = default;
++
++void PrometheusExtensionPageAdapter::Execute(
++    const AgentRouteRequest& request,
++    Browser* browser,
++    tabs::TabInterface* anchor_tab,
++    const AgentSession& session,
++    CompletionCallback callback) {
++  std::move(callback).Run(AgentRouteResult::Failure(
++      AgentErrorCode::kCapabilityNotReady,
++      "Extension page dispatch is not implemented",
++      "Retry after extension page dispatch is available"));
++}
++
++// static
++PrometheusExtensionRouteFamily
++PrometheusExtensionPageAdapter::RouteFamilyForTesting(
++    AgentRouteName route_name) {
++  return PrometheusExtensionRouteFamily::kOutsidePageBoundary;
++}
++
++// static
++PrometheusExtensionAdmissionDecision
++PrometheusExtensionPageAdapter::EvaluateAdmissionForTesting(
++    AgentRouteName route_name,
++    ExtensionAgentGrant grant,
++    const PrometheusExtensionAdmissionEvidence& evidence) {
++  return {};
++}
++
++// static
++bool PrometheusExtensionPageAdapter::ShouldUseExtensionAdapterForTesting(
++    bool has_extension_surface_selector,
++    const GURL& committed_primary_url) {
++  return false;
++}
++
++// static
++PrometheusExtensionAuditProjection
++PrometheusExtensionPageAdapter::BuildAuditProjectionForTesting(
++    std::string extension_id,
++    PrometheusExtensionSurfaceKind surface,
++    ExtensionAgentGrant grant,
++    std::string result) {
++  return {};
++}
++
++// static
++bool PrometheusExtensionPageAdapter::IsAuditProjectionSafeForTesting(
++    const PrometheusExtensionAuditProjection& projection) {
++  return false;
++}
++
++bool ExtensionAgentDispatchContractImplementedForTesting() {
++  return false;
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_page_adapter.h b/chrome/browser/prometheus/prometheus_extension_page_adapter.h
+new file mode 100644
+index 0000000000..4e55bfd106
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_page_adapter.h
+@@ -0,0 +1,119 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_PAGE_ADAPTER_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_PAGE_ADAPTER_H_
++
++#include <string>
++
++#include "base/functional/callback.h"
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "chrome/browser/prometheus/prometheus_agent_route.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_types.h"
++#include "chrome/browser/prometheus/prometheus_extension_surface_resolver.h"
++#include "url/gurl.h"
++
++class Browser;
++
++namespace tabs {
++class TabInterface;
++}
++
++namespace prometheus {
++
++class PrometheusExtensionPolicyService;
++struct AgentSession;
++
++enum class PrometheusExtensionRouteFamily {
++  kRead,
++  kInteract,
++  kScript,
++  kAlwaysDenied,
++  kOutsidePageBoundary,
++};
++
++enum class PrometheusExtensionAdmissionDenial {
++  kNone,
++  kSurfaceBlocked,
++  kReadDenied,
++  kInteractionDenied,
++  kScriptDenied,
++  kUnsupportedRoute,
++  kStalePolicy,
++  kPrivateDenied,
++  kUnavailable,
++};
++
++struct PrometheusExtensionAdmissionEvidence {
++  bool surface_resolved = true;
++  bool policy_generation_current = true;
++  bool exact_browser_context = true;
++  bool visible = true;
++  bool exact_document = true;
++  bool private_mode = false;
++  bool private_policy_allowed = true;
++};
++
++struct PrometheusExtensionAdmissionDecision {
++  bool allowed = false;
++  PrometheusExtensionRouteFamily family =
++      PrometheusExtensionRouteFamily::kOutsidePageBoundary;
++  PrometheusExtensionAdmissionDenial denial =
++      PrometheusExtensionAdmissionDenial::kUnavailable;
++  AgentErrorCode error_code = AgentErrorCode::kPermissionBlocked;
++};
++
++struct PrometheusExtensionAuditProjection {
++  std::string id_suffix;
++  std::string surface;
++  std::string grant;
++  std::string result;
++};
++
++class PrometheusExtensionPageAdapter {
++ public:
++  using CompletionCallback = base::OnceCallback<void(AgentRouteResult)>;
++
++  explicit PrometheusExtensionPageAdapter(
++      PrometheusExtensionPolicyService* policy_service);
++  PrometheusExtensionPageAdapter(const PrometheusExtensionPageAdapter&) =
++      delete;
++  PrometheusExtensionPageAdapter& operator=(
++      const PrometheusExtensionPageAdapter&) = delete;
++  ~PrometheusExtensionPageAdapter();
++
++  void Execute(const AgentRouteRequest& request,
++               Browser* browser,
++               tabs::TabInterface* anchor_tab,
++               const AgentSession& session,
++               CompletionCallback callback);
++
++  static PrometheusExtensionRouteFamily RouteFamilyForTesting(
++      AgentRouteName route_name);
++  static PrometheusExtensionAdmissionDecision EvaluateAdmissionForTesting(
++      AgentRouteName route_name,
++      ExtensionAgentGrant grant,
++      const PrometheusExtensionAdmissionEvidence& evidence);
++  static bool ShouldUseExtensionAdapterForTesting(
++      bool has_extension_surface_selector,
++      const GURL& committed_primary_url);
++  static PrometheusExtensionAuditProjection BuildAuditProjectionForTesting(
++      std::string extension_id,
++      PrometheusExtensionSurfaceKind surface,
++      ExtensionAgentGrant grant,
++      std::string result);
++  static bool IsAuditProjectionSafeForTesting(
++      const PrometheusExtensionAuditProjection& projection);
++
++ private:
++  raw_ptr<PrometheusExtensionPolicyService> policy_service_;
++  base::WeakPtrFactory<PrometheusExtensionPageAdapter> weak_factory_{this};
++};
++
++bool ExtensionAgentDispatchContractImplementedForTesting();
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_PAGE_ADAPTER_H_
+diff --git a/chrome/browser/prometheus/prometheus_extension_page_adapter_unittest.cc b/chrome/browser/prometheus/prometheus_extension_page_adapter_unittest.cc
+new file mode 100644
+index 0000000000..d1a63649b0
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_page_adapter_unittest.cc
+@@ -0,0 +1,177 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_extension_page_adapter.h"
++
++#include <array>
++
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++namespace {
++
++constexpr auto kReadRoutes = std::to_array<AgentRouteName>({
++    AgentRouteName::kReadPage,
++    AgentRouteName::kGetDomSnapshot,
++    AgentRouteName::kGetPageSnapshot,
++    AgentRouteName::kGetText,
++    AgentRouteName::kGetAttribute,
++});
++
++constexpr auto kInteractRoutes = std::to_array<AgentRouteName>({
++    AgentRouteName::kClick,
++    AgentRouteName::kTypeText,
++    AgentRouteName::kPressKey,
++    AgentRouteName::kScroll,
++    AgentRouteName::kHover,
++    AgentRouteName::kSelectOption,
++    AgentRouteName::kClear,
++});
++
++void RequireGreenContract() {
++  ASSERT_TRUE(ExtensionAgentDispatchContractImplementedForTesting())
++      << "retained RED: the extension Agent dispatch boundary is not "
++         "implemented";
++}
++
++PrometheusExtensionAdmissionDecision Decide(AgentRouteName route,
++                                            ExtensionAgentGrant grant) {
++  return PrometheusExtensionPageAdapter::EvaluateAdmissionForTesting(
++      route, grant, PrometheusExtensionAdmissionEvidence());
++}
++
++TEST(PrometheusExtensionAgentAdapterTest, BlockedDeniesEveryReadAndAction) {
++  RequireGreenContract();
++  for (AgentRouteName route : kReadRoutes) {
++    const auto decision = Decide(route, ExtensionAgentGrant::kBlocked);
++    EXPECT_FALSE(decision.allowed);
++    EXPECT_EQ(PrometheusExtensionAdmissionDenial::kReadDenied,
++              decision.denial);
++  }
++  for (AgentRouteName route : kInteractRoutes) {
++    const auto decision = Decide(route, ExtensionAgentGrant::kBlocked);
++    EXPECT_FALSE(decision.allowed);
++    EXPECT_EQ(PrometheusExtensionAdmissionDenial::kInteractionDenied,
++              decision.denial);
++  }
++}
++
++TEST(PrometheusExtensionAgentAdapterTest, ReadOnlyAllowsExactlyFiveReads) {
++  RequireGreenContract();
++  for (AgentRouteName route : kReadRoutes) {
++    const auto decision = Decide(route, ExtensionAgentGrant::kReadOnly);
++    EXPECT_TRUE(decision.allowed);
++    EXPECT_EQ(PrometheusExtensionRouteFamily::kRead, decision.family);
++  }
++  for (AgentRouteName route : kInteractRoutes) {
++    const auto decision = Decide(route, ExtensionAgentGrant::kReadOnly);
++    EXPECT_FALSE(decision.allowed);
++    EXPECT_EQ(PrometheusExtensionAdmissionDenial::kInteractionDenied,
++              decision.denial);
++  }
++}
++
++TEST(PrometheusExtensionAgentAdapterTest,
++     InteractAddsExactlySevenTypedActions) {
++  RequireGreenContract();
++  for (AgentRouteName route : kReadRoutes) {
++    EXPECT_TRUE(Decide(route, ExtensionAgentGrant::kInteract).allowed);
++  }
++  for (AgentRouteName route : kInteractRoutes) {
++    const auto decision = Decide(route, ExtensionAgentGrant::kInteract);
++    EXPECT_TRUE(decision.allowed);
++    EXPECT_EQ(PrometheusExtensionRouteFamily::kInteract, decision.family);
++  }
++}
++
++TEST(PrometheusExtensionAgentAdapterTest, ScriptsDragAndDropRemainDenied) {
++  RequireGreenContract();
++  for (ExtensionAgentGrant grant :
++       {ExtensionAgentGrant::kBlocked, ExtensionAgentGrant::kReadOnly,
++        ExtensionAgentGrant::kInteract}) {
++    const auto script = Decide(AgentRouteName::kExecuteJs, grant);
++    EXPECT_FALSE(script.allowed);
++    EXPECT_EQ(PrometheusExtensionAdmissionDenial::kScriptDenied,
++              script.denial);
++    for (AgentRouteName route :
++         {AgentRouteName::kDrag, AgentRouteName::kDropFile}) {
++      const auto denied = Decide(route, grant);
++      EXPECT_FALSE(denied.allowed);
++      EXPECT_EQ(PrometheusExtensionAdmissionDenial::kUnsupportedRoute,
++                denied.denial);
++    }
++  }
++}
++
++TEST(PrometheusExtensionAgentAdapterTest,
++     ExecutionRevalidatesPolicyVisibilityContextAndDocument) {
++  RequireGreenContract();
++  PrometheusExtensionAdmissionEvidence evidence;
++  for (bool* condition :
++       {&evidence.surface_resolved, &evidence.policy_generation_current,
++        &evidence.exact_browser_context, &evidence.visible,
++        &evidence.exact_document}) {
++    *condition = false;
++    const auto decision =
++        PrometheusExtensionPageAdapter::EvaluateAdmissionForTesting(
++            AgentRouteName::kClick, ExtensionAgentGrant::kInteract, evidence);
++    EXPECT_FALSE(decision.allowed);
++    EXPECT_NE(PrometheusExtensionAdmissionDenial::kNone, decision.denial);
++    *condition = true;
++  }
++}
++
++TEST(PrometheusExtensionAgentAdapterTest,
++     PrivatePolicyIsExplicitAndNeverInherited) {
++  RequireGreenContract();
++  PrometheusExtensionAdmissionEvidence evidence;
++  evidence.private_mode = true;
++  evidence.private_policy_allowed = false;
++  const auto decision =
++      PrometheusExtensionPageAdapter::EvaluateAdmissionForTesting(
++          AgentRouteName::kReadPage, ExtensionAgentGrant::kInteract, evidence);
++  EXPECT_FALSE(decision.allowed);
++  EXPECT_EQ(PrometheusExtensionAdmissionDenial::kPrivateDenied,
++            decision.denial);
++}
++
++TEST(PrometheusExtensionAgentAdapterTest,
++     ContentScriptHttpPageKeepsNormalPageProvenance) {
++  RequireGreenContract();
++  EXPECT_FALSE(
++      PrometheusExtensionPageAdapter::ShouldUseExtensionAdapterForTesting(
++          false, GURL("https://example.test/content-script-host")));
++  EXPECT_TRUE(
++      PrometheusExtensionPageAdapter::ShouldUseExtensionAdapterForTesting(
++          false, GURL("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
++                      "page.html")));
++  EXPECT_TRUE(
++      PrometheusExtensionPageAdapter::ShouldUseExtensionAdapterForTesting(
++          true, GURL("https://example.test/anchor")));
++}
++
++TEST(PrometheusExtensionAgentAdapterTest,
++     AuditProjectionIsSuffixOnlyClosedAndContentFree) {
++  RequireGreenContract();
++  const auto projection =
++      PrometheusExtensionPageAdapter::BuildAuditProjectionForTesting(
++          "aaaaaaaaaaaaaaaaaaaaaaaaaabc123",
++          PrometheusExtensionSurfaceKind::kPopup,
++          ExtensionAgentGrant::kReadOnly, "allowed");
++  EXPECT_EQ("abc123", projection.id_suffix);
++  EXPECT_EQ("popup", projection.surface);
++  EXPECT_EQ("read_only", projection.grant);
++  EXPECT_EQ("allowed", projection.result);
++  EXPECT_TRUE(
++      PrometheusExtensionPageAdapter::IsAuditProjectionSafeForTesting(
++          projection));
++
++  auto unsafe = projection;
++  unsafe.result = "page_content=sentinel";
++  EXPECT_FALSE(
++      PrometheusExtensionPageAdapter::IsAuditProjectionSafeForTesting(unsafe));
++}
++
++}  // namespace
++}  // namespace prometheus
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 6a34bb696f..2a886badd5 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -87,6 +87,7 @@ source_set("browser_tests") {
+     "../../../prometheus/prometheus_agent_gateway_browsertest.cc",
+     "../../../prometheus/prometheus_agent_profile_service_browsertest.cc",
+     "../../../prometheus/prometheus_agent_service_browsertest.cc",
++    "../../../prometheus/prometheus_extension_agent_browsertest.cc",
+     "../../../prometheus/prometheus_extension_surface_browsertest.cc",
+     "../../../prometheus/prometheus_mcp_integration_browsertest.cc",
+     "../../../prometheus/prometheus_page_adapter_browsertest.cc",
+@@ -116,6 +117,7 @@ source_set("browser_tests") {
+     "//chrome/browser/prometheus:prometheus_agent_tab_data",
+     "//chrome/browser/prometheus:prometheus_chrome_mode",
+     "//chrome/browser/prometheus:prometheus_extension_surface_resolver",
++    "//chrome/browser/prometheus:prometheus_extension_page_adapter",
+     "//chrome/browser/prometheus:prometheus_provider_registry",
+     "//chrome/browser/prometheus:prometheus_provider_transport",
+     "//chrome/browser/prometheus:prometheus_runtime_prefs",
+-- 
+2.50.1 (Apple Git-155)
+

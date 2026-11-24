@@ -1,0 +1,968 @@
+From a2e4ee48697aa554ca75f2e6ff80dffa34367de2 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 23:08:09 -0500
+Subject: [PATCH 17/17] feat(21-07): implement shared supervision capture hub
+
+Bind exact primary documents through one private Mojo/APC owner.
+
+Share bounded baseline and diff history while keeping consumer cursors, acknowledgements, expiry, and resync independent.
+---
+ .../prometheus_supervision_capture_hub.cc     | 735 +++++++++++++++++-
+ .../prometheus_supervision_capture_hub.h      |  33 +-
+ 2 files changed, 716 insertions(+), 52 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc b/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
+index 001b5119ee..e546960a81 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
+@@ -4,22 +4,53 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_supervision_capture_hub.h"
+ 
++#include <algorithm>
++#include <optional>
+ #include <utility>
+ 
+ #include "base/functional/bind.h"
++#include "base/location.h"
+ #include "base/memory/raw_ptr.h"
++#include "base/task/sequenced_task_runner.h"
++#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
+ #include "content/public/browser/navigation_handle.h"
+ #include "content/public/browser/page.h"
+ #include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/weak_document_ptr.h"
+ #include "content/public/browser/web_contents.h"
++#include "mojo/public/cpp/bindings/pending_remote.h"
+ #include "mojo/public/cpp/bindings/receiver.h"
+ #include "mojo/public/cpp/bindings/remote.h"
++#include "services/service_manager/public/cpp/interface_provider.h"
++#include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
+ #include "third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom.h"
+ 
+ namespace prometheus {
+ 
+-// The retained RED scaffold fixes the endpoint ownership in this private hub
+-// entry. Task 2 completes binding and lifecycle behavior.
++namespace {
++
++SupervisionLimits ClampCaptureHubLimits(const SupervisionLimits& limits) {
++  SupervisionLimits clamped = ClampSupervisionLimits(limits);
++  clamped.baseline_nodes =
++      std::min(clamped.baseline_nodes, kDefaultSupervisionBaselineNodes);
++  clamped.baseline_bytes =
++      std::min(clamped.baseline_bytes, kDefaultSupervisionBaselineBytes);
++  clamped.diff_operations =
++      std::min(clamped.diff_operations, kDefaultSupervisionDiffOperations);
++  clamped.diff_bytes =
++      std::min(clamped.diff_bytes, kDefaultSupervisionDiffBytes);
++  clamped.retained_batches =
++      std::min(clamped.retained_batches, kDefaultSupervisionRetainedBatches);
++  clamped.retained_bytes_per_viewer =
++      std::min(clamped.retained_bytes_per_viewer,
++               kDefaultSupervisionRetainedBytesPerViewer);
++  return clamped;
++}
++
++}  // namespace
++
++// Every document control pipe and dirty-host receiver is confined to this
++// private entry. Consumers can neither name a frame nor obtain an endpoint.
+ class PrometheusSupervisionCaptureHub::FrameEntry
+     : public blink::mojom::PrometheusSupervisionDocumentHost {
+  public:
+@@ -30,15 +61,75 @@ class PrometheusSupervisionCaptureHub::FrameEntry
+         render_frame_host_(render_frame_host),
+         generation_(generation),
+         host_receiver_(this) {}
+-  ~FrameEntry() override = default;
+ 
++  ~FrameEntry() override { Stop(); }
++
++  bool Start() {
++    if (enabled_ || !render_frame_host_->IsActive() ||
++        !render_frame_host_->IsRenderFrameLive()) {
++      return false;
++    }
++
++    render_frame_host_->GetRemoteInterfaces()->GetInterface(
++        document_remote_.BindNewPipeAndPassReceiver());
++    mojo::PendingRemote<blink::mojom::PrometheusSupervisionDocumentHost>
++        host_remote;
++    host_receiver_.Bind(host_remote.InitWithNewPipeAndPassReceiver());
++    document_remote_.set_disconnect_handler(
++        base::BindOnce(&FrameEntry::PostDisconnected, base::Unretained(this)));
++    host_receiver_.set_disconnect_handler(
++        base::BindOnce(&FrameEntry::PostDisconnected, base::Unretained(this)));
++    document_remote_->Enable(std::move(host_remote));
++    enabled_ = true;
++    return true;
++  }
++
++  bool Stop() {
++    if (!enabled_) {
++      return false;
++    }
++    enabled_ = false;
++    if (document_remote_.is_bound()) {
++      document_remote_.set_disconnect_handler(base::OnceClosure());
++      document_remote_->Disable();
++    }
++    if (host_receiver_.is_bound()) {
++      host_receiver_.set_disconnect_handler(base::OnceClosure());
++    }
++    host_receiver_.reset();
++    document_remote_.reset();
++    return true;
++  }
++
++  uint64_t generation() const { return generation_; }
++
++  // blink::mojom::PrometheusSupervisionDocumentHost:
+   void OnDocumentDirty(
+-      blink::mojom::PrometheusSupervisionDirtySignal signal) override {}
++      blink::mojom::PrometheusSupervisionDirtySignal signal) override {
++    if (!enabled_) {
++      return;
++    }
++    owner_->OnFrameDirty(
++        render_frame_host_, generation_,
++        signal == blink::mojom::PrometheusSupervisionDirtySignal::kOverflow);
++  }
+ 
+  private:
++  void PostDisconnected() {
++    if (!enabled_) {
++      return;
++    }
++    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&PrometheusSupervisionCaptureHub::OnFrameDisconnected,
++                       owner_->weak_factory_.GetWeakPtr(), render_frame_host_,
++                       generation_));
++  }
++
+   raw_ptr<PrometheusSupervisionCaptureHub> owner_;
+   raw_ptr<content::RenderFrameHost> render_frame_host_;
+-  [[maybe_unused]] uint64_t generation_ = 0;
++  const uint64_t generation_;
++  bool enabled_ = false;
+   mojo::Remote<blink::mojom::PrometheusSupervisionDocument> document_remote_;
+   mojo::Receiver<blink::mojom::PrometheusSupervisionDocumentHost>
+       host_receiver_;
+@@ -50,7 +141,7 @@ PrometheusSupervisionCaptureHub::PrometheusSupervisionCaptureHub(
+     const SupervisionLimits& limits)
+     : content::WebContentsObserver(web_contents),
+       stable_tab_id_(stable_tab_id),
+-      limits_(ClampSupervisionLimits(limits)),
++      limits_(ClampCaptureHubLimits(limits)),
+       now_callback_(base::BindRepeating(&base::Time::Now)) {}
+ 
+ PrometheusSupervisionCaptureHub::PrometheusSupervisionCaptureHub(
+@@ -59,118 +150,686 @@ PrometheusSupervisionCaptureHub::PrometheusSupervisionCaptureHub(
+     CaptureForTestingCallback capture_for_testing)
+     : content::WebContentsObserver(nullptr),
+       stable_tab_id_(stable_tab_id),
+-      limits_(ClampSupervisionLimits(limits)),
++      limits_(ClampCaptureHubLimits(limits)),
+       capture_for_testing_(std::move(capture_for_testing)),
+       now_callback_(base::BindRepeating(&base::Time::Now)) {}
+ 
+-PrometheusSupervisionCaptureHub::~PrometheusSupervisionCaptureHub() = default;
++PrometheusSupervisionCaptureHub::~PrometheusSupervisionCaptureHub() {
++  StopObservation();
++}
+ 
+ std::optional<SupervisionCaptureConsumerId>
+ PrometheusSupervisionCaptureHub::AttachConsumer(
+     SupervisionCaptureConsumerKind kind,
+     base::Time expiry) {
+-  return std::nullopt;
++  SweepExpiredConsumers();
++  if (destroyed_ || stable_tab_id_ <= 0 || expiry.is_null() ||
++      expiry <= Now() || consumers_.size() >= limits_.viewers_per_tab) {
++    return std::nullopt;
++  }
++
++  const std::optional<uint64_t> next_id =
++      CheckedNextSupervisionSequence(next_consumer_id_);
++  if (!next_id.has_value()) {
++    return std::nullopt;
++  }
++  next_consumer_id_ = *next_id;
++
++  ConsumerState consumer;
++  consumer.kind = kind;
++  consumer.session = base::UnguessableToken::Create();
++  consumer.expiry = expiry;
++  consumers_.emplace(next_consumer_id_, std::move(consumer));
++
++  if (consumers_.size() == 1u) {
++    StartObservation();
++    if (!observing_) {
++      consumers_.erase(next_consumer_id_);
++      return std::nullopt;
++    }
++  }
++  return next_consumer_id_;
+ }
+ 
+ std::optional<SupervisionCaptureBaselineDelivery>
+ PrometheusSupervisionCaptureHub::ReadBaseline(
+     SupervisionCaptureConsumerId consumer_id) {
+-  return std::nullopt;
++  SweepExpiredConsumers();
++  auto consumer = consumers_.find(consumer_id);
++  if (consumer == consumers_.end() || !consumer->second.needs_baseline ||
++      !IsUsableBaseline(baseline_) || sequence_ == 0u) {
++    return std::nullopt;
++  }
++
++  consumer->second.offered_baseline_sequence = sequence_;
++  consumer->second.offered_diff_sequence.reset();
++  return SupervisionCaptureBaselineDelivery{
++      .stamp = StampFor(consumer->second, sequence_), .baseline = baseline_};
+ }
+ 
+ std::optional<SupervisionCaptureDiffDelivery>
+ PrometheusSupervisionCaptureHub::ReadNext(
+     SupervisionCaptureConsumerId consumer_id) {
+-  return std::nullopt;
++  SweepExpiredConsumers();
++  auto consumer = consumers_.find(consumer_id);
++  if (consumer == consumers_.end() || consumer->second.needs_baseline ||
++      consumer->second.next_sequence == 0u) {
++    return std::nullopt;
++  }
++
++  const auto batch = std::ranges::find(history_, consumer->second.next_sequence,
++                                       &SharedBatch::sequence);
++  if (batch == history_.end()) {
++    if (sequence_ >= consumer->second.next_sequence) {
++      RequireBaseline(consumer->second);
++    }
++    return std::nullopt;
++  }
++
++  consumer->second.offered_diff_sequence = batch->sequence;
++  return SupervisionCaptureDiffDelivery{
++      .stamp = StampFor(consumer->second, batch->sequence),
++      .diff = batch->diff};
+ }
+ 
+ bool PrometheusSupervisionCaptureHub::Ack(
+     SupervisionCaptureConsumerId consumer_id,
+     const SupervisionStreamStamp& stamp) {
+-  return false;
++  SweepExpiredConsumers();
++  auto consumer = consumers_.find(consumer_id);
++  if (consumer == consumers_.end()) {
++    return false;
++  }
++
++  ConsumerState& state = consumer->second;
++  if (!IsValidSupervisionStreamStamp(stamp) || stamp.session != state.session ||
++      stamp.stable_tab_id != stable_tab_id_ ||
++      stamp.document_epoch != document_epoch_) {
++    RequireBaseline(state);
++    return false;
++  }
++
++  if (state.needs_baseline) {
++    if (!state.offered_baseline_sequence.has_value() ||
++        *state.offered_baseline_sequence != sequence_ ||
++        stamp.sequence != sequence_ || !IsUsableBaseline(baseline_)) {
++      RequireBaseline(state);
++      return false;
++    }
++    const std::optional<uint64_t> next =
++        CheckedNextSupervisionSequence(stamp.sequence);
++    if (!next.has_value()) {
++      RequireBaseline(state);
++      return false;
++    }
++    state.acknowledged_sequence = stamp.sequence;
++    state.next_sequence = *next;
++    state.offered_baseline_sequence.reset();
++    state.offered_diff_sequence.reset();
++    state.needs_baseline = false;
++    PruneHistory();
++    return true;
++  }
++
++  if (!state.offered_diff_sequence.has_value() ||
++      *state.offered_diff_sequence != state.next_sequence ||
++      stamp.sequence != state.next_sequence) {
++    RequireBaseline(state);
++    PruneHistory();
++    return false;
++  }
++  const auto batch =
++      std::ranges::find(history_, stamp.sequence, &SharedBatch::sequence);
++  const std::optional<uint64_t> next =
++      CheckedNextSupervisionSequence(stamp.sequence);
++  if (batch == history_.end() || !next.has_value()) {
++    RequireBaseline(state);
++    PruneHistory();
++    return false;
++  }
++
++  state.acknowledged_sequence = stamp.sequence;
++  state.next_sequence = *next;
++  state.offered_diff_sequence.reset();
++  PruneHistory();
++  return true;
+ }
+ 
+ bool PrometheusSupervisionCaptureHub::RevokeConsumer(
+     SupervisionCaptureConsumerId consumer_id) {
+-  return false;
++  SweepExpiredConsumers();
++  auto consumer = consumers_.find(consumer_id);
++  if (consumer == consumers_.end()) {
++    return false;
++  }
++  consumers_.erase(consumer);
++  if (consumers_.empty()) {
++    StopObservation();
++  } else {
++    PruneHistory();
++  }
++  return true;
+ }
+ 
+ bool PrometheusSupervisionCaptureHub::DetachConsumer(
+     SupervisionCaptureConsumerId consumer_id) {
+-  return false;
++  return RevokeConsumer(consumer_id);
+ }
+ 
+-void PrometheusSupervisionCaptureHub::SweepExpiredConsumers() {}
++void PrometheusSupervisionCaptureHub::SweepExpiredConsumers() {
++  if (consumers_.empty()) {
++    return;
++  }
++  const base::Time now = Now();
++  std::erase_if(consumers_, [now](const auto& entry) {
++    return entry.second.expiry <= now;
++  });
++  if (consumers_.empty()) {
++    StopObservation();
++  } else {
++    PruneHistory();
++  }
++}
+ 
+ bool PrometheusSupervisionCaptureHub::ConsumerNeedsBaseline(
+     SupervisionCaptureConsumerId consumer_id) const {
+-  return true;
++  const auto consumer = consumers_.find(consumer_id);
++  return consumer == consumers_.end() || consumer->second.expiry <= Now() ||
++         consumer->second.needs_baseline;
+ }
+ 
+ void PrometheusSupervisionCaptureHub::SetNowCallbackForTesting(
+     NowCallback now_callback) {
+-  now_callback_ = std::move(now_callback);
++  if (now_callback) {
++    now_callback_ = std::move(now_callback);
++  }
+ }
+ 
+-void PrometheusSupervisionCaptureHub::NotifyDirtyForTesting(bool overflow) {}
++void PrometheusSupervisionCaptureHub::NotifyDirtyForTesting(bool overflow) {
++  if (capture_for_testing_) {
++    RequestCapture(overflow);
++  }
++}
+ 
+-void PrometheusSupervisionCaptureHub::ReplaceDocumentForTesting() {}
++void PrometheusSupervisionCaptureHub::ReplaceDocumentForTesting() {
++  if (capture_for_testing_) {
++    StartNewDocumentEpoch();
++  }
++}
+ 
+-void PrometheusSupervisionCaptureHub::DisconnectRendererForTesting() {}
++void PrometheusSupervisionCaptureHub::DisconnectRendererForTesting() {
++  if (capture_for_testing_) {
++    StartNewDocumentEpoch();
++  }
++}
+ 
+ void PrometheusSupervisionCaptureHub::RenderFrameCreated(
+-    content::RenderFrameHost* render_frame_host) {}
++    content::RenderFrameHost* render_frame_host) {
++  if (observing_) {
++    BindFrame(render_frame_host);
++  }
++}
+ 
+ void PrometheusSupervisionCaptureHub::RenderFrameDeleted(
+-    content::RenderFrameHost* render_frame_host) {}
++    content::RenderFrameHost* render_frame_host) {
++  auto frame = frames_.find(render_frame_host);
++  if (frame == frames_.end()) {
++    return;
++  }
++  if (frame->second->Stop()) {
++    ++disable_count_;
++  }
++  frames_.erase(frame);
++  if (observing_ && !destroyed_ && web_contents() &&
++      !web_contents()->IsBeingDestroyed()) {
++    StartNewDocumentEpoch();
++  }
++}
+ 
+-void PrometheusSupervisionCaptureHub::PrimaryPageChanged(content::Page& page) {}
++void PrometheusSupervisionCaptureHub::PrimaryPageChanged(content::Page& page) {
++  if (observing_ && web_contents() &&
++      &page == &web_contents()->GetPrimaryPage()) {
++    StartNewDocumentEpoch();
++  }
++}
+ 
+ void PrometheusSupervisionCaptureHub::DidFinishNavigation(
+-    content::NavigationHandle* navigation_handle) {}
++    content::NavigationHandle* navigation_handle) {
++  if (!observing_ || !navigation_handle->HasCommitted() ||
++      navigation_handle->IsSameDocument()) {
++    return;
++  }
++  content::RenderFrameHost* render_frame_host =
++      navigation_handle->GetRenderFrameHost();
++  if (!render_frame_host || !render_frame_host->GetParent() ||
++      !web_contents() ||
++      &render_frame_host->GetPage() != &web_contents()->GetPrimaryPage()) {
++    return;
++  }
++  StartNewDocumentEpoch();
++}
+ 
+-void PrometheusSupervisionCaptureHub::WebContentsDestroyed() {}
++void PrometheusSupervisionCaptureHub::WebContentsDestroyed() {
++  destroyed_ = true;
++  consumers_.clear();
++  StopObservation();
++}
+ 
+ base::Time PrometheusSupervisionCaptureHub::Now() const {
+   return now_callback_.Run();
+ }
+ 
+-void PrometheusSupervisionCaptureHub::StartObservation() {}
++void PrometheusSupervisionCaptureHub::StartObservation() {
++  if (observing_ || destroyed_ || consumers_.empty() ||
++      (!capture_for_testing_ &&
++       (!web_contents() || web_contents()->IsBeingDestroyed()))) {
++    return;
++  }
++
++  observing_ = true;
++  document_epoch_ = base::UnguessableToken::Create();
++  sequence_ = 0;
++  const std::optional<uint64_t> next_document_generation =
++      CheckedNextSupervisionGeneration(document_generation_);
++  document_generation_ = next_document_generation.value_or(1u);
++  if (!next_document_generation.has_value()) {
++    weak_factory_.InvalidateWeakPtrs();
++  }
++
++  if (capture_for_testing_) {
++    ++enable_count_;
++  } else {
++    BindCurrentFrames();
++  }
++  RequireBaselineForAll();
++  RequestCapture(/*force_baseline=*/true);
++}
+ 
+-void PrometheusSupervisionCaptureHub::StopObservation() {}
++void PrometheusSupervisionCaptureHub::StopObservation() {
++  if (!observing_) {
++    return;
++  }
++  observing_ = false;
++  const std::optional<uint64_t> next_capture_generation =
++      CheckedNextSupervisionGeneration(capture_generation_);
++  capture_generation_ = next_capture_generation.value_or(1u);
++  if (!next_capture_generation.has_value()) {
++    weak_factory_.InvalidateWeakPtrs();
++  }
++  capture_in_flight_ = false;
++  dirty_while_capturing_ = false;
++  force_baseline_after_capture_ = false;
++
++  UnbindCurrentFrames();
++  if (capture_for_testing_) {
++    ++disable_count_;
++  }
++  history_.clear();
++  retained_bytes_ = 0;
++  baseline_ = SupervisionBaseline();
++  document_epoch_ = base::UnguessableToken();
++  sequence_ = 0;
++}
+ 
+-void PrometheusSupervisionCaptureHub::StartNewDocumentEpoch() {}
++void PrometheusSupervisionCaptureHub::StartNewDocumentEpoch() {
++  if (!observing_ || destroyed_ || consumers_.empty()) {
++    return;
++  }
++
++  const std::optional<uint64_t> next_capture_generation =
++      CheckedNextSupervisionGeneration(capture_generation_);
++  capture_generation_ = next_capture_generation.value_or(1u);
++  const std::optional<uint64_t> next_document_generation =
++      CheckedNextSupervisionGeneration(document_generation_);
++  document_generation_ = next_document_generation.value_or(1u);
++  if (!next_capture_generation.has_value() ||
++      !next_document_generation.has_value()) {
++    weak_factory_.InvalidateWeakPtrs();
++  }
++  capture_in_flight_ = false;
++  dirty_while_capturing_ = false;
++  force_baseline_after_capture_ = false;
++
++  UnbindCurrentFrames();
++  if (capture_for_testing_) {
++    ++disable_count_;
++  }
++  history_.clear();
++  retained_bytes_ = 0;
++  baseline_ = SupervisionBaseline();
++  document_epoch_ = base::UnguessableToken::Create();
++  sequence_ = 0;
++  RequireBaselineForAll();
++
++  if (capture_for_testing_) {
++    ++enable_count_;
++  } else {
++    BindCurrentFrames();
++  }
++  RequestCapture(/*force_baseline=*/true);
++}
+ 
+-void PrometheusSupervisionCaptureHub::BindCurrentFrames() {}
++void PrometheusSupervisionCaptureHub::UnbindCurrentFrames() {
++  for (auto& [render_frame_host, frame] : frames_) {
++    static_cast<void>(render_frame_host);
++    if (frame->Stop()) {
++      ++disable_count_;
++    }
++  }
++  frames_.clear();
++}
++
++void PrometheusSupervisionCaptureHub::BindCurrentFrames() {
++  if (!observing_ || !web_contents()) {
++    return;
++  }
++  content::RenderFrameHost* primary_main_frame =
++      web_contents()->GetPrimaryMainFrame();
++  if (!primary_main_frame) {
++    return;
++  }
++  primary_main_frame->ForEachRenderFrameHost(
++      [this](content::RenderFrameHost* render_frame_host) {
++        BindFrame(render_frame_host);
++      });
++}
+ 
+ void PrometheusSupervisionCaptureHub::BindFrame(
+-    content::RenderFrameHost* render_frame_host) {}
++    content::RenderFrameHost* render_frame_host) {
++  if (!observing_ || !render_frame_host || !web_contents() ||
++      frames_.contains(render_frame_host) || !render_frame_host->IsActive() ||
++      !render_frame_host->IsRenderFrameLive() ||
++      content::WebContents::FromRenderFrameHost(render_frame_host) !=
++          web_contents() ||
++      &render_frame_host->GetPage() != &web_contents()->GetPrimaryPage()) {
++    return;
++  }
++
++  const std::optional<uint64_t> next_generation =
++      CheckedNextSupervisionGeneration(next_frame_generation_);
++  if (!next_generation.has_value()) {
++    weak_factory_.InvalidateWeakPtrs();
++    next_frame_generation_ = 1u;
++  } else {
++    next_frame_generation_ = *next_generation;
++  }
++  auto entry = std::make_unique<FrameEntry>(this, render_frame_host,
++                                            next_frame_generation_);
++  if (!entry->Start()) {
++    return;
++  }
++  frames_.emplace(render_frame_host, std::move(entry));
++  ++enable_count_;
++}
+ 
+ void PrometheusSupervisionCaptureHub::OnFrameDirty(
+     content::RenderFrameHost* render_frame_host,
+     uint64_t frame_generation,
+-    bool overflow) {}
++    bool overflow) {
++  auto frame = frames_.find(render_frame_host);
++  if (!observing_ || frame == frames_.end() ||
++      frame->second->generation() != frame_generation) {
++    return;
++  }
++  RequestCapture(overflow);
++}
+ 
+ void PrometheusSupervisionCaptureHub::OnFrameDisconnected(
+     content::RenderFrameHost* render_frame_host,
+-    uint64_t frame_generation) {}
++    uint64_t frame_generation) {
++  auto frame = frames_.find(render_frame_host);
++  if (!observing_ || frame == frames_.end() ||
++      frame->second->generation() != frame_generation) {
++    return;
++  }
++  StartNewDocumentEpoch();
++}
+ 
+-void PrometheusSupervisionCaptureHub::RequestCapture(bool force_baseline) {}
++void PrometheusSupervisionCaptureHub::RequestCapture(bool force_baseline) {
++  if (!observing_ || destroyed_ || consumers_.empty()) {
++    return;
++  }
++  force_baseline_after_capture_ |= force_baseline;
++  if (capture_in_flight_) {
++    dirty_while_capturing_ = true;
++    return;
++  }
++
++  const std::optional<uint64_t> next_generation =
++      CheckedNextSupervisionGeneration(capture_generation_);
++  if (!next_generation.has_value()) {
++    StartNewDocumentEpoch();
++    return;
++  }
++  capture_generation_ = *next_generation;
++  const uint64_t requested_generation = capture_generation_;
++  const bool requested_force_baseline = force_baseline_after_capture_;
++  force_baseline_after_capture_ = false;
++  capture_in_flight_ = true;
++  dirty_while_capturing_ = false;
++  ++capture_count_;
++
++  if (capture_for_testing_) {
++    capture_for_testing_.Run(
++        base::BindOnce(&PrometheusSupervisionCaptureHub::OnCapturedForTesting,
++                       weak_factory_.GetWeakPtr(), requested_generation,
++                       requested_force_baseline));
++    return;
++  }
++
++  content::WebContents* observed_web_contents = web_contents();
++  content::RenderFrameHost* primary_main_frame =
++      observed_web_contents ? observed_web_contents->GetPrimaryMainFrame()
++                            : nullptr;
++  if (!observed_web_contents || observed_web_contents->IsBeingDestroyed() ||
++      observed_web_contents->IsCrashed() || !primary_main_frame ||
++      !primary_main_frame->IsActive() ||
++      !primary_main_frame->IsRenderFrameLive() ||
++      &primary_main_frame->GetPage() !=
++          &observed_web_contents->GetPrimaryPage() ||
++      !primary_main_frame->GetLastCommittedURL().SchemeIsHTTPOrHTTPS()) {
++    OnCapturedForTesting(requested_generation, requested_force_baseline,
++                         SupervisionBaseline());
++    return;
++  }
++
++  const uint64_t requested_document_generation = document_generation_;
++  content::WeakDocumentPtr requested_document =
++      primary_main_frame->GetWeakDocumentPtr();
++  auto options = optimization_guide::ActionableAIPageContentOptions(
++      /*on_critical_path=*/true);
++  options->include_same_site_only = true;
++  options->include_passwords_for_redaction = true;
++  options->include_sensitive_payments_for_redaction = true;
++  options->include_otps_for_redaction = true;
++  optimization_guide::GetAIPageContent(
++      observed_web_contents, std::move(options),
++      base::BindOnce(
++          [](base::WeakPtr<PrometheusSupervisionCaptureHub> hub,
++             uint64_t capture_generation, uint64_t document_generation,
++             bool force_baseline, content::WeakDocumentPtr requested_document,
++             optimization_guide::AIPageContentResultOrError result) {
++            if (!hub) {
++              return;
++            }
++            SupervisionBaseline projected;
++            content::RenderFrameHost* requested_frame =
++                requested_document.AsRenderFrameHostIfValid();
++            content::WebContents* observed_web_contents = hub->web_contents();
++            content::RenderFrameHost* current_frame =
++                observed_web_contents
++                    ? observed_web_contents->GetPrimaryMainFrame()
++                    : nullptr;
++            if (hub->observing_ && !hub->destroyed_ &&
++                document_generation == hub->document_generation_ &&
++                capture_generation == hub->capture_generation_ &&
++                requested_frame && requested_frame == current_frame &&
++                requested_frame->IsActive() &&
++                requested_frame->IsRenderFrameLive() && observed_web_contents &&
++                !observed_web_contents->IsBeingDestroyed() &&
++                !observed_web_contents->IsCrashed() && result.has_value()) {
++              const auto& page_content = result->proto;
++              if (page_content.has_main_frame_data() &&
++                  page_content.main_frame_data().has_document_identifier()) {
++                const std::string& document_token =
++                    page_content.main_frame_data()
++                        .document_identifier()
++                        .serialized_token();
++                const auto document =
++                    result->document_identifiers.find(document_token);
++                if (!document_token.empty() &&
++                    document != result->document_identifiers.end() &&
++                    document->second.AsRenderFrameHostIfValid() ==
++                        requested_frame) {
++                  projected = BuildSupervisionBaseline(
++                      page_content, document_token, hub->limits_);
++                }
++              }
++            }
++            hub->OnCapturedForTesting(capture_generation, force_baseline,
++                                      std::move(projected));
++          },
++          weak_factory_.GetWeakPtr(), requested_generation,
++          requested_document_generation, requested_force_baseline,
++          std::move(requested_document)));
++}
+ 
+ void PrometheusSupervisionCaptureHub::OnCapturedForTesting(
+     uint64_t capture_generation,
+     bool force_baseline,
+-    SupervisionBaseline baseline) {}
++    SupervisionBaseline baseline) {
++  if (!observing_ || destroyed_ || capture_generation != capture_generation_ ||
++      !capture_in_flight_) {
++    return;
++  }
++  capture_in_flight_ = false;
++  const bool request_follow_up = dirty_while_capturing_;
++  const bool follow_up_force_baseline = force_baseline_after_capture_;
++  dirty_while_capturing_ = false;
++  force_baseline_after_capture_ = false;
++
++  if (!IsUsableBaseline(baseline)) {
++    baseline_ = SupervisionBaseline();
++    history_.clear();
++    retained_bytes_ = 0;
++    RequireBaselineForAll();
++  } else if (!IsUsableBaseline(baseline_) || force_baseline) {
++    const std::optional<uint64_t> next_sequence =
++        sequence_ == 0u ? std::optional<uint64_t>(1u)
++                        : CheckedNextSupervisionSequence(sequence_);
++    if (!next_sequence.has_value()) {
++      StartNewDocumentEpoch();
++      return;
++    }
++    sequence_ = *next_sequence;
++    baseline_ = std::move(baseline);
++    history_.clear();
++    retained_bytes_ = 0;
++    RequireBaselineForAll();
++  } else {
++    SupervisionDiff diff = ComputeSupervisionDiff(baseline_, baseline, limits_);
++    if (!diff.authoritative()) {
++      const std::optional<uint64_t> next_sequence =
++          CheckedNextSupervisionSequence(sequence_);
++      if (!next_sequence.has_value()) {
++        StartNewDocumentEpoch();
++        return;
++      }
++      sequence_ = *next_sequence;
++      baseline_ = std::move(baseline);
++      history_.clear();
++      retained_bytes_ = 0;
++      RequireBaselineForAll();
++    } else if (diff.operations.empty()) {
++      baseline_ = std::move(baseline);
++    } else {
++      const std::optional<uint64_t> next_sequence =
++          CheckedNextSupervisionSequence(sequence_);
++      if (!next_sequence.has_value()) {
++        StartNewDocumentEpoch();
++        return;
++      }
++      sequence_ = *next_sequence;
++      baseline_ = std::move(baseline);
++      retained_bytes_ += diff.serialized_json.size();
++      history_.push_back(
++          SharedBatch{.sequence = sequence_, .diff = std::move(diff)});
++
++      while (history_.size() > limits_.retained_batches ||
++             retained_bytes_ > limits_.retained_bytes_per_viewer) {
++        const uint64_t evicted_sequence = history_.front().sequence;
++        for (auto& [consumer_id, consumer] : consumers_) {
++          static_cast<void>(consumer_id);
++          if (!consumer.needs_baseline &&
++              consumer.acknowledged_sequence < evicted_sequence) {
++            RequireBaseline(consumer);
++          }
++        }
++        retained_bytes_ -= history_.front().diff.serialized_json.size();
++        history_.pop_front();
++      }
++    }
++  }
++
++  if (request_follow_up && observing_ && !destroyed_) {
++    RequestCapture(follow_up_force_baseline);
++  }
++}
++
++bool PrometheusSupervisionCaptureHub::IsUsableBaseline(
++    const SupervisionBaseline& baseline) const {
++  return baseline.authoritative() && !baseline.nodes.empty() &&
++         baseline.nodes.size() <= limits_.baseline_nodes &&
++         !baseline.serialized_json.empty() &&
++         baseline.serialized_json.size() <= limits_.baseline_bytes;
++}
++
++SupervisionStreamStamp PrometheusSupervisionCaptureHub::StampFor(
++    const ConsumerState& consumer,
++    uint64_t sequence) const {
++  return SupervisionStreamStamp{.session = consumer.session,
++                                .stable_tab_id = stable_tab_id_,
++                                .document_epoch = document_epoch_,
++                                .sequence = sequence};
++}
+ 
+-void PrometheusSupervisionCaptureHub::RequireBaselineForAll() {}
++void PrometheusSupervisionCaptureHub::RequireBaselineForAll() {
++  for (auto& [consumer_id, consumer] : consumers_) {
++    static_cast<void>(consumer_id);
++    RequireBaseline(consumer);
++  }
++}
+ 
+-void PrometheusSupervisionCaptureHub::RequireBaseline(ConsumerState& consumer) {}
++void PrometheusSupervisionCaptureHub::RequireBaseline(ConsumerState& consumer) {
++  consumer.acknowledged_sequence = 0;
++  consumer.next_sequence = 0;
++  consumer.offered_baseline_sequence.reset();
++  consumer.offered_diff_sequence.reset();
++  consumer.needs_baseline = true;
++}
+ 
+-void PrometheusSupervisionCaptureHub::PruneHistory() {}
++void PrometheusSupervisionCaptureHub::PruneHistory() {
++  while (!history_.empty()) {
++    const uint64_t front_sequence = history_.front().sequence;
++    const bool retained_by_consumer =
++        std::ranges::any_of(consumers_, [front_sequence](const auto& entry) {
++          const ConsumerState& consumer = entry.second;
++          return !consumer.needs_baseline &&
++                 consumer.acknowledged_sequence < front_sequence;
++        });
++    if (retained_by_consumer) {
++      return;
++    }
++    retained_bytes_ -= history_.front().diff.serialized_json.size();
++    history_.pop_front();
++  }
++}
+ 
+ bool PrometheusSupervisionCaptureHub::HasCurrentConsumer(
+     SupervisionCaptureConsumerId consumer_id) const {
+-  return false;
++  const auto consumer = consumers_.find(consumer_id);
++  return observing_ && !destroyed_ && consumer != consumers_.end() &&
++         consumer->second.expiry > Now();
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub.h b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+index 65210d9d76..fb600b9600 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+@@ -73,8 +73,8 @@ class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
+ 
+   ~PrometheusSupervisionCaptureHub() override;
+ 
+-  PrometheusSupervisionCaptureHub(
+-      const PrometheusSupervisionCaptureHub&) = delete;
++  PrometheusSupervisionCaptureHub(const PrometheusSupervisionCaptureHub&) =
++      delete;
+   PrometheusSupervisionCaptureHub& operator=(
+       const PrometheusSupervisionCaptureHub&) = delete;
+ 
+@@ -92,8 +92,7 @@ class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
+   void SweepExpiredConsumers();
+ 
+   size_t consumer_count() const { return consumers_.size(); }
+-  bool ConsumerNeedsBaseline(
+-      SupervisionCaptureConsumerId consumer_id) const;
++  bool ConsumerNeedsBaseline(SupervisionCaptureConsumerId consumer_id) const;
+ 
+   // Deterministic lifecycle hooks and counters. They expose no endpoint or
+   // document identity and are used only by native/browser verification.
+@@ -123,6 +122,8 @@ class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
+     base::Time expiry;
+     uint64_t acknowledged_sequence = 0;
+     uint64_t next_sequence = 0;
++    std::optional<uint64_t> offered_baseline_sequence;
++    std::optional<uint64_t> offered_diff_sequence;
+     bool needs_baseline = true;
+   };
+ 
+@@ -138,6 +139,7 @@ class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
+   void StartObservation();
+   void StopObservation();
+   void StartNewDocumentEpoch();
++  void UnbindCurrentFrames();
+   void BindCurrentFrames();
+   void BindFrame(content::RenderFrameHost* render_frame_host);
+   void OnFrameDirty(content::RenderFrameHost* render_frame_host,
+@@ -149,12 +151,15 @@ class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
+   void OnCapturedForTesting(uint64_t capture_generation,
+                             bool force_baseline,
+                             SupervisionBaseline baseline);
++  bool IsUsableBaseline(const SupervisionBaseline& baseline) const;
++  SupervisionStreamStamp StampFor(const ConsumerState& consumer,
++                                  uint64_t sequence) const;
+   void RequireBaselineForAll();
+   void RequireBaseline(ConsumerState& consumer);
+   void PruneHistory();
+   bool HasCurrentConsumer(SupervisionCaptureConsumerId consumer_id) const;
+ 
+-  [[maybe_unused]] const int32_t stable_tab_id_;
++  const int32_t stable_tab_id_;
+   const SupervisionLimits limits_;
+   CaptureForTestingCallback capture_for_testing_;
+   NowCallback now_callback_;
+@@ -165,16 +170,16 @@ class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
+   size_t retained_bytes_ = 0;
+   SupervisionBaseline baseline_;
+   base::UnguessableToken document_epoch_;
+-  [[maybe_unused]] uint64_t sequence_ = 0;
+-  [[maybe_unused]] uint64_t document_generation_ = 0;
+-  [[maybe_unused]] uint64_t capture_generation_ = 0;
+-  [[maybe_unused]] uint64_t next_frame_generation_ = 0;
+-  [[maybe_unused]] SupervisionCaptureConsumerId next_consumer_id_ = 0;
+-  [[maybe_unused]] bool observing_ = false;
++  uint64_t sequence_ = 0;
++  uint64_t document_generation_ = 0;
++  uint64_t capture_generation_ = 0;
++  uint64_t next_frame_generation_ = 0;
++  SupervisionCaptureConsumerId next_consumer_id_ = 0;
++  bool observing_ = false;
+   bool capture_in_flight_ = false;
+-  [[maybe_unused]] bool dirty_while_capturing_ = false;
+-  [[maybe_unused]] bool force_baseline_after_capture_ = false;
+-  [[maybe_unused]] bool destroyed_ = false;
++  bool dirty_while_capturing_ = false;
++  bool force_baseline_after_capture_ = false;
++  bool destroyed_ = false;
+   size_t enable_count_ = 0;
+   size_t disable_count_ = 0;
+   size_t capture_count_ = 0;
+-- 
+2.50.1 (Apple Git-155)
+

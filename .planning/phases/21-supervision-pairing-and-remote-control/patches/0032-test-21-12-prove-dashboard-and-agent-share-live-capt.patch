@@ -1,0 +1,835 @@
+From cbe1f662e16f77da556af4d3c3c640919a1a07be Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 07:46:33 -0500
+Subject: [PATCH] test(21-12): prove dashboard and agent share live capture
+
+---
+ .../prometheus_agent_gateway_browsertest.cc   | 230 +++++++++---
+ .../prometheus_browser_main_extra_parts.cc    |  20 +
+ .../prometheus_browser_main_extra_parts.h     |   5 +
+ ...eus_supervision_capture_hub_browsertest.cc | 346 +++++++++++++++++-
+ 4 files changed, 558 insertions(+), 43 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+index b6b9e401f1..c81f683893 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+@@ -37,12 +37,17 @@
+ #include "chrome/browser/profiles/profile_test_util.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
++#include "chrome/browser/prometheus/prometheus_browser_main_extra_parts.h"
+ #include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
++#include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h"
++#include "chrome/browser/tab_list/tab_list_interface.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/common/chrome_switches.h"
+ #include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
+ #include "content/public/test/browser_test.h"
+ #include "net/base/address_list.h"
+ #include "net/base/io_buffer.h"
+@@ -294,6 +299,14 @@ class PrometheusAgentGatewayBrowserTest : public InProcessBrowserTest {
+   }
+ 
+   void TearDownOnMainThread() override {
++    if (production_parts_) {
++      if (gateway_) {
++        gateway_->SetSupervisionGatewayDispatcher({});
++      }
++      production_parts_->UnbindSupervisionAgentForTesting();
++      production_parts_->PostMainMessageLoopRun();
++      production_parts_.reset();
++    }
+     if (gateway_) {
+       base::test::TestFuture<void> stopped;
+       gateway_->Shutdown(stopped.GetCallback());
+@@ -378,6 +391,7 @@ class PrometheusAgentGatewayBrowserTest : public InProcessBrowserTest {
+   base::ScopedTempDir temp_dir_;
+   base::FilePath descriptor_path_;
+   std::unique_ptr<PrometheusAgentGateway> gateway_;
++  std::unique_ptr<PrometheusBrowserMainExtraParts> production_parts_;
+   std::vector<SupervisionGatewayRequest> supervision_requests_;
+   std::vector<SupervisionGatewayCancellationToken> supervision_cancellations_;
+   std::vector<SupervisionGatewayDispatcher::ResultCallback>
+@@ -455,8 +469,8 @@ IN_PROC_BROWSER_TEST_F(
+     auto expected =
+         ParseSupervisionTransportRequest(kSupervisionRequests[index]);
+     ASSERT_TRUE(expected.has_value()) << expected.error().message;
+-    HttpResult response = Authorized("POST", "/v1/supervision",
+-                                     kSupervisionRequests[index]);
++    HttpResult response =
++        Authorized("POST", "/v1/supervision", kSupervisionRequests[index]);
+     EXPECT_EQ(200, response.status);
+     ExpectSecureResponseHeaders(response);
+     auto body = base::JSONReader::ReadDict(response.body, base::JSON_PARSE_RFC);
+@@ -469,40 +483,37 @@ IN_PROC_BROWSER_TEST_F(
+               supervision_requests_.back().transport.params.index());
+     EXPECT_TRUE(supervision_requests_.back().cancellation_token);
+   }
+-  EXPECT_EQ(kSupervisionTransportOperationCount,
+-            supervision_requests_.size());
++  EXPECT_EQ(kSupervisionTransportOperationCount, supervision_requests_.size());
+   EXPECT_TRUE(supervision_cancellations_.empty());
+ }
+ 
+-IN_PROC_BROWSER_TEST_F(
+-    PrometheusAgentGatewayBrowserTest,
+-    SupervisionPerimeterAndAbsentDispatcherFailClosed) {
++IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
++                       SupervisionPerimeterAndAbsentDispatcherFailClosed) {
+   const int port = gateway_->port_for_testing();
+   const std::string bearer = gateway_->bearer_for_testing();
+   EXPECT_EQ(401, Exchange(MakeRequest("POST", "/v1/supervision", port, "",
+                                       kSupervisionRequests[0]))
+                      .status);
+-  EXPECT_EQ(403, Exchange(MakeRequest(
+-                     "POST", "/v1/supervision", port, bearer,
+-                     kSupervisionRequests[0],
+-                     "Origin: https://dashboard.example\r\n"))
++  EXPECT_EQ(403, Exchange(MakeRequest("POST", "/v1/supervision", port, bearer,
++                                      kSupervisionRequests[0],
++                                      "Origin: https://dashboard.example\r\n"))
+                      .status);
+-  EXPECT_EQ(405, Exchange(MakeRequest("GET", "/v1/supervision", port,
+-                                      bearer, kSupervisionRequests[0]))
++  EXPECT_EQ(405, Exchange(MakeRequest("GET", "/v1/supervision", port, bearer,
++                                      kSupervisionRequests[0]))
+                      .status);
+-  EXPECT_EQ(415,
+-            Exchange("POST /v1/supervision HTTP/1.1\r\nHost: 127.0.0.1:" +
+-                     std::to_string(port) + "\r\nAuthorization: Bearer " +
+-                     bearer +
+-                     "\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n"
+-                     "Connection: close\r\n\r\n{}")
+-                .status);
++  EXPECT_EQ(
++      415,
++      Exchange("POST /v1/supervision HTTP/1.1\r\nHost: 127.0.0.1:" +
++               std::to_string(port) + "\r\nAuthorization: Bearer " + bearer +
++               "\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n"
++               "Connection: close\r\n\r\n{}")
++          .status);
+   EXPECT_TRUE(supervision_requests_.empty());
+ 
+   gateway_->SetSupervisionGatewayDispatcher({});
+   EXPECT_EQ(1u, supervision_shutdowns_);
+-  HttpResult unavailable = Authorized("POST", "/v1/supervision",
+-                                      kSupervisionRequests[0]);
++  HttpResult unavailable =
++      Authorized("POST", "/v1/supervision", kSupervisionRequests[0]);
+   EXPECT_EQ(200, unavailable.status);
+   EXPECT_NE(std::string::npos, unavailable.body.find("UNAVAILABLE"));
+   EXPECT_TRUE(supervision_requests_.empty());
+@@ -515,10 +526,9 @@ IN_PROC_BROWSER_TEST_F(
+   gateway_->SetRequestTimeoutForTesting(base::Milliseconds(25));
+ 
+   RawHttpClient timed_out(gateway_->endpoint_for_testing());
+-  timed_out.Send(MakeRequest("POST", "/v1/supervision",
+-                             gateway_->port_for_testing(),
+-                             gateway_->bearer_for_testing(),
+-                             kSupervisionRequests[2]));
++  timed_out.Send(
++      MakeRequest("POST", "/v1/supervision", gateway_->port_for_testing(),
++                  gateway_->bearer_for_testing(), kSupervisionRequests[2]));
+   ASSERT_TRUE(base::test::RunUntil(
+       [&]() { return supervision_requests_.size() == 1u; }));
+   EXPECT_EQ(504, timed_out.ReadResponse().status);
+@@ -534,10 +544,9 @@ IN_PROC_BROWSER_TEST_F(
+ 
+   gateway_->SetRequestTimeoutForTesting(base::Seconds(30));
+   RawHttpClient disconnected(gateway_->endpoint_for_testing());
+-  disconnected.Send(MakeRequest("POST", "/v1/supervision",
+-                                 gateway_->port_for_testing(),
+-                                 gateway_->bearer_for_testing(),
+-                                 kSupervisionRequests[2]));
++  disconnected.Send(
++      MakeRequest("POST", "/v1/supervision", gateway_->port_for_testing(),
++                  gateway_->bearer_for_testing(), kSupervisionRequests[2]));
+   ASSERT_TRUE(base::test::RunUntil(
+       [&]() { return supervision_requests_.size() == 2u; }));
+   disconnected.Disconnect();
+@@ -552,10 +561,9 @@ IN_PROC_BROWSER_TEST_F(
+   EXPECT_EQ(2u, supervision_cancellations_.size());
+ 
+   RawHttpClient unbound(gateway_->endpoint_for_testing());
+-  unbound.Send(MakeRequest("POST", "/v1/supervision",
+-                           gateway_->port_for_testing(),
+-                           gateway_->bearer_for_testing(),
+-                           kSupervisionRequests[2]));
++  unbound.Send(
++      MakeRequest("POST", "/v1/supervision", gateway_->port_for_testing(),
++                  gateway_->bearer_for_testing(), kSupervisionRequests[2]));
+   ASSERT_TRUE(base::test::RunUntil(
+       [&]() { return supervision_requests_.size() == 3u; }));
+   gateway_->SetSupervisionGatewayDispatcher({});
+@@ -573,14 +581,154 @@ IN_PROC_BROWSER_TEST_F(
+   EXPECT_EQ(3u, supervision_cancellations_.size());
+ }
+ 
++IN_PROC_BROWSER_TEST_F(
++    PrometheusAgentGatewayBrowserTest,
++    SupervisionCommandSemanticsUseProductionBindingsAndUnbindSafely) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("/title1.html")));
++  tabs::TabInterface* const target_tab =
++      TabListInterface::From(browser())->GetActiveTab();
++  ASSERT_TRUE(target_tab);
++  const int32_t stable_tab_id = target_tab->GetHandle().raw_value();
++  const int32_t window_id = browser()->GetSessionID().id();
++
++  production_parts_ = std::make_unique<PrometheusBrowserMainExtraParts>(true);
++  production_parts_->PostBrowserStart();
++  ASSERT_TRUE(
++      production_parts_->BindSupervisionGatewayForTesting(gateway_.get()));
++  EXPECT_EQ(1u, supervision_shutdowns_);
++
++  HttpResult created =
++      Authorized("POST", "/v1/session/create",
++                 R"({"display_label":"Production supervision Agent"})");
++  ASSERT_EQ(200, created.status);
++  const std::string agent_session = ExtractSessionId(created);
++  ASSERT_FALSE(agent_session.empty());
++
++  const std::string exact_target =
++      "{\"browser_session_id\":" + std::to_string(window_id) +
++      ",\"window_session_id\":" + std::to_string(window_id) +
++      ",\"tab_id\":" + std::to_string(stable_tab_id) + "}";
++  HttpResult claimed =
++      Authorized("POST", "/v1/agent/command",
++                 "{\"route\":\"activate_tab\",\"session_id\":\"" +
++                     agent_session + "\",\"target\":" + exact_target + "}");
++  ASSERT_EQ(200, claimed.status);
++  EXPECT_NE(std::string::npos, claimed.body.find("\"ok\":true"));
++
++  PrometheusSupervisionProfileService* const service =
++      PrometheusSupervisionProfileServiceFactory::GetForProfile(
++          browser()->profile());
++  ASSERT_TRUE(service);
++  SupervisionPairingCreationResult pairing =
++      service->CreatePairing(browser(), target_tab);
++  ASSERT_TRUE(pairing.ok) << pairing.message;
++
++  HttpResult redeemed =
++      Authorized("POST", "/v1/supervision",
++                 "{\"operation\":\"redeem\",\"params\":{\"pairing_code\":\"" +
++                     pairing.pairing_code +
++                     "\",\"client_label\":\"Production dashboard\"}}");
++  ASSERT_EQ(200, redeemed.status);
++  auto redeemed_json =
++      base::JSONReader::ReadDict(redeemed.body, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(redeemed_json.has_value()) << redeemed.body;
++  ASSERT_EQ(true, redeemed_json->FindBool("ok"));
++  const base::DictValue* redeemed_result = redeemed_json->FindDict("result");
++  ASSERT_TRUE(redeemed_result);
++  const std::string* dashboard_session =
++      redeemed_result->FindString("dashboard_session");
++  ASSERT_TRUE(dashboard_session);
++
++  HttpResult baseline = Authorized(
++      "POST", "/v1/supervision",
++      "{\"operation\":\"baseline\",\"params\":{\"dashboard_session\":\"" +
++          *dashboard_session + "\"}}");
++  ASSERT_EQ(200, baseline.status);
++  auto baseline_json =
++      base::JSONReader::ReadDict(baseline.body, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(baseline_json.has_value()) << baseline.body;
++  ASSERT_EQ(true, baseline_json->FindBool("ok"));
++  const base::DictValue* baseline_result = baseline_json->FindDict("result");
++  ASSERT_TRUE(baseline_result);
++  const std::string* document_epoch =
++      baseline_result->FindString("document_epoch");
++  std::optional<double> sequence = baseline_result->FindDouble("sequence");
++  ASSERT_TRUE(document_epoch);
++  ASSERT_TRUE(sequence.has_value());
++
++  HttpResult acked = Authorized(
++      "POST", "/v1/supervision",
++      "{\"operation\":\"ack\",\"params\":{\"dashboard_session\":\"" +
++          *dashboard_session + "\",\"document_epoch\":\"" + *document_epoch +
++          "\",\"sequence\":" + base::NumberToString(*sequence) + "}}");
++  ASSERT_EQ(200, acked.status);
++  EXPECT_NE(std::string::npos, acked.body.find("\"ok\":true"));
++
++  HttpResult agent_started =
++      Authorized("POST", "/v1/agent/command",
++                 "{\"route\":\"start_supervision_session\",\"session_id\":\"" +
++                     agent_session + "\"}");
++  ASSERT_EQ(200, agent_started.status);
++  EXPECT_NE(std::string::npos,
++            agent_started.body.find("\"kind\":\"baseline\""));
++  EXPECT_EQ(std::string::npos, agent_started.body.find("dashboard_session"));
++  EXPECT_EQ(2u, service->capture_consumer_count_for_testing(stable_tab_id));
++  PrometheusSupervisionCaptureHub* const hub =
++      service->capture_hub_for_testing(stable_tab_id);
++  ASSERT_TRUE(hub);
++  EXPECT_EQ(1u, hub->enable_count_for_testing());
++  EXPECT_EQ(1u, hub->capture_count_for_testing());
++
++  const std::string pending_diff_body =
++      "{\"operation\":\"diff\",\"params\":{\"dashboard_session\":\"" +
++      *dashboard_session + "\",\"document_epoch\":\"" + *document_epoch +
++      "\",\"after_sequence\":" + base::NumberToString(*sequence) + "}}";
++  RawHttpClient pending_dashboard(gateway_->endpoint_for_testing());
++  pending_dashboard.Send(
++      MakeRequest("POST", "/v1/supervision", gateway_->port_for_testing(),
++                  gateway_->bearer_for_testing(), pending_diff_body));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return gateway_->pending_supervision_request_count_for_testing() == 1u;
++  }));
++
++  gateway_->SetSupervisionGatewayDispatcher({});
++  EXPECT_EQ(1u, service->capture_consumer_count_for_testing(stable_tab_id));
++  production_parts_->UnbindSupervisionAgentForTesting();
++  HttpResult cancelled = pending_dashboard.ReadResponse();
++  EXPECT_EQ(200, cancelled.status);
++  EXPECT_NE(std::string::npos, cancelled.body.find("UNAVAILABLE"));
++  EXPECT_EQ(cancelled.raw.find("HTTP/1.1"), cancelled.raw.rfind("HTTP/1.1"));
++  EXPECT_EQ(0u, gateway_->pending_supervision_request_count_for_testing());
++
++  HttpResult dashboard_unavailable = Authorized(
++      "POST", "/v1/supervision",
++      "{\"operation\":\"baseline\",\"params\":{\"dashboard_session\":\"" +
++          *dashboard_session + "\"}}");
++  EXPECT_EQ(200, dashboard_unavailable.status);
++  EXPECT_NE(std::string::npos, dashboard_unavailable.body.find("UNAVAILABLE"));
++  HttpResult agent_unavailable =
++      Authorized("POST", "/v1/agent/command",
++                 "{\"route\":\"get_supervision_diff\",\"session_id\":\"" +
++                     agent_session + "\"}");
++  EXPECT_EQ(200, agent_unavailable.status);
++  EXPECT_NE(std::string::npos,
++            agent_unavailable.body.find("CAPABILITY_NOT_READY"));
++
++  ASSERT_EQ(200, Authorized("POST", "/v1/session/close",
++                            "{\"session_id\":\"" + agent_session + "\"}")
++                     .status);
++  EXPECT_EQ(0u, service->capture_hub_count_for_testing());
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+                        SupervisionShutdownCancelsPendingDiffAndStopsIo) {
+   hold_supervision_requests_ = true;
+   RawHttpClient client(gateway_->endpoint_for_testing());
+-  client.Send(MakeRequest("POST", "/v1/supervision",
+-                          gateway_->port_for_testing(),
+-                          gateway_->bearer_for_testing(),
+-                          kSupervisionRequests[2]));
++  client.Send(
++      MakeRequest("POST", "/v1/supervision", gateway_->port_for_testing(),
++                  gateway_->bearer_for_testing(), kSupervisionRequests[2]));
+   ASSERT_TRUE(base::test::RunUntil(
+       [&]() { return supervision_requests_.size() == 1u; }));
+ 
+@@ -605,8 +753,7 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+                        SupervisionHealthUsesOnlySanitizedReadiness) {
+   auto read_status = [](const HttpResult& response, std::string_view key) {
+     std::string status;
+-    auto root =
+-        base::JSONReader::ReadDict(response.body, base::JSON_PARSE_RFC);
++    auto root = base::JSONReader::ReadDict(response.body, base::JSON_PARSE_RFC);
+     EXPECT_TRUE(root.has_value()) << response.body;
+     const base::ListValue* diagnostics =
+         root ? root->FindList("diagnostics") : nullptr;
+@@ -638,8 +785,7 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+   supervision_readiness_.reason = "Bearer SECRET-READINESS-SENTINEL";
+   HttpResult rejected = Authorized("GET", "/v1/health", "");
+   EXPECT_EQ("not_ready", read_status(rejected, "supervision"));
+-  EXPECT_EQ(std::string::npos,
+-            rejected.body.find("SECRET-READINESS-SENTINEL"));
++  EXPECT_EQ(std::string::npos, rejected.body.find("SECRET-READINESS-SENTINEL"));
+ 
+   gateway_->SetSupervisionGatewayDispatcher({});
+   HttpResult absent = Authorized("GET", "/v1/health", "");
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index 1a015efa32..8171700380 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -1738,6 +1738,12 @@ class PrometheusSupervisionComposition {
+       Cancel(SupervisionGatewayCancellationToken{token});
+     }
+     pending_diffs_.clear();
++    for (auto& [wire_session, owner] : dashboard_owners_) {
++      static_cast<void>(wire_session);
++      if (owner.service) {
++        owner.service->EndSession(owner.session);
++      }
++    }
+     dashboard_owners_.clear();
+     weak_factory_.InvalidateWeakPtrs();
+   }
+@@ -1792,6 +1798,20 @@ void PrometheusBrowserMainExtraParts::PostBrowserStart() {
+       base::BindOnce([](bool started) { static_cast<void>(started); }));
+ }
+ 
++bool PrometheusBrowserMainExtraParts::BindSupervisionGatewayForTesting(
++    PrometheusAgentGateway* gateway) {
++  if (!gateway || !supervision_composition_) {
++    return false;
++  }
++  gateway->SetSupervisionGatewayDispatcher(
++      supervision_composition_->CreateDashboardDispatcher());
++  return true;
++}
++
++void PrometheusBrowserMainExtraParts::UnbindSupervisionAgentForTesting() {
++  PrometheusAgentService::SetSupervisionRouteDispatcher({});
++}
++
+ void PrometheusBrowserMainExtraParts::PostMainMessageLoopRun() {
+   if (gateway_) {
+     gateway_->SetSupervisionGatewayDispatcher({});
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
+index 6b3213d439..589f41d7db 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
+@@ -27,6 +27,11 @@ class PrometheusBrowserMainExtraParts final
+   void PostBrowserStart() override;
+   void PostMainMessageLoopRun() override;
+ 
++  // Lets browser tests exercise the production composition with a
++  // test-owned loopback gateway while retaining the normal binding path.
++  bool BindSupervisionGatewayForTesting(PrometheusAgentGateway* gateway);
++  void UnbindSupervisionAgentForTesting();
++
+  private:
+   const bool is_integration_test_;
+   std::unique_ptr<PrometheusSupervisionComposition> supervision_composition_;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc b/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc
+index 397a78fc18..281ea6984b 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc
+@@ -11,7 +11,9 @@
+ 
+ #include "base/functional/bind.h"
+ #include "base/test/run_until.h"
++#include "base/test/test_future.h"
+ #include "base/time/time.h"
++#include "chrome/browser/prometheus/prometheus_agent_transport_codec.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"
+ #include "chrome/browser/tab_list/tab_list_interface.h"
+ #include "chrome/browser/ui/browser.h"
+@@ -38,11 +40,15 @@ namespace prometheus {
+ namespace {
+ 
+ constexpr char kHubPagePath[] = "/prometheus-supervision-hub.html";
++constexpr char kCompatibilityHubPagePath[] =
++    "/prometheus-supervision-compatibility-hub.html";
+ constexpr char kFramePagePath[] = "/prometheus-supervision-frame.html";
+ constexpr char kReleasePath[] = "/prometheus-supervision-release";
+ constexpr char kSecondReleasePath[] = "/prometheus-supervision-second-release";
++constexpr char kThirdReleasePath[] = "/prometheus-supervision-third-release";
+ constexpr char kMutationMarker[] = "released-visible-marker";
+ constexpr char kSecondMutationMarker[] = "second-released-visible-marker";
++constexpr char kThirdMutationMarker[] = "third-released-visible-marker";
+ constexpr char kPasswordSentinel[] = "PASSWORD_SENTINEL_21_07";
+ constexpr char kPaymentSentinel[] = "4111111111112107";
+ constexpr char kOtpSentinel[] = "927107";
+@@ -87,6 +93,54 @@ fetch('/prometheus-supervision-release')
+     status.id = 'second-server-release';
+     status.textContent = message;
+     document.querySelector('#mutation-region').append(status);
++    return fetch('/prometheus-supervision-third-release');
++  })
++  .then(response => response.text())
++  .then(message => {
++    const status = document.createElement('p');
++    status.id = 'third-server-release';
++    status.textContent = message;
++    document.querySelector('#mutation-region').append(status);
++  });
++</script>
++)HTML";
++
++constexpr char kCompatibilityHubPage[] = R"HTML(
++<!doctype html>
++<meta charset="utf-8">
++<title>Supervision compatibility capture hub</title>
++<main>
++  <h1>Initial shared supervision state</h1>
++  <section id="mutation-region" aria-label="Supervision mutation region">
++    <p id="mutation-status">waiting for server release</p>
++  </section>
++</main>
++<script>
++fetch('/prometheus-supervision-release')
++  .then(response => response.text())
++  .then(message => {
++    const button = document.createElement('button');
++    button.id = 'server-released-button';
++    button.textContent = message;
++    document.querySelector('#mutation-region').append(button);
++    document.querySelector('#mutation-status').textContent =
++        'server mutation committed';
++    return fetch('/prometheus-supervision-second-release');
++  })
++  .then(response => response.text())
++  .then(message => {
++    const status = document.createElement('p');
++    status.id = 'second-server-release';
++    status.textContent = message;
++    document.querySelector('#mutation-region').append(status);
++    return fetch('/prometheus-supervision-third-release');
++  })
++  .then(response => response.text())
++  .then(message => {
++    const status = document.createElement('p');
++    status.id = 'third-server-release';
++    status.textContent = message;
++    document.querySelector('#mutation-region').append(status);
+   });
+ </script>
+ )HTML";
+@@ -109,6 +163,13 @@ bool Omits(std::string_view payload, std::string_view forbidden) {
+ 
+ class PrometheusSupervisionCaptureHubBrowserTest : public InProcessBrowserTest {
+  public:
++  struct CompatibilityObservation {
++    bool ok = false;
++    AgentErrorCode error_code = AgentErrorCode::kNone;
++    std::string message;
++    std::string serialized;
++  };
++
+   void SetUpOnMainThread() override {
+     InProcessBrowserTest::SetUpOnMainThread();
+     host_resolver()->AddRule("*", "127.0.0.1");
+@@ -118,12 +179,22 @@ class PrometheusSupervisionCaptureHubBrowserTest : public InProcessBrowserTest {
+     second_release_response_ =
+         std::make_unique<net::test_server::ControllableHttpResponse>(
+             embedded_test_server(), kSecondReleasePath);
++    third_release_response_ =
++        std::make_unique<net::test_server::ControllableHttpResponse>(
++            embedded_test_server(), kThirdReleasePath);
+     embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
+         &PrometheusSupervisionCaptureHubBrowserTest::HandleRequest,
+         base::Unretained(this)));
+     ASSERT_TRUE(embedded_test_server()->Start());
++    const testing::TestInfo* const test_info =
++        testing::UnitTest::GetInstance()->current_test_info();
++    const bool compatibility_case =
++        test_info && std::string_view(test_info->name())
++                         .starts_with("DashboardAndAgentConsumers");
+     ASSERT_TRUE(ui_test_utils::NavigateToURL(
+-        browser(), embedded_test_server()->GetURL(kHubPagePath)));
++        browser(),
++        embedded_test_server()->GetURL(
++            compatibility_case ? kCompatibilityHubPagePath : kHubPagePath)));
+     now_ = base::Time::Now();
+     SupervisionLimits limits;
+     limits.viewer_ttl_ms = base::Minutes(2).InMilliseconds();
+@@ -141,6 +212,7 @@ class PrometheusSupervisionCaptureHubBrowserTest : public InProcessBrowserTest {
+ 
+   void TearDownOnMainThread() override {
+     supervision_service_.reset();
++    third_release_response_.reset();
+     second_release_response_.reset();
+     release_response_.reset();
+     InProcessBrowserTest::TearDownOnMainThread();
+@@ -234,6 +306,73 @@ class PrometheusSupervisionCaptureHubBrowserTest : public InProcessBrowserTest {
+     return *second_release_response_;
+   }
+ 
++  net::test_server::ControllableHttpResponse& third_release_response() {
++    return *third_release_response_;
++  }
++
++  std::optional<std::string> CreateAndClaimAgentSession() {
++    AgentSessionResult created = agent_service_.CreateSession("MCP Agent");
++    if (!created.route_result.ok || !created.session.has_value()) {
++      ADD_FAILURE() << created.route_result.message;
++      return std::nullopt;
++    }
++    AgentRouteRequest request;
++    request.route_name = AgentRouteName::kActivateTab;
++    request.session_id = created.session->id;
++    request.target.browser_session_id = browser()->GetSessionID().id();
++    request.target.window_session_id = browser()->GetSessionID().id();
++    request.target.tab_handle = active_tab()->GetHandle();
++    base::test::TestFuture<AgentRouteResult> claimed;
++    agent_service_.ExecuteRoute(browser(), request, claimed.GetCallback());
++    AgentRouteResult claim_result = claimed.Take();
++    if (!claim_result.ok) {
++      ADD_FAILURE() << claim_result.message;
++      return std::nullopt;
++    }
++    return created.session->id;
++  }
++
++  CompatibilityObservation ExecuteCompatibility(AgentRouteName route_name,
++                                                std::string_view session_id,
++                                                tabs::TabHandle tab_handle) {
++    AgentRouteRequest request;
++    request.route_name = route_name;
++    request.session_id = std::string(session_id);
++    request.target.browser_session_id = browser()->GetSessionID().id();
++    request.target.window_session_id = browser()->GetSessionID().id();
++    request.target.tab_handle = tab_handle;
++    base::RunLoop completed;
++    std::optional<CompatibilityObservation> observation;
++    supervision_service().ExecuteCompatibilityRoute(
++        browser(), request,
++        base::BindOnce(
++            [](std::optional<CompatibilityObservation>* observation,
++               base::OnceClosure completed, AgentRouteResult result) {
++              CompatibilityObservation captured;
++              captured.ok = result.ok;
++              captured.error_code = result.error_code;
++              captured.message = result.message;
++              auto serialized = SerializeAgentTransportResult(result);
++              if (serialized.has_value()) {
++                captured.serialized = std::move(*serialized);
++              } else {
++                captured.message = serialized.error().message;
++              }
++              observation->emplace(std::move(captured));
++              std::move(completed).Run();
++            },
++            &observation, completed.QuitClosure()));
++    if (!observation.has_value()) {
++      completed.Run();
++    }
++    EXPECT_TRUE(observation.has_value());
++    return observation.value_or(CompatibilityObservation());
++  }
++
++  void ReleaseAgentSessionOwnership(std::string_view session_id) {
++    agent_service_.ReleaseSessionOwnership(session_id);
++  }
++
+   void AdvanceNow(base::TimeDelta delta) { now_ += delta; }
+ 
+  private:
+@@ -242,6 +381,8 @@ class PrometheusSupervisionCaptureHubBrowserTest : public InProcessBrowserTest {
+     std::string_view content;
+     if (request.relative_url == kHubPagePath) {
+       content = kHubPage;
++    } else if (request.relative_url == kCompatibilityHubPagePath) {
++      content = kCompatibilityHubPage;
+     } else if (request.relative_url == kFramePagePath) {
+       content = kFramePage;
+     } else {
+@@ -257,6 +398,8 @@ class PrometheusSupervisionCaptureHubBrowserTest : public InProcessBrowserTest {
+   std::unique_ptr<net::test_server::ControllableHttpResponse> release_response_;
+   std::unique_ptr<net::test_server::ControllableHttpResponse>
+       second_release_response_;
++  std::unique_ptr<net::test_server::ControllableHttpResponse>
++      third_release_response_;
+   AgentSessionRegistry registry_{8, base::Hours(1)};
+   PrometheusAgentService agent_service_{&registry_};
+   base::Time now_;
+@@ -514,6 +657,207 @@ IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
+   ASSERT_TRUE(hub.Ack(*second, second_diff->stamp));
+ }
+ 
++IN_PROC_BROWSER_TEST_F(
++    PrometheusSupervisionCaptureHubBrowserTest,
++    DashboardAndAgentConsumersShareRealMutationsAndDetachIndependently) {
++  ASSERT_TRUE(active_tab());
++  const tabs::TabHandle target_tab = active_tab()->GetHandle();
++  const int32_t stable_tab_id = target_tab.raw_value();
++  const std::optional<std::string> agent_session = CreateAndClaimAgentSession();
++  ASSERT_TRUE(agent_session.has_value());
++
++  SupervisionRedemptionResult dashboard_a = RedeemDashboard("Dashboard A");
++  ASSERT_TRUE(dashboard_a.ok);
++  SupervisionDashboardBaselineResult dashboard_a_baseline =
++      WaitForDashboardBaseline(dashboard_a.dashboard_session);
++  ASSERT_TRUE(dashboard_a_baseline.delivery.has_value());
++  ASSERT_TRUE(supervision_service()
++                  .AckDashboard(dashboard_a.dashboard_session,
++                                dashboard_a_baseline.delivery->stamp)
++                  .ok);
++
++  CompatibilityObservation agent_started = ExecuteCompatibility(
++      AgentRouteName::kStartSupervisionSession, *agent_session, target_tab);
++  ASSERT_TRUE(agent_started.ok) << agent_started.message;
++  EXPECT_NE(std::string::npos,
++            agent_started.serialized.find("\"kind\":\"baseline\""));
++
++  PrometheusSupervisionCaptureHub* hub =
++      supervision_service().capture_hub_for_testing(stable_tab_id);
++  ASSERT_TRUE(hub);
++  EXPECT_EQ(2u, hub->consumer_count());
++  EXPECT_EQ(1u, hub->enable_count_for_testing());
++  EXPECT_EQ(1u, hub->capture_count_for_testing());
++
++  for (std::string_view forbidden :
++       {kPasswordSentinel, kPaymentSentinel, kOtpSentinel, "attributeName",
++        "oldValue", "addedNodes", "removedNodes", "dashboard_session",
++        "document_epoch", "sequence", "cursor"}) {
++    EXPECT_TRUE(Omits(agent_started.serialized, forbidden)) << forbidden;
++  }
++
++  release_response().WaitForRequest();
++  release_response().Send(net::HTTP_OK, "text/plain", kMutationMarker);
++  release_response().Done();
++
++  SupervisionDashboardDiffResult dashboard_a_diff =
++      WaitForDashboardDiff(dashboard_a.dashboard_session);
++  ASSERT_TRUE(dashboard_a_diff.delivery.has_value());
++  CompatibilityObservation agent_first_diff = ExecuteCompatibility(
++      AgentRouteName::kGetSupervisionDiff, *agent_session, target_tab);
++  ASSERT_TRUE(agent_first_diff.ok) << agent_first_diff.message;
++  EXPECT_NE(
++      std::string::npos,
++      dashboard_a_diff.delivery->diff.serialized_json.find(kMutationMarker));
++  EXPECT_NE(std::string::npos,
++            agent_first_diff.serialized.find(kMutationMarker));
++  const size_t captures_after_first_mutation = hub->capture_count_for_testing();
++  EXPECT_EQ(2u, captures_after_first_mutation);
++  EXPECT_EQ(2u, hub->consumer_count());
++  ASSERT_TRUE(supervision_service()
++                  .AckDashboard(dashboard_a.dashboard_session,
++                                dashboard_a_diff.delivery->stamp)
++                  .ok);
++
++  CompatibilityObservation agent_no_change = ExecuteCompatibility(
++      AgentRouteName::kGetSupervisionDiff, *agent_session, target_tab);
++  ASSERT_TRUE(agent_no_change.ok) << agent_no_change.message;
++  EXPECT_NE(std::string::npos,
++            agent_no_change.serialized.find("\"kind\":\"no_change\""));
++
++  ASSERT_TRUE(
++      supervision_service().EndSession(dashboard_a.dashboard_session).ok);
++  EXPECT_EQ(1u, hub->consumer_count());
++  EXPECT_EQ(0u, hub->disable_count_for_testing());
++
++  second_release_response().WaitForRequest();
++  second_release_response().Send(net::HTTP_OK, "text/plain",
++                                 kSecondMutationMarker);
++  second_release_response().Done();
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return hub->capture_count_for_testing() > captures_after_first_mutation;
++  }));
++  CompatibilityObservation agent_second_diff = ExecuteCompatibility(
++      AgentRouteName::kGetSupervisionDiff, *agent_session, target_tab);
++  ASSERT_TRUE(agent_second_diff.ok) << agent_second_diff.message;
++  EXPECT_NE(std::string::npos,
++            agent_second_diff.serialized.find(kSecondMutationMarker));
++  const size_t captures_after_second_mutation =
++      hub->capture_count_for_testing();
++  EXPECT_EQ(captures_after_first_mutation + 1u, captures_after_second_mutation);
++
++  SupervisionRedemptionResult dashboard_b = RedeemDashboard("Dashboard B");
++  ASSERT_TRUE(dashboard_b.ok);
++  SupervisionDashboardBaselineResult dashboard_b_baseline =
++      WaitForDashboardBaseline(dashboard_b.dashboard_session);
++  ASSERT_TRUE(dashboard_b_baseline.delivery.has_value());
++  EXPECT_NE(std::string::npos,
++            dashboard_b_baseline.delivery->baseline.serialized_json.find(
++                kSecondMutationMarker));
++  ASSERT_TRUE(supervision_service()
++                  .AckDashboard(dashboard_b.dashboard_session,
++                                dashboard_b_baseline.delivery->stamp)
++                  .ok);
++  EXPECT_EQ(2u, hub->consumer_count());
++  EXPECT_EQ(1u, hub->enable_count_for_testing());
++  EXPECT_EQ(captures_after_second_mutation, hub->capture_count_for_testing());
++
++  CompatibilityObservation agent_ended = ExecuteCompatibility(
++      AgentRouteName::kEndSupervisionSession, *agent_session, target_tab);
++  ASSERT_TRUE(agent_ended.ok) << agent_ended.message;
++  EXPECT_EQ(1u, hub->consumer_count());
++  EXPECT_EQ(0u, hub->disable_count_for_testing());
++
++  third_release_response().WaitForRequest();
++  third_release_response().Send(net::HTTP_OK, "text/plain",
++                                kThirdMutationMarker);
++  third_release_response().Done();
++  SupervisionDashboardDiffResult dashboard_b_diff =
++      WaitForDashboardDiff(dashboard_b.dashboard_session);
++  ASSERT_TRUE(dashboard_b_diff.delivery.has_value());
++  EXPECT_NE(std::string::npos,
++            dashboard_b_diff.delivery->diff.serialized_json.find(
++                kThirdMutationMarker));
++  ASSERT_TRUE(supervision_service()
++                  .AckDashboard(dashboard_b.dashboard_session,
++                                dashboard_b_diff.delivery->stamp)
++                  .ok);
++  EXPECT_EQ(captures_after_second_mutation + 1u,
++            hub->capture_count_for_testing());
++
++  CompatibilityObservation agent_restarted = ExecuteCompatibility(
++      AgentRouteName::kStartSupervisionSession, *agent_session, target_tab);
++  ASSERT_TRUE(agent_restarted.ok) << agent_restarted.message;
++  EXPECT_EQ(2u, hub->consumer_count());
++  const base::UnguessableToken old_epoch =
++      dashboard_b_diff.delivery->stamp.document_epoch;
++
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("/title2.html")));
++  SupervisionDashboardBaselineResult navigated_dashboard =
++      WaitForDashboardBaseline(dashboard_b.dashboard_session);
++  ASSERT_TRUE(navigated_dashboard.delivery.has_value());
++  EXPECT_NE(old_epoch, navigated_dashboard.delivery->stamp.document_epoch);
++  ASSERT_TRUE(supervision_service()
++                  .AckDashboard(dashboard_b.dashboard_session,
++                                navigated_dashboard.delivery->stamp)
++                  .ok);
++  CompatibilityObservation agent_needs_resync = ExecuteCompatibility(
++      AgentRouteName::kGetSupervisionDiff, *agent_session, target_tab);
++  EXPECT_FALSE(agent_needs_resync.ok);
++  EXPECT_EQ(AgentErrorCode::kStaleTarget, agent_needs_resync.error_code);
++  CompatibilityObservation agent_resynced = ExecuteCompatibility(
++      AgentRouteName::kGetSupervisionSnapshot, *agent_session, target_tab);
++  ASSERT_TRUE(agent_resynced.ok) << agent_resynced.message;
++
++  ReleaseAgentSessionOwnership(*agent_session);
++  EXPECT_FALSE(supervision_service()
++                   .ReadDashboardDiff(dashboard_b.dashboard_session)
++                   .ok);
++  CompatibilityObservation owner_lost = ExecuteCompatibility(
++      AgentRouteName::kGetSupervisionSnapshot, *agent_session, target_tab);
++  EXPECT_FALSE(owner_lost.ok);
++  EXPECT_EQ(AgentErrorCode::kTabNotOwned, owner_lost.error_code);
++  EXPECT_EQ(0u, supervision_service().capture_hub_count_for_testing());
++  EXPECT_EQ(2u,
++            supervision_service().released_capture_disable_count_for_testing());
++
++  const std::optional<std::string> close_session = CreateAndClaimAgentSession();
++  ASSERT_TRUE(close_session.has_value());
++  SupervisionRedemptionResult closing_dashboard =
++      RedeemDashboard("Closing dashboard");
++  ASSERT_TRUE(closing_dashboard.ok);
++  SupervisionDashboardBaselineResult closing_baseline =
++      WaitForDashboardBaseline(closing_dashboard.dashboard_session);
++  ASSERT_TRUE(closing_baseline.delivery.has_value());
++  ASSERT_TRUE(supervision_service()
++                  .AckDashboard(closing_dashboard.dashboard_session,
++                                closing_baseline.delivery->stamp)
++                  .ok);
++  CompatibilityObservation closing_agent = ExecuteCompatibility(
++      AgentRouteName::kStartSupervisionSession, *close_session, target_tab);
++  ASSERT_TRUE(closing_agent.ok) << closing_agent.message;
++  EXPECT_EQ(2u, supervision_service().capture_consumer_count_for_testing(
++                    stable_tab_id));
++
++  tabs::TabInterface* const safety_tab =
++      TabListInterface::From(browser())->OpenTab(GURL("about:blank"), -1, true);
++  ASSERT_TRUE(safety_tab);
++  TabListInterface::From(browser())->CloseTab(target_tab);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return supervision_service().capture_hub_count_for_testing() == 0u;
++  }));
++  EXPECT_FALSE(supervision_service()
++                   .ReadDashboardDiff(closing_dashboard.dashboard_session)
++                   .ok);
++  CompatibilityObservation target_closed = ExecuteCompatibility(
++      AgentRouteName::kGetSupervisionSnapshot, *close_session, target_tab);
++  EXPECT_FALSE(target_closed.ok);
++  EXPECT_EQ(AgentErrorCode::kStaleTarget, target_closed.error_code);
++  EXPECT_EQ(3u,
++            supervision_service().released_capture_disable_count_for_testing());
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
+                        NavigationTearsDownOldDocumentBeforeRebinding) {
+   ASSERT_TRUE(contents());
+-- 
+2.50.1 (Apple Git-155)
+

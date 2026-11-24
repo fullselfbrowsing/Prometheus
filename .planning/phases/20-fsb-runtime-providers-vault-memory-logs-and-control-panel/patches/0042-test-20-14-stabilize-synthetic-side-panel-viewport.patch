@@ -1,0 +1,46 @@
+From 5beb75dd920d020ba95f7c866f466167f085ff73 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sat, 18 Jul 2026 21:37:35 -0500
+Subject: [PATCH] test(20-14): stabilize synthetic side-panel viewport
+
+---
+ .../ui/webui/prometheus/prometheus_web_ui_browsertest.cc  | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 4b947ca048..8ae67368d0 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -40,6 +40,7 @@
+ #include "components/zoom/zoom_controller.h"
+ #include "content/public/browser/navigation_entry.h"
+ #include "content/public/browser/reload_type.h"
++#include "content/public/browser/render_widget_host_view.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/browser/web_ui.h"
+ #include "content/public/common/content_features.h"
+@@ -2792,8 +2793,9 @@ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+   ASSERT_TRUE(controller);
+   content::WebContents* const web_contents = visible_side_panel_web_contents();
+   ASSERT_TRUE(web_contents);
+-  views::WebView* const web_view = visible_side_panel_web_view(browser());
+-  ASSERT_TRUE(web_view);
++  content::RenderWidgetHostView* const render_widget_host_view =
++      web_contents->GetRenderWidgetHostView();
++  ASSERT_TRUE(render_widget_host_view);
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+     return content::EvalJs(web_contents, R"(
+       window.prometheusRuntimeSnapshotForTesting?.status || '';
+@@ -2863,8 +2865,8 @@ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+                    .ExtractInt());
+ 
+   for (const int width : std::array<int, 2>{300, 320}) {
+-    web_view->SetSize(gfx::Size(width, 900));
+     ASSERT_TRUE(base::test::RunUntil([&]() {
++      render_widget_host_view->SetSize(gfx::Size(width, 900));
+       return content::EvalJs(web_contents, "window.innerWidth;").ExtractInt() ==
+              width;
+     })) << "width="
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,200 @@
+From 3b738d8ed5bdb04db7d6a5f464687e82a5cd863f Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 29 Jul 2026 07:46:34 -0500
+Subject: [PATCH] feat(22-03): publish live bounded extension health
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  2 ++
+ .../prometheus/prometheus_agent_gateway.cc    | 35 ++++++++++++++++---
+ .../prometheus_agent_gateway_browsertest.cc   | 21 ++++++++---
+ .../prometheus_agent_gateway_unittest.cc      |  4 +--
+ chrome/browser/ui/views/prometheus/BUILD.gn   |  1 +
+ 5 files changed, 53 insertions(+), 10 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 9d542781bc..e5e63b2926 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -723,6 +723,8 @@ source_set("prometheus_agent_gateway") {
+     ":prometheus_agent_route",
+     ":prometheus_agent_transport_codec",
+     ":prometheus_endpoint_descriptor",
++    ":prometheus_extension_policy_service",
++    ":prometheus_extension_policy_types",
+     ":prometheus_provider_registry",
+     ":prometheus_runtime_profile_service",
+     ":prometheus_runtime_transport_codec",
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.cc b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+index bae6b336c4..89bcf34ea4 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+@@ -36,6 +36,8 @@
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_agent_transport_codec.h"
+ #include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_service.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_transport_codec.h"
+@@ -230,6 +232,19 @@ AgentDiagnosticStatus ToAgentDiagnosticStatus(
+   }
+ }
+ 
++std::optional<AgentDiagnosticStatus> ToExtensionDiagnosticStatus(
++    ExtensionPolicyHealthStatus status) {
++  switch (status) {
++    case ExtensionPolicyHealthStatus::kReady:
++      return AgentDiagnosticStatus::kReady;
++    case ExtensionPolicyHealthStatus::kDegraded:
++      return AgentDiagnosticStatus::kDegraded;
++    case ExtensionPolicyHealthStatus::kUnavailable:
++      return AgentDiagnosticStatus::kUnavailable;
++  }
++  return std::nullopt;
++}
++
+ bool IsSanitizedSupervisionDiagnostic(std::string_view value) {
+   if (value.empty() || value.size() > 256u || !base::IsStringUTF8(value) ||
+       value.find('\n') != std::string_view::npos ||
+@@ -721,9 +736,16 @@ AgentRouteResult BuildPrometheusGatewayHealthForTesting(
+       valid_supervision_readiness
+           ? supervision_readiness->next_action
+           : "Open a regular Prometheus browser window and retry");
+-  add("extensions", AgentDiagnosticStatus::kNotReady,
+-      "Agent extension policy is owned by Phase 22",
+-      "Retry after extension diagnostics reports ready");
++  ExtensionPolicyHealth extension_health = runtime_health.extension_health;
++  std::optional<AgentDiagnosticStatus> extension_status =
++      ToExtensionDiagnosticStatus(extension_health.status);
++  if (!extension_status.has_value()) {
++    extension_health = ExtensionPolicyHealth();
++    extension_status = AgentDiagnosticStatus::kUnavailable;
++  }
++  add("extensions", extension_status.value(),
++      SanitizeExtensionPolicyReason(extension_health.reason),
++      SanitizeExtensionPolicyRecovery(extension_health.recovery));
+   return health;
+ }
+ 
+@@ -1939,10 +1961,15 @@ void PrometheusAgentGateway::HandleNativeRequest(
+                 : std::vector<PrometheusProviderConfig>();
+     const bool policy_operable_provider =
+         std::ranges::any_of(providers, IsProviderPolicyOperable);
+-    const RuntimeGatewayHealthState runtime_health =
++    RuntimeGatewayHealthState runtime_health =
+         BuildPrometheusRuntimeHealthStateForTesting(
+             runtime != nullptr, providers.size(), policy_operable_provider,
+             runtime && runtime->IsVaultAvailableForTransport());
++    PrometheusExtensionPolicyService* const extension_policy =
++        PrometheusExtensionPolicyServiceFactory::GetForProfile(profile);
++    if (extension_policy) {
++      runtime_health.extension_health = extension_policy->GetHealth();
++    }
+     std::optional<SupervisionGatewayReadiness> supervision_readiness;
+     if (supervision_dispatcher_) {
+       supervision_readiness = supervision_dispatcher_->readiness.Run();
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+index 9fa2622728..600decc2ee 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+@@ -753,6 +753,11 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+                        SupervisionHealthUsesOnlySanitizedReadiness) {
++  PrometheusExtensionPolicyService* const extension_policy =
++      PrometheusExtensionPolicyServiceFactory::GetForProfile(
++          browser()->profile());
++  ASSERT_TRUE(extension_policy);
++  extension_policy->SetSystemReadyForTesting(true);
+   auto read_status = [](const HttpResult& response, std::string_view key) {
+     std::string status;
+     auto root = base::JSONReader::ReadDict(response.body, base::JSON_PARSE_RFC);
+@@ -782,7 +787,7 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+   HttpResult ready = Authorized("GET", "/v1/health", "");
+   EXPECT_EQ(200, ready.status);
+   EXPECT_EQ("ready", read_status(ready, "supervision"));
+-  EXPECT_EQ("not_ready", read_status(ready, "extensions"));
++  EXPECT_EQ("ready", read_status(ready, "extensions"));
+ 
+   supervision_readiness_.reason = "Bearer SECRET-READINESS-SENTINEL";
+   HttpResult rejected = Authorized("GET", "/v1/health", "");
+@@ -792,7 +797,7 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+   gateway_->SetSupervisionGatewayDispatcher({});
+   HttpResult absent = Authorized("GET", "/v1/health", "");
+   EXPECT_EQ("not_ready", read_status(absent, "supervision"));
+-  EXPECT_EQ("not_ready", read_status(absent, "extensions"));
++  EXPECT_EQ("ready", read_status(absent, "extensions"));
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+@@ -899,6 +904,11 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+                        RunsPinnedSessionCommandAndClosedTenKeyHealth) {
++  PrometheusExtensionPolicyService* const extension_policy =
++      PrometheusExtensionPolicyServiceFactory::GetForProfile(
++          browser()->profile());
++  ASSERT_TRUE(extension_policy);
++  extension_policy->SetSystemReadyForTesting(true);
+   HttpResult created =
+       Authorized("POST", "/v1/session/create", R"({"display_label":"Codex"})");
+   ASSERT_EQ(200, created.status);
+@@ -935,8 +945,7 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+       "supervision",      "extensions"};
+   const std::set<std::string> allowed_statuses = {"ready", "degraded",
+                                                   "not_ready", "unavailable"};
+-  const std::set<std::string> not_ready_keys = {"provider", "supervision",
+-                                                "extensions"};
++  const std::set<std::string> not_ready_keys = {"provider", "supervision"};
+   std::set<std::string> actual_keys;
+   for (const base::Value& value : *diagnostics) {
+     const base::DictValue* component = value.GetIfDict();
+@@ -953,6 +962,10 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+     EXPECT_TRUE(allowed_statuses.contains(*status)) << *status;
+     if (*key == "vault") {
+       EXPECT_EQ("ready", *status) << *key;
++    } else if (*key == "extensions") {
++      EXPECT_EQ("ready", *status) << *key;
++      EXPECT_LE(reason->size(), kMaxExtensionPolicyReasonBytes);
++      EXPECT_LE(next_action->size(), kMaxExtensionPolicyRecoveryBytes);
+     } else if (not_ready_keys.contains(*key)) {
+       EXPECT_EQ("not_ready", *status) << *key;
+       EXPECT_FALSE(reason->empty()) << *key;
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+index 563d587d49..7d5ef8307d 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+@@ -1278,7 +1278,7 @@ TEST(PrometheusAgentGatewayTest,
+   EXPECT_EQ(AgentDiagnosticStatus::kReady, statuses["provider"]);
+   EXPECT_EQ(AgentDiagnosticStatus::kDegraded, statuses["vault"]);
+   EXPECT_EQ(AgentDiagnosticStatus::kNotReady, statuses["supervision"]);
+-  EXPECT_EQ(AgentDiagnosticStatus::kNotReady, statuses["extensions"]);
++  EXPECT_EQ(AgentDiagnosticStatus::kUnavailable, statuses["extensions"]);
+ 
+   auto serialized = SerializeAgentTransportResult(result);
+   ASSERT_TRUE(serialized.has_value());
+@@ -1541,7 +1541,7 @@ TEST(PrometheusAgentGatewayTest,
+     EXPECT_TRUE(statuses.contains(key));
+   }
+   EXPECT_EQ("not_ready", statuses["supervision"]);
+-  EXPECT_EQ("not_ready", statuses["extensions"]);
++  EXPECT_EQ("unavailable", statuses["extensions"]);
+   for (std::string_view forbidden :
+        {"prompt-sentinel", "page-content-sentinel",
+         "?api_key=", "provider-body-sentinel", "ciphertext-sentinel",
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 2a886badd5..6d9639bbd1 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -116,6 +116,7 @@ source_set("browser_tests") {
+     "//chrome/browser/prometheus:prometheus_agent_session",
+     "//chrome/browser/prometheus:prometheus_agent_tab_data",
+     "//chrome/browser/prometheus:prometheus_chrome_mode",
++    "//chrome/browser/prometheus:prometheus_extension_policy_service",
+     "//chrome/browser/prometheus:prometheus_extension_surface_resolver",
+     "//chrome/browser/prometheus:prometheus_extension_page_adapter",
+     "//chrome/browser/prometheus:prometheus_provider_registry",
+-- 
+2.50.1 (Apple Git-155)
+

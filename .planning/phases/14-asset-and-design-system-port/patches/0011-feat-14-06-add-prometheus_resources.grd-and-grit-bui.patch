@@ -1,0 +1,112 @@
+From 32f46c1a5b01a5cb7e090d5bab77f1fd225946c1 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 1 Jul 2026 16:41:04 -0500
+Subject: [PATCH 11/15] feat(14-06): add prometheus_resources.grd and grit()
+ build target (DESIGN-03, DESIGN-05, D-10)
+
+Top-level GRIT file compiling prometheus_resources.grdp (from Plan 14-05)
+into prometheus_resources.pak + grit/prometheus_resources.h. Adds the
+grit("prometheus_resources") GN target and a copy() target that stages
+the compiled .pak next to test/browser binaries in $root_out_dir.
+
+Registers chrome/browser/resources/prometheus/prometheus_resources.grd
+in tools/gritsettings/resource_ids.spec (required global grit ID
+allocation for any new top-level .grd) under the chrome/browser section,
+matching the section placement of sibling chrome/browser/resources/*.grd
+entries (app_icon_resources.grd, component_extension_resources.grd, etc.)
+rather than the components/ section.
+---
+ chrome/browser/resources/prometheus/BUILD.gn  | 26 ++++++++++++++-----
+ .../prometheus/prometheus_resources.grd       | 14 ++++++++++
+ tools/gritsettings/resource_ids.spec          |  4 +++
+ 3 files changed, 38 insertions(+), 6 deletions(-)
+ create mode 100644 chrome/browser/resources/prometheus/prometheus_resources.grd
+
+diff --git a/chrome/browser/resources/prometheus/BUILD.gn b/chrome/browser/resources/prometheus/BUILD.gn
+index c56abf549d..8c3e3d9151 100644
+--- a/chrome/browser/resources/prometheus/BUILD.gn
++++ b/chrome/browser/resources/prometheus/BUILD.gn
+@@ -3,11 +3,9 @@
+ # found in the LICENSE file.
+ 
+ # Prometheus design system resource targets.
+-# Plan 14-05: aggregate_vector_icons for the curated 72-glyph FA Free subset.
+-# Plan 14-06: grit("prometheus_resources") lives there (single owner; adding it
+-#             here would produce a duplicate-target build error in the shared BUILD.gn).
+ 
+ import("//components/vector_icons/vector_icons.gni")
++import("//tools/grit/grit_rule.gni")
+ 
+ # Aggregate all 72 FA icon files into generated vector_icons.{cc,h}.
+ # This is a GN action target; its visibility is restricted to this BUILD file
+@@ -92,9 +90,9 @@ aggregate_vector_icons("_prometheus_vector_icons_action") {
+   ]
+ }
+ 
+-# Public wrapper source_set that exposes the generated icons with open visibility.
+-# Consumers (e.g. chrome/browser/prometheus:prometheus_action) dep on THIS target.
+-# Following the pattern from chrome/app/vector_icons/BUILD.gn.
++# Public wrapper source_set that exposes the generated icons with open
++# visibility. Consumers (e.g. chrome/browser/prometheus:prometheus_action) dep
++# on THIS target. Following the pattern from chrome/app/vector_icons/BUILD.gn.
+ source_set("prometheus_vector_icons") {
+   sources = get_target_outputs(":_prometheus_vector_icons_action")
+ 
+@@ -105,3 +103,19 @@ source_set("prometheus_vector_icons") {
+     "//ui/gfx",
+   ]
+ }
++
++grit("prometheus_resources") {
++  source = "prometheus_resources.grd"
++  output_dir = "$root_gen_dir/chrome"
++  outputs = [
++    "grit/prometheus_resources.h",
++    "prometheus_resources.pak",
++  ]
++}
++
++copy("prometheus_resources_pak") {
++  sources = [ "$root_gen_dir/chrome/prometheus_resources.pak" ]
++  outputs = [ "$root_out_dir/prometheus_resources.pak" ]
++
++  deps = [ ":prometheus_resources" ]
++}
+diff --git a/chrome/browser/resources/prometheus/prometheus_resources.grd b/chrome/browser/resources/prometheus/prometheus_resources.grd
+new file mode 100644
+index 0000000000..b81e6f021c
+--- /dev/null
++++ b/chrome/browser/resources/prometheus/prometheus_resources.grd
+@@ -0,0 +1,14 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<grit latest_public_release="0" current_release="1">
++  <outputs>
++    <output filename="grit/prometheus_resources.h" type="rc_header">
++      <emit emit_type="prepend"></emit>
++    </output>
++    <output filename="prometheus_resources.pak" type="data_package" />
++  </outputs>
++  <release seq="1">
++    <includes>
++      <part file="prometheus_resources.grdp" />
++    </includes>
++  </release>
++</grit>
+diff --git a/tools/gritsettings/resource_ids.spec b/tools/gritsettings/resource_ids.spec
+index 1d0adb9e76..03ba794ccb 100644
+--- a/tools/gritsettings/resource_ids.spec
++++ b/tools/gritsettings/resource_ids.spec
+@@ -189,6 +189,10 @@
+   "chrome/browser/indigo/resources/browser_resources.grd": {
+     "includes": [2640],
+   },
++  "chrome/browser/resources/prometheus/prometheus_resources.grd": {
++    "META": {"sizes": {"includes": [100]}},
++    "includes": [2650],
++  },
+   # END chrome/browser section.
+ 
+   # START chrome/ WebUI resources section
+-- 
+2.50.1 (Apple Git-155)
+

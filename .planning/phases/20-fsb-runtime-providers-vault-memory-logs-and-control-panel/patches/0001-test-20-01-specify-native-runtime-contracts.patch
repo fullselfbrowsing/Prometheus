@@ -1,0 +1,511 @@
+From 116c87dc17727f1519a708038b0bb75506018bf8 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 08:58:47 -0500
+Subject: [PATCH] test(20-01): specify native runtime contracts
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  11 +
+ .../prometheus/prometheus_runtime_types.cc    |  84 +++++++
+ .../prometheus/prometheus_runtime_types.h     | 142 ++++++++++++
+ .../prometheus_runtime_types_unittest.cc      | 213 ++++++++++++++++++
+ 4 files changed, 450 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_runtime_types.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_runtime_types.h
+ create mode 100644 chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 760767caf6..14748c04fc 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -251,6 +251,15 @@ source_set("prometheus_endpoint_descriptor") {
+   ]
+ }
+ 
++source_set("prometheus_runtime_types") {
++  sources = [
++    "prometheus_runtime_types.cc",
++    "prometheus_runtime_types.h",
++  ]
++
++  deps = [ "//base" ]
++}
++
+ source_set("prometheus_agent_gateway_contract") {
+   sources = [
+     "prometheus_agent_gateway.h",
+@@ -307,6 +316,7 @@ test("prometheus_unittests") {
+     "prometheus_page_js_executor_unittest.cc",
+     "prometheus_page_snapshot_unittest.cc",
+     "prometheus_page_waiter_unittest.cc",
++    "prometheus_runtime_types_unittest.cc",
+     "prometheus_tab_state_unittest.cc",
+     "prometheus_webui_unittest.cc",
+   ]
+@@ -330,6 +340,7 @@ test("prometheus_unittests") {
+     ":prometheus_page_action_history",
+     ":prometheus_page_adapter",
+     ":prometheus_page_waiter",
++    ":prometheus_runtime_types",
+     ":prometheus_tab_state",
+     "//base",
+     "//chrome/browser/resources/prometheus:prometheus_resources",
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types.cc b/chrome/browser/prometheus/prometheus_runtime_types.cc
+new file mode 100644
+index 0000000000..3eda143132
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_runtime_types.cc
+@@ -0,0 +1,84 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_runtime_types.h"
++
++namespace prometheus {
++
++std::optional<RuntimeTaskOrigin> RuntimeTaskOriginFromString(
++    std::string_view) {
++  return std::nullopt;
++}
++
++std::string_view RuntimeTaskOriginToString(RuntimeTaskOrigin) {
++  return "";
++}
++
++std::optional<RequestedExecution> RequestedExecutionFromString(
++    std::string_view) {
++  return std::nullopt;
++}
++
++std::string_view RequestedExecutionToString(RequestedExecution) {
++  return "";
++}
++
++std::optional<EffectiveExecution> EffectiveExecutionFromString(
++    std::string_view) {
++  return std::nullopt;
++}
++
++std::string_view EffectiveExecutionToString(EffectiveExecution) {
++  return "";
++}
++
++std::optional<RuntimeTaskState> RuntimeTaskStateFromString(
++    std::string_view) {
++  return std::nullopt;
++}
++
++std::string_view RuntimeTaskStateToString(RuntimeTaskState) {
++  return "";
++}
++
++std::optional<RuntimeErrorCode> RuntimeErrorCodeFromString(
++    std::string_view) {
++  return std::nullopt;
++}
++
++std::string_view RuntimeErrorCodeToString(RuntimeErrorCode) {
++  return "";
++}
++
++bool IsLegalRuntimeTaskTransition(RuntimeTaskState, RuntimeTaskState) {
++  return false;
++}
++
++bool IsTerminalRuntimeTaskState(RuntimeTaskState) {
++  return false;
++}
++
++RuntimeLimits ClampRuntimeLimits(const RuntimeLimits& limits) {
++  return limits;
++}
++
++bool IsValidRuntimeUsage(const RuntimeUsage&) {
++  return false;
++}
++
++std::optional<RuntimeUsage> AddRuntimeUsage(const RuntimeUsage&,
++                                            const RuntimeUsage&) {
++  return std::nullopt;
++}
++
++bool IsBoundedRuntimeUtf8(std::string_view, size_t) {
++  return false;
++}
++
++std::optional<base::DictValue> RuntimeTaskSnapshotToValue(
++    const RuntimeTaskSnapshot&) {
++  return base::DictValue();
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types.h b/chrome/browser/prometheus/prometheus_runtime_types.h
+new file mode 100644
+index 0000000000..344d2a14b8
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_runtime_types.h
+@@ -0,0 +1,142 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_RUNTIME_TYPES_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_RUNTIME_TYPES_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <optional>
++#include <string>
++#include <string_view>
++
++#include "base/values.h"
++
++namespace prometheus {
++
++enum class RuntimeTaskOrigin {
++  kSidePanel,
++  kMcp,
++};
++
++enum class RequestedExecution {
++  kAuto,
++  kProvider,
++  kLocal,
++};
++
++enum class EffectiveExecution {
++  kHosted,
++  kRouted,
++  kLocal,
++};
++
++enum class RuntimeTaskState {
++  kQueued,
++  kRunning,
++  kWaitingConfirmation,
++  kCancelling,
++  kSucceeded,
++  kFailed,
++  kCancelled,
++};
++
++enum class RuntimeErrorCode {
++  kNone,
++  kInvalidRequest,
++  kRequestTooLarge,
++  kInvalidTransition,
++  kPolicyBlocked,
++  kLocalUiRequired,
++  kProviderUnavailable,
++  kProviderAuth,
++  kProviderRateLimited,
++  kProviderInvalidResponse,
++  kToolDenied,
++  kTargetLost,
++  kConfirmationRequired,
++  kCancelled,
++  kTimeout,
++  kInternal,
++};
++
++inline constexpr int64_t kDefaultRuntimePromptBytes = 16 * 1024;
++inline constexpr int64_t kHardRuntimePromptBytes = 64 * 1024;
++inline constexpr int64_t kDefaultRuntimeResultBytes = 64 * 1024;
++inline constexpr int64_t kHardRuntimeResultBytes = 256 * 1024;
++inline constexpr int64_t kDefaultRuntimeTurns = 8;
++inline constexpr int64_t kHardRuntimeTurns = 32;
++inline constexpr int64_t kDefaultRuntimeTokens = 16 * 1024;
++inline constexpr int64_t kHardRuntimeTokens = 128 * 1024;
++inline constexpr int64_t kDefaultRuntimeDurationMs = 120 * 1000;
++inline constexpr int64_t kHardRuntimeDurationMs = 10 * 60 * 1000;
++inline constexpr int64_t kDefaultRuntimeConcurrentTasks = 2;
++inline constexpr int64_t kHardRuntimeConcurrentTasks = 8;
++inline constexpr int64_t kRuntimeToolsPerTurn = 1;
++
++struct RuntimeLimits {
++  int64_t max_prompt_bytes = kDefaultRuntimePromptBytes;
++  int64_t max_result_bytes = kDefaultRuntimeResultBytes;
++  int64_t max_turns = kDefaultRuntimeTurns;
++  int64_t max_total_tokens = kDefaultRuntimeTokens;
++  int64_t max_duration_ms = kDefaultRuntimeDurationMs;
++  int64_t max_concurrent_tasks = kDefaultRuntimeConcurrentTasks;
++};
++
++struct RuntimeUsage {
++  int64_t input_tokens = 0;
++  int64_t output_tokens = 0;
++  int64_t tool_calls = 0;
++  int64_t duration_ms = 0;
++  std::optional<int64_t> cost_microunits;
++};
++
++struct RuntimeTaskSnapshot {
++  std::string task_id;
++  RuntimeTaskOrigin origin = RuntimeTaskOrigin::kSidePanel;
++  RequestedExecution requested_execution = RequestedExecution::kAuto;
++  std::optional<EffectiveExecution> effective_execution;
++  RuntimeTaskState state = RuntimeTaskState::kQueued;
++  RuntimeErrorCode error_code = RuntimeErrorCode::kNone;
++  int64_t created_at_ms = 0;
++  int64_t updated_at_ms = 0;
++  RuntimeUsage usage;
++};
++
++std::optional<RuntimeTaskOrigin> RuntimeTaskOriginFromString(
++    std::string_view value);
++std::string_view RuntimeTaskOriginToString(RuntimeTaskOrigin value);
++
++std::optional<RequestedExecution> RequestedExecutionFromString(
++    std::string_view value);
++std::string_view RequestedExecutionToString(RequestedExecution value);
++
++std::optional<EffectiveExecution> EffectiveExecutionFromString(
++    std::string_view value);
++std::string_view EffectiveExecutionToString(EffectiveExecution value);
++
++std::optional<RuntimeTaskState> RuntimeTaskStateFromString(
++    std::string_view value);
++std::string_view RuntimeTaskStateToString(RuntimeTaskState value);
++
++std::optional<RuntimeErrorCode> RuntimeErrorCodeFromString(
++    std::string_view value);
++std::string_view RuntimeErrorCodeToString(RuntimeErrorCode value);
++
++bool IsLegalRuntimeTaskTransition(RuntimeTaskState from,
++                                  RuntimeTaskState to);
++bool IsTerminalRuntimeTaskState(RuntimeTaskState state);
++
++RuntimeLimits ClampRuntimeLimits(const RuntimeLimits& limits);
++bool IsValidRuntimeUsage(const RuntimeUsage& usage);
++std::optional<RuntimeUsage> AddRuntimeUsage(const RuntimeUsage& left,
++                                            const RuntimeUsage& right);
++
++bool IsBoundedRuntimeUtf8(std::string_view value, size_t max_bytes);
++std::optional<base::DictValue> RuntimeTaskSnapshotToValue(
++    const RuntimeTaskSnapshot& snapshot);
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_RUNTIME_TYPES_H_
+diff --git a/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
+new file mode 100644
+index 0000000000..825dafd18a
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_runtime_types_unittest.cc
+@@ -0,0 +1,213 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_runtime_types.h"
++
++#include <limits>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "base/values.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++
++namespace {
++
++class PrometheusRuntimeTypesTest : public testing::Test {};
++
++TEST_F(PrometheusRuntimeTypesTest, RoundTripsClosedEnums) {
++  const std::vector<std::pair<std::string_view, RuntimeTaskOrigin>> origins = {
++      {"side_panel", RuntimeTaskOrigin::kSidePanel},
++      {"mcp", RuntimeTaskOrigin::kMcp},
++  };
++  for (const auto& [name, value] : origins) {
++    ASSERT_EQ(value, RuntimeTaskOriginFromString(name));
++    EXPECT_EQ(name, RuntimeTaskOriginToString(value));
++  }
++
++  const std::vector<std::pair<std::string_view, RequestedExecution>>
++      requested = {{"auto", RequestedExecution::kAuto},
++                   {"provider", RequestedExecution::kProvider},
++                   {"local", RequestedExecution::kLocal}};
++  for (const auto& [name, value] : requested) {
++    ASSERT_EQ(value, RequestedExecutionFromString(name));
++    EXPECT_EQ(name, RequestedExecutionToString(value));
++  }
++
++  const std::vector<std::pair<std::string_view, EffectiveExecution>>
++      effective = {{"hosted", EffectiveExecution::kHosted},
++                   {"routed", EffectiveExecution::kRouted},
++                   {"local", EffectiveExecution::kLocal}};
++  for (const auto& [name, value] : effective) {
++    ASSERT_EQ(value, EffectiveExecutionFromString(name));
++    EXPECT_EQ(name, EffectiveExecutionToString(value));
++  }
++
++  EXPECT_EQ(std::nullopt, RequestedExecutionFromString("mcp"));
++  EXPECT_EQ(std::nullopt, EffectiveExecutionFromString("mcp"));
++  EXPECT_EQ(std::nullopt, RuntimeTaskOriginFromString("terminal"));
++}
++
++TEST_F(PrometheusRuntimeTypesTest, EnforcesLegalStateGraph) {
++  EXPECT_TRUE(IsLegalRuntimeTaskTransition(RuntimeTaskState::kQueued,
++                                           RuntimeTaskState::kRunning));
++  EXPECT_TRUE(IsLegalRuntimeTaskTransition(RuntimeTaskState::kQueued,
++                                           RuntimeTaskState::kCancelling));
++  EXPECT_TRUE(IsLegalRuntimeTaskTransition(RuntimeTaskState::kRunning,
++                                           RuntimeTaskState::kSucceeded));
++  EXPECT_TRUE(IsLegalRuntimeTaskTransition(
++      RuntimeTaskState::kRunning, RuntimeTaskState::kWaitingConfirmation));
++  EXPECT_TRUE(IsLegalRuntimeTaskTransition(
++      RuntimeTaskState::kWaitingConfirmation, RuntimeTaskState::kRunning));
++  EXPECT_TRUE(IsLegalRuntimeTaskTransition(RuntimeTaskState::kCancelling,
++                                           RuntimeTaskState::kCancelled));
++
++  EXPECT_FALSE(IsLegalRuntimeTaskTransition(RuntimeTaskState::kQueued,
++                                            RuntimeTaskState::kSucceeded));
++  EXPECT_FALSE(IsLegalRuntimeTaskTransition(RuntimeTaskState::kRunning,
++                                            RuntimeTaskState::kQueued));
++  EXPECT_FALSE(IsLegalRuntimeTaskTransition(RuntimeTaskState::kCancelling,
++                                            RuntimeTaskState::kSucceeded));
++  EXPECT_FALSE(IsLegalRuntimeTaskTransition(RuntimeTaskState::kRunning,
++                                            RuntimeTaskState::kRunning));
++}
++
++TEST_F(PrometheusRuntimeTypesTest, TerminalStatesAreImmutable) {
++  for (RuntimeTaskState state : {RuntimeTaskState::kSucceeded,
++                                 RuntimeTaskState::kFailed,
++                                 RuntimeTaskState::kCancelled}) {
++    EXPECT_TRUE(IsTerminalRuntimeTaskState(state));
++    for (RuntimeTaskState next : {
++             RuntimeTaskState::kQueued, RuntimeTaskState::kRunning,
++             RuntimeTaskState::kWaitingConfirmation,
++             RuntimeTaskState::kCancelling, RuntimeTaskState::kSucceeded,
++             RuntimeTaskState::kFailed, RuntimeTaskState::kCancelled}) {
++      EXPECT_FALSE(IsLegalRuntimeTaskTransition(state, next));
++    }
++  }
++  EXPECT_FALSE(IsTerminalRuntimeTaskState(RuntimeTaskState::kRunning));
++}
++
++TEST_F(PrometheusRuntimeTypesTest, ClampsInvalidAndOversizedLimits) {
++  RuntimeLimits limits;
++  limits.max_prompt_bytes = -1;
++  limits.max_result_bytes = kHardRuntimeResultBytes + 1;
++  limits.max_turns = 0;
++  limits.max_total_tokens = kHardRuntimeTokens + 1;
++  limits.max_duration_ms = -100;
++  limits.max_concurrent_tasks = kHardRuntimeConcurrentTasks + 1;
++
++  RuntimeLimits clamped = ClampRuntimeLimits(limits);
++  EXPECT_EQ(kDefaultRuntimePromptBytes, clamped.max_prompt_bytes);
++  EXPECT_EQ(kHardRuntimeResultBytes, clamped.max_result_bytes);
++  EXPECT_EQ(kDefaultRuntimeTurns, clamped.max_turns);
++  EXPECT_EQ(kHardRuntimeTokens, clamped.max_total_tokens);
++  EXPECT_EQ(kDefaultRuntimeDurationMs, clamped.max_duration_ms);
++  EXPECT_EQ(kHardRuntimeConcurrentTasks, clamped.max_concurrent_tasks);
++  EXPECT_EQ(1, kRuntimeToolsPerTurn);
++}
++
++TEST_F(PrometheusRuntimeTypesTest, AddsUsageWithoutLosingUnknownCost) {
++  RuntimeUsage first{.input_tokens = 10,
++                     .output_tokens = 20,
++                     .tool_calls = 1,
++                     .duration_ms = 30,
++                     .cost_microunits = 40};
++  RuntimeUsage second{.input_tokens = 2,
++                      .output_tokens = 3,
++                      .tool_calls = 1,
++                      .duration_ms = 5,
++                      .cost_microunits = 7};
++  std::optional<RuntimeUsage> total = AddRuntimeUsage(first, second);
++  ASSERT_TRUE(total.has_value());
++  EXPECT_EQ(12, total->input_tokens);
++  EXPECT_EQ(23, total->output_tokens);
++  EXPECT_EQ(2, total->tool_calls);
++  EXPECT_EQ(35, total->duration_ms);
++  EXPECT_EQ(47, total->cost_microunits);
++
++  second.cost_microunits = std::nullopt;
++  total = AddRuntimeUsage(first, second);
++  ASSERT_TRUE(total.has_value());
++  EXPECT_EQ(std::nullopt, total->cost_microunits);
++
++  RuntimeUsage invalid = first;
++  invalid.input_tokens = -1;
++  EXPECT_FALSE(IsValidRuntimeUsage(invalid));
++
++  RuntimeUsage overflow = first;
++  overflow.input_tokens = std::numeric_limits<int64_t>::max();
++  EXPECT_EQ(std::nullopt, AddRuntimeUsage(overflow, second));
++}
++
++TEST_F(PrometheusRuntimeTypesTest, EnforcesUtf8AndByteBounds) {
++  EXPECT_TRUE(IsBoundedRuntimeUtf8("hello", 5));
++  EXPECT_FALSE(IsBoundedRuntimeUtf8("hello!", 5));
++  EXPECT_TRUE(IsBoundedRuntimeUtf8("\xE2\x9C\x93", 3));
++  EXPECT_FALSE(IsBoundedRuntimeUtf8("\xC3\x28", 2));
++}
++
++TEST_F(PrometheusRuntimeTypesTest, SerializesOnlyClosedMetadata) {
++  RuntimeTaskSnapshot snapshot;
++  snapshot.task_id = "task-123";
++  snapshot.origin = RuntimeTaskOrigin::kMcp;
++  snapshot.requested_execution = RequestedExecution::kAuto;
++  snapshot.effective_execution = EffectiveExecution::kHosted;
++  snapshot.state = RuntimeTaskState::kRunning;
++  snapshot.created_at_ms = 100;
++  snapshot.updated_at_ms = 125;
++  snapshot.usage = RuntimeUsage{.input_tokens = 11,
++                                .output_tokens = 7,
++                                .tool_calls = 1,
++                                .duration_ms = 25,
++                                .cost_microunits = std::nullopt};
++
++  std::optional<base::DictValue> value =
++      RuntimeTaskSnapshotToValue(snapshot);
++  ASSERT_TRUE(value.has_value());
++  const std::string* task_id = value->FindString("task_id");
++  ASSERT_NE(nullptr, task_id);
++  EXPECT_EQ("task-123", *task_id);
++  ASSERT_NE(nullptr, value->FindString("origin"));
++  EXPECT_EQ("mcp", *value->FindString("origin"));
++  ASSERT_NE(nullptr, value->FindString("requested_execution"));
++  EXPECT_EQ("auto", *value->FindString("requested_execution"));
++  ASSERT_NE(nullptr, value->FindString("effective_execution"));
++  EXPECT_EQ("hosted", *value->FindString("effective_execution"));
++  ASSERT_NE(nullptr, value->FindString("state"));
++  EXPECT_EQ("running", *value->FindString("state"));
++
++  for (std::string_view forbidden : {
++           "prompt", "page_text", "selector", "script", "typed_text",
++           "secret", "ciphertext", "authorization", "profile_path",
++           "gateway_session_id", "provider_body"}) {
++    EXPECT_EQ(nullptr, value->Find(forbidden)) << forbidden;
++  }
++
++  const base::DictValue* usage = value->FindDict("usage");
++  ASSERT_NE(nullptr, usage);
++  EXPECT_EQ(11, usage->FindInt("input_tokens"));
++  EXPECT_EQ(false, usage->FindBool("cost_known"));
++  EXPECT_EQ(nullptr, usage->Find("cost_microunits"));
++}
++
++TEST_F(PrometheusRuntimeTypesTest, RejectsInvalidSnapshots) {
++  RuntimeTaskSnapshot snapshot;
++  snapshot.task_id = "";
++  EXPECT_EQ(std::nullopt, RuntimeTaskSnapshotToValue(snapshot));
++
++  snapshot.task_id = std::string(kHardRuntimePromptBytes + 1, 'x');
++  EXPECT_EQ(std::nullopt, RuntimeTaskSnapshotToValue(snapshot));
++
++  snapshot.task_id = "task-1";
++  snapshot.updated_at_ms = -1;
++  EXPECT_EQ(std::nullopt, RuntimeTaskSnapshotToValue(snapshot));
++}
++
++}  // namespace
++
++}  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

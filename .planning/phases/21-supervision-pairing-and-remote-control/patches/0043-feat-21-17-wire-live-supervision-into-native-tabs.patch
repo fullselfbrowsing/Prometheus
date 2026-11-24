@@ -1,0 +1,788 @@
+From 622937c71ed81147916f2e27a5986a9abb376ad5 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 13:46:22 -0500
+Subject: [PATCH] feat(21-17): wire live supervision into native tabs
+
+---
+ .../prometheus/prometheus_agent_tab_data.cc   |   4 +-
+ .../prometheus/prometheus_tab_state.cc        |  66 +++++++
+ .../browser/prometheus/prometheus_tab_state.h |  29 +++
+ ...theus_tab_supervision_badge_browsertest.cc | 185 +++++++++++++++++-
+ .../views/tabs/prometheus_tab_status_badge.cc | 152 ++++++++++++--
+ .../views/tabs/prometheus_tab_status_badge.h  |  16 +-
+ chrome/browser/ui/views/tabs/tab.cc           |  37 +++-
+ chrome/browser/ui/views/tabs/tab.h            |   3 +
+ 8 files changed, 468 insertions(+), 24 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_tab_data.cc b/chrome/browser/prometheus/prometheus_agent_tab_data.cc
+index 7cb5326bfe..077009abb5 100644
+--- a/chrome/browser/prometheus/prometheus_agent_tab_data.cc
++++ b/chrome/browser/prometheus/prometheus_agent_tab_data.cc
+@@ -23,7 +23,9 @@ ui::UnownedUserDataHost& GetHostForTab(tabs::TabInterface* tab) {
+ DEFINE_USER_DATA(PrometheusAgentTabData);
+ 
+ PrometheusAgentTabData::PrometheusAgentTabData(tabs::TabInterface* tab)
+-    : scoped_unowned_user_data_(GetHostForTab(tab), *this) {}
++    : scoped_unowned_user_data_(GetHostForTab(tab), *this) {
++  PrometheusTabStateObservation::NotifySourceAvailable(tab);
++}
+ 
+ PrometheusAgentTabData::~PrometheusAgentTabData() {
+   for (PrometheusTabStateObserver& observer : tab_state_observers_) {
+diff --git a/chrome/browser/prometheus/prometheus_tab_state.cc b/chrome/browser/prometheus/prometheus_tab_state.cc
+index df780d2ea5..50925db706 100644
+--- a/chrome/browser/prometheus/prometheus_tab_state.cc
++++ b/chrome/browser/prometheus/prometheus_tab_state.cc
+@@ -9,6 +9,8 @@
+ #include <string_view>
+ #include <vector>
+ 
++#include "base/check.h"
++#include "base/no_destructor.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+ #include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
+@@ -18,6 +20,13 @@
+ namespace {
+ 
+ using TabSupervision = PrometheusTabState::Supervision;
++using TabStateObservations =
++    std::vector<raw_ptr<PrometheusTabStateObservation>>;
++
++TabStateObservations& GetTabStateObservations() {
++  static base::NoDestructor<TabStateObservations> observations;
++  return *observations;
++}
+ 
+ bool IsActiveViewerState(prometheus::SupervisionViewerState state) {
+   return state == prometheus::SupervisionViewerState::kViewOnly ||
+@@ -142,6 +151,63 @@ PrometheusTabState PrometheusTabState::SafeDefault() {
+   return PrometheusTabState();
+ }
+ 
++PrometheusTabStateObservation::PrometheusTabStateObservation(
++    tabs::TabInterface* tab,
++    PrometheusTabStateObserver* observer)
++    : tab_(tab), observer_(observer) {
++  CHECK(tab_);
++  CHECK(observer_);
++  GetTabStateObservations().push_back(this);
++  AttachToCurrentSource();
++}
++
++PrometheusTabStateObservation::~PrometheusTabStateObservation() {
++  if (source_) {
++    source_->RemoveTabStateObserver(this);
++  }
++  std::erase(GetTabStateObservations(), this);
++}
++
++// static
++void PrometheusTabStateObservation::NotifySourceAvailable(
++    tabs::TabInterface* tab) {
++  CHECK(tab);
++  const TabStateObservations observations = GetTabStateObservations();
++  for (PrometheusTabStateObservation* observation : observations) {
++    if (observation->tab_ == tab) {
++      observation->AttachToCurrentSource();
++    }
++  }
++}
++
++void PrometheusTabStateObservation::AttachToCurrentSource() {
++  prometheus::PrometheusAgentTabData* source =
++      prometheus::PrometheusAgentTabData::From(tab_);
++  if (source_ == source) {
++    return;
++  }
++  if (source_) {
++    source_->RemoveTabStateObserver(this);
++  }
++  source_ = source;
++  if (!source_) {
++    observer_->OnPrometheusTabStateChanged(PrometheusTabState::SafeDefault());
++    return;
++  }
++  source_->AddTabStateObserver(this);
++  observer_->OnPrometheusTabStateChanged(source_->ToTabState());
++}
++
++void PrometheusTabStateObservation::OnPrometheusTabStateChanged(
++    const PrometheusTabState& state) {
++  observer_->OnPrometheusTabStateChanged(state);
++}
++
++void PrometheusTabStateObservation::OnPrometheusTabStateInvalidated() {
++  source_ = nullptr;
++  observer_->OnPrometheusTabStateInvalidated();
++}
++
+ PrometheusTabState::Supervision ProjectPrometheusTabSupervisionState(
+     const prometheus::SanitizedSupervisionSnapshot& snapshot) {
+   TabSupervision result;
+diff --git a/chrome/browser/prometheus/prometheus_tab_state.h b/chrome/browser/prometheus/prometheus_tab_state.h
+index f377de830b..68e44aad2e 100644
+--- a/chrome/browser/prometheus/prometheus_tab_state.h
++++ b/chrome/browser/prometheus/prometheus_tab_state.h
+@@ -11,9 +11,11 @@
+ #include <string>
+ #include <vector>
+ 
++#include "base/memory/raw_ptr.h"
+ #include "base/observer_list_types.h"
+ 
+ namespace prometheus {
++class PrometheusAgentTabData;
+ struct SanitizedSupervisionSnapshot;
+ }  // namespace prometheus
+ 
+@@ -21,6 +23,10 @@ namespace content {
+ class WebContents;
+ }  // namespace content
+ 
++namespace tabs {
++class TabInterface;
++}  // namespace tabs
++
+ struct PrometheusTabState {
+   enum class Health {
+     kOk,
+@@ -111,6 +117,29 @@ class PrometheusTabStateObserver : public base::CheckedObserver {
+   virtual void OnPrometheusTabStateInvalidated() = 0;
+ };
+ 
++class PrometheusTabStateObservation final
++    : public PrometheusTabStateObserver {
++ public:
++  PrometheusTabStateObservation(tabs::TabInterface* tab,
++                                PrometheusTabStateObserver* observer);
++  PrometheusTabStateObservation(const PrometheusTabStateObservation&) = delete;
++  PrometheusTabStateObservation& operator=(
++      const PrometheusTabStateObservation&) = delete;
++  ~PrometheusTabStateObservation() override;
++
++  static void NotifySourceAvailable(tabs::TabInterface* tab);
++
++ private:
++  void AttachToCurrentSource();
++
++  void OnPrometheusTabStateChanged(const PrometheusTabState& state) override;
++  void OnPrometheusTabStateInvalidated() override;
++
++  const raw_ptr<tabs::TabInterface> tab_;
++  const raw_ptr<PrometheusTabStateObserver> observer_;
++  raw_ptr<prometheus::PrometheusAgentTabData> source_ = nullptr;
++};
++
+ PrometheusTabState::Supervision ProjectPrometheusTabSupervisionState(
+     const prometheus::SanitizedSupervisionSnapshot& snapshot);
+ 
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc b/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc
+index ecc79af7fa..12392fe362 100644
+--- a/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc
++++ b/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc
+@@ -5,18 +5,35 @@
+ #include "chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h"
+ 
+ #include <array>
++#include <memory>
+ #include <optional>
+ #include <string_view>
+ 
++#include "base/test/scoped_feature_list.h"
+ #include "chrome/browser/prometheus/prometheus_action.h"
++#include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/browser_tabstrip.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/horizontal_tab_strip_region_view.h"
++#include "chrome/browser/ui/views/tabs/tab.h"
++#include "chrome/browser/ui/views/tabs/tab_strip.h"
++#include "chrome/common/chrome_features.h"
+ #include "chrome/test/base/in_process_browser_test.h"
++#include "components/tabs/public/tab_interface.h"
++#include "content/public/common/content_features.h"
+ #include "content/public/test/browser_test.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ #include "ui/base/models/image_model.h"
+ #include "ui/color/color_id.h"
+ #include "ui/views/accessibility/view_accessibility.h"
+ #include "ui/views/controls/image_view.h"
++#include "ui/views/test/views_test_utils.h"
++#include "ui/views/view_utils.h"
++#include "ui/views/widget/widget.h"
++#include "url/gurl.h"
+ 
+ namespace {
+ 
+@@ -56,7 +73,45 @@ void ExpectSafeText(const PrometheusTabStatusBadge& badge) {
+ 
+ }  // namespace
+ 
+-class PrometheusTabSupervisionBadgeBrowserTest : public InProcessBrowserTest {};
++class PrometheusTabSupervisionBadgeBrowserTest : public InProcessBrowserTest {
++ public:
++  PrometheusTabSupervisionBadgeBrowserTest() {
++    scoped_feature_list_.InitWithFeatures(
++        {}, {features::kInitialWebUI,
++             features::kWebUIToolbarProcessOverheadExperiment});
++  }
++
++  BrowserView* browser_view() {
++    return BrowserView::GetBrowserViewForBrowser(browser());
++  }
++
++  HorizontalTabStripRegionView* tab_strip_region_view() {
++    return views::AsViewClass<HorizontalTabStripRegionView>(
++        browser_view()->tab_strip_view());
++  }
++
++  TabStrip* tab_strip() { return tab_strip_region_view()->tab_strip(); }
++
++  tabs::TabInterface* tab_interface_at(int index) {
++    return browser()->tab_strip_model()->GetTabAtIndex(index);
++  }
++
++  Tab* tab_view_at(int index) { return tab_strip()->tab_at(index); }
++
++  void AddBackgroundTab() {
++    chrome::AddTabAt(browser(), GURL("about:blank"), -1,
++                     /*foreground=*/false);
++    RunScheduledLayouts();
++  }
++
++  void FlushLayouts() {
++    browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++    RunScheduledLayouts();
++  }
++
++ private:
++  base::test::ScopedFeatureList scoped_feature_list_;
++};
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusTabSupervisionBadgeBrowserTest,
+                        StateSafeDefaultOwnerAgentAndSlotContract) {
+@@ -194,3 +249,131 @@ IN_PROC_BROWSER_TEST_F(PrometheusTabSupervisionBadgeBrowserTest,
+     EXPECT_EQ(views::View::FocusBehavior::NEVER, child->GetFocusBehavior());
+   }
+ }
++
++IN_PROC_BROWSER_TEST_F(PrometheusTabSupervisionBadgeBrowserTest,
++                       RealTabLiveTransitionsAndTerminalClear) {
++  ASSERT_EQ(1, tab_strip()->GetModelCount());
++  Tab* const tab = tab_view_at(0);
++  ASSERT_TRUE(tab);
++  PrometheusTabStatusBadge* const badge =
++      tab->prometheus_tab_status_badge_for_testing();
++  ASSERT_TRUE(badge);
++  EXPECT_FALSE(badge->GetVisible());
++
++  std::unique_ptr<prometheus::PrometheusAgentTabData> tab_data =
++      prometheus::PrometheusAgentTabData::ForTabForTesting(
++          tab_interface_at(0));
++  ASSERT_TRUE(tab_data);
++  EXPECT_EQ(tab_data.get(), prometheus::PrometheusAgentTabData::From(
++                                tab_interface_at(0)));
++  EXPECT_FALSE(badge->GetVisible());
++
++  EXPECT_TRUE(tab_data->ClaimIfUnowned("owner-a", "Agent A").ok);
++  EXPECT_EQ(u"Owned by Agent A; Tab health OK",
++            badge->GetViewAccessibility().GetCachedName());
++
++  tab_data->set_automation_active(true);
++  PrometheusTabState::Supervision supervision;
++  supervision.available = true;
++  supervision.viewer_count = 2;
++  supervision.view_state = ViewState::kViewing;
++  supervision.control_state = ControlState::kControllerReady;
++  supervision.controller_label = "Dashboard A";
++  supervision.activity_state = ActivityState::kExecuting;
++  supervision.action_category = ActionCategory::kClick;
++  tab_data->UpdateSupervisionState(supervision);
++  FlushLayouts();
++
++  EXPECT_EQ(badge, tab->prometheus_tab_status_badge_for_testing());
++  EXPECT_TRUE(badge->GetVisible());
++  EXPECT_EQ(ExpectedIcon(PrometheusAction::kCircleNodes,
++                         kColorPrometheusAccent),
++            badge->supervision_badge_for_testing()->GetImageModel());
++  EXPECT_EQ(
++      u"Owned by Agent A; Agent is working in this tab; Supervised by 2 trusted clients; Remote control enabled for Dashboard A; Remote action active: Click; Tab health OK",
++      badge->GetViewAccessibility().GetCachedName());
++
++  supervision.activity_state = ActivityState::kCompleted;
++  supervision.action_category.reset();
++  tab_data->UpdateSupervisionState(supervision);
++  EXPECT_EQ(ExpectedIcon(PrometheusAction::kShield, kColorPrometheusAccent),
++            badge->supervision_badge_for_testing()->GetImageModel());
++
++  supervision.control_state = ControlState::kViewOnly;
++  supervision.controller_label.reset();
++  tab_data->UpdateSupervisionState(supervision);
++  EXPECT_EQ(ExpectedIcon(PrometheusAction::kEye, kColorPrometheusAccent),
++            badge->supervision_badge_for_testing()->GetImageModel());
++
++  tab_data->ClearSupervisionState();
++  EXPECT_TRUE(tab_data->ReleaseIfOwned("owner-a").ok);
++  EXPECT_FALSE(badge->GetVisible());
++  EXPECT_EQ(u"No agent owns this tab",
++            badge->GetViewAccessibility().GetCachedName());
++
++  tab_data->UpdateSupervisionState(ViewingState(1).supervision);
++  EXPECT_TRUE(badge->GetVisible());
++  tab_data.reset();
++  EXPECT_FALSE(badge->GetVisible());
++
++  tab_data = prometheus::PrometheusAgentTabData::ForTabForTesting(
++      tab_interface_at(0));
++  ASSERT_TRUE(tab_data);
++  tab_data->UpdateSupervisionState(ViewingState(3).supervision);
++  EXPECT_TRUE(badge->GetVisible());
++  EXPECT_EQ(
++      u"No agent owns this tab; Supervised by 3 trusted clients; Tab health OK",
++      badge->GetViewAccessibility().GetCachedName());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusTabSupervisionBadgeBrowserTest,
++                       RealTabExactTabIsolation) {
++  AddBackgroundTab();
++  ASSERT_EQ(2, tab_strip()->GetModelCount());
++  Tab* const first_tab = tab_view_at(0);
++  Tab* const second_tab = tab_view_at(1);
++  ASSERT_TRUE(first_tab);
++  ASSERT_TRUE(second_tab);
++
++  std::unique_ptr<prometheus::PrometheusAgentTabData> first_data =
++      prometheus::PrometheusAgentTabData::ForTabForTesting(
++          tab_interface_at(0));
++  std::unique_ptr<prometheus::PrometheusAgentTabData> second_data =
++      prometheus::PrometheusAgentTabData::ForTabForTesting(
++          tab_interface_at(1));
++  ASSERT_TRUE(first_data);
++  ASSERT_TRUE(second_data);
++
++  PrometheusTabState first_state = ViewingState(1);
++  first_state.supervision.control_state = ControlState::kControllerReady;
++  first_state.supervision.controller_label = "Dashboard A";
++  first_data->UpdateSupervisionState(first_state.supervision);
++
++  EXPECT_TRUE(first_tab->prometheus_tab_status_badge_for_testing()
++                  ->GetVisible());
++  EXPECT_FALSE(second_tab->prometheus_tab_status_badge_for_testing()
++                   ->GetVisible());
++  EXPECT_EQ(
++      u"No agent owns this tab; Supervised by 1 trusted client; Remote control enabled for Dashboard A; Tab health OK",
++      first_tab->prometheus_tab_status_badge_for_testing()
++          ->GetViewAccessibility()
++          .GetCachedName());
++
++  second_data->UpdateSupervisionState(ViewingState(2).supervision);
++  EXPECT_EQ(
++      u"No agent owns this tab; Supervised by 2 trusted clients; Tab health OK",
++      second_tab->prometheus_tab_status_badge_for_testing()
++          ->GetViewAccessibility()
++          .GetCachedName());
++  EXPECT_EQ(
++      u"No agent owns this tab; Supervised by 1 trusted client; Remote control enabled for Dashboard A; Tab health OK",
++      first_tab->prometheus_tab_status_badge_for_testing()
++          ->GetViewAccessibility()
++          .GetCachedName());
++
++  first_data.reset();
++  EXPECT_FALSE(first_tab->prometheus_tab_status_badge_for_testing()
++                   ->GetVisible());
++  EXPECT_TRUE(second_tab->prometheus_tab_status_badge_for_testing()
++                  ->GetVisible());
++}
+diff --git a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc
+index 37c4bc008d..d2848ac0c1 100644
+--- a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc
++++ b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc
+@@ -6,11 +6,14 @@
+ 
+ #include <memory>
+ #include <string>
++#include <string_view>
+ #include <vector>
+ 
++#include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "chrome/browser/prometheus/prometheus_action.h"
++#include "chrome/browser/prometheus/prometheus_supervision_types.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "ui/accessibility/ax_enums.mojom.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+@@ -19,17 +22,79 @@
+ #include "ui/gfx/geometry/insets.h"
+ #include "ui/gfx/geometry/size.h"
+ #include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/background.h"
+ #include "ui/views/controls/image_view.h"
+ #include "ui/views/layout/box_layout.h"
+ 
+ namespace {
+ 
+-constexpr int kBadgeSpacing = 2;
++using ActionCategory = PrometheusTabState::Supervision::ActionCategory;
++using ControlState = PrometheusTabState::Supervision::ControlState;
++using Severity = PrometheusTabState::Supervision::Severity;
++
++bool HasViewers(const PrometheusTabState& state) {
++  return state.supervision.viewer_count > 0;
++}
++
++bool HasController(const PrometheusTabState& state) {
++  return state.supervision.controller_label.has_value() &&
++         (state.supervision.control_state == ControlState::kControllerReady ||
++          state.supervision.control_state == ControlState::kStopping);
++}
++
++bool HasActiveAction(const PrometheusTabState& state) {
++  return state.supervision.HasActiveAction() &&
++         state.supervision.action_category.has_value();
++}
++
++bool HasHealthWarning(const PrometheusTabState& state) {
++  return state.health == PrometheusTabState::Health::kNeedsAttention ||
++         state.supervision.severity != Severity::kNormal;
++}
++
++bool HasSupervision(const PrometheusTabState& state) {
++  return HasActiveAction(state) || HasController(state) || HasViewers(state) ||
++         state.supervision_active;
++}
+ 
+ bool IsSafeDefault(const PrometheusTabState& state) {
+   return state.owner_label.empty() && !state.automation_active &&
+-         !state.supervision_active &&
+-         state.health == PrometheusTabState::Health::kOk;
++         !HasSupervision(state) && !HasHealthWarning(state);
++}
++
++std::string SafeOwnerLabel(std::string_view label) {
++  std::string safe_label =
++      prometheus::DeriveSupervisionSafeClientLabel(label);
++  if (safe_label == prometheus::kSupervisionClientLabelFallback &&
++      base::CollapseWhitespaceASCII(label, true) != safe_label) {
++    return "Agent";
++  }
++  return safe_label;
++}
++
++std::u16string ActionCategoryName(ActionCategory category) {
++  switch (category) {
++    case ActionCategory::kClick:
++      return u"Click";
++    case ActionCategory::kType:
++      return u"Type";
++    case ActionCategory::kKeyPress:
++      return u"Key press";
++    case ActionCategory::kScroll:
++      return u"Scroll";
++    case ActionCategory::kHover:
++      return u"Hover";
++    case ActionCategory::kSelect:
++      return u"Select";
++    case ActionCategory::kClear:
++      return u"Clear";
++    case ActionCategory::kDrag:
++      return u"Drag";
++    case ActionCategory::kDrop:
++      return u"Drop";
++    case ActionCategory::kNavigate:
++      return u"Navigate";
++  }
+ }
+ 
+ std::u16string BuildAccessibleName(const PrometheusTabState& state) {
+@@ -42,22 +107,42 @@ std::u16string BuildAccessibleName(const PrometheusTabState& state) {
+     parts.push_back(u"No agent owns this tab");
+   } else {
+     std::u16string owner = u"Owned by ";
+-    owner += base::UTF8ToUTF16(state.owner_label);
++    owner += base::UTF8ToUTF16(SafeOwnerLabel(state.owner_label));
+     parts.push_back(std::move(owner));
+   }
+ 
+   if (state.automation_active) {
+     parts.push_back(u"Agent is working in this tab");
+   }
+-  if (state.supervision_active) {
++
++  if (HasViewers(state)) {
++    std::u16string viewers = u"Supervised by ";
++    viewers += base::NumberToString16(state.supervision.viewer_count);
++    viewers += state.supervision.viewer_count == 1 ? u" trusted client"
++                                                   : u" trusted clients";
++    parts.push_back(std::move(viewers));
++  } else if (state.supervision_active) {
+     parts.push_back(u"Supervision active");
+   }
+ 
+-  parts.push_back(state.health == PrometheusTabState::Health::kOk
+-                      ? u"Tab health OK"
+-                      : u"Tab needs attention");
++  if (HasController(state)) {
++    std::u16string controller = u"Remote control enabled for ";
++    controller += base::UTF8ToUTF16(
++        prometheus::DeriveSupervisionSafeClientLabel(
++            *state.supervision.controller_label));
++    parts.push_back(std::move(controller));
++  }
+ 
+-  return base::JoinString(parts, u", ");
++  if (HasActiveAction(state)) {
++    std::u16string action = u"Remote action active: ";
++    action += ActionCategoryName(*state.supervision.action_category);
++    parts.push_back(std::move(action));
++  }
++
++  parts.push_back(HasHealthWarning(state) ? u"Tab needs attention"
++                                          : u"Tab health OK");
++
++  return base::JoinString(parts, u"; ");
+ }
+ 
+ ui::ImageModel GetPrometheusBadgeIcon(PrometheusAction action,
+@@ -89,18 +174,22 @@ void SetBadgeIcon(views::ImageView* icon,
+ 
+ }  // namespace
+ 
+-PrometheusTabStatusBadge::PrometheusTabStatusBadge() {
++PrometheusTabStatusBadge::PrometheusTabStatusBadge(tabs::TabInterface* tab) {
+   SetCanProcessEventsWithinSubtree(false);
+   GetViewAccessibility().SetRole(ax::mojom::Role::kStatus);
+   SetLayoutManager(std::make_unique<views::BoxLayout>(
+       views::BoxLayout::Orientation::kHorizontal, gfx::Insets(),
+-      kBadgeSpacing));
++      kIconSpacing));
+ 
+   owner_or_automation_badge_ = AddBadgeIcon(this);
+   supervision_badge_ = AddBadgeIcon(this);
+   health_badge_ = AddBadgeIcon(this);
+ 
+   SetState(PrometheusTabState::SafeDefault());
++  if (tab) {
++    tab_state_observation_ =
++        std::make_unique<PrometheusTabStateObservation>(tab, this);
++  }
+ }
+ 
+ PrometheusTabStatusBadge::~PrometheusTabStatusBadge() = default;
+@@ -108,23 +197,48 @@ PrometheusTabStatusBadge::~PrometheusTabStatusBadge() = default;
+ void PrometheusTabStatusBadge::SetState(const PrometheusTabState& state) {
+   const bool has_owner_or_automation =
+       !state.owner_label.empty() || state.automation_active;
+-  const bool has_health_warning =
+-      state.health == PrometheusTabState::Health::kNeedsAttention;
++  const bool has_active_action = HasActiveAction(state);
++  const bool has_controller = HasController(state);
++  const bool has_supervision = HasSupervision(state);
++  const bool has_health_warning = HasHealthWarning(state);
+ 
+   SetBadgeIcon(owner_or_automation_badge_, has_owner_or_automation,
+-               PrometheusAction::kBolt, kColorPrometheusAccent);
+-  SetBadgeIcon(supervision_badge_, state.supervision_active,
+-               PrometheusAction::kShield, kColorPrometheusAccent);
++               PrometheusAction::kBolt,
++               state.automation_active ? kColorPrometheusAccent
++                                       : kColorPrometheusText2);
++  SetBadgeIcon(supervision_badge_, has_supervision,
++               has_active_action
++                   ? PrometheusAction::kCircleNodes
++                   : has_controller ? PrometheusAction::kShield
++                                    : PrometheusAction::kEye,
++               kColorPrometheusAccent);
++  supervision_badge_->SetBackground(
++      has_active_action
++          ? views::CreateRoundedRectBackground(kColorPrometheusAccentSoft, 4)
++          : nullptr);
+   SetBadgeIcon(health_badge_, has_health_warning,
+                PrometheusAction::kTriangleExclamation,
+-               kColorPrometheusAccent);
++               state.supervision.severity == Severity::kBlocked
++                   ? ui::kColorAlertHighSeverity
++                   : ui::kColorAlertMediumSeverityIcon);
+ 
+-  SetVisible(has_owner_or_automation || state.supervision_active ||
++  SetVisible(has_owner_or_automation || has_supervision ||
+              has_health_warning);
+-  GetViewAccessibility().SetName(BuildAccessibleName(state));
++  const std::u16string accessible_name = BuildAccessibleName(state);
++  GetViewAccessibility().SetName(accessible_name);
++  SetTooltipText(accessible_name);
+   PreferredSizeChanged();
+   SchedulePaint();
+ }
+ 
++void PrometheusTabStatusBadge::OnPrometheusTabStateChanged(
++    const PrometheusTabState& state) {
++  SetState(state);
++}
++
++void PrometheusTabStatusBadge::OnPrometheusTabStateInvalidated() {
++  SetState(PrometheusTabState::SafeDefault());
++}
++
+ BEGIN_METADATA(PrometheusTabStatusBadge)
+ END_METADATA
+diff --git a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h
+index 1e3afa3970..d575141c27 100644
+--- a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h
++++ b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h
+@@ -5,6 +5,8 @@
+ #ifndef CHROME_BROWSER_UI_VIEWS_TABS_PROMETHEUS_TAB_STATUS_BADGE_H_
+ #define CHROME_BROWSER_UI_VIEWS_TABS_PROMETHEUS_TAB_STATUS_BADGE_H_
+ 
++#include <memory>
++
+ #include "base/memory/raw_ptr.h"
+ #include "chrome/browser/prometheus/prometheus_tab_state.h"
+ #include "ui/base/metadata/metadata_header_macros.h"
+@@ -14,14 +16,19 @@ namespace views {
+ class ImageView;
+ }  // namespace views
+ 
+-class PrometheusTabStatusBadge : public views::View {
++namespace tabs {
++class TabInterface;
++}  // namespace tabs
++
++class PrometheusTabStatusBadge : public views::View,
++                                 public PrometheusTabStateObserver {
+   METADATA_HEADER(PrometheusTabStatusBadge, views::View)
+ 
+  public:
+   static constexpr int kIconSize = 12;
+   static constexpr int kIconSpacing = 4;
+ 
+-  PrometheusTabStatusBadge();
++  explicit PrometheusTabStatusBadge(tabs::TabInterface* tab = nullptr);
+   PrometheusTabStatusBadge(const PrometheusTabStatusBadge&) = delete;
+   PrometheusTabStatusBadge& operator=(const PrometheusTabStatusBadge&) = delete;
+   ~PrometheusTabStatusBadge() override;
+@@ -39,9 +46,14 @@ class PrometheusTabStatusBadge : public views::View {
+   }
+ 
+  private:
++  // PrometheusTabStateObserver:
++  void OnPrometheusTabStateChanged(const PrometheusTabState& state) override;
++  void OnPrometheusTabStateInvalidated() override;
++
+   raw_ptr<views::ImageView> owner_or_automation_badge_ = nullptr;
+   raw_ptr<views::ImageView> supervision_badge_ = nullptr;
+   raw_ptr<views::ImageView> health_badge_ = nullptr;
++  std::unique_ptr<PrometheusTabStateObservation> tab_state_observation_;
+ };
+ 
+ #endif  // CHROME_BROWSER_UI_VIEWS_TABS_PROMETHEUS_TAB_STATUS_BADGE_H_
+diff --git a/chrome/browser/ui/views/tabs/tab.cc b/chrome/browser/ui/views/tabs/tab.cc
+index 679d55d111..83ba279eaf 100644
+--- a/chrome/browser/ui/views/tabs/tab.cc
++++ b/chrome/browser/ui/views/tabs/tab.cc
+@@ -50,6 +50,7 @@
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/tabs/browser_tab_strip_controller.h"
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
++#include "chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h"
+ #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
+ #include "chrome/browser/ui/views/tabs/tab/alert_indicator_button.h"
+ #include "chrome/browser/ui/views/tabs/tab/tab_accessibility.h"
+@@ -266,6 +267,9 @@ Tab::Tab(tabs::TabHandle handle, TabSlotController* controller)
+   alert_indicator_button_ =
+       AddChildView(std::make_unique<AlertIndicatorButton>(this));
+ 
++  AddChildView(
++      std::make_unique<PrometheusTabStatusBadge>(tab_handle_.Get()));
++
+   BrowserWindowInterface* const browser_window_interface =
+       controller_->GetBrowserWindowInterface();
+   if (browser_window_interface &&
+@@ -345,6 +349,16 @@ Tab::~Tab() {
+   }
+ }
+ 
++PrometheusTabStatusBadge* Tab::prometheus_tab_status_badge_for_testing()
++    const {
++  for (views::View* child : children()) {
++    if (auto* badge = views::AsViewClass<PrometheusTabStatusBadge>(child)) {
++      return badge;
++    }
++  }
++  return nullptr;
++}
++
+ bool Tab::IsActive() const {
+   if (split()) {
+     return std::ranges::any_of(controller()->GetTabsInSplit(this),
+@@ -382,6 +396,9 @@ bool Tab::GetHitTestMask(SkPath* mask) const {
+ 
+ void Tab::Layout(PassKey) {
+   const gfx::Rect contents_rect = GetContentsBounds();
++  PrometheusTabStatusBadge* const prometheus_badge =
++      prometheus_tab_status_badge_for_testing();
++  DCHECK(prometheus_badge);
+ 
+   const bool was_showing_icon = showing_icon_;
+   UpdateIconVisibility();
+@@ -486,6 +503,22 @@ void Tab::Layout(PassKey) {
+   alert_indicator_button_->UpdateAlertIndicatorAnimation();
+   alert_indicator_button_->SetVisible(showing_alert_indicator_);
+ 
++  int badge_right = contents_rect.right();
++  if (showing_alert_indicator_) {
++    badge_right = alert_indicator_button_->x() - after_title_padding;
++  } else if (showing_close_button_) {
++    badge_right = close_x - after_title_padding;
++  }
++  if (prometheus_badge->GetVisible()) {
++    const gfx::Size badge_size = prometheus_badge->GetPreferredSize();
++    prometheus_badge->SetBounds(
++        std::max(contents_rect.x(), badge_right - badge_size.width()),
++        contents_rect.y() + Center(contents_rect.height(), badge_size.height()),
++        badge_size.width(), badge_size.height());
++  } else {
++    prometheus_badge->SetBoundsRect(gfx::Rect());
++  }
++
+   // Size the title to fill the remaining width and use all available height.
+   bool show_title = ShouldRenderAsNormalTab();
+ 
+@@ -506,7 +539,9 @@ void Tab::Layout(PassKey) {
+       title_left = std::max(title_left, after_favicon);
+     }
+     int title_right = contents_rect.right();
+-    if (showing_alert_indicator_) {
++    if (prometheus_badge->GetVisible()) {
++      title_right = prometheus_badge->x() - after_title_padding;
++    } else if (showing_alert_indicator_) {
+       title_right = alert_indicator_button_->x() - after_title_padding;
+     } else if (showing_close_button_) {
+       // Allow the title to overlay the close button's empty border padding.
+diff --git a/chrome/browser/ui/views/tabs/tab.h b/chrome/browser/ui/views/tabs/tab.h
+index 190d0cd9fd..101ef5f255 100644
+--- a/chrome/browser/ui/views/tabs/tab.h
++++ b/chrome/browser/ui/views/tabs/tab.h
+@@ -34,6 +34,7 @@
+ 
+ enum class TabChangeType;
+ class TabCloseButton;
++class PrometheusTabStatusBadge;
+ class TabSlotController;
+ class TabIcon;
+ struct TabSizeInfo;
+@@ -213,6 +214,8 @@ class Tab : public gfx::AnimationDelegate,
+     return alert_indicator_button_;
+   }
+ 
++  PrometheusTabStatusBadge* prometheus_tab_status_badge_for_testing() const;
++
+   void UpdateInsets();
+ 
+   glic::TabUnderlineView* glic_underline() const {
+-- 
+2.50.1 (Apple Git-155)
+

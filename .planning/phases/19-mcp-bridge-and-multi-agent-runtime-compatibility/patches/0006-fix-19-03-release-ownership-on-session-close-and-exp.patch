@@ -1,0 +1,332 @@
+From d45867601f15a37430f5237f1d85b8b793144a7d Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sun, 12 Jul 2026 21:10:15 -0500
+Subject: [PATCH 06/19] fix(19-03): release ownership on session close and
+ expiry
+
+- expose deterministic opaque resume and one-shot expiry APIs
+- clamp session capacity to the supported 1 through 64 range
+- clear only exact-session tab ownership after successful close
+---
+ .../prometheus/prometheus_agent_service.cc    | 13 +++-
+ .../prometheus/prometheus_agent_service.h     |  1 +
+ .../prometheus/prometheus_agent_session.cc    | 65 +++++++++++++------
+ .../prometheus/prometheus_agent_session.h     | 11 +++-
+ .../prometheus_agent_session_unittest.cc      |  1 -
+ .../prometheus/prometheus_agent_tab_data.cc   | 24 +++++--
+ .../prometheus/prometheus_agent_tab_data.h    |  7 +-
+ 7 files changed, 90 insertions(+), 32 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.cc b/chrome/browser/prometheus/prometheus_agent_service.cc
+index bcbfd8e537..3ce0c71901 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service.cc
+@@ -172,7 +172,18 @@ AgentSessionResult PrometheusAgentService::CreateSession(
+ 
+ AgentRouteResult PrometheusAgentService::CloseSession(
+     std::string_view session_id) {
+-  return session_registry_->CloseSession(session_id);
++  AgentRouteResult result = session_registry_->CloseSession(session_id);
++  if (result.ok) {
++    ReleaseSessionOwnership(session_id);
++  }
++  return result;
++}
++
++void PrometheusAgentService::ReleaseSessionOwnership(
++    std::string_view session_id) {
++  for (auto& entry : tab_data_) {
++    entry.second->data->ReleaseIfOwnedBy(session_id);
++  }
+ }
+ 
+ void PrometheusAgentService::ExecuteRoute(BrowserWindowInterface* browser,
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.h b/chrome/browser/prometheus/prometheus_agent_service.h
+index 2915985aa8..66fca03a55 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_service.h
+@@ -45,6 +45,7 @@ class PrometheusAgentService {
+ 
+   AgentSessionResult CreateSession(std::string display_label);
+   AgentRouteResult CloseSession(std::string_view session_id);
++  void ReleaseSessionOwnership(std::string_view session_id);
+   void ExecuteRoute(BrowserWindowInterface* browser,
+                     const AgentRouteRequest& request,
+                     RouteCallback callback);
+diff --git a/chrome/browser/prometheus/prometheus_agent_session.cc b/chrome/browser/prometheus/prometheus_agent_session.cc
+index c2daafafd2..9fd2a9cb81 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session.cc
++++ b/chrome/browser/prometheus/prometheus_agent_session.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_agent_session.h"
+ 
++#include <algorithm>
+ #include <utility>
+ 
+ #include "base/strings/string_util.h"
+@@ -37,15 +38,16 @@ AgentSessionResult AgentSessionResult::Failure(AgentErrorCode error_code,
+                                                std::string message,
+                                                std::string recovery) {
+   AgentSessionResult result;
+-  result.route_result =
+-      AgentRouteResult::Failure(error_code, std::move(message),
+-                                std::move(recovery));
++  result.route_result = AgentRouteResult::Failure(
++      error_code, std::move(message), std::move(recovery));
+   return result;
+ }
+ 
+ AgentSessionRegistry::AgentSessionRegistry(size_t max_active_sessions,
+                                            base::TimeDelta reconnect_grace)
+-    : max_active_sessions_(max_active_sessions),
++    : max_active_sessions_(std::clamp(max_active_sessions,
++                                      kMinimumAgentSessions,
++                                      kMaximumAgentSessions)),
+       reconnect_grace_(reconnect_grace) {}
+ 
+ AgentSessionRegistry::~AgentSessionRegistry() = default;
+@@ -53,7 +55,6 @@ AgentSessionRegistry::~AgentSessionRegistry() = default;
+ AgentSessionResult AgentSessionRegistry::CreateSession(
+     std::string display_label,
+     base::Time now) {
+-  DeactivateExpiredSessions(now);
+   if (active_session_count() >= max_active_sessions_) {
+     return AgentSessionResult::Failure(
+         AgentErrorCode::kAgentCapReached, "Agent session cap reached",
+@@ -71,22 +72,36 @@ AgentSessionResult AgentSessionRegistry::CreateSession(
+   return AgentSessionResult::Success(it->second, {"session_created"});
+ }
+ 
+-AgentSessionResult AgentSessionRegistry::ValidateSession(
++AgentSessionResult AgentSessionRegistry::ResumeSession(
+     std::string_view session_id,
+     base::Time now) {
+-  DeactivateExpiredSessions(now);
+   auto it = sessions_.find(session_id);
+-  if (it == sessions_.end() || !it->second.active) {
++  if (it == sessions_.end() || !it->second.active ||
++      !IsWithinReconnectGrace(it->second, now)) {
+     return AgentSessionResult::Failure(
+         AgentErrorCode::kUnauthorized, "Unknown or expired agent session",
+         "Create a new browser-issued agent session and retry");
+   }
+-  return AgentSessionResult::Success(it->second, {});
++
++  it->second.last_seen_at = now;
++  return AgentSessionResult::Success(it->second, {"session_resumed"});
+ }
+ 
+-AgentRouteResult AgentSessionRegistry::TouchSession(
++AgentSessionResult AgentSessionRegistry::ValidateSession(
+     std::string_view session_id,
+     base::Time now) {
++  auto it = sessions_.find(session_id);
++  if (it == sessions_.end() || !it->second.active ||
++      !IsWithinReconnectGrace(it->second, now)) {
++    return AgentSessionResult::Failure(
++        AgentErrorCode::kUnauthorized, "Unknown or expired agent session",
++        "Create a new browser-issued agent session and retry");
++  }
++  return AgentSessionResult::Success(it->second, {});
++}
++
++AgentRouteResult AgentSessionRegistry::TouchSession(std::string_view session_id,
++                                                    base::Time now) {
+   AgentSessionResult validation = ValidateSession(session_id, now);
+   if (!validation.route_result.ok) {
+     return validation.route_result;
+@@ -110,6 +125,21 @@ AgentRouteResult AgentSessionRegistry::CloseSession(
+   return AgentRouteResult::Success({"session_closed"});
+ }
+ 
++std::vector<std::string> AgentSessionRegistry::ExpireSessions(base::Time now) {
++  std::vector<std::string> expired_ids;
++  if (!reconnect_grace_.is_positive()) {
++    return expired_ids;
++  }
++
++  for (auto& [id, session] : sessions_) {
++    if (session.active && !IsWithinReconnectGrace(session, now)) {
++      session.active = false;
++      expired_ids.push_back(id);
++    }
++  }
++  return expired_ids;
++}
++
+ size_t AgentSessionRegistry::active_session_count() const {
+   size_t count = 0;
+   for (const auto& [id, session] : sessions_) {
+@@ -122,7 +152,8 @@ size_t AgentSessionRegistry::active_session_count() const {
+ 
+ void AgentSessionRegistry::set_max_active_sessions_for_testing(
+     size_t max_active_sessions) {
+-  max_active_sessions_ = max_active_sessions;
++  max_active_sessions_ = std::clamp(max_active_sessions, kMinimumAgentSessions,
++                                    kMaximumAgentSessions);
+ }
+ 
+ const AgentSession* AgentSessionRegistry::GetSessionForTesting(
+@@ -146,16 +177,12 @@ std::string AgentSessionRegistry::SanitizeDisplayLabel(
+   return label;
+ }
+ 
+-void AgentSessionRegistry::DeactivateExpiredSessions(base::Time now) {
++bool AgentSessionRegistry::IsWithinReconnectGrace(const AgentSession& session,
++                                                  base::Time now) const {
+   if (!reconnect_grace_.is_positive()) {
+-    return;
+-  }
+-
+-  for (auto& [id, session] : sessions_) {
+-    if (session.active && now - session.last_seen_at > reconnect_grace_) {
+-      session.active = false;
+-    }
++    return true;
+   }
++  return now - session.last_seen_at <= reconnect_grace_;
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_session.h b/chrome/browser/prometheus/prometheus_agent_session.h
+index 49a011eec0..6a5c988571 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session.h
++++ b/chrome/browser/prometheus/prometheus_agent_session.h
+@@ -17,6 +17,10 @@
+ namespace prometheus {
+ 
+ inline constexpr size_t kMaxAgentSessionLabelLength = 80;
++inline constexpr size_t kMinimumAgentSessions = 1;
++inline constexpr size_t kDefaultMaxAgentSessions = 8;
++inline constexpr size_t kMaximumAgentSessions = 64;
++inline constexpr base::TimeDelta kAgentReconnectGrace = base::Seconds(10);
+ 
+ struct AgentSession {
+   AgentSession();
+@@ -56,10 +60,12 @@ class AgentSessionRegistry {
+   ~AgentSessionRegistry();
+ 
+   AgentSessionResult CreateSession(std::string display_label, base::Time now);
++  AgentSessionResult ResumeSession(std::string_view session_id, base::Time now);
+   AgentSessionResult ValidateSession(std::string_view session_id,
+-                                      base::Time now);
++                                     base::Time now);
+   AgentRouteResult TouchSession(std::string_view session_id, base::Time now);
+   AgentRouteResult CloseSession(std::string_view session_id);
++  std::vector<std::string> ExpireSessions(base::Time now);
+ 
+   size_t active_session_count() const;
+   void set_max_active_sessions_for_testing(size_t max_active_sessions);
+@@ -68,7 +74,8 @@ class AgentSessionRegistry {
+ 
+  private:
+   std::string SanitizeDisplayLabel(std::string_view display_label) const;
+-  void DeactivateExpiredSessions(base::Time now);
++  bool IsWithinReconnectGrace(const AgentSession& session,
++                              base::Time now) const;
+ 
+   size_t max_active_sessions_;
+   base::TimeDelta reconnect_grace_;
+diff --git a/chrome/browser/prometheus/prometheus_agent_session_unittest.cc b/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
+index ecc520dab6..812aa6ed85 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
+@@ -4,7 +4,6 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_agent_session.h"
+ 
+-#include <array>
+ #include <string>
+ #include <vector>
+ 
+diff --git a/chrome/browser/prometheus/prometheus_agent_tab_data.cc b/chrome/browser/prometheus/prometheus_agent_tab_data.cc
+index b91f813997..369bcb3bd5 100644
+--- a/chrome/browser/prometheus/prometheus_agent_tab_data.cc
++++ b/chrome/browser/prometheus/prometheus_agent_tab_data.cc
+@@ -28,8 +28,7 @@ PrometheusAgentTabData::PrometheusAgentTabData(tabs::TabInterface* tab)
+ PrometheusAgentTabData::~PrometheusAgentTabData() = default;
+ 
+ // static
+-PrometheusAgentTabData* PrometheusAgentTabData::From(
+-    tabs::TabInterface* tab) {
++PrometheusAgentTabData* PrometheusAgentTabData::From(tabs::TabInterface* tab) {
+   return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+ }
+ 
+@@ -82,12 +81,25 @@ AgentRouteResult PrometheusAgentTabData::ReleaseIfOwned(
+     return TabNotOwnedFailure();
+   }
+ 
++  ClearOwnership();
++  return AgentRouteResult::Success({"tab_released"});
++}
++
++bool PrometheusAgentTabData::ReleaseIfOwnedBy(std::string_view session_id) {
++  if (!HasOwner() || owner_session_id_ != session_id) {
++    return false;
++  }
++
++  ClearOwnership();
++  return true;
++}
++
++void PrometheusAgentTabData::ClearOwnership() {
+   owner_session_id_.clear();
+   owner_label_.clear();
+   automation_active_ = false;
+   supervision_active_ = false;
+   health_ = PrometheusTabState::Health::kOk;
+-  return AgentRouteResult::Success({"tab_released"});
+ }
+ 
+ PrometheusTabState PrometheusAgentTabData::ToTabState() const {
+@@ -108,9 +120,9 @@ bool PrometheusAgentTabData::HasOwner() const {
+ }
+ 
+ AgentRouteResult PrometheusAgentTabData::TabNotOwnedFailure() const {
+-  return AgentRouteResult::Failure(
+-      AgentErrorCode::kTabNotOwned, "Tab owned by another session",
+-      "Switch sessions or choose an unowned tab");
++  return AgentRouteResult::Failure(AgentErrorCode::kTabNotOwned,
++                                   "Tab owned by another session",
++                                   "Switch sessions or choose an unowned tab");
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_tab_data.h b/chrome/browser/prometheus/prometheus_agent_tab_data.h
+index 984978205a..22d327905f 100644
+--- a/chrome/browser/prometheus/prometheus_agent_tab_data.h
++++ b/chrome/browser/prometheus/prometheus_agent_tab_data.h
+@@ -33,8 +33,9 @@ class PrometheusAgentTabData {
+ 
+   AgentRouteResult CanControl(std::string_view session_id) const;
+   AgentRouteResult ClaimIfUnowned(std::string_view session_id,
+-                                   std::string owner_label);
++                                  std::string owner_label);
+   AgentRouteResult ReleaseIfOwned(std::string_view session_id);
++  bool ReleaseIfOwnedBy(std::string_view session_id);
+   PrometheusTabState ToTabState() const;
+ 
+   const std::string& owner_session_id() const { return owner_session_id_; }
+@@ -49,6 +50,7 @@ class PrometheusAgentTabData {
+ 
+  private:
+   bool HasOwner() const;
++  void ClearOwnership();
+   AgentRouteResult TabNotOwnedFailure() const;
+ 
+   std::string owner_session_id_;
+@@ -57,8 +59,7 @@ class PrometheusAgentTabData {
+   bool supervision_active_ = false;
+   PrometheusTabState::Health health_ = PrometheusTabState::Health::kOk;
+ 
+-  ui::ScopedUnownedUserData<PrometheusAgentTabData>
+-      scoped_unowned_user_data_;
++  ui::ScopedUnownedUserData<PrometheusAgentTabData> scoped_unowned_user_data_;
+ };
+ 
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

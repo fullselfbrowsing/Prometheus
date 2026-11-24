@@ -1,0 +1,353 @@
+From ad736125eefc5d60744124015b0418342740e86f Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 04:41:01 -0500
+Subject: [PATCH 6/6] fix(17-review): harden Prometheus agent route boundaries
+
+---
+ .../prometheus/prometheus_agent_service.cc    |  84 ++++++++++---
+ .../prometheus/prometheus_agent_service.h     |   3 +-
+ .../prometheus_agent_service_browsertest.cc   | 110 ++++++++++++++++++
+ 3 files changed, 182 insertions(+), 15 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.cc b/chrome/browser/prometheus/prometheus_agent_service.cc
+index 2f9212b4fb..b0cfa60286 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service.cc
+@@ -50,12 +50,33 @@ AgentRouteResult StaleTarget(std::string message) {
+                                    "Refresh targets and retry the route");
+ }
+ 
++AgentRouteResult PermissionBlocked(std::string message, std::string recovery) {
++  return AgentRouteResult::Failure(AgentErrorCode::kPermissionBlocked,
++                                   std::move(message), std::move(recovery));
++}
++
+ AgentRouteResult UnsupportedRoute() {
+   return AgentRouteResult::Failure(
+       AgentErrorCode::kUnsupportedRoute, "Route is not supported in Phase 17",
+       "Use browser-owned tab/window/navigation routes only");
+ }
+ 
++AgentRouteResult TabOutOfScope(std::string message) {
++  return AgentRouteResult::Failure(
++      AgentErrorCode::kTabOutOfScope, std::move(message),
++      "Choose a target from the current profile's listed windows");
++}
++
++bool IsAllowedAgentNavigationUrl(const GURL& url) {
++  if (!url.is_valid()) {
++    return false;
++  }
++  if (url.SchemeIsHTTPOrHTTPS()) {
++    return true;
++  }
++  return url.SchemeIs("about") && url.path() == "blank";
++}
++
+ std::vector<std::string> ListTabMetadata(TabListInterface* tab_list) {
+   std::vector<std::string> changed_state;
+   for (tabs::TabInterface* tab : tab_list->GetAllTabs()) {
+@@ -67,10 +88,13 @@ std::vector<std::string> ListTabMetadata(TabListInterface* tab_list) {
+   return changed_state;
+ }
+ 
+-std::vector<std::string> ListWindowMetadata() {
++std::vector<std::string> ListWindowMetadata(Profile* profile) {
+   std::vector<std::string> changed_state;
+   GlobalBrowserCollection::GetInstance()->ForEach(
+-      [&changed_state](BrowserWindowInterface* browser) {
++      [profile, &changed_state](BrowserWindowInterface* browser) {
++        if (!browser || browser->GetProfile() != profile) {
++          return true;
++        }
+         changed_state.push_back("window:" +
+                                 std::to_string(browser->GetSessionID().id()));
+         return true;
+@@ -150,17 +174,29 @@ AgentRouteResult PrometheusAgentService::ExecuteRoute(
+                                           resolved.browser, nullptr));
+     }
+     case AgentRouteName::kListWindows:
++      if (!browser) {
++        return FinishRoute(request, timestamp, started_at,
++                           InvalidTarget("Missing browser target"));
++      }
+       return FinishRoute(request, timestamp, started_at,
+-                         AgentRouteResult::Success(ListWindowMetadata()));
++                         AgentRouteResult::Success(
++                             ListWindowMetadata(browser->GetProfile())));
+     case AgentRouteName::kOpenTab: {
+       AgentRouteResult resolved_result = ResolveTarget(
+           browser, request.target, /*require_tab=*/false, &resolved);
+       if (!resolved_result.ok) {
+         return FinishRoute(request, timestamp, started_at, resolved_result);
+       }
+-      tabs::TabInterface* opened_tab = resolved.tab_list->OpenTab(
+-          request.url.value_or(GURL("about:blank")), /*index=*/-1,
+-          /*foreground=*/true);
++      const GURL url = request.url.value_or(GURL("about:blank"));
++      if (!IsAllowedAgentNavigationUrl(url)) {
++        return FinishRoute(
++            request, timestamp, started_at,
++            PermissionBlocked("URL scheme is not allowed for agent navigation",
++                              "Use http, https, about:blank, or an explicit "
++                              "Prometheus surface route"));
++      }
++      tabs::TabInterface* opened_tab =
++          resolved.tab_list->OpenTab(url, /*index=*/-1, /*foreground=*/true);
+       if (!opened_tab) {
+         return FinishRoute(request, timestamp, started_at,
+                            StaleTarget("Failed to open a new tab"));
+@@ -214,10 +250,13 @@ AgentRouteResult PrometheusAgentService::ExecuteRoute(
+       if (!resolved_result.ok) {
+         return FinishRoute(request, timestamp, started_at, resolved_result);
+       }
+-      if (!request.url.has_value() || !request.url->is_valid()) {
++      if (!request.url.has_value() ||
++          !IsAllowedAgentNavigationUrl(*request.url)) {
+         return FinishRoute(
+             request, timestamp, started_at,
+-            InvalidTarget("Navigate route requires a valid URL"));
++            PermissionBlocked("URL scheme is not allowed for agent navigation",
++                              "Use http, https, about:blank, or an explicit "
++                              "Prometheus surface route"));
+       }
+       AgentRouteResult control =
+           EnsureCanControl(resolved.tab, *session_result.session);
+@@ -337,7 +376,8 @@ AgentRouteResult PrometheusAgentService::ExecuteRoute(
+           request, timestamp, started_at,
+           OpenPrometheusInternalUrl(browser, request.target,
+                                     GURL(chrome::kChromeUIPrometheusNewTabURL),
+-                                    "prometheus_new_tab_opened"));
++                                    "prometheus_new_tab_opened",
++                                    *session_result.session));
+     case AgentRouteName::kOpenPrometheusSidePanel:
+       return FinishRoute(request, timestamp, started_at,
+                          OpenPrometheusSidePanel(browser, request.target));
+@@ -346,7 +386,8 @@ AgentRouteResult PrometheusAgentService::ExecuteRoute(
+                          OpenPrometheusInternalUrl(
+                              browser, request.target,
+                              GURL(chrome::kChromeUIPrometheusControlPanelURL),
+-                             "prometheus_control_panel_opened"));
++                             "prometheus_control_panel_opened",
++                             *session_result.session));
+     case AgentRouteName::kUnsupportedPageAction:
+       return FinishRoute(request, timestamp, started_at, UnsupportedRoute());
+   }
+@@ -364,6 +405,7 @@ AgentRouteResult PrometheusAgentService::ResolveTarget(
+   if (!browser) {
+     return InvalidTarget("Missing browser target");
+   }
++  BrowserWindowInterface* const source_browser = browser;
+ 
+   std::optional<int32_t> requested_window = target.window_session_id;
+   if (target.browser_session_id.has_value()) {
+@@ -385,6 +427,10 @@ AgentRouteResult PrometheusAgentService::ResolveTarget(
+       if (!browser) {
+         return StaleTarget("Requested browser window no longer exists");
+       }
++      if (browser->GetProfile() != source_browser->GetProfile()) {
++        return TabOutOfScope(
++            "Requested browser window is outside the agent profile scope");
++      }
+     }
+   }
+ 
+@@ -468,7 +514,8 @@ AgentRouteResult PrometheusAgentService::OpenPrometheusInternalUrl(
+     BrowserWindowInterface* browser,
+     const AgentTarget& target,
+     const GURL& url,
+-    std::string changed_state) {
++    std::string changed_state,
++    const AgentSession& session) {
+   ResolvedTarget resolved;
+   AgentRouteResult resolved_result =
+       ResolveTarget(browser, target, /*require_tab=*/false, &resolved);
+@@ -486,9 +533,18 @@ AgentRouteResult PrometheusAgentService::OpenPrometheusInternalUrl(
+     return StaleTarget("Failed to open Prometheus internal surface");
+   }
+ 
+-  return SuccessForTarget(
+-      {std::move(changed_state)}, resolved.browser,
+-      tabs::TabInterface::MaybeGetFromContents(web_contents));
++  tabs::TabInterface* opened_tab =
++      tabs::TabInterface::MaybeGetFromContents(web_contents);
++  if (!opened_tab) {
++    return StaleTarget("Prometheus internal surface tab is unavailable");
++  }
++  AgentRouteResult claim = EnsureCanControl(opened_tab, session);
++  if (!claim.ok) {
++    return claim;
++  }
++
++  return SuccessForTarget({std::move(changed_state)}, resolved.browser,
++                          opened_tab);
+ }
+ 
+ AgentRouteResult PrometheusAgentService::OpenPrometheusSidePanel(
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.h b/chrome/browser/prometheus/prometheus_agent_service.h
+index b685e58398..5af48d428a 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_service.h
+@@ -71,7 +71,8 @@ class PrometheusAgentService {
+   AgentRouteResult OpenPrometheusInternalUrl(BrowserWindowInterface* browser,
+                                              const AgentTarget& target,
+                                              const GURL& url,
+-                                             std::string changed_state);
++                                             std::string changed_state,
++                                             const AgentSession& session);
+   AgentRouteResult OpenPrometheusSidePanel(BrowserWindowInterface* browser,
+                                            const AgentTarget& target);
+   AgentRouteResult SuccessForTarget(std::vector<std::string> changed_state,
+diff --git a/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc
+index 3632192452..a4daa0e878 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service_browsertest.cc
+@@ -150,6 +150,49 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
+   EXPECT_EQ("Agent A", tab_data->owner_label());
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
++                       ListWindowsAndExplicitTargetsStayWithinProfile) {
++  const std::string session_id = CreateSession("Agent A");
++  ASSERT_FALSE(session_id.empty());
++  Browser* const same_profile_browser = CreateBrowser(browser()->profile());
++  ASSERT_TRUE(same_profile_browser);
++  Browser* const incognito_browser = CreateIncognitoBrowser();
++  ASSERT_TRUE(incognito_browser);
++
++  AgentRouteResult list_result =
++      Execute(Request(AgentRouteName::kListWindows, session_id));
++  ASSERT_TRUE(list_result.ok) << list_result.message;
++  EXPECT_TRUE(HasChangedState(
++      list_result, "window:" + std::to_string(browser()->GetSessionID().id())));
++  EXPECT_TRUE(HasChangedState(
++      list_result,
++      "window:" + std::to_string(same_profile_browser->GetSessionID().id())));
++  EXPECT_FALSE(HasChangedState(
++      list_result,
++      "window:" + std::to_string(incognito_browser->GetSessionID().id())));
++
++  AgentRouteRequest same_profile_open =
++      Request(AgentRouteName::kOpenTab, session_id);
++  same_profile_open.target.window_session_id =
++      same_profile_browser->GetSessionID().id();
++  same_profile_open.url = GURL("about:blank#same-profile");
++  AgentRouteResult same_profile_result = Execute(same_profile_open);
++  ASSERT_TRUE(same_profile_result.ok) << same_profile_result.message;
++  ASSERT_TRUE(same_profile_result.target.window_session_id.has_value());
++  EXPECT_EQ(same_profile_browser->GetSessionID().id(),
++            *same_profile_result.target.window_session_id);
++
++  AgentRouteRequest cross_profile_open =
++      Request(AgentRouteName::kOpenTab, session_id);
++  cross_profile_open.target.window_session_id =
++      incognito_browser->GetSessionID().id();
++  cross_profile_open.url = GURL("about:blank#cross-profile");
++  AgentRouteResult cross_profile_result = Execute(cross_profile_open);
++  EXPECT_FALSE(cross_profile_result.ok);
++  EXPECT_EQ(AgentErrorCode::kTabOutOfScope,
++            cross_profile_result.error_code);
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
+                        CrossSessionDeniedAndActivateUsesTargetHandle) {
+   const std::string session_a = CreateSession("Agent A");
+@@ -194,6 +237,55 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
+   EXPECT_EQ(tab_count, tab_strip_model()->count());
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
++                       NavigationRoutesRejectUnsafeSchemes) {
++  const std::string session_id = CreateSession("Agent A");
++  ASSERT_FALSE(session_id.empty());
++
++  const int initial_tab_count = tab_strip_model()->count();
++  const GURL unsafe_urls[] = {
++      GURL("javascript:alert(1)"),
++      GURL("data:text/html,<title>blocked</title>"),
++      GURL("file:///tmp/prometheus-agent-blocked"),
++      GURL("chrome://version/"),
++  };
++
++  for (const GURL& url : unsafe_urls) {
++    AgentRouteRequest open_request =
++        Request(AgentRouteName::kOpenTab, session_id);
++    open_request.url = url;
++    AgentRouteResult open_result = Execute(open_request);
++    EXPECT_FALSE(open_result.ok) << url;
++    EXPECT_EQ(AgentErrorCode::kPermissionBlocked, open_result.error_code)
++        << url;
++  }
++  EXPECT_EQ(initial_tab_count, tab_strip_model()->count());
++
++  AgentRouteRequest open_allowed = Request(AgentRouteName::kOpenTab, session_id);
++  open_allowed.url = GURL("about:blank#safe-navigation-target");
++  AgentRouteResult open_allowed_result = Execute(open_allowed);
++  ASSERT_TRUE(open_allowed_result.ok) << open_allowed_result.message;
++  tabs::TabInterface* target_tab =
++      open_allowed_result.target.tab_handle.Get();
++  ASSERT_TRUE(target_tab);
++  EXPECT_EQ(initial_tab_count + 1, tab_strip_model()->count());
++  const GURL before_rejected_navigations =
++      target_tab->GetContents()->GetLastCommittedURL();
++
++  for (const GURL& url : unsafe_urls) {
++    AgentRouteRequest navigate_request =
++        Request(AgentRouteName::kNavigate, session_id);
++    navigate_request.target = TargetFor(target_tab);
++    navigate_request.url = url;
++    AgentRouteResult navigate_result = Execute(navigate_request);
++    EXPECT_FALSE(navigate_result.ok) << url;
++    EXPECT_EQ(AgentErrorCode::kPermissionBlocked, navigate_result.error_code)
++        << url;
++  }
++  EXPECT_EQ(before_rejected_navigations,
++            target_tab->GetContents()->GetLastCommittedURL());
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
+                        NavigateReloadBackAndForwardAffectOwnedTab) {
+   ASSERT_TRUE(embedded_test_server()->Start());
+@@ -325,7 +417,9 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentServiceBrowserTest,
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentInternalSurfaceBrowserTest,
+                        NewTabAndControlPanelRoutesOpenExpectedWebUIHosts) {
+   const std::string session_id = CreateSession("Agent A");
++  const std::string second_session_id = CreateSession("Agent B");
+   ASSERT_FALSE(session_id.empty());
++  ASSERT_FALSE(second_session_id.empty());
+ 
+   const GURL new_tab_url(chrome::kChromeUIPrometheusNewTabURL);
+   content::TestNavigationObserver new_tab_observer(new_tab_url);
+@@ -338,6 +432,9 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentInternalSurfaceBrowserTest,
+   tabs::TabInterface* new_tab = new_tab_result.target.tab_handle.Get();
+   ASSERT_TRUE(new_tab);
+   EXPECT_EQ(new_tab_url, new_tab->GetContents()->GetLastCommittedURL());
++  PrometheusAgentTabData* new_tab_data = PrometheusAgentTabData::From(new_tab);
++  ASSERT_TRUE(new_tab_data);
++  EXPECT_EQ(session_id, new_tab_data->owner_session_id());
+ 
+   const GURL control_panel_url(chrome::kChromeUIPrometheusControlPanelURL);
+   content::TestNavigationObserver control_panel_observer(control_panel_url);
+@@ -353,6 +450,19 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentInternalSurfaceBrowserTest,
+   ASSERT_TRUE(control_panel_tab);
+   EXPECT_EQ(control_panel_url,
+             control_panel_tab->GetContents()->GetLastCommittedURL());
++  PrometheusAgentTabData* control_panel_data =
++      PrometheusAgentTabData::From(control_panel_tab);
++  ASSERT_TRUE(control_panel_data);
++  EXPECT_EQ(session_id, control_panel_data->owner_session_id());
++
++  const int tab_count = tab_strip_model()->count();
++  AgentRouteRequest denied_close =
++      Request(AgentRouteName::kCloseTab, second_session_id);
++  denied_close.target = TargetFor(control_panel_tab);
++  AgentRouteResult denied_close_result = Execute(denied_close);
++  EXPECT_FALSE(denied_close_result.ok);
++  EXPECT_EQ(AgentErrorCode::kTabNotOwned, denied_close_result.error_code);
++  EXPECT_EQ(tab_count, tab_strip_model()->count());
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentInternalSurfaceBrowserTest,
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,839 @@
+From 707575f3c1a8743b0eeecb90a925b05e069edcbe Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 20 Jul 2026 06:18:20 -0500
+Subject: [PATCH] fix(20): CR-01 persist vault metadata across restarts
+
+---
+ .../prometheus_runtime_profile_service.cc     |   2 +-
+ ...ometheus_vault_confirmation_browsertest.cc |   4 +-
+ .../prometheus/prometheus_vault_service.cc    | 281 +++++++++++++++++-
+ .../prometheus/prometheus_vault_service.h     |   8 +-
+ .../prometheus_vault_service_unittest.cc      | 247 ++++++++++++---
+ 5 files changed, 495 insertions(+), 47 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+index c7500cd5fa..0a3df16fe6 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+@@ -385,7 +385,7 @@ PrometheusRuntimeProfileService::PrometheusRuntimeProfileService(
+   owned_secret_store_ =
+       CreatePrometheusSecretStore(prefs, profile_->IsOffTheRecord());
+   owned_vault_service_ = std::make_unique<PrometheusVaultService>(
+-      profile_, owned_secret_store_.get(), agent_profile_service_);
++      profile_, owned_secret_store_.get(), agent_profile_service_, prefs);
+   owned_vault_service_->SetNativeConfirmationDelegate(base::BindRepeating(
+       &PrometheusRuntimeProfileService::OpenVaultUseConfirmation,
+       weak_factory_.GetWeakPtr()));
+diff --git a/chrome/browser/prometheus/prometheus_vault_confirmation_browsertest.cc b/chrome/browser/prometheus/prometheus_vault_confirmation_browsertest.cc
+index fd523e6faf..d0dbfe1505 100644
+--- a/chrome/browser/prometheus/prometheus_vault_confirmation_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_vault_confirmation_browsertest.cc
+@@ -14,6 +14,7 @@
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
+ #include "chrome/browser/prometheus/prometheus_vault_service.h"
++#include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/tab_list/tab_list_interface.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/browser_window.h"
+@@ -119,7 +120,8 @@ class PrometheusVaultConfirmationBrowserTest : public InProcessBrowserTest {
+             &PrometheusVaultConfirmationBrowserTest::InsertField,
+             base::Unretained(this)));
+     vault_ = std::make_unique<PrometheusVaultService>(
+-        browser()->profile(), &secret_store_, profile_service_);
++        browser()->profile(), &secret_store_, profile_service_,
++        browser()->profile()->GetPrefs());
+     vault_->SetNowCallbackForTesting(base::BindRepeating(
+         &PrometheusVaultConfirmationBrowserTest::Now, base::Unretained(this)));
+   }
+diff --git a/chrome/browser/prometheus/prometheus_vault_service.cc b/chrome/browser/prometheus/prometheus_vault_service.cc
+index 718fb6ab79..7f1c278082 100644
+--- a/chrome/browser/prometheus/prometheus_vault_service.cc
++++ b/chrome/browser/prometheus/prometheus_vault_service.cc
+@@ -15,8 +15,11 @@
+ #include "base/json/json_reader.h"
+ #include "base/json/json_writer.h"
+ #include "base/numerics/safe_conversions.h"
++#include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
++#include "components/prefs/pref_service.h"
+ #include "url/gurl.h"
+ #include "url/origin.h"
+ 
+@@ -27,6 +30,25 @@ namespace {
+ constexpr char kVaultIdPrefix[] = "vault-";
+ constexpr char kVaultCredentialOwnerKind[] = "vault_credential";
+ constexpr char kVaultPaymentOwnerKind[] = "vault_payment";
++constexpr char kRuntimeSchemaVersionKey[] = "schema_version";
++constexpr char kRuntimeDataKey[] = "data";
++constexpr char kVaultStoreKey[] = "vault_store";
++constexpr char kVaultStoreSchemaVersionKey[] = "schema_version";
++constexpr char kVaultStoreNextMetadataIdKey[] = "next_metadata_id";
++constexpr char kVaultStoreEntriesKey[] = "entries";
++constexpr char kVaultMetadataIdKey[] = "id";
++constexpr char kVaultMetadataLabelKey[] = "label";
++constexpr char kVaultMetadataKindKey[] = "kind";
++constexpr char kVaultMetadataOriginKey[] = "canonical_site_origin";
++constexpr char kVaultMetadataUpdatedTimeKey[] = "updated_time_ms";
++constexpr char kVaultMetadataSecretConfiguredKey[] = "secret_configured";
++constexpr char kSecretRecordIdKey[] = "record_id";
++constexpr char kSecretKindKey[] = "secret_kind";
++constexpr char kSecretOwnerKindKey[] = "owner_kind";
++constexpr char kSecretCanonicalOriginKey[] = "canonical_origin";
++constexpr char kSecretConfiguredKey[] = "secret_configured";
++constexpr int kVaultStoreSchemaVersion = 1;
++constexpr size_t kMaxVaultStoreSerializedBytes = 256 * 1024;
+ 
+ std::optional<std::string> CanonicalSiteOrigin(std::string_view input) {
+   if (input.empty() || input.size() > kMaxPrometheusSecretBindingUrlBytes ||
+@@ -54,6 +76,118 @@ bool IsKnownVaultKind(PrometheusVaultKind kind) {
+   return false;
+ }
+ 
++std::optional<PrometheusVaultKind> VaultKindFromString(std::string_view value) {
++  if (value == "credential") {
++    return PrometheusVaultKind::kCredential;
++  }
++  if (value == "payment") {
++    return PrometheusVaultKind::kPayment;
++  }
++  return std::nullopt;
++}
++
++std::optional<uint64_t> VaultIdSequence(std::string_view id) {
++  if (!base::StartsWith(id, kVaultIdPrefix)) {
++    return std::nullopt;
++  }
++  uint64_t sequence = 0;
++  if (!base::StringToUint64(id.substr(std::size(kVaultIdPrefix) - 1),
++                            &sequence) ||
++      sequence == 0 ||
++      id != std::string(kVaultIdPrefix) + base::NumberToString(sequence)) {
++    return std::nullopt;
++  }
++  return sequence;
++}
++
++base::DictValue VaultMetadataToValue(const PrometheusVaultMetadata& metadata) {
++  base::DictValue value;
++  value.Set(kVaultMetadataIdKey, metadata.id);
++  value.Set(kVaultMetadataLabelKey, metadata.label);
++  value.Set(kVaultMetadataKindKey,
++            std::string(PrometheusVaultKindToString(metadata.kind)));
++  value.Set(kVaultMetadataOriginKey, metadata.canonical_site_origin);
++  value.Set(kVaultMetadataUpdatedTimeKey,
++            base::NumberToString(metadata.updated_time_ms));
++  value.Set(kVaultMetadataSecretConfiguredKey, metadata.secret_configured);
++  return value;
++}
++
++std::optional<PrometheusVaultMetadata> VaultMetadataFromValue(
++    const base::DictValue& value) {
++  if (value.size() != 6u) {
++    return std::nullopt;
++  }
++  const std::string* id = value.FindString(kVaultMetadataIdKey);
++  const std::string* label = value.FindString(kVaultMetadataLabelKey);
++  const std::string* kind_value = value.FindString(kVaultMetadataKindKey);
++  const std::string* origin_value = value.FindString(kVaultMetadataOriginKey);
++  const std::string* updated_time_value =
++      value.FindString(kVaultMetadataUpdatedTimeKey);
++  std::optional<bool> secret_configured =
++      value.FindBool(kVaultMetadataSecretConfiguredKey);
++  if (!id || !VaultIdSequence(*id).has_value() || !label || label->empty() ||
++      label->size() > kMaxPrometheusVaultLabelBytes ||
++      !base::IsStringUTF8(*label) || !kind_value || !origin_value ||
++      !updated_time_value || !secret_configured.has_value()) {
++    return std::nullopt;
++  }
++  std::optional<PrometheusVaultKind> kind = VaultKindFromString(*kind_value);
++  std::optional<std::string> canonical_origin =
++      CanonicalSiteOrigin(*origin_value);
++  int64_t updated_time_ms = 0;
++  if (!kind.has_value() || !canonical_origin.has_value() ||
++      *canonical_origin != *origin_value ||
++      !base::StringToInt64(*updated_time_value, &updated_time_ms) ||
++      updated_time_ms < 0) {
++    return std::nullopt;
++  }
++  return PrometheusVaultMetadata{
++      .id = *id,
++      .label = *label,
++      .kind = *kind,
++      .canonical_site_origin = *canonical_origin,
++      .updated_time_ms = updated_time_ms,
++      .secret_configured = *secret_configured,
++  };
++}
++
++std::optional<PrometheusSecretBinding> SecretBindingFromSnapshot(
++    const base::Value& value) {
++  if (!value.is_dict() || value.GetDict().size() != 5u) {
++    return std::nullopt;
++  }
++  const base::DictValue& metadata = value.GetDict();
++  const std::string* record_id = metadata.FindString(kSecretRecordIdKey);
++  const std::string* kind_value = metadata.FindString(kSecretKindKey);
++  const std::string* owner_kind = metadata.FindString(kSecretOwnerKindKey);
++  const std::string* origin = metadata.FindString(kSecretCanonicalOriginKey);
++  std::optional<bool> configured = metadata.FindBool(kSecretConfiguredKey);
++  if (!record_id || !kind_value || !owner_kind || !origin ||
++      configured != true) {
++    return std::nullopt;
++  }
++  std::optional<PrometheusSecretKind> kind =
++      PrometheusSecretKindFromString(*kind_value);
++  if (!kind.has_value()) {
++    return std::nullopt;
++  }
++  PrometheusSecretBinding binding{
++      .record_id = *record_id,
++      .secret_kind = *kind,
++      .owner_kind = *owner_kind,
++      .canonical_origin = *origin,
++  };
++  return IsValidPrometheusSecretBinding(binding)
++             ? std::optional(std::move(binding))
++             : std::nullopt;
++}
++
++bool IsVaultSecretBinding(const PrometheusSecretBinding& binding) {
++  return binding.secret_kind == PrometheusSecretKind::kVaultCredential ||
++         binding.secret_kind == PrometheusSecretKind::kVaultPayment;
++}
++
+ bool IsAllowedVaultField(PrometheusVaultKind kind, std::string_view name) {
+   switch (kind) {
+     case PrometheusVaultKind::kCredential:
+@@ -301,13 +435,16 @@ struct PrometheusVaultService::ActiveUse {
+ PrometheusVaultService::PrometheusVaultService(
+     Profile* profile,
+     PrometheusSecretStore* secret_store,
+-    PrometheusAgentProfileService* agent_profile_service)
++    PrometheusAgentProfileService* agent_profile_service,
++    PrefService* prefs)
+     : profile_(profile),
+       secret_store_(secret_store),
+       agent_profile_service_(agent_profile_service),
++      prefs_(prefs),
+       now_callback_(base::BindRepeating(&base::Time::Now)) {
+   CHECK(profile_);
+   CHECK(secret_store_);
++  LoadMetadata();
+ }
+ 
+ PrometheusVaultService::~PrometheusVaultService() {
+@@ -336,6 +473,10 @@ PrometheusVaultMetadataResult PrometheusVaultService::CreateMetadata(
+ 
+   PrometheusVaultMetadata metadata;
+   do {
++    if (next_metadata_id_ == std::numeric_limits<uint64_t>::max()) {
++      result.status = PrometheusVaultStatus::kLimitReached;
++      return result;
++    }
+     metadata.id = kVaultIdPrefix + std::to_string(++next_metadata_id_);
+   } while (metadata_.contains(metadata.id));
+   metadata.label = std::move(label);
+@@ -343,6 +484,7 @@ PrometheusVaultMetadataResult PrometheusVaultService::CreateMetadata(
+   metadata.canonical_site_origin = std::move(*origin);
+   metadata.updated_time_ms = Now().InMillisecondsSinceUnixEpoch();
+   metadata_.emplace(metadata.id, metadata);
++  PersistMetadata();
+   result.status = PrometheusVaultStatus::kSuccess;
+   result.metadata = std::move(metadata);
+   return result;
+@@ -399,6 +541,7 @@ PrometheusVaultMetadataResult PrometheusVaultService::UpdateMetadata(
+   it->second.label = std::move(label);
+   it->second.canonical_site_origin = std::move(*origin);
+   it->second.updated_time_ms = Now().InMillisecondsSinceUnixEpoch();
++  PersistMetadata();
+   result.status = PrometheusVaultStatus::kSuccess;
+   result.metadata = it->second;
+   return result;
+@@ -413,7 +556,9 @@ void PrometheusVaultService::DeleteMetadata(std::string entry_id,
+   }
+   const bool secret_configured = it->second.secret_configured;
+   PrometheusSecretBinding binding = SecretBindingFor(it->second);
++  PrometheusVaultMetadata removed_metadata = it->second;
+   metadata_.erase(it);
++  PersistMetadata();
+   if (!secret_configured) {
+     std::move(callback).Run(PrometheusVaultStatus::kSuccess);
+     return;
+@@ -421,12 +566,20 @@ void PrometheusVaultService::DeleteMetadata(std::string entry_id,
+   secret_store_->Delete(
+       std::move(binding),
+       base::BindOnce(
+-          [](MetadataDeleteCallback callback, PrometheusSecretError error) {
++          [](base::WeakPtr<PrometheusVaultService> service,
++             PrometheusVaultMetadata removed_metadata,
++             MetadataDeleteCallback callback, PrometheusSecretError error) {
++            if (error != PrometheusSecretError::kNone && service) {
++              service->metadata_.insert_or_assign(removed_metadata.id,
++                                                  removed_metadata);
++              service->PersistMetadata();
++            }
+             std::move(callback).Run(
+                 error == PrometheusSecretError::kNone
+                     ? PrometheusVaultStatus::kSuccess
+                     : PrometheusVaultStatus::kSecretStoreFailure);
+           },
++          weak_factory_.GetWeakPtr(), std::move(removed_metadata),
+           std::move(callback)));
+ }
+ 
+@@ -729,6 +882,7 @@ void PrometheusVaultService::OnSecretWriteComplete(
+       metadata_it->second.secret_configured = true;
+       metadata_it->second.updated_time_ms =
+           Now().InMillisecondsSinceUnixEpoch();
++      PersistMetadata();
+       status = PrometheusVaultStatus::kSuccess;
+     } else {
+       status = PrometheusVaultStatus::kNotFound;
+@@ -919,6 +1073,129 @@ bool PrometheusVaultService::BindingMatchesTarget(
+          binding.focused == target.focused && target.focused;
+ }
+ 
++void PrometheusVaultService::LoadMetadata() {
++  metadata_.clear();
++  next_metadata_id_ = 0;
++  if (!prefs_) {
++    return;
++  }
++
++  const base::DictValue& root = prefs_->GetDict(kPrometheusRuntimeProfileData);
++  if (root.FindInt(kRuntimeSchemaVersionKey) !=
++      kPrometheusRuntimeSchemaVersion) {
++    return;
++  }
++  const base::DictValue* data = root.FindDict(kRuntimeDataKey);
++  const base::DictValue* store =
++      data ? data->FindDict(kVaultStoreKey) : nullptr;
++  if (store) {
++    std::optional<std::string> serialized = base::WriteJson(*store);
++    const std::string* next_id =
++        store->FindString(kVaultStoreNextMetadataIdKey);
++    const base::ListValue* entries = store->FindList(kVaultStoreEntriesKey);
++    uint64_t persisted_next_id = 0;
++    if (store->size() == 3u && serialized.has_value() &&
++        serialized->size() <= kMaxVaultStoreSerializedBytes &&
++        store->FindInt(kVaultStoreSchemaVersionKey) ==
++            kVaultStoreSchemaVersion &&
++        next_id && base::StringToUint64(*next_id, &persisted_next_id) &&
++        entries && entries->size() <= kMaxPrometheusVaultEntries) {
++      next_metadata_id_ = persisted_next_id;
++      for (const base::Value& value : *entries) {
++        if (!value.is_dict()) {
++          continue;
++        }
++        std::optional<PrometheusVaultMetadata> metadata =
++            VaultMetadataFromValue(value.GetDict());
++        if (!metadata.has_value() || metadata_.contains(metadata->id)) {
++          continue;
++        }
++        next_metadata_id_ =
++            std::max(next_metadata_id_, *VaultIdSequence(metadata->id));
++        metadata_.emplace(metadata->id, std::move(*metadata));
++      }
++    }
++  }
++
++  ReconcileSecretRecords();
++  PersistMetadata();
++}
++
++void PrometheusVaultService::ReconcileSecretRecords() {
++  std::map<std::string, std::vector<PrometheusSecretBinding>, std::less<>>
++      vault_bindings;
++  for (const base::Value& value :
++       secret_store_->GetSanitizedMetadataSnapshot()) {
++    std::optional<PrometheusSecretBinding> binding =
++        SecretBindingFromSnapshot(value);
++    if (binding.has_value() && IsVaultSecretBinding(*binding)) {
++      if (std::optional<uint64_t> sequence =
++              VaultIdSequence(binding->record_id)) {
++        next_metadata_id_ = std::max(next_metadata_id_, *sequence);
++      }
++      vault_bindings[binding->record_id].push_back(std::move(*binding));
++    }
++  }
++
++  for (auto& [entry_id, metadata] : metadata_) {
++    auto bindings_it = vault_bindings.find(entry_id);
++    const bool has_exact_secret =
++        bindings_it != vault_bindings.end() &&
++        bindings_it->second.size() == 1u &&
++        bindings_it->second.front() == SecretBindingFor(metadata);
++    if (metadata.secret_configured && !has_exact_secret) {
++      metadata.secret_configured = false;
++    }
++  }
++
++  for (auto& [record_id, bindings] : vault_bindings) {
++    auto metadata_it = metadata_.find(record_id);
++    const bool retain =
++        metadata_it != metadata_.end() &&
++        metadata_it->second.secret_configured && bindings.size() == 1u &&
++        bindings.front() == SecretBindingFor(metadata_it->second);
++    if (retain) {
++      continue;
++    }
++    for (PrometheusSecretBinding& binding : bindings) {
++      secret_store_->Delete(std::move(binding), base::DoNothing());
++    }
++  }
++}
++
++void PrometheusVaultService::PersistMetadata() {
++  if (!prefs_) {
++    return;
++  }
++  base::ListValue entries;
++  entries.reserve(metadata_.size());
++  for (const auto& [entry_id, metadata] : metadata_) {
++    static_cast<void>(entry_id);
++    entries.Append(VaultMetadataToValue(metadata));
++  }
++  base::DictValue store;
++  store.Set(kVaultStoreSchemaVersionKey, kVaultStoreSchemaVersion);
++  store.Set(kVaultStoreNextMetadataIdKey,
++            base::NumberToString(next_metadata_id_));
++  store.Set(kVaultStoreEntriesKey, std::move(entries));
++
++  std::optional<std::string> serialized = base::WriteJson(store);
++  CHECK(serialized.has_value());
++  CHECK_LE(serialized->size(), kMaxVaultStoreSerializedBytes);
++
++  base::DictValue root = prefs_->GetDict(kPrometheusRuntimeProfileData).Clone();
++  if (root.FindInt(kRuntimeSchemaVersionKey) !=
++      kPrometheusRuntimeSchemaVersion) {
++    return;
++  }
++  base::DictValue data = root.FindDict(kRuntimeDataKey)
++                             ? root.FindDict(kRuntimeDataKey)->Clone()
++                             : base::DictValue();
++  data.Set(kVaultStoreKey, std::move(store));
++  root.Set(kRuntimeDataKey, std::move(data));
++  prefs_->SetDict(kPrometheusRuntimeProfileData, std::move(root));
++}
++
+ PrometheusSecretBinding PrometheusVaultService::SecretBindingFor(
+     const PrometheusVaultMetadata& metadata) const {
+   PrometheusSecretBinding binding;
+diff --git a/chrome/browser/prometheus/prometheus_vault_service.h b/chrome/browser/prometheus/prometheus_vault_service.h
+index d4092feaec..3988a9986e 100644
+--- a/chrome/browser/prometheus/prometheus_vault_service.h
++++ b/chrome/browser/prometheus/prometheus_vault_service.h
+@@ -22,6 +22,7 @@
+ #include "chrome/browser/prometheus/prometheus_secret_store.h"
+ 
+ class BrowserWindowInterface;
++class PrefService;
+ class Profile;
+ 
+ namespace prometheus {
+@@ -182,7 +183,8 @@ class PrometheusVaultService {
+ 
+   PrometheusVaultService(Profile* profile,
+                          PrometheusSecretStore* secret_store,
+-                         PrometheusAgentProfileService* agent_profile_service);
++                         PrometheusAgentProfileService* agent_profile_service,
++                         PrefService* prefs = nullptr);
+   PrometheusVaultService(const PrometheusVaultService&) = delete;
+   PrometheusVaultService& operator=(const PrometheusVaultService&) = delete;
+   ~PrometheusVaultService();
+@@ -249,10 +251,14 @@ class PrometheusVaultService {
+                             const ConfirmedVaultTargetBinding& target) const;
+   PrometheusSecretBinding SecretBindingFor(
+       const PrometheusVaultMetadata& metadata) const;
++  void LoadMetadata();
++  void ReconcileSecretRecords();
++  void PersistMetadata();
+ 
+   raw_ptr<Profile> profile_;
+   raw_ptr<PrometheusSecretStore> secret_store_;
+   raw_ptr<PrometheusAgentProfileService> agent_profile_service_;
++  raw_ptr<PrefService> prefs_;
+   std::map<std::string, PrometheusVaultMetadata, std::less<>> metadata_;
+   uint64_t next_metadata_id_ = 0;
+   uint64_t generation_ = 0;
+diff --git a/chrome/browser/prometheus/prometheus_vault_service_unittest.cc b/chrome/browser/prometheus/prometheus_vault_service_unittest.cc
+index 792fd70c1f..9cfb149504 100644
+--- a/chrome/browser/prometheus/prometheus_vault_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_vault_service_unittest.cc
+@@ -14,12 +14,16 @@
+ #include "base/functional/bind.h"
+ #include "base/json/json_writer.h"
+ #include "base/test/test_future.h"
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
++#include "components/os_crypt/async/browser/test_utils.h"
++#include "components/sync_preferences/testing_pref_service_syncable.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ 
+ namespace prometheus {
+ namespace {
+ 
+-constexpr char kPlaintextSentinel[] = "VAULT-PLAINTEXT-password-4111111111111111";
++constexpr char kPlaintextSentinel[] =
++    "VAULT-PLAINTEXT-password-4111111111111111";
+ constexpr char kCiphertextSentinel[] = "VAULT-CIPHERTEXT-SENTINEL";
+ constexpr char kRequestHash[] = "bounded-request-hash";
+ 
+@@ -44,8 +48,7 @@ class FakeSecretStore final : public PrometheusSecretStore {
+     auto value = values.find(binding.record_id);
+     auto stored_binding = bindings.find(binding.record_id);
+     if (value == values.end() || stored_binding == bindings.end()) {
+-      std::move(callback).Run(
+-          {.error = PrometheusSecretError::kNotFound});
++      std::move(callback).Run({.error = PrometheusSecretError::kNotFound});
+       return;
+     }
+     if (stored_binding->second != binding) {
+@@ -53,11 +56,11 @@ class FakeSecretStore final : public PrometheusSecretStore {
+           {.error = PrometheusSecretError::kBindingMismatch});
+       return;
+     }
+-    std::move(callback).Run({.error = next_read_error,
+-                             .value = next_read_error ==
+-                                              PrometheusSecretError::kNone
+-                                          ? std::optional(value->second)
+-                                          : std::nullopt});
++    std::move(callback).Run(
++        {.error = next_read_error,
++         .value = next_read_error == PrometheusSecretError::kNone
++                      ? std::optional(value->second)
++                      : std::nullopt});
+   }
+ 
+   void Replace(PrometheusSecretBinding binding,
+@@ -100,13 +103,12 @@ class PrometheusVaultServiceTest : public testing::Test {
+   PrometheusVaultServiceTest()
+       : profile_(reinterpret_cast<Profile*>(&profile_storage_)),
+         browser_(reinterpret_cast<BrowserWindowInterface*>(&browser_storage_)),
+-        other_browser_(reinterpret_cast<BrowserWindowInterface*>(
+-            &other_browser_storage_)),
++        other_browser_(
++            reinterpret_cast<BrowserWindowInterface*>(&other_browser_storage_)),
+         service_(profile_, &secret_store_, nullptr) {
+     now_ = base::Time::FromMillisecondsSinceUnixEpoch(100000);
+-    service_.SetNowCallbackForTesting(
+-        base::BindRepeating(&PrometheusVaultServiceTest::Now,
+-                            base::Unretained(this)));
++    service_.SetNowCallbackForTesting(base::BindRepeating(
++        &PrometheusVaultServiceTest::Now, base::Unretained(this)));
+     ResetTarget();
+     service_.SetTargetInspectorForTesting(base::BindRepeating(
+         &PrometheusVaultServiceTest::InspectTarget, base::Unretained(this)));
+@@ -252,13 +254,11 @@ TEST_F(PrometheusVaultServiceTest, MetadataCrudBoundsAndSanitizedShape) {
+   ASSERT_TRUE(created.ok());
+   ASSERT_TRUE(created.metadata.has_value());
+   EXPECT_FALSE(created.metadata->id.empty());
+-  EXPECT_EQ(created.metadata->canonical_site_origin,
+-            "https://login.example");
++  EXPECT_EQ(created.metadata->canonical_site_origin, "https://login.example");
+   EXPECT_FALSE(created.metadata->secret_configured);
+ 
+   ASSERT_EQ(1u, service_.ListMetadata().size());
+-  ASSERT_EQ(1u,
+-            service_.ListMetadata(PrometheusVaultKind::kCredential).size());
++  ASSERT_EQ(1u, service_.ListMetadata(PrometheusVaultKind::kCredential).size());
+   EXPECT_TRUE(service_.ListMetadata(PrometheusVaultKind::kPayment).empty());
+ 
+   base::ListValue snapshot = service_.GetSanitizedMetadataSnapshot();
+@@ -281,8 +281,7 @@ TEST_F(PrometheusVaultServiceTest, MetadataCrudBoundsAndSanitizedShape) {
+   PrometheusVaultMetadataResult updated = service_.UpdateMetadata(
+       created.metadata->id, "Renamed account", "https://other.example/a");
+   ASSERT_TRUE(updated.ok());
+-  EXPECT_EQ(updated.metadata->canonical_site_origin,
+-            "https://other.example");
++  EXPECT_EQ(updated.metadata->canonical_site_origin, "https://other.example");
+ 
+   base::test::TestFuture<PrometheusVaultStatus> deleted;
+   service_.DeleteMetadata(created.metadata->id, deleted.GetCallback());
+@@ -291,14 +290,15 @@ TEST_F(PrometheusVaultServiceTest, MetadataCrudBoundsAndSanitizedShape) {
+             PrometheusVaultStatus::kNotFound);
+ 
+   for (size_t i = 0; i < kMaxPrometheusVaultEntries; ++i) {
+-    EXPECT_TRUE(service_.CreateMetadata(
+-                           "entry-" + std::to_string(i),
+-                           PrometheusVaultKind::kPayment,
+-                           "https://payments.example")
++    EXPECT_TRUE(service_
++                    .CreateMetadata("entry-" + std::to_string(i),
++                                    PrometheusVaultKind::kPayment,
++                                    "https://payments.example")
+                     .ok());
+   }
+-  EXPECT_EQ(service_.CreateMetadata("overflow", PrometheusVaultKind::kPayment,
+-                                    "https://payments.example")
++  EXPECT_EQ(service_
++                .CreateMetadata("overflow", PrometheusVaultKind::kPayment,
++                                "https://payments.example")
+                 .status,
+             PrometheusVaultStatus::kLimitReached);
+   EXPECT_EQ(kMaxPrometheusVaultEntries,
+@@ -306,6 +306,172 @@ TEST_F(PrometheusVaultServiceTest, MetadataCrudBoundsAndSanitizedShape) {
+   EXPECT_TRUE(service_.ListMetadata(PrometheusVaultKind::kCredential).empty());
+ }
+ 
++TEST(PrometheusVaultServicePersistenceTest,
++     RestartPreservesMetadataUseDeletionAndMonotonicIds) {
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusRuntimeProfilePrefs(prefs.registry());
++  std::unique_ptr<os_crypt_async::OSCryptAsync> os_crypt =
++      os_crypt_async::GetTestOSCryptAsyncForTesting(true);
++  int profile_storage = 0;
++  int browser_storage = 0;
++  Profile* profile = reinterpret_cast<Profile*>(&profile_storage);
++  BrowserWindowInterface* browser =
++      reinterpret_cast<BrowserWindowInterface*>(&browser_storage);
++  std::string entry_id;
++
++  {
++    PrometheusOsCryptSecretStore secret_store(&prefs, false, os_crypt.get());
++    PrometheusVaultService vault(profile, &secret_store, nullptr, &prefs);
++    PrometheusVaultMetadataResult created = vault.CreateMetadata(
++        "Restart account", PrometheusVaultKind::kCredential,
++        "https://restart.example/login");
++    ASSERT_TRUE(created.ok());
++    entry_id = created.metadata->id;
++    base::test::TestFuture<PrometheusVaultStatus> saved;
++    vault.OpenNativeSecretEntryWithDelegate(
++        entry_id, false,
++        base::BindRepeating(
++            [](const PrometheusVaultMetadata&, bool,
++               PrometheusVaultService::NativeEntryReplyCallback reply) {
++              NativeVaultEntryReply result;
++              result.status = PrometheusVaultStatus::kSuccess;
++              result.fields.emplace_back(
++                  "password", ScopedSensitiveVaultValue(kPlaintextSentinel));
++              reply.Run(std::move(result));
++            }),
++        saved.GetCallback());
++    EXPECT_EQ(saved.Get(), PrometheusVaultStatus::kSuccess);
++  }
++
++  {
++    PrometheusOsCryptSecretStore secret_store(&prefs, false, os_crypt.get());
++    PrometheusVaultService vault(profile, &secret_store, nullptr, &prefs);
++    ASSERT_EQ(vault.ListMetadata().size(), 1u);
++    EXPECT_EQ(vault.ListMetadata().front().id, entry_id);
++    EXPECT_TRUE(vault.ListMetadata().front().secret_configured);
++
++    ConfirmedVaultTargetBinding live_target;
++    live_target.profile = profile;
++    live_target.browser = browser;
++    live_target.window_session_id = 51;
++    live_target.tab_handle = tabs::TabHandle(9);
++    live_target.owner_session_id = "restart-owner";
++    live_target.canonical_origin = "https://restart.example";
++    live_target.frame_token = "303:404";
++    live_target.document_token = "restart-document";
++    live_target.target_refs = {"restart-document:1"};
++    live_target.focused = true;
++    vault.SetTargetInspectorForTesting(base::BindRepeating(
++        [](ConfirmedVaultTargetBinding* live_target, BrowserWindowInterface*,
++           const AgentTarget&, const AgentFrameTarget&,
++           const std::vector<std::string>&) {
++          return std::optional<ConfirmedVaultTargetBinding>(*live_target);
++        },
++        &live_target));
++    vault.SetNativeConfirmationDelegateForTesting(base::BindRepeating(
++        [](const PrometheusVaultConfirmationBinding&,
++           PrometheusVaultService::NativeConfirmationReply reply) {
++          reply.Run(true);
++        }));
++    vault.SetInsertionDelegateForTesting(base::BindRepeating(
++        [](BrowserWindowInterface*, ConfirmedVaultInsertionRequest request,
++           PrometheusAgentService::ConfirmedVaultCallback callback) {
++          ConfirmedVaultInsertionResult result;
++          result.status = ConfirmedVaultInsertionStatus::kSuccess;
++          result.fields_completed = request.fields.size();
++          std::move(callback).Run(result);
++        }));
++
++    PrometheusVaultUseRequest request;
++    request.caller_id = "restart-caller";
++    request.session_id = live_target.owner_session_id;
++    request.entry_id = entry_id;
++    request.exact_browser = browser;
++    request.target.window_session_id = live_target.window_session_id;
++    request.target.tab_handle = live_target.tab_handle;
++    request.frame.document_token = live_target.document_token;
++    request.frame.render_process_id = 303;
++    request.frame.render_frame_routing_id = 404;
++    request.target_refs = live_target.target_refs;
++    request.request_hash = "restart-request";
++    request.origin = PrometheusVaultUseOrigin::kBrowserUi;
++    base::test::TestFuture<PrometheusVaultUseResult> used;
++    vault.UseEntry(std::move(request), used.GetCallback());
++    EXPECT_EQ(used.Get().status, PrometheusVaultStatus::kSuccess);
++
++    base::test::TestFuture<PrometheusVaultStatus> deleted;
++    vault.DeleteMetadata(entry_id, deleted.GetCallback());
++    EXPECT_EQ(deleted.Get(), PrometheusVaultStatus::kSuccess);
++    PrometheusVaultMetadataResult replacement = vault.CreateMetadata(
++        "Replacement account", PrometheusVaultKind::kCredential,
++        "https://restart.example");
++    ASSERT_TRUE(replacement.ok());
++    EXPECT_NE(replacement.metadata->id, entry_id);
++    EXPECT_EQ(replacement.metadata->id, "vault-2");
++  }
++
++  PrometheusOsCryptSecretStore secret_store(&prefs, false, os_crypt.get());
++  PrometheusVaultService restarted(profile, &secret_store, nullptr, &prefs);
++  EXPECT_EQ(restarted.GetMetadata(entry_id).status,
++            PrometheusVaultStatus::kNotFound);
++  ASSERT_EQ(restarted.ListMetadata().size(), 1u);
++  EXPECT_EQ(restarted.ListMetadata().front().id, "vault-2");
++  EXPECT_TRUE(secret_store.GetSanitizedMetadataSnapshot().empty());
++}
++
++TEST(PrometheusVaultServicePersistenceTest,
++     CorruptMetadataDropsEntryAndDeletesOrphanedSecret) {
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusRuntimeProfilePrefs(prefs.registry());
++  std::unique_ptr<os_crypt_async::OSCryptAsync> os_crypt =
++      os_crypt_async::GetTestOSCryptAsyncForTesting(true);
++  int profile_storage = 0;
++  Profile* profile = reinterpret_cast<Profile*>(&profile_storage);
++
++  {
++    PrometheusOsCryptSecretStore secret_store(&prefs, false, os_crypt.get());
++    PrometheusVaultService vault(profile, &secret_store, nullptr, &prefs);
++    PrometheusVaultMetadataResult created = vault.CreateMetadata(
++        "Corrupt account", PrometheusVaultKind::kCredential,
++        "https://corrupt.example");
++    ASSERT_TRUE(created.ok());
++    base::test::TestFuture<PrometheusVaultStatus> saved;
++    vault.OpenNativeSecretEntryWithDelegate(
++        created.metadata->id, false,
++        base::BindRepeating(
++            [](const PrometheusVaultMetadata&, bool,
++               PrometheusVaultService::NativeEntryReplyCallback reply) {
++              NativeVaultEntryReply result;
++              result.status = PrometheusVaultStatus::kSuccess;
++              result.fields.emplace_back(
++                  "password", ScopedSensitiveVaultValue(kPlaintextSentinel));
++              reply.Run(std::move(result));
++            }),
++        saved.GetCallback());
++    EXPECT_EQ(saved.Get(), PrometheusVaultStatus::kSuccess);
++  }
++
++  base::DictValue root = prefs.GetDict(kPrometheusRuntimeProfileData).Clone();
++  base::DictValue* store = root.FindDict("data")->FindDict("vault_store");
++  ASSERT_TRUE(store);
++  store->Set("next_metadata_id", "corrupt");
++  base::ListValue* entries = store->FindList("entries");
++  ASSERT_TRUE(entries);
++  ASSERT_EQ(entries->size(), 1u);
++  entries->front().GetDict().Set("label", 7);
++  prefs.SetDict(kPrometheusRuntimeProfileData, std::move(root));
++
++  PrometheusOsCryptSecretStore secret_store(&prefs, false, os_crypt.get());
++  PrometheusVaultService restarted(profile, &secret_store, nullptr, &prefs);
++  EXPECT_TRUE(restarted.ListMetadata().empty());
++  EXPECT_TRUE(secret_store.GetSanitizedMetadataSnapshot().empty());
++  PrometheusVaultMetadataResult next = restarted.CreateMetadata(
++      "After corruption", PrometheusVaultKind::kCredential,
++      "https://corrupt.example");
++  ASSERT_TRUE(next.ok());
++  EXPECT_EQ(next.metadata->id, "vault-2");
++}
++
+ TEST_F(PrometheusVaultServiceTest,
+        NativeEntrySaveCancelFailureMissingDelegateAndKindSeparation) {
+   PrometheusVaultMetadataResult created = service_.CreateMetadata(
+@@ -316,8 +482,7 @@ TEST_F(PrometheusVaultServiceTest,
+   base::test::TestFuture<PrometheusVaultStatus> missing;
+   service_.OpenNativeSecretEntry(created.metadata->id, false,
+                                  missing.GetCallback());
+-  EXPECT_EQ(missing.Get(),
+-            PrometheusVaultStatus::kNativeEntryUnavailable);
++  EXPECT_EQ(missing.Get(), PrometheusVaultStatus::kNativeEntryUnavailable);
+   EXPECT_EQ(secret_store_.save_count, 0);
+ 
+   service_.SetNativeEntryDelegateForTesting(base::BindRepeating(
+@@ -358,8 +523,8 @@ TEST_F(PrometheusVaultServiceTest,
+             PrometheusSecretKind::kVaultCredential);
+   EXPECT_NE(secret_store_.last_binding->secret_kind,
+             PrometheusSecretKind::kProviderApiKey);
+-  EXPECT_TRUE(service_.GetMetadata(created.metadata->id)
+-                  .metadata->secret_configured);
++  EXPECT_TRUE(
++      service_.GetMetadata(created.metadata->id).metadata->secret_configured);
+ }
+ 
+ TEST_F(PrometheusVaultServiceTest,
+@@ -380,8 +545,9 @@ TEST_F(PrometheusVaultServiceTest,
+       &captured, &reply));
+ 
+   base::test::TestFuture<PrometheusVaultUseResult> result;
+-  service_.UseEntry(UseRequest(metadata.id, PrometheusVaultUseOrigin::kBrowserUi),
+-                    result.GetCallback());
++  service_.UseEntry(
++      UseRequest(metadata.id, PrometheusVaultUseOrigin::kBrowserUi),
++      result.GetCallback());
+   ASSERT_TRUE(captured.has_value());
+   ASSERT_TRUE(reply.has_value());
+   EXPECT_EQ(captured->caller_id, "caller-A");
+@@ -398,8 +564,7 @@ TEST_F(PrometheusVaultServiceTest,
+   EXPECT_EQ(captured->entry_id, metadata.id);
+   EXPECT_EQ(captured->request_hash, kRequestHash);
+   EXPECT_GT(captured->generation, 0u);
+-  EXPECT_EQ(captured->expires_at,
+-            now_ + kPrometheusVaultApprovalLifetime);
++  EXPECT_EQ(captured->expires_at, now_ + kPrometheusVaultApprovalLifetime);
+   EXPECT_FALSE(captured->consumed);
+   EXPECT_EQ(secret_store_.read_count, 0);
+   EXPECT_EQ(insertion_count_, 0);
+@@ -469,8 +634,7 @@ TEST_F(PrometheusVaultServiceTest,
+         break;
+     }
+     reply->Run(true);
+-    EXPECT_NE(result.Get().status, PrometheusVaultStatus::kSuccess)
+-        << mutation;
++    EXPECT_NE(result.Get().status, PrometheusVaultStatus::kSuccess) << mutation;
+     EXPECT_EQ(secret_store_.read_count, reads_before) << mutation;
+     EXPECT_EQ(insertion_count_, insertions_before) << mutation;
+   }
+@@ -492,8 +656,7 @@ TEST_F(PrometheusVaultServiceTest,
+   changed.request_hash = "different-request";
+   base::test::TestFuture<PrometheusVaultUseResult> mismatch;
+   service_.UseEntry(std::move(changed), mismatch.GetCallback());
+-  EXPECT_EQ(mismatch.Get().status,
+-            PrometheusVaultStatus::kApprovalMismatch);
++  EXPECT_EQ(mismatch.Get().status, PrometheusVaultStatus::kApprovalMismatch);
+   EXPECT_EQ(secret_store_.read_count, 0);
+ 
+   base::test::TestFuture<PrometheusVaultUseResult> accepted;
+@@ -553,10 +716,10 @@ TEST_F(PrometheusVaultServiceTest,
+        SecretSentinelsAreAbsentFromMetadataStatusAndAuthorityAudit) {
+   PrometheusVaultMetadata metadata = CreateConfiguredCredential();
+   ASSERT_FALSE(metadata.id.empty());
+-  EXPECT_EQ(BeginAndReply(
+-                UseRequest(metadata.id, PrometheusVaultUseOrigin::kBrowserUi),
+-                true),
+-            PrometheusVaultStatus::kSuccess);
++  EXPECT_EQ(
++      BeginAndReply(
++          UseRequest(metadata.id, PrometheusVaultUseOrigin::kBrowserUi), true),
++      PrometheusVaultStatus::kSuccess);
+ 
+   std::string json = base::WriteJson(service_.GetSanitizedMetadataSnapshot())
+                          .value_or(std::string());
+@@ -566,7 +729,7 @@ TEST_F(PrometheusVaultServiceTest,
+   EXPECT_EQ(json.find("password"), std::string::npos);
+   EXPECT_EQ(json.find("api_key"), std::string::npos);
+   EXPECT_EQ(std::string(PrometheusVaultStatusToString(
+-                PrometheusVaultStatus::kInsertionFailed))
++                            PrometheusVaultStatus::kInsertionFailed))
+                 .find(kPlaintextSentinel),
+             std::string::npos);
+ }
+-- 
+2.50.1 (Apple Git-155)
+

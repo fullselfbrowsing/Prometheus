@@ -1,175 +1,486 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: milestone_complete
-stopped_at: Phase 10 Plan 04 complete — build verified (177/177 targets), all static checks pass, visual checkpoint auto-approved
-last_updated: "2026-06-17T09:19:48.361Z"
-last_activity: 2026-06-17
+milestone: v2.0
+milestone_name: Chromium Engine Migration
+current_phase: 22
+current_phase_name: chrome-extension-ecosystem-and-policy
+current_plan: 5
+status: executing
+stopped_at: Completed 22-04-PLAN.md
+last_updated: "2026-07-30T01:10:17.590Z"
+last_activity: 2026-07-29
 progress:
-  total_phases: 10
+  total_phases: 14
   completed_phases: 11
-  total_plans: 51
-  completed_plans: 51
-  percent: 110
+  total_plans: 97
+  completed_plans: 96
+  percent: 79
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-06-16)
+See: `.planning/PROJECT.md` (updated 2026-07-13)
 
-**Core value:** Agents get fast, precise, auditable control of the whole browser through DOM/native structure, not screenshots, brittle extension injection, or human-only UI.
-**Current focus:** Phase 10 — New Tab Start Page
+**Core value:** Agents get fast, precise, auditable whole-browser control
+through DOM/native structure rather than screenshots or extension injection.
+
+**Current focus:** Phase 22 — chrome-extension-ecosystem-and-policy
+22-01 through 22-04 are complete; Plan 22-05 is next to run the built
+application and closeout gates.
+
+**Product boundary:** Claude Code, Cursor, Codex, and similar tools remain
+external MCP clients. Prometheus has no bundled agent CLI/runtime, embedded
+terminal, alternate engine, prompt provisioner, or `CLAUDE.md` provisioning.
 
 ## Current Position
 
-Phase: 10
-Plan: Not started
-Status: Milestone complete
-Last activity: 2026-06-17
+Phase: 22 (chrome-extension-ecosystem-and-policy) — EXECUTING
+Plan: 5 of 5
+**Current Phase:** 22
+**Current Phase Name:** chrome-extension-ecosystem-and-policy
+**Total Phases:** 14
+**Completed Phases:** 11
+**Current Plan:** 5
+**Total Plans in Phase:** 5
+**Status:** Executing Phase 22 (Plan 22-05 partial — see Blockers)
+**Progress:** [██████████] 99%
+**Last Activity:** 2026-07-29
+**Last Activity Description:** Plan 22-05 Task 1 complete (retained built-app
+extension smoke RED contract). Task 2 partial: landed the developer-private
+manager-caller integration and verified native install/inspect/reload
+end to end; disable onward, `smoke-phase-22-extensions.sh`, and Tasks 3-4
+remain. Plan 22-05 is NOT complete; do not advance past it.
 
-Progress: [██████████] 100%
+Milestone work is 96 of 97 current plans complete (99%); 22-05 is the
+remaining plan and is in progress.
+
+## Latest Evidence
+
+- Phase 21 review remediation and Plan 26: the no-argument closeout gate
+  selects and passes 190 Phase 21 native, 14 Blink renderer, 52 Phase 21
+  browser, 208 Phase 20 native, 84
+  Phase 17–19 native, 21 Phase 20 content, 3 Phase 19 renderer, 37 Phase 20
+  browser, 83 Phase 17–19 browser, and 81 Node tests with frozen exact counts.
+  The 54/12/22/0/2 catalog, built-app smoke, static security boundaries,
+  environment/GPL/artifact/resource/preservation checks, five byte-identical
+  artifact hashes, clean nested state, and 74/74 ordered source-only stable
+  patch identities with mutation rejection pass. Retained blocker regressions
+  prove queued in-flight dirty recapture, snapshot-generation rejection after
+  destructive row/tab reorder, and real browser recapture across document-root
+  replacement. `human_uat: not_run`; Phase 22 remains `not_ready`.
+
+- Phase 21 Plan 25: the intended 3-case dialog RED, 3/3 dialog GREEN,
+  1/1 action completion regression, signed built-app two-viewer/MCP smoke,
+  8/8 production-binding/confirmation browser gate, and 21/21 final Node gate
+  pass with actual native widgets, exact Browser/kind/order, shared capture,
+  independent cursors, real actions, conflict/resync, sanitized readiness,
+  exact-once pending cancellation, ordered unbind/shutdown, recursive
+  credential privacy, stable patch identity/replay, and byte-identical reviewed
+  build artifacts.
+
+- Phase 21 Plan 24: the intended 4-test composition RED, final 25-test
+  bootstrap/composition regression, and post-hardening 4-test composition gate
+  pass with sole post-start binding, ordinary/official/invalid/OTR/
+  persistent/missing-service 404, exact Profile/Browser/tab/origin/document/
+  owner re-resolution, normal pairing creation, exact redemption observation,
+  early unbind/zeroization, stable patch identity/replay, and byte-identical
+  reviewed build artifacts.
+
+- Phase 21 Plan 23: the intended 11-test RED gate, 5-test focused GREEN gate,
+  and final 39-test gateway/bootstrap regression pass with exact launch/file/
+  schema/origin gating, absent-dispatcher 404, complete perimeter ordering,
+  two sequential exact-bound slots, recursive output privacy, exact-once
+  zeroization, stable patch identity/replay, and byte-identical reviewed build
+  artifacts.
+
+- Phase 21 Plan 22: the intended 4-test RED gate, 3-test intermediate GREEN
+  gate, final 4-test supervision browser gate, and 4-test packaged-asset gate
+  pass with private code lifetime, exact copy cadence, ordinal-scoped actions
+  plus generation-bound destructive confirms, safe focus, closed DTO privacy,
+  OTR closure, 320/480/720/1024 widths, 200-percent zoom, stable patch
+  identity/replay, and byte-identical reviewed build artifacts.
+
+- Phase 21 Plan 21: the intended 3-test RED gate, 3-test lifecycle/dialog
+  GREEN gate, final 3-test lifecycle browser gate, and 11-test service gate
+  pass with exact lifecycle actions, consumer-local retry, terminal
+  presentation erasure, physical digest removal, stable patch identity/replay,
+  and byte-identical reviewed artifacts.
+
+- Phase 21 Plan 20: the intended 2-test RED gate, 2-test snapshot/target GREEN
+  gate, 2-test create GREEN gate, 6-test service pairing gate, and final
+  4-test runtime suite pass with exact-window isolation, stale ordinal
+  rejection, one-shot code delivery, explicit old-digest-first replacement,
+  stable patch identity/replay, and byte-identical reviewed artifacts.
+
+- Phase 21 Plan 19: the intended 3-test RED gate, 2-test state/action GREEN
+  gate, and final 3-test strip suite pass with persistent four-mode state,
+  exact closed copy, zero-argument actions, safe End confirmation, keyboard
+  focus, hostile-data privacy, 320–1024 widths, 200-percent zoom, stable patch
+  identity, fresh framework resources, and byte-identical reviewed artifacts.
+
+- Phase 21 Plan 18: the intended 2-test RED gate, 4-test exact state/action
+  GREEN gate, isolated bulk-end/teardown regression, and final 5-test runtime
+  suite pass with strict zero-authority messages, fresh exact-tab resolution,
+  bounded browser-owned labels, all-viewer end, reload-safe callbacks, stable
+  patch identity, and byte-identical reviewed build artifacts.
+
+- Phase 21 Plan 17: all 8 badge browser tests and both actual compact-layout
+  browser tests pass with exact icon/name priority, complete accessibility
+  under visual compression, real-tab lifecycle/isolation, invariant native
+  geometry, stable patch identity, and byte-identical reviewed build artifacts.
+
+- Phase 21 Plan 16: the intended 8-test RED gate, matching 8-test GREEN gate,
+  final 15-test tab-state regression, and 3-test real service-path regression
+  pass with a structurally authority-free DTO, exact observed-lease
+  publication before downstream observers, coherent lifecycle clears, stable
+  patch identity, and byte-identical reviewed build artifacts.
+
+- Phase 21 Plan 15: the intended 3-test browser RED gate, 3-test enable-service
+  GREEN gate, 2-test enable-browser gate, final 4-test native-dialog browser
+  gate, 5-test controller/vault gate, and 5-test profile-action regression pass
+  with safe-default native consent, fresh exact authority revalidation, sole
+  typed Agent dispatch, vault non-bypass, stable patch identity, and
+  byte-identical reviewed build artifacts.
+
+- Phase 21 Plan 14: the intended 29-test RED gate, 3-test ordinary-action
+  GREEN gate, final 34-test controller/profile gate, and 7-test Agent
+  regression pass with exact Browser/tab/frame dispatch, immutable owner and
+  acknowledged-stamp admission, one confirmation slot, lifecycle-first
+  cancellation, metadata-only audit, stable patch identity, and byte-identical
+  reviewed build artifacts.
+
+- Phase 21 Plan 13: the 7-test exact Node GREEN gate and complete 80-test MCP
+  regression pass with a 54/12/22/0/2 catalog, five deeply empty native
+  supervision schemas, authority-free forwarding/results, live supervision
+  health, retained extension deferral, and unchanged nested Chromium tree.
+
+- Phase 21 Plan 12: the exact 2-test mixed live-browser gate and final 14-test
+  service/codec regression pass with five real shared-hub compatibility
+  semantics, independent dashboard/Agent progress, production dual binding and
+  unbind, stable patch identity, and byte-identical reviewed build artifacts.
+
+- Phase 21 Plan 11: the intended one-test RED and three-test exact Agent
+  supervision GREEN gates pass with all five routes pinned to the authenticated
+  Browser/stable tab, one Agent-only abstract seam, sole top-level concrete
+  composition, ordered dual unbind, stable patch identity, and byte-identical
+  reviewed build artifacts.
+
+- Phase 21 Plan 10: the 8-test exact supervision codec gate and 48-test Agent
+  route/transport/runtime regression pass with exactly five empty-schema
+  native identities, bounded deterministic safe-APC result variants,
+  recursive privacy rejection, stable patch identity, and byte-identical
+  reviewed build artifacts.
+
+- Phase 21 Plan 9: the exact 8-test supervision gateway unit and 5-test live
+  browser gates plus broader 24-test unit and 14-test browser regressions pass
+  with one authenticated loopback path, dependency-neutral dispatch,
+  cancel-on-terminal lifecycle, sanitized readiness, stable patch identity,
+  and byte-identical reviewed build artifacts.
+
+- Phase 21 Plan 8: the exact 5-test long-poll, 45-test combined native, and
+  2-test real-browser gates pass with one exact-target hub, independent opaque
+  consumers/waits, coherent lifecycle teardown, privacy/ownership audits,
+  stable patch identity, and byte-identical reviewed build artifacts.
+
+- Phase 21 Plan 7: the exact 6-test real-browser, 27-test combined native, and
+  12-test Blink gates pass with one renderer binding/APC capture per dirty
+  epoch, independent bounded consumer state, secret-redaction and ownership
+  audits, stable patch identity, and byte-identical reviewed build artifacts.
+
+- Phase 21 Plan 6: the exact 12-test Blink lifecycle gate and retained 68-test
+  supervision regression pass with generated-Mojo and renderer-initializer
+  compile proof, source privacy guards, stable patch identity, and byte-identical
+  Ninja metadata.
+
+- Phase 21 Plan 5: the exact 8-test factory/profile gate and combined 68-test
+  supervision regression pass with sole-Agent ownership guards, exact-profile
+  dependency injection, stable patch identity, and byte-identical Ninja metadata.
+
+- Phase 21 Plan 4: all 18 supervision lifecycle and 5 Agent observation tests
+  pass with exact target/owner authority, bounded authority-free audit, stable
+  patch identity, and byte-identical Ninja metadata.
+
+- Phase 21 Plan 3: all 16 projection/diff fixtures and the combined 42-test
+  supervision regression pass with strict APC privacy, canonical structural
+  operations, independent viewer cursors, and atomic resynchronization.
+
+- Phase 21 Plan 2: all 13 transport codec tests and the combined 26-test
+  codec/types regression pass with exact operation/action schemas, recursive
+  authority rejection, sanitized compatibility output, and byte-identical
+  Ninja metadata.
+
+- Phase 21 Plan 1: the direct verifier selects 13 supervision contract tests;
+  all pass with byte-identical Ninja metadata after exhaustive transition,
+  bounds, checked-identity, privacy-sentinel, and serialization coverage.
+
+- Phase 20 final closeout: the exact verifier passes 208/208 Phase 20 native,
+  24/24 content/renderer, 84/84 native regression, 37/37 Phase 20 browser,
+  83/83 browser regression, and 75/75 Node tests plus built-app MCP smoke,
+  security/preservation, and 54/54 stable patch-identity gates.
+
+- Phase 20 code review: three automated review/fix iterations resolved two
+  critical and ten warning findings, including restart-safe vault metadata,
+  production task execution, guarded provider fallback, bounded bookkeeping,
+  agent-cap admission, and close/expiry/shutdown runtime cleanup.
+
+- Phase 20 UI audit: code/evidence score 12/24. Functional/security acceptance
+  remains passed; missing foreground confirmation affordances, transactional
+  vault-save behavior, control-panel information architecture, token cleanup,
+  and subjective desktop polish are explicit non-blocking carry-forward work.
+
+- Phase 20 Plan 10: the complete Node suite passes 74/74, focused runtime
+  promotion gates pass 37/37, and the rebuilt app passes the deterministic
+  two-client external MCP smoke. The aggregate `prometheus_unittests` target
+  remains unable to link because of unrelated unresolved Chrome symbols.
+
+- Phase 20 Plan 13: the complete control-panel and vault browser gate passes
+  23/23 serially, and the complete Runtime/Memory/Vault/Secret native gate
+  passes 125/125 with responsive, keyboard, policy, and disclosure coverage.
+
+- Phase 20 Plan 12: exact list guard selects 11 control-panel cases; the full
+  serial suite passes 11/11, including 320/480/720/1024 responsive, keyboard,
+  OTR, malformed-message, and recursive content/secret privacy coverage.
+
+- Phase 20 Plan 11: exact Runtime and AskFsb guards pass 2/2; the complete
+  WebUI foundation list guard passes 10/10 serially, including real 300px and
+  320px responsive, exact-window lifecycle, restart, and privacy coverage.
+
+- Phase 20 Plan 9: exact guards select 8 runtime-codec, 13 gateway, and 16
+  existing Agent-transport cases; the combined regression is 37/37 green and
+  the real native health endpoint returns exactly ten sanitized components.
+
+- Phase 20 Plan 8: exact list guards select 7 Vault, 5 confirmed-Agent, 11
+  SecretStore, and 5 browser cases; focused units are 23/23 green and serial
+  exact-window browser confirmation is 5/5 green.
+
+- Phase 20 Plan 7: exact combined Runtime, Store, Codec, Transport, Registry,
+  Agent-session, and Bootstrap regression is 121/121 green; the executor runs
+  exactly 20 closed-schema adversarial evaluation cases.
+
+- Phase 20 Plan 6: all 5 SafeTitle and 21 policy/session focused tests pass;
+  the complete native `prometheus_unittests` regression is 226/226 green.
+
+- Phase 20 Plan 5: all 17 codec, 12 transport, and 11 registry tests pass;
+  the complete native `prometheus_unittests` regression is 214/214 green.
+
+- Phase 19 verified all seven MCP requirements at nested Chromium HEAD
+  `460caac2f9e7deecd9fa6294c41d13e5a6dd6115`.
+
+- Fresh gates: 64 Node, 34 focused native, 7 renderer, 32 Phase 19 browser,
+  and 53 Phase 17/18 regression tests plus the built-app stdio smoke.
+
+- Phase 20 Plan 4: 11 encrypted-secret and 10 provider-registry tests pass;
+  the complete native `prometheus_unittests` regression is 184/184 green.
+
+- Phase 20 Plan 3: all 12 memory-store and 13 foundation tests pass; memory
+  ownership is opaque and guides are bounded to exact canonical HTTP(S) origins.
+
+- Phase 20 Plan 2: all 12 store and 13 foundation tests pass; task state,
+  structured evidence, safe results, usage, races, and restart repair are bounded.
+
+- Human UAT was not run; remaining visual review stays non-blocking in Phase 24.
+
+## Decisions
+
+| Phase | Decision |
+|-------|----------|
+| Milestone | Keep all agent CLIs external through stdio MCP. |
+| 17 | Browser-issued profile sessions own stable tab identities. |
+| 18 | Browser-owned permission, frame, wait, verification, and audit checks remain authoritative. |
+| 18 | Page content stays in bounded results and out of audit metadata. |
+| 19 | Reimplement compatibility clean-room from observable contracts and official MCP behavior. |
+| 19 | Retired sessions and gateway bindings are erased; opaque resume is valid only inside the ten-second grace. |
+| 20 | Keep MCP as provenance only; execution remains Auto/Provider/Local over native Hosted/Routed/Local routes. |
+| 20 | Persist tasks through generation-fenced exactly-once mutations with LRU task and FIFO record bounds. |
+| 20 | Persist only domain-separated caller hashes for memory ownership; never expose raw caller or gateway authority IDs. |
+| 20 | Bind guides to canonical HTTP(S) origins and revalidate the current committed document before every apply. |
+| 20 | Bind encrypted envelopes to record ID, secret kind, owner kind, and the complete canonical endpoint or site URL. |
+| 20 | Keep known providers on fixed HTTPS endpoints and permit HTTP only for explicit local kinds accepted by `net::IsLocalhost`. |
+| 20 | Keep exactly three native provider wire families behind one bounded provider-neutral DTO; compatible provider kinds select their family only through registry metadata. |
+| 20 | Check discovery capability before any secret read, then re-resolve provider metadata, registry URL, and exact secret binding immediately before every authenticated send. |
+| 20 | Provider requests use transient network isolation with omitted credentials and cookies, terminal redirects, bounded buffering, loader-owned cancellation, and no automatic transport retry. |
+| 20 | Derive safe_title before task creation so the runtime store never accepts or persists the raw prompt. |
+| 20 | Evaluate admission, dispatch, ownership, vault, and telemetry through fresh closed effective-policy decisions. |
+| 20 | Lowered task or Agent caps reject only new admission and never evict active work or ownership. |
+| 20 | Keep local runtime authority in a private move-only exact-Browser/tab principal and never serialize prompt or authority identifiers. |
+| 20 | Retry only typed pre-mutation provider failures in registry order while preserving the exact bounded request and requiring unchanged current provider configuration. |
+| 20 | Generation-fence every asynchronous continuation, revalidate fresh policy and authority, and retain known usage while leaving unavailable cost unknown. |
+| 20 | Keep confirmed vault insertion as a move-only C++-only Agent authority method with no Agent/runtime route, transport schema, catalog entry, or model tool. |
+| 20 | Bind vault confirmation to the exact Browser/profile/window/tab/owner/origin/frame/document/refs/focus and revalidate before decrypt, before insertion, and before every typed field. |
+| 20 | Give MCP only a short-lived one-use identical-retry approval; no approval token or secret crosses the response. |
+| 20 | Keep the 27 native runtime commands in a separate closed codec and derive profile, Browser, tab, and caller only from a browser-issued session binding. |
+| 20 | Deny external provider mutation at both the gateway and runtime service while preserving bounded read-only config, discovery, and diagnostics. |
+| 20 | Let RuntimeProfileService own the shared vault/secret state and publish exact ten-key health from live sanitized provider/vault owners. |
+| 20 | Break the WebUI/runtime target cycle with an opaque side-panel runtime factory and keep concrete exact-window principal acquisition in browser main extra parts. |
+| 20 | Bind control-panel mutation authority to one exact regular Profile/WebContents and keep external MCP provider mutation denied. |
+| 20 | Publish native control-runtime availability as module-safe load-time data so OTR stays handler-free without renderer initialization. |
+| 20 | Keep secret bytes entirely in browser-owned Views and native services; WebUI sends only safe IDs, intent, and bounded non-secret settings. |
+| 20 | Require exact fresh document, origin, Browser, ownership, and destination revalidation for guide apply and vault use. |
+| 20 | Render mutable policy only from the persisted and clamped effective native snapshot. |
+| 20 | Keep ownership, native-only vault transport, per-use confirmation, and unavailable supervision immutable and truthful. |
+| 20 | Keep `set_provider_config` manifest-native for compatibility but return `LOCAL_UI_REQUIRED` before reading raw arguments. |
+| 20 | Use params-only bodies for all 27 runtime-codec routes; page-action routes retain target/params/visual. |
+| 20 | Seed built smoke only through the closed native test bootstrap with a canonical disposable path, mode-0600 metadata file, and loopback fixture. |
+| 20 | Bind both independent smoke clients while the fresh regular browser and active tab are known available so task authority is deterministic. |
+| 20 | Revalidate generation, live authority, current policy and limits, and exact provider configuration immediately before every automatic fallback send. |
+| 20 | Treat profile-service close, expiry, and shutdown as the authoritative session-loss boundary that synchronously cancels matching runtime work exactly once. |
+| 20 | Require stable patch-body identity for every exported Chromium commit and prove the gate rejects a parent-applicable mutation. |
+| 21 | Keep session, document epoch, controller lease, and generation authority in browser-only memory types with no prefs or `base::Value` serializer; sanitized projections structurally cannot carry authority. |
+| 21 | Carry stable tab identity as a positive `int32_t` in the standalone contract and resolve it only inside the owning browser service. |
+| 21 | Parse each of the seven supervision operations into a distinct typed variant and reject unknown, prototype, identity, authority, route, script, vault, secret, and stale-shape fields before dispatch. |
+| 21 | Project dashboard session, document epoch, and sequence only through the authenticated dashboard serializer; rebuild compatibility output from sanitized metadata with no authority path. |
+| 21 | Normalize the one-time pairing code only for redemption, derive the client label through the native safe-label projector, and keep malformed-input errors fixed and non-echoing. |
+
+- [Phase 21]: Project form values only when APC explicitly marks them safe and the control is independently neither password, payment, nor OTP; absent and future redaction decisions fail closed. — Supervision must structurally omit secrets before serialization, and a plausible truncated or ambiguously redacted baseline must never appear authoritative.
+- [Phase 21]: Keep stream authority outside diff JSON and require a fresh acknowledged baseline after any malformed tree, reparenting ambiguity, authority mismatch, sequence discontinuity, wrap, or resource-cap overflow. — Canonical bounded structural operations stay transport-independent while per-viewer cursor failure remains atomic and cannot create partial authoritative state.
+- [Phase 21]: Capture the current Agent owner exactly once at redemption, including empty, and terminalize on every later owner transition instead of adopting a replacement owner. — Immutable redemption authority prevents replacement-owner takeover and keeps control fail-closed.
+- [Phase 21]: Keep PrometheusAgentService as the sole creator, registrar, owner, detach observer, and destroyer of tab authority data; supervision receives only a coalesced move-only observation lease. — One lifetime owner avoids duplicate registration, observer-list violations, and use-after-free across detach and shutdown.
+- [Phase 21]: Retain only salted pairing-code digests and expose only bounded newest-first metadata through supervision snapshots and audit. — Raw credentials and browser authority remain memory-only and structurally absent from routine surfaces.
+- [Phase 21]: Compose supervision only through the exact regular profile Agent keyed service and inject a weak observation callback. — Explicit factory dependency and fail-closed null, OTR, missing, and mismatched checks preserve one tab-data owner across teardown.
+- [Phase 21]: Emit only kDirty or kOverflow from a document-scoped Blink Supplement that observes the Document subtree across root creation and replacement, while browser code retains capture, identity, sequence, and fan-out authority. — Content-free invalidation wakes APC recapture without creating a renderer serializer or second authority owner, even when the document element changes.
+- [Phase 21]: Reduce MutationObserver delivery only through a fixed record-count ceiling and one 50 ms timer, with every Mojo and document teardown path converging on Disable. — Bounded coalescing and idempotent cleanup prevent content inspection, callback amplification, and late cross-document signals.
+- [Phase 21]: Make one WebContents-scoped capture hub the sole owner of renderer Mojo endpoints, APC calls, safe trees, document epochs, and retained batches; downstream dashboard and Agent-compatible consumers receive only opaque IDs and stamped safe values. — One browser authority prevents duplicate observers, capture amplification, and renderer handles from leaking into delivery surfaces.
+- [Phase 21]: Retain one bounded baseline/diff history per document while keeping cursor, ack, expiry, revoke, lag, and resync state consumer-local. — Consumers can progress independently without duplicating trees or allowing one slow or invalid consumer to advance another.
+- [Phase 21]: Scrub bounded raw form values from canonical and accessibility-derived APC fields before projection. — Password, payment, and OTP values stay absent even when optional APC redaction features are disabled or duplicate content into structural labels.
+- [Phase 21]: Ignore speculative frame creation and generation-fence deferred subframe recovery. — Committed navigation and disconnect ordering converge on one fail-closed epoch transition without duplicate enable or capture work.
+- [Phase 21]: Attach a redeemed dashboard to the one exact-target capture hub before consuming its pairing, then retain only the opaque consumer token beside service-owned authority. — Partial setup cannot burn a one-time code, and no dashboard record can acquire renderer or capture ownership.
+- [Phase 21]: Split long-poll ownership between one content-free hub readiness callback and one service-owned dashboard completion guarded by an opaque wait token. — Cancellation, shutdown, and teardown remain bounded and win even after readiness has been queued.
+- [Phase 21]: Terminalize every same-target viewer coherently on exact target or immutable owner loss while keeping ack, wait, cancel, lag, resync, expiry, revoke, and end consumer-local. — Authority loss cannot leave a sibling viewer live, and ordinary viewer progress cannot affect another cursor.
+- [Phase 21]: Own the abstract supervision gateway seam as a complete value callback bundle. — Plan 11 can install and clear it without a raw implementation lifetime or a concrete service edge in the gateway.
+- [Phase 21]: Reuse each live gateway request ID as its opaque supervision cancellation token. — The token identifies transport lifetime only and carries no profile, target, viewer, session, or renderer authority.
+- [Phase 21]: Erase pending supervision state before delivery or external cancellation. — Synchronous cancellation and late dispatcher results then become harmless no-ops and cannot double-complete or reach stopped I/O.
+- [Phase 21]: Project supervision health only from bounded content-screened readiness metadata. — Invalid, missing, credential-bearing, authority-bearing, selector-bearing, or content-bearing diagnostics collapse to fixed not-ready text.
+- [Phase 21]: Keep all five Agent supervision compatibility routes caller-scoped and argument-free. — Browser-owned dispatch derives target, stream, document, pairing, and controller authority; callers retain only the authenticated Agent session envelope.
+- [Phase 21]: Require an exact route-to-success-payload match and reject empty baseline or diff stand-ins. — The transport codec projects supplied semantics only and cannot invent a plausible stream outcome.
+- [Phase 21]: Serialize only bounded coherent safe-APC topology and fixed markers, with sensitive and authority sentinels rejected before JSON output. — Compatibility output stays deterministic, secret-free, identity-free, and structurally distinct from dashboard authority transport.
+- [Phase 21]: Keep concrete supervision dispatch out of Plan 21-10 and make existing switches fail explicitly for the five new enum values. — Plan 21-11 owns abstract dispatch composition; explicit fixed failures preserve compileability without crossing the service boundary early.
+- [Phase 21]: Canonicalize all five supervision routes from the authenticated SessionBinding. — The gateway rejects caller target scope and enters Agent service through the exact live Browser and stable tab.
+- [Phase 21]: Keep Agent and gateway code limited to neutral supervision callbacks. — The top-level browser composition is the only owner allowed to resolve concrete regular-profile supervision services.
+- [Phase 21]: Clear dashboard work before Agent dispatch and gateway shutdown. — Ordered cancellation and repeated harmless unbind prevent late work from crossing teardown.
+- [Phase 21]: Leave compatibility semantics typed not-ready until Plan 21-12. — Plan 21-11 proves exact dispatch and ownership without inventing pairing or stream success.
+- [Phase 21]: Attach MCP compatibility only as `kAgentCompatibility` on the exact dashboard capture hub. — One renderer/APC/tree/history authority serves both consumers while their tokens, cursors, waits, and end state remain independent.
+- [Phase 21]: Treat successful closed-codec serialization as the Agent cursor commit boundary. — Rejected baseline or diff output remains unacknowledged and readable for safe resynchronization.
+- [Phase 21]: Queue a forced follow-up whenever document dirtiness arrives during an APC snapshot, start it before notifying retained waiters, and return Agent no-change only after a fresh validated read sees no batch and the shared hub is settled. — Compatibility cannot manufacture an empty result while capture work, a queued recapture, or a baseline is pending.
+- [Phase 21]: End composition-owned dashboard sessions after cancelling waits and before clearing Agent dispatch. — Ordered dual unbind releases dashboard resources, completes pending transport exactly once, and makes later paths fail safely.
+- [Phase 21]: Keep the 90-name MCP union fixed while promoting exactly five supervision dispositions to native. — Public tool identity remains stable while only browser-backed availability changes.
+- [Phase 21]: Forward supervision through the existing empty native command envelope and keep target, stream, code, cursor, and controller authority browser-owned. — The authenticated Agent binding already pins exact scope, so Node must not synthesize a second authority surface.
+- [Phase 21]: Apply recursive authority-field defense only to supervision results and pass through live supervision readiness while extensions remain Phase 22 not-ready. — This protects supervision credentials without removing legitimate content from ordinary page tools or weakening the extension boundary.
+- [Phase 21]: Classify seven implemented typed page actions as ordinary and hold drag, drop, and navigation in one consequential confirmation slot. — The ordinary path reuses working Agent verification semantics while Plan 15 owns native allow-once consent for consequential work.
+- [Phase 21]: Require immutable nonempty redemption-owner equality plus the live controller lease and current acknowledged hub stamp before every remote action. — Supervision must never claim an unowned tab, adopt a replacement owner, or mutate from a stale dashboard view.
+- [Phase 21]: Keep supervision action results and audit content-free while dispatching only through exact-browser Agent routes. — Typed codes and metadata preserve operator visibility without leaking raw refs, text, options, URLs, or Agent page payloads.
+- [Phase 21]: Keep supervision dialog models sanitized and dependency-neutral while the profile service and action controller retain every authority check. — Views may return only approved or denied and cannot create a controller or dispatch an action itself.
+- [Phase 21]: Treat native approval as visible intent rather than authority and revalidate the exact session, target, immutable owner, controller lease, expiry, document, sequence, and generation afterward. — Safe focus, Escape, close, stale callbacks, and lifecycle loss all deny without mutation.
+- [Phase 21]: Bind consequential consent directly to one pending action ID and leave vault-shaped work on its separate native confirmation path. — A dashboard cannot pre-approve a later action or reuse supervision control to bypass vault policy.
+- [Phase 21]: Project browser chrome supervision only from the authoritative sanitized service snapshot through the exact Agent-owned tab-data lease, with authority fields structurally absent. — One display-only whole-value replacement keeps eligible unowned viewing visible, clears controller/action state coherently before observers render it, and prevents chrome surfaces from inventing a second target, owner, or credential authority.
+- [Phase 21]: Compress native tab badge visuals in supervision, active-Agent, health, then idle-owner priority while preserving the complete sanitized accessible name. — Display compression must never hide semantic supervision truth from assistive technology.
+- [Phase 21]: Allocate the native badge only from spare title width before the existing alert/close controls. — Supervision changes cannot move or cover the close target, change tab height, or alter active-address geometry.
+- [Phase 21]: Keep side-panel supervision available independently of task-principal acquisition. — Task actions remain unavailable without a principal while the persistent exact-tab supervision strip continues to reflect browser-owned state.
+- [Phase 21]: Route stop, manage, and end as zero-identity selected-tab intents into the authoritative profile service. — WebUI never retains dashboard sessions, controller leases, tab IDs, or any other mutation authority.
+- [Phase 21]: Gate native side-panel snapshots until the current WebUI document explicitly initializes. — Reload, destruction, and late service notifications cannot call JavaScript across document lifetimes.
+- [Phase 21]: Keep the supervision strip between the four-mode navigation and mode content, and remove it completely only when the sanitized viewer count reaches zero. — The strip stays persistent without becoming a fifth mode or inventing independent lifecycle state.
+- [Phase 21]: Re-whitelist Plan 18 supervision fields in the renderer and send stop, end, and manage only as zero-argument intents. — The side panel can present and request actions without retaining sessions, leases, target IDs, selectors, raw values, page content, or other authority.
+- [Phase 21]: Build fresh Prometheus GRIT resources and replay Chromium’s canonical full framework repack for focused browser tests, then restore and hash-check the reviewed package. — Focused test evidence must exercise current WebUI resources without mutating reviewed build metadata or leaving a changed application package.
+- [Phase 21]: Keep formatted pairing characters exclusively on the dedicated direct create-result type. — Snapshot, observer, refresh, select, cancellation, diagnostics, audit, and MCP structures remain code-incapable.
+- [Phase 21]: Treat Control Panel target ordinals as one-generation display references to weak exact-window tabs. — Native code revalidates generation, handle, list membership, Browser, profile, and HTTP(S) eligibility before every selection or pairing mutation.
+- [Phase 21]: Preserve the current selected target while it remains eligible and never silently select a replacement after loss. — A closed or replaced tab cannot inherit an old renderer ordinal.
+- [Phase 21]: Require explicit replacement when an unredeemed pairing digest exists. — Ordinary create is non-mutating; replace erases the old digest before generating and returning a new one.
+- [Phase 21]: Format the eight-character code only in the native Control Panel adapter and immediately zero-fill and clear the raw buffer. — The direct result receives `XXXX-XXXX` once while the service retains only salt, digest, target authority, and expiry.
+- [Phase 21]: Keep lifecycle row authority and pairing presentation browser-only, revalidate exact targets before every action, retry only the selected capture consumer, and erase terminal pairing state before observer delivery. — This prevents renderer authority, sibling cursor mutation, stale control resurrection, and post-terminal pairing recovery.
+- [Phase 21]: Keep the formatted pairing code only in closure-private module state and one intentional sensitive text node, and erase both on every terminal, clear, or reload boundary. — One-shot presentation remains copyable only after explicit user action and unrecoverable after lifecycle loss.
+- [Phase 21]: Normalize every fresh native supervision snapshot through an explicit closed renderer whitelist before retaining it. — Unknown, credential-bearing, and authority-shaped injected fields are discarded rather than merely hidden during rendering.
+- [Phase 21]: Send row ordinals in lifecycle messages and bind destructive confirms to the browser-issued generation of the rendered snapshot; cancel the dialog on generation change and reject stale generations natively before ordinal resolution. — The freshness token cannot authorize a target without the native row binding, so renderer state cannot become session, lease, owner, epoch, or stale-row authority.
+- [Phase 21]: Use a 60/40 Control Panel split at 1024 CSS pixels and above and preserve the same semantic one-pane order below it. — Real 320/480/720/1024 widths and 200-percent zoom share one accessible reading and keyboard order.
+- [Phase 21]: Recognize `/v1/test/supervision-handoff` only from the boolean fact that a complete abstract validated dispatcher is installed, after the unchanged gateway perimeter. — Ordinary and official launches remain 404 before body parsing or native dispatch, and the gateway gains no concrete bootstrap/profile dependency.
+- [Phase 21]: Create handoff state only for the exact non-official runtime-test switches, disposable regular non-OTR profile, 0600 no-follow closed-schema file, canonical loopback HTTP origin, and initial live exact binding. — The test-only seam cannot activate from ordinary launch, unsafe metadata, remote origin, or an ambiguous target.
+- [Phase 21]: Consume two pairing slots before return, require slot-one redemption before slot two, preserve exact profile/browser/tab/origin/document/current-owner continuity, and wipe request authority before callback reentrancy. — Replay, owner/target loss, timeout, unbind, shutdown, exhaustion, and code failure return no credential and converge on idempotent cleanup.
+- [Phase 22]: Persist only bounded requested extension grant choices and derive effective access from fresh Chromium registry truth, with Private access separately requested and capped by regular access. — This preserves Chromium as lifecycle and installed-identity authority, prevents persisted runtime authority, and makes OTR, uninstall, replacement, eligibility loss, and stale-generation behavior fail closed.
+- [Phase 22]: Treat extension_surface as a closed popup or side_panel routing hint anchored to a positive stable tab; reconstruct extension identity only from current browser-owned visible WebContents and revalidate policy immediately before dispatch. — This prevents caller-supplied extension, URL, frame, renderer, script, or reverse-authority identities from widening the Agent route while preserving ordinary HTTP(S) page behavior.
+- [Phase 22]: Keep chrome://extensions as lifecycle authority and expose only generation-bound Prometheus grants in the local Control Panel; confirm Interact increases with a safe-default native dialog and publish inventory-free live extension health. — Renderer references are display-only, so native code must resolve and revalidate current identity before confirmation and mutation while external diagnostics remain an exact-ten bounded status channel rather than an inventory surface.
+- [Phase 22]: Keep the compatibility catalog as its own GN target so its manually-synthesized object path stays self-consistent, and derive its five rows as a compiled evidence snapshot cross-checked only on fixture SHA-256 and category keys against the independently regenerated JSON/Markdown evidence. — Prometheus builds in this project via direct Siso compile-command synthesis rather than gn gen, so new targets must synthesize from a genuinely Siso-known template, and evidence integrity is best enforced on the narrow machine-checkable facts rather than requiring byte-identical prose.
+- [Phase 22]: Observe the pinned Chromium build's native Manifest V2 policy through the ordinary UnpackedInstaller path without asserting a specific accepted/rejected outcome, and record whichever result occurs (this build: rejected, unpacked_load_failed) as evidence kept structurally outside the five-row MV3 catalog. — The plan requires truthful observation, not a hand-authored expectation; asserting a specific outcome would risk silently becoming a bypass if the pinned policy ever changes.
+- [Phase 22 P05, partial]: Install a one-shot `ui::SelectFileDialogFactory` immediately before the real Load-unpacked click that removes itself from the global factory slot inside `Create()` itself (before `SelectFileImpl` runs), and advance the controller's stage/pending-transition/timeout state synchronously before issuing any WebUI click rather than in that click's own completion callback. — A factory install can otherwise answer a second/unrelated picker, and the renderer's native API call and the triggering `ExecuteJavaScript()` completion are independent IPC round trips with no ordering guarantee between them.
+- [Phase 22 P05, partial]: Copy the live sender WebContents' committed URL into `SelectFileDialog::SelectFile()`'s `caller` argument only when that sender is exactly the live `chrome://extensions` origin; every other caller keeps the prior caller-less call. — Verified end to end (real install through reload); disable onward remains unverified pending root-causing why the native `chrome.management.setEnabled()` click produces no observed registry unload. Phase 22 is not closed.
 
 ## Performance Metrics
 
-**Velocity:**
-
-- Total plans completed: 51
-- Average duration: 7min
-- Total execution time: 0.3 hours
-
-**By Phase:**
-
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 07 | 10 | 87min | 9min |
-| 08 | 5 | - | - |
-| 09 | 6 | - | - |
-| 10 | 4 | - | - |
-
-**Recent Trend:**
-
-- Last 5 plans: 07-06 through 07-10 completed, including review fixes and visual approval
-- Trend: Phase 07 completed after verification, code review, and UI audit gates
-
-*Updated after each plan completion*
-
-**Recent Plan Metrics:**
-
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
-| Phase 07 P02 | 9min | 2 tasks | 10 files |
-| Phase 07 P03 | 8min | 2 tasks | 7 files |
-| Phase 07 P04 | 5 min | 2 tasks | 5 files |
-| Phase 07 P05 | 8min | 2 tasks | 8 files |
-| Phase 07 P06 | 7min | 2 tasks | 7 files |
-| Phase 07 P07 | 14min | 2 tasks | 10 files |
-| Phase 07 P08 | 12min | 2 tasks | 10 files |
-| Phase 07 P09 | 9min | 2 tasks | 10 files |
-| Phase 07 P10 | 6min | 3 tasks | 4 files |
-| Phase 08 P02 | 5min | 2 tasks | 6 files |
-| Phase 08 P03 | 3min | 2 tasks | 2 files |
-| Phase 08 P04 | 8min | 2 tasks | 2 files |
-| Phase 08 P05 | 12min | 1 tasks | 4 files |
-| Phase 09 P01 | 3 | 2 tasks | 78 files |
-| Phase 09 P02 | 2min | 1 tasks | 4 files |
-| Phase 09 P03 | 8min | 1 tasks | 3 files |
-| Phase 09 P04 | 5min | 2 tasks | 10 files |
-| Phase 09 P05 | 4min | 2 tasks | 7 files |
-| Phase 09 P06 | 5min | 3 tasks | 6 files |
-| Phase 10 P01 | 3min | 2 tasks | 5 files |
-| Phase 10 P03 | 15min | 2 tasks | 6 files |
-| Phase 10 P04 | 3min | 2 tasks | 0 files |
+| Phase 20 P05 | 55min | 3 tasks | 15 files |
+| Phase 20 P06 | 25min | 2 tasks | 17 files |
+| Phase 20 P07 | 9h11min | 4 tasks | 19 files |
+| Phase 20 P08 | 1h16min | 3 tasks | 18 files |
+| Phase 20 P09 | 2h | 3 tasks | 20 files |
+| Phase 20 P11 | 1h58min | 3 tasks | 18 files |
+| Phase 20 P12 | 2h4min | 3 tasks | 20 files |
+| Phase 20 P13 | 2h 1m | 3 tasks | 18 files |
+| Phase 20 P10 | 3h47m | 3 tasks | 11 files |
+| Phase 20 P14 | 5h45m | 2 tasks | 21 files |
+| Phase 21 P01 | 41min | 3 tasks | 8 files |
+| Phase 21 P02 | 33min | 2 tasks | 8 files |
+| Phase 21 P03 | 38min | 3 tasks | 12 files |
+| Phase 21 P04 | 42min | 3 tasks | 14 files |
+| Phase 21 P05 | 1h28min | 2 tasks | 13 files |
+| Phase 21 P06 | 56min | 3 tasks | 15 files |
+| Phase 21 P07 | 2h52min | 3 tasks | 13 files |
+| Phase 21 P08 | 1h18min | 3 tasks | 17 files |
+| Phase 21 P09 | 55min | 3 tasks | 14 files |
+| Phase 21 P10 | 50min | 2 tasks | 13 files |
+| Phase 21 P11 | 57min | 3 tasks | 18 files |
+| Phase 21 P12 | 1h51min | 3 tasks | 18 files |
+| Phase 21 P13 | 10min | 2 tasks | 9 files |
+| Phase 21 P14 | 80min | 3 tasks | 12 files |
+| Phase 21 P15 | 87min | 3 tasks | 15 files |
+| Phase 21 P16 | 1h7min | 3 tasks | 10 files |
+| Phase 21 P17 | 1h45min | 3 tasks | 11 files |
+| Phase 21 P18 | 1h49min | 3 tasks | 9 files |
+| Phase 21 P19 | 1h37min | 3 tasks | 5 files |
+| Phase 21 P20 | 1h20min | 3 tasks | 10 files |
+| Phase 21 P21 | 2h04min | 3 tasks | 12 files |
+| Phase 21 P22 | 1h48min | 3 tasks | 6 files |
+| Phase 21 P23 | 50min | 3 tasks | 9 files |
+| Phase 21 P24 | 50min | 2 tasks | 8 files |
+| Phase 21 P25 | 3h | 3 tasks | 15 files |
+| Phase 21 P26 | not recorded | 2 tasks | 9 root closeout files |
+| Phase 22 P01 | 47 min | 3 tasks | 16 files |
+| Phase 22 P02 | 11h 34m | 3 tasks | 44 files |
+| Phase 22 P03 | 1h 17m | 4 tasks | 32 files |
+| Phase 22 P04 | 3h 5m | 3 tasks | 17 files |
+| Phase 22 P05 (partial) | unrecorded | 1 of 4 tasks complete, 1 partial | 13 files |
 
-## Accumulated Context
+## Blockers and Deferred Items
 
-### Decisions
+- Blocker: Phase 22 Plan 05 is partially complete. Task 1 (retained RED
+  contract) is done and verified. Task 2 is partial: the developer-private
+  manager-caller integration and native install/inspect/reload are verified
+  end to end against a synthesized test binary, but the disable stage's
+  `chrome.management.setEnabled()` DOM click reports success while no
+  matching `ExtensionRegistryObserver` unload is ever observed (root cause
+  not identified); enable/local-policy/options/remove were never reached to
+  test. `smoke-phase-22-extensions.sh` (driving the real packaged
+  `Prometheus.app`) was not built. Tasks 3 (`verify-phase-22.sh`) and 4
+  (closeout evidence) were not started. See
+  `.planning/phases/22-chrome-extension-ecosystem-and-policy/22-05-SUMMARY.md`
+  for the full account. Phase 22 is not ready to close.
+- Human desktop visual review: deferred to the non-blocking Phase 24 release review.
+- UI audit carry-forward: add `Review in Prometheus` for waiting confirmation,
+  add a browser-owned `Use in Current Tab` vault action, keep the vault secret
+  dialog open on encryption failure, complete task/log/header/permission detail
+  models, and normalize light/accent/type/spacing tokens before release.
 
-Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
+- Signed/notarized public distribution: beyond the local v2.0 validation package.
 
-- User steer: Product name is Prometheus; affiliation/tagline is "Powered by FSB".
-- Initialization: Start from local Falkon/QtWebEngine fork.
-- Initialization: Rebrand product-visible identity while preserving required legal notices.
-- Initialization: Prioritize native agent control and MCP compatibility before full FSB runtime parity.
-- Phase 5: Use a native Prometheus sidebar and `AgentRuntime` for task, provider, log, memory/site-guide, and vault surfaces.
-- Phase 6: Use session-stamped DOM-native supervision tools and a local macOS validation package with legal/source bundle.
-- Milestone extension: Use Safari compact mode as a reference for space-saving chrome, not as a visual clone.
-- Milestone extension: Require an explicit FSB feature parity matrix before claiming "FSB but better".
-- Milestone extension: Use a curated offline Font Awesome Free icon subset with attribution preserved and no network dependency.
-- [Phase 07]: Use enum-backed QzSettings helpers as the canonical mapping between stored strings and runtime tab chrome settings.
-- [Phase 07]: Keep Separate and TitleAndIcon as compatible defaults while presenting native Preferences labels exactly as specified.
-- [Phase 07]: Expose tab chrome state as a router-owned whitelist instead of exposing request params or router internals.
-- [Phase 07]: Use MainApplication::agentCommandRouter() as the native UI access path so TabModel does not own agent state.
-- [Phase 07]: Return safe model defaults when the router is unavailable: empty owner, false automation/supervision, and health ok.
-- [Phase 07]: Use a proxy/delegate/list-view primitive instead of moving the existing ComboTabBar into the navigation row.
-- [Phase 07]: Route compact tab switching, close requests, context menus, and drag/drop through existing WebTab, TabWidget, TabContextMenu, and TabModel behavior.
-- [Phase 07]: Partially stage CMake registration hunks for the Task 2 commit so unrelated pre-existing CMake changes remain uncommitted.
-- [Phase 07]: Use a fixed compact NavigationBar row from qzSettings->tabLayout while preserving saved NavigationBar/Layout and ShowSearchBar behavior for Separate.
-- [Phase 07]: Hide the conventional tab row with TabBar::setForceHidden() instead of moving tab ownership or LocationBar synchronization out of TabWidget.
-- [Phase 07]: Use a QSortFilterProxyModel over either BrowserWindow::tabModel() or BrowserWindow::tabMruModel() so overview/search and quick switch share rendering without changing source order.
-- [Phase 07]: Render only existing title, favicon, URL/domain, and sanitized TabModel state roles in the privileged popup.
-- [Phase 07]: Keep the group filter as a hidden populated control slot until Plan 07-07 adds real group roles.
-- [Phase 07]: Use BrowserWindow-owned one-shot TabSearchPopup instances with delete-on-close instead of long-lived shared popup state.
-- [Phase 07]: Expose quick switch through a native File menu action with unused Ctrl+Shift+A metadata while preserving existing tab and location shortcuts.
-- [Phase 07]: Place Tab Overview and Search Tabs after the active address/search field so compact tab overflow cannot hide Search Tabs.
-- [Phase 07]: Expose group state through TabModel roles backed by TabGroupModel instead of extension pseudo-tabs.
-- [Phase 07]: Store group membership on each WebTab through prometheusTabGroupId sessionData and keep group labels/colors/collapsed state in BrowserWindow TabGroups UI state.
-- [Phase 07]: Normalize restored group IDs, labels, and colors before applying persisted session data.
-- [Phase 07]: Keep group mutation MCP/native tool names as typed compatibility errors while exposing group state through list_tabs.
-- [Phase 07]: Use disabled state rows and confirmation-body summaries to show owner/supervision state before destructive or group-moving UI actions.
-- [Phase 07]: Leave group registry metadata intact when closing a group so Recently Closed Tabs can restore group membership.
-- [Phase 07]: Use active tab, then TabMruModel, then source order as the representative precedence for collapsed groups.
-- [Phase 07]: Use an internal ungrouped filter sentinel while keeping user-facing copy as Ungrouped.
-- [Phase 07]: Group only Tab Overview into section order; Search Tabs and quick switch preserve source/MRU ordering semantics.
-- [Phase 07]: Require health-issued bearer authorization for native agent commands and bind tab ownership to authenticated sessions, not caller-controlled client labels.
-- [Phase 07]: Key agent tab ownership, supervision, and chrome state by stable tab IDs instead of mutable tab indices.
-- [Phase ?]: FsbControlPanelPage uses QWidget with floating Window flags; routeForSession(request, control_panel) is the internal surface session key for native policy calls
-- [Phase ?]: [09-01] arrow-down-to-line substituted with arrow-down: FA Free 6.x solid missing this glyph
-- [Phase ?]: [09-01] sidebar-flip placeholder SVG created: Pro-only icon not in FA Free 6.x; minimal valid SVG with two-panel geometry and CC BY 4.0 attribution
-- [Phase ?]: [09-01] 69 glyphs vendored offline (plan prose said 70 but enumerated list has 69 unique names)
-- [Phase ?]: PrometheusMarkWidget: use qzcommon.h not falkon_defs.h for FALKON_EXPORT
-- [Phase ?]: New FA SVGs appended after sidebar-flip.svg inside existing CC BY 4.0 block — no per-entry attribution comment needed
-- [Phase ?]: TabWidget new-tab default uses settings.value() fallback only; explicit user newTabUrl settings are untouched
-- [Phase ?]: SideBarManager is in sidebar.h; BrowserWindow obtained from WebPage via TabbedWebView cast
-- [Phase ?]: Human-verify checkpoint auto-approved under auto-mode; 26 visual checks deferred to final binary run
+## Session
 
-### Roadmap Evolution
+**Last Date:** 2026-08-31
+**Stopped At:** Session resumed; proceeding with Phase 22 code-review remediation
+**Resume File:** .planning/phases/22-chrome-extension-ecosystem-and-policy/22-REVIEW.md
 
-- Phase 7 added: Compact Safari-style browser chrome and advanced tab management.
-- Phase 8 added: Native FSB-plus settings side panel and feature parity matrix.
-- Phase 9 added: Offline Font Awesome Free icon system and minimal themes.
-- Phase 8 edited: revised to side-panel four modes + FSB Control Panel page split per canonical design
-- Phase 9 edited: added Poppins/Space Mono fonts, logo pass, warm two-theme tokens
-- Phase 10 added: New Tab Start Page (design-driven new scope)
+## Operator Next Step
 
-### Pending Todos
-
-None yet.
-
-### Blockers/Concerns
-
-- Full internal namespace/class/library rename from Falkon to Prometheus is deferred; Phase 2 rebranded primary product-visible surfaces and preserved legal attribution.
-- Phase 4 added a local stdio MCP bridge over the native JSON spine plus manual tools, ownership, diagnostics, and visual-session field handling.
-- Phase 5 added local runtime surfaces and native-only secure secret storage. Provider-backed hosted model execution is still deferred.
-- Phase 6 added PhantomStream-style supervision primitives, safe pairing, packaging, legal bundle validation, and full release validation.
-- The generated artifact is a local validation package, not a notarized public macOS release.
-- The first six phases include a basic native Prometheus side panel, but Phase 8 must turn it into a comprehensive control center and verify FSB-plus parity.
-- Primary UI still uses many platform theme icons and inherited theme assets; Phase 9 must make primary icons deterministic, offline, and legally attributed.
-- Phase 7 completed compact minimal chrome and advanced tab management. Phase 8 must upgrade the side panel/settings surface into a comprehensive FSB-plus control center with a verified parity matrix.
-
-## Deferred Items
-
-Items acknowledged and carried forward from previous milestone close:
-
-| Category | Item | Status | Deferred At |
-|----------|------|--------|-------------|
-| *(none)* | | | |
-
-## Session Continuity
-
-Last session: 2026-06-17T09:19:48.357Z
-Stopped at: Phase 10 Plan 04 complete — build verified (177/177 targets), all static checks pass, visual checkpoint auto-approved
-Resume file: None
+Resume 22-05-PLAN.md Task 2: root-cause why the built-app extension smoke's
+disable-toggle click does not produce an observed `ExtensionRegistryObserver`
+unload, extend the controller browser test through `kComplete`, build
+`smoke-phase-22-extensions.sh` against the real `Prometheus.app`, then
+execute Tasks 3-4. Phase 22 remains `not_ready` until 22-05 fully completes.

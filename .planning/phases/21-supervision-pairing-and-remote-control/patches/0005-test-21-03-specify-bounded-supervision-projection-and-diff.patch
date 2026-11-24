@@ -1,0 +1,1029 @@
+From 6398eeb8e185564a60193ac260e9535088c17c7e Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 18:18:10 -0500
+Subject: [PATCH] test(21-03): specify bounded supervision projection and diff
+
+- freeze strict APC privacy and restricted-frame fixtures
+- cover four deterministic operations and every resync trigger
+- register projection and diff contracts in the focused test graph
+---
+ chrome/browser/prometheus/BUILD.gn            |  30 ++
+ .../prometheus/prometheus_supervision_diff.cc |  65 ++++
+ .../prometheus/prometheus_supervision_diff.h  | 100 +++++
+ .../prometheus_supervision_diff_unittest.cc   | 308 ++++++++++++++++
+ .../prometheus_supervision_projection.cc      |  21 ++
+ .../prometheus_supervision_projection.h       |  71 ++++
+ ...metheus_supervision_projection_unittest.cc | 346 ++++++++++++++++++
+ 7 files changed, 941 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_diff.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_diff.h
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_diff_unittest.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_projection.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_projection.h
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_projection_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 8e9b3a03da..ccb7eee234 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -290,6 +290,32 @@ source_set("prometheus_supervision_transport_codec") {
+   ]
+ }
+ 
++source_set("prometheus_supervision_projection") {
++  sources = [
++    "prometheus_supervision_projection.cc",
++    "prometheus_supervision_projection.h",
++  ]
++
++  deps = [
++    ":prometheus_supervision_types",
++    "//base",
++    "//components/optimization_guide/proto:optimization_guide_proto",
++  ]
++}
++
++source_set("prometheus_supervision_diff") {
++  sources = [
++    "prometheus_supervision_diff.cc",
++    "prometheus_supervision_diff.h",
++  ]
++
++  deps = [
++    ":prometheus_supervision_projection",
++    ":prometheus_supervision_types",
++    "//base",
++  ]
++}
++
+ source_set("prometheus_runtime_prefs") {
+   sources = [
+     "prometheus_runtime_prefs.cc",
+@@ -553,6 +579,8 @@ test("prometheus_unittests") {
+     "prometheus_runtime_transport_codec_unittest.cc",
+     "prometheus_runtime_types_unittest.cc",
+     "prometheus_secret_store_unittest.cc",
++    "prometheus_supervision_diff_unittest.cc",
++    "prometheus_supervision_projection_unittest.cc",
+     "prometheus_supervision_transport_codec_unittest.cc",
+     "prometheus_supervision_types_unittest.cc",
+     "prometheus_tab_state_unittest.cc",
+@@ -592,6 +620,8 @@ test("prometheus_unittests") {
+     ":prometheus_runtime_transport_codec",
+     ":prometheus_runtime_types",
+     ":prometheus_secret_store",
++    ":prometheus_supervision_diff",
++    ":prometheus_supervision_projection",
+     ":prometheus_supervision_transport_codec",
+     ":prometheus_supervision_types",
+     ":prometheus_tab_state",
+diff --git a/chrome/browser/prometheus/prometheus_supervision_diff.cc b/chrome/browser/prometheus/prometheus_supervision_diff.cc
+new file mode 100644
+index 0000000000..7e0633cb09
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_diff.cc
+@@ -0,0 +1,65 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_diff.h"
++
++#include <utility>
++
++namespace prometheus {
++
++SupervisionDiff ComputeSupervisionDiff(const SupervisionBaseline& previous,
++                                       const SupervisionBaseline& current,
++                                       const SupervisionLimits& limits) {
++  static_cast<void>(previous);
++  static_cast<void>(current);
++  static_cast<void>(limits);
++  return {};
++}
++
++SupervisionViewerDiffCursor::SupervisionViewerDiffCursor(
++    const SupervisionLimits& limits)
++    : limits_(limits) {}
++
++SupervisionViewerDiffCursor::~SupervisionViewerDiffCursor() = default;
++
++void SupervisionViewerDiffCursor::BeginBaseline(
++    const SupervisionStreamStamp& baseline_stamp) {
++  baseline_stamp_ = baseline_stamp;
++  EnterNeedsBaseline();
++}
++
++bool SupervisionViewerDiffCursor::AcknowledgeBaseline(
++    const SupervisionStreamStamp& baseline_stamp) {
++  static_cast<void>(baseline_stamp);
++  return false;
++}
++
++bool SupervisionViewerDiffCursor::QueueBatch(SupervisionDiffBatch batch) {
++  static_cast<void>(batch);
++  EnterNeedsBaseline();
++  return false;
++}
++
++const SupervisionDiffBatch* SupervisionViewerDiffCursor::ReadNext() const {
++  return nullptr;
++}
++
++bool SupervisionViewerDiffCursor::Acknowledge(uint64_t sequence) {
++  static_cast<void>(sequence);
++  EnterNeedsBaseline();
++  return false;
++}
++
++void SupervisionViewerDiffCursor::RequireBaseline() {
++  EnterNeedsBaseline();
++}
++
++void SupervisionViewerDiffCursor::EnterNeedsBaseline() {
++  batches_.clear();
++  retained_bytes_ = 0;
++  acknowledged_sequence_ = 0;
++  needs_baseline_ = true;
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_diff.h b/chrome/browser/prometheus/prometheus_supervision_diff.h
+new file mode 100644
+index 0000000000..af70b98343
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_diff.h
+@@ -0,0 +1,100 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_DIFF_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_DIFF_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <deque>
++#include <optional>
++#include <string>
++#include <vector>
++
++#include "chrome/browser/prometheus/prometheus_supervision_projection.h"
++#include "chrome/browser/prometheus/prometheus_supervision_types.h"
++
++namespace prometheus {
++
++enum class SupervisionDiffOperationType {
++  kInsertSubtree,
++  kRemove,
++  kReplaceFields,
++  kReorderChildren,
++};
++
++struct SupervisionDiffOperation {
++  SupervisionDiffOperationType type =
++      SupervisionDiffOperationType::kReplaceFields;
++  std::string ref;
++  std::string parent_ref;
++  size_t index = 0;
++  std::vector<SupervisionNormalizedNode> subtree;
++  std::optional<SupervisionNormalizedNode> replacement;
++  std::vector<std::string> child_order;
++
++  bool operator==(const SupervisionDiffOperation&) const = default;
++};
++
++// Diff payloads intentionally contain no stream authority. The browser-only
++// stamp travels in SupervisionDiffBatch and is never part of serialized_json.
++struct SupervisionDiff {
++  bool needs_baseline = true;
++  std::vector<SupervisionDiffOperation> operations;
++  std::string serialized_json;
++
++  bool authoritative() const { return !needs_baseline; }
++
++  bool operator==(const SupervisionDiff&) const = default;
++};
++
++SupervisionDiff ComputeSupervisionDiff(
++    const SupervisionBaseline& previous,
++    const SupervisionBaseline& current,
++    const SupervisionLimits& limits = SupervisionLimits());
++
++struct SupervisionDiffBatch {
++  SupervisionStreamStamp stamp;
++  SupervisionDiff diff;
++
++  bool operator==(const SupervisionDiffBatch&) const = default;
++};
++
++// A single viewer's delivery/ack state. Callers create one cursor per viewer;
++// no cursor can advance, revoke, or resynchronize another cursor.
++class SupervisionViewerDiffCursor {
++ public:
++  explicit SupervisionViewerDiffCursor(
++      const SupervisionLimits& limits = SupervisionLimits());
++  SupervisionViewerDiffCursor(const SupervisionViewerDiffCursor&) = delete;
++  SupervisionViewerDiffCursor& operator=(const SupervisionViewerDiffCursor&) =
++      delete;
++  ~SupervisionViewerDiffCursor();
++
++  void BeginBaseline(const SupervisionStreamStamp& baseline_stamp);
++  bool AcknowledgeBaseline(const SupervisionStreamStamp& baseline_stamp);
++  bool QueueBatch(SupervisionDiffBatch batch);
++  const SupervisionDiffBatch* ReadNext() const;
++  bool Acknowledge(uint64_t sequence);
++  void RequireBaseline();
++
++  bool needs_baseline() const { return needs_baseline_; }
++  size_t retained_batches() const { return batches_.size(); }
++  size_t retained_bytes() const { return retained_bytes_; }
++  uint64_t acknowledged_sequence() const { return acknowledged_sequence_; }
++
++ private:
++  void EnterNeedsBaseline();
++
++  SupervisionLimits limits_;
++  std::optional<SupervisionStreamStamp> baseline_stamp_;
++  uint64_t acknowledged_sequence_ = 0;
++  std::deque<SupervisionDiffBatch> batches_;
++  size_t retained_bytes_ = 0;
++  bool needs_baseline_ = true;
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_DIFF_H_
+diff --git a/chrome/browser/prometheus/prometheus_supervision_diff_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_diff_unittest.cc
+new file mode 100644
+index 0000000000..5d1142d0c2
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_diff_unittest.cc
+@@ -0,0 +1,308 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_diff.h"
++
++#include <cstdint>
++#include <limits>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "base/unguessable_token.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++
++namespace {
++
++SupervisionNormalizedNode MakeNode(std::string ref,
++                                   std::string parent_ref,
++                                   std::vector<std::string> child_refs,
++                                   std::string name = std::string()) {
++  SupervisionNormalizedNode node;
++  node.ref = std::move(ref);
++  node.parent_ref = std::move(parent_ref);
++  node.child_refs = std::move(child_refs);
++  node.tag = "container";
++  node.name = std::move(name);
++  return node;
++}
++
++SupervisionBaseline MakeBaseline(std::vector<SupervisionNormalizedNode> nodes) {
++  SupervisionBaseline baseline;
++  baseline.state = SupervisionProjectionState::kAuthoritative;
++  baseline.nodes = std::move(nodes);
++  baseline.serialized_json = "{\"nodes\":[]}";
++  return baseline;
++}
++
++SupervisionBaseline MakeTwoChildTree(bool reverse = false) {
++  const std::vector<std::string> order =
++      reverse ? std::vector<std::string>{"doc:3", "doc:2"}
++              : std::vector<std::string>{"doc:2", "doc:3"};
++  return MakeBaseline({MakeNode("doc:1", "", order, "root"),
++                       MakeNode("doc:2", "doc:1", {}, "two"),
++                       MakeNode("doc:3", "doc:1", {}, "three")});
++}
++
++SupervisionStreamStamp MakeStamp(uint64_t sequence) {
++  return SupervisionStreamStamp{
++      .session = base::UnguessableToken::Create(),
++      .stable_tab_id = 7,
++      .document_epoch = base::UnguessableToken::Create(),
++      .sequence = sequence,
++  };
++}
++
++SupervisionStreamStamp NextStamp(const SupervisionStreamStamp& previous,
++                                 uint64_t sequence) {
++  SupervisionStreamStamp stamp = previous;
++  stamp.sequence = sequence;
++  return stamp;
++}
++
++SupervisionDiff MakeAuthoritativeDiff(size_t bytes = 2) {
++  SupervisionDiff diff;
++  diff.needs_baseline = false;
++  diff.serialized_json.assign(bytes, 'd');
++  return diff;
++}
++
++SupervisionDiffBatch MakeBatch(const SupervisionStreamStamp& stamp,
++                               size_t bytes = 2) {
++  return SupervisionDiffBatch{.stamp = stamp,
++                              .diff = MakeAuthoritativeDiff(bytes)};
++}
++
++TEST(PrometheusSupervisionDiffTest,
++     IdenticalTreesProduceDeterministicEmptyDiff) {
++  const SupervisionBaseline baseline = MakeTwoChildTree();
++
++  const SupervisionDiff first = ComputeSupervisionDiff(baseline, baseline);
++  const SupervisionDiff second = ComputeSupervisionDiff(baseline, baseline);
++
++  ASSERT_TRUE(first.authoritative());
++  EXPECT_TRUE(first.operations.empty());
++  EXPECT_EQ("[]", first.serialized_json);
++  EXPECT_EQ(first, second);
++}
++
++TEST(PrometheusSupervisionDiffTest, InsertEmitsOnlyInsertSubtree) {
++  const SupervisionBaseline previous =
++      MakeBaseline({MakeNode("doc:1", "", {"doc:2"}, "root"),
++                    MakeNode("doc:2", "doc:1", {}, "two")});
++  const SupervisionBaseline current = MakeTwoChildTree();
++
++  const SupervisionDiff diff = ComputeSupervisionDiff(previous, current);
++
++  ASSERT_TRUE(diff.authoritative());
++  ASSERT_EQ(1u, diff.operations.size());
++  EXPECT_EQ(SupervisionDiffOperationType::kInsertSubtree,
++            diff.operations[0].type);
++  EXPECT_EQ("doc:3", diff.operations[0].ref);
++  EXPECT_EQ("doc:1", diff.operations[0].parent_ref);
++  EXPECT_EQ(1u, diff.operations[0].index);
++  ASSERT_EQ(1u, diff.operations[0].subtree.size());
++  EXPECT_EQ("doc:3", diff.operations[0].subtree[0].ref);
++}
++
++TEST(PrometheusSupervisionDiffTest, RemoveEmitsOnlyRemove) {
++  const SupervisionBaseline previous = MakeTwoChildTree();
++  const SupervisionBaseline current =
++      MakeBaseline({MakeNode("doc:1", "", {"doc:2"}, "root"),
++                    MakeNode("doc:2", "doc:1", {}, "two")});
++
++  const SupervisionDiff diff = ComputeSupervisionDiff(previous, current);
++
++  ASSERT_TRUE(diff.authoritative());
++  ASSERT_EQ(1u, diff.operations.size());
++  EXPECT_EQ(SupervisionDiffOperationType::kRemove, diff.operations[0].type);
++  EXPECT_EQ("doc:3", diff.operations[0].ref);
++}
++
++TEST(PrometheusSupervisionDiffTest, FieldChangeEmitsOnlyReplaceFields) {
++  SupervisionBaseline previous = MakeTwoChildTree();
++  SupervisionBaseline current = previous;
++  current.nodes[1].name = "two changed";
++
++  const SupervisionDiff diff = ComputeSupervisionDiff(previous, current);
++
++  ASSERT_TRUE(diff.authoritative());
++  ASSERT_EQ(1u, diff.operations.size());
++  EXPECT_EQ(SupervisionDiffOperationType::kReplaceFields,
++            diff.operations[0].type);
++  EXPECT_EQ("doc:2", diff.operations[0].ref);
++  ASSERT_TRUE(diff.operations[0].replacement.has_value());
++  EXPECT_EQ("two changed", diff.operations[0].replacement->name);
++}
++
++TEST(PrometheusSupervisionDiffTest, ChildOrderChangeEmitsOnlyReorderChildren) {
++  const SupervisionBaseline previous = MakeTwoChildTree();
++  const SupervisionBaseline current = MakeTwoChildTree(/*reverse=*/true);
++
++  const SupervisionDiff diff = ComputeSupervisionDiff(previous, current);
++
++  ASSERT_TRUE(diff.authoritative());
++  ASSERT_EQ(1u, diff.operations.size());
++  EXPECT_EQ(SupervisionDiffOperationType::kReorderChildren,
++            diff.operations[0].type);
++  EXPECT_EQ("doc:1", diff.operations[0].ref);
++  EXPECT_EQ((std::vector<std::string>{"doc:3", "doc:2"}),
++            diff.operations[0].child_order);
++}
++
++TEST(PrometheusSupervisionDiffTest,
++     SessionTargetAndEpochDiscontinuitiesRequireBaseline) {
++  const SupervisionStreamStamp baseline = MakeStamp(1);
++
++  auto expect_rejected = [&](SupervisionStreamStamp changed) {
++    SupervisionViewerDiffCursor cursor;
++    cursor.BeginBaseline(baseline);
++    ASSERT_TRUE(cursor.AcknowledgeBaseline(baseline));
++    changed.sequence = 2;
++    EXPECT_FALSE(cursor.QueueBatch(MakeBatch(changed)));
++    EXPECT_TRUE(cursor.needs_baseline());
++    EXPECT_EQ(0u, cursor.retained_batches());
++  };
++
++  SupervisionStreamStamp changed_session = baseline;
++  changed_session.session = base::UnguessableToken::Create();
++  expect_rejected(changed_session);
++  SupervisionStreamStamp changed_target = baseline;
++  changed_target.stable_tab_id = 8;
++  expect_rejected(changed_target);
++  SupervisionStreamStamp changed_epoch = baseline;
++  changed_epoch.document_epoch = base::UnguessableToken::Create();
++  expect_rejected(changed_epoch);
++}
++
++TEST(PrometheusSupervisionDiffTest,
++     DuplicateGapAndOutOfOrderSequencesRequireBaseline) {
++  const SupervisionStreamStamp baseline = MakeStamp(1);
++
++  SupervisionViewerDiffCursor duplicate;
++  duplicate.BeginBaseline(baseline);
++  ASSERT_TRUE(duplicate.AcknowledgeBaseline(baseline));
++  ASSERT_TRUE(duplicate.QueueBatch(MakeBatch(NextStamp(baseline, 2))));
++  EXPECT_FALSE(duplicate.QueueBatch(MakeBatch(NextStamp(baseline, 2))));
++  EXPECT_TRUE(duplicate.needs_baseline());
++
++  SupervisionViewerDiffCursor gap;
++  gap.BeginBaseline(baseline);
++  ASSERT_TRUE(gap.AcknowledgeBaseline(baseline));
++  EXPECT_FALSE(gap.QueueBatch(MakeBatch(NextStamp(baseline, 3))));
++  EXPECT_TRUE(gap.needs_baseline());
++
++  SupervisionViewerDiffCursor out_of_order;
++  out_of_order.BeginBaseline(baseline);
++  ASSERT_TRUE(out_of_order.AcknowledgeBaseline(baseline));
++  ASSERT_TRUE(out_of_order.QueueBatch(MakeBatch(NextStamp(baseline, 2))));
++  EXPECT_FALSE(out_of_order.QueueBatch(MakeBatch(NextStamp(baseline, 1))));
++  EXPECT_TRUE(out_of_order.needs_baseline());
++}
++
++TEST(PrometheusSupervisionDiffTest,
++     OperationAndSerializedByteCapsRequireBaseline) {
++  SupervisionBaseline previous = MakeTwoChildTree();
++  SupervisionBaseline current = previous;
++  current.nodes[1].name = "changed two";
++  current.nodes[2].name = "changed three";
++
++  const SupervisionDiff unrestricted =
++      ComputeSupervisionDiff(previous, current);
++  ASSERT_TRUE(unrestricted.authoritative());
++  ASSERT_EQ(2u, unrestricted.operations.size());
++
++  SupervisionLimits operation_limits;
++  operation_limits.diff_operations = 1;
++  const SupervisionDiff too_many_operations =
++      ComputeSupervisionDiff(previous, current, operation_limits);
++  EXPECT_TRUE(too_many_operations.needs_baseline);
++  EXPECT_TRUE(too_many_operations.operations.empty());
++  EXPECT_TRUE(too_many_operations.serialized_json.empty());
++
++  SupervisionLimits byte_limits;
++  byte_limits.diff_bytes = 1;
++  const SupervisionDiff too_many_bytes =
++      ComputeSupervisionDiff(previous, current, byte_limits);
++  EXPECT_TRUE(too_many_bytes.needs_baseline);
++  EXPECT_TRUE(too_many_bytes.operations.empty());
++  EXPECT_TRUE(too_many_bytes.serialized_json.empty());
++}
++
++TEST(PrometheusSupervisionDiffTest,
++     RetainedBatchAndByteOverflowClearQueueAndRequireBaseline) {
++  const SupervisionStreamStamp baseline = MakeStamp(1);
++
++  SupervisionLimits batch_limits;
++  batch_limits.retained_batches = 1;
++  SupervisionViewerDiffCursor batch_overflow(batch_limits);
++  batch_overflow.BeginBaseline(baseline);
++  ASSERT_TRUE(batch_overflow.AcknowledgeBaseline(baseline));
++  ASSERT_TRUE(batch_overflow.QueueBatch(MakeBatch(NextStamp(baseline, 2))));
++  EXPECT_FALSE(batch_overflow.QueueBatch(MakeBatch(NextStamp(baseline, 3))));
++  EXPECT_TRUE(batch_overflow.needs_baseline());
++  EXPECT_EQ(0u, batch_overflow.retained_batches());
++  EXPECT_EQ(0u, batch_overflow.retained_bytes());
++
++  SupervisionLimits byte_limits;
++  byte_limits.retained_bytes_per_viewer = 5;
++  SupervisionViewerDiffCursor byte_overflow(byte_limits);
++  byte_overflow.BeginBaseline(baseline);
++  ASSERT_TRUE(byte_overflow.AcknowledgeBaseline(baseline));
++  ASSERT_TRUE(byte_overflow.QueueBatch(MakeBatch(NextStamp(baseline, 2), 5)));
++  EXPECT_FALSE(byte_overflow.QueueBatch(MakeBatch(NextStamp(baseline, 3), 1)));
++  EXPECT_TRUE(byte_overflow.needs_baseline());
++  EXPECT_EQ(0u, byte_overflow.retained_batches());
++  EXPECT_EQ(0u, byte_overflow.retained_bytes());
++}
++
++TEST(PrometheusSupervisionDiffTest, SequenceWrapRequiresFreshBaseline) {
++  SupervisionStreamStamp terminal =
++      MakeStamp(std::numeric_limits<uint64_t>::max());
++  SupervisionViewerDiffCursor cursor;
++  cursor.BeginBaseline(terminal);
++  EXPECT_FALSE(cursor.AcknowledgeBaseline(terminal));
++  EXPECT_TRUE(cursor.needs_baseline());
++
++  SupervisionStreamStamp before_terminal = terminal;
++  before_terminal.sequence = std::numeric_limits<uint64_t>::max() - 1;
++  cursor.BeginBaseline(before_terminal);
++  ASSERT_TRUE(cursor.AcknowledgeBaseline(before_terminal));
++  ASSERT_TRUE(cursor.QueueBatch(MakeBatch(terminal)));
++  EXPECT_FALSE(cursor.QueueBatch(MakeBatch(NextStamp(terminal, 0))));
++  EXPECT_TRUE(cursor.needs_baseline());
++}
++
++TEST(PrometheusSupervisionDiffTest,
++     IndependentViewerCursorsDoNotAdvanceOrRevokeEachOther) {
++  const SupervisionStreamStamp baseline = MakeStamp(1);
++  const SupervisionDiffBatch batch = MakeBatch(NextStamp(baseline, 2));
++  SupervisionViewerDiffCursor viewer_a;
++  SupervisionViewerDiffCursor viewer_b;
++  viewer_a.BeginBaseline(baseline);
++  viewer_b.BeginBaseline(baseline);
++  ASSERT_TRUE(viewer_a.AcknowledgeBaseline(baseline));
++  ASSERT_TRUE(viewer_b.AcknowledgeBaseline(baseline));
++  ASSERT_TRUE(viewer_a.QueueBatch(batch));
++  ASSERT_TRUE(viewer_b.QueueBatch(batch));
++
++  ASSERT_NE(nullptr, viewer_a.ReadNext());
++  ASSERT_NE(nullptr, viewer_b.ReadNext());
++  EXPECT_TRUE(viewer_a.Acknowledge(2));
++  EXPECT_EQ(nullptr, viewer_a.ReadNext());
++  ASSERT_NE(nullptr, viewer_b.ReadNext());
++  EXPECT_EQ(2u, viewer_b.ReadNext()->stamp.sequence);
++  EXPECT_EQ(1u, viewer_b.acknowledged_sequence());
++
++  viewer_a.RequireBaseline();
++  EXPECT_TRUE(viewer_a.needs_baseline());
++  EXPECT_FALSE(viewer_b.needs_baseline());
++  EXPECT_TRUE(viewer_b.Acknowledge(2));
++  EXPECT_EQ(2u, viewer_b.acknowledged_sequence());
++}
++
++}  // namespace
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_projection.cc b/chrome/browser/prometheus/prometheus_supervision_projection.cc
+new file mode 100644
+index 0000000000..51d3dc75b8
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_projection.cc
+@@ -0,0 +1,21 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_projection.h"
++
++#include "components/optimization_guide/proto/features/common_quality_data.pb.h"
++
++namespace prometheus {
++
++SupervisionBaseline BuildSupervisionBaseline(
++    const optimization_guide::proto::AnnotatedPageContent& page_content,
++    const std::string& primary_document_token,
++    const SupervisionLimits& limits) {
++  static_cast<void>(page_content);
++  static_cast<void>(primary_document_token);
++  static_cast<void>(limits);
++  return {};
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_projection.h b/chrome/browser/prometheus/prometheus_supervision_projection.h
+new file mode 100644
+index 0000000000..467c866810
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_projection.h
+@@ -0,0 +1,71 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_PROJECTION_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_PROJECTION_H_
++
++#include <optional>
++#include <string>
++#include <vector>
++
++#include "chrome/browser/prometheus/prometheus_supervision_types.h"
++
++namespace optimization_guide::proto {
++class AnnotatedPageContent;
++}  // namespace optimization_guide::proto
++
++namespace prometheus {
++
++enum class SupervisionProjectionState {
++  kAuthoritative,
++  kNeedsBaseline,
++};
++
++// One privacy-filtered APC node. `ref` is stable only for the lifetime of its
++// document and `parent_ref` is empty only for an emitted root.
++struct SupervisionNormalizedNode {
++  std::string ref;
++  std::string parent_ref;
++  std::vector<std::string> child_refs;
++  std::string tag;
++  std::string role;
++  std::string name;
++  std::string text_snippet;
++  bool disabled = false;
++  bool focusable = false;
++  bool clickable = false;
++  std::optional<std::string> input_value;
++  std::optional<std::string> input_type;
++  std::optional<bool> checked;
++  bool required = false;
++  bool readonly = false;
++  bool frame_restricted = false;
++  std::string frame_restricted_reason;
++
++  bool operator==(const SupervisionNormalizedNode&) const = default;
++};
++
++// An authoritative baseline is all-or-nothing. A cap, malformed ref, duplicate
++// ref, unknown document, or traversal overflow returns kNeedsBaseline with no
++// nodes and no plausible serialized payload.
++struct SupervisionBaseline {
++  SupervisionProjectionState state = SupervisionProjectionState::kNeedsBaseline;
++  std::vector<SupervisionNormalizedNode> nodes;
++  std::string serialized_json;
++
++  bool authoritative() const {
++    return state == SupervisionProjectionState::kAuthoritative;
++  }
++
++  bool operator==(const SupervisionBaseline&) const = default;
++};
++
++SupervisionBaseline BuildSupervisionBaseline(
++    const optimization_guide::proto::AnnotatedPageContent& page_content,
++    const std::string& primary_document_token,
++    const SupervisionLimits& limits = SupervisionLimits());
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_PROJECTION_H_
+diff --git a/chrome/browser/prometheus/prometheus_supervision_projection_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_projection_unittest.cc
+new file mode 100644
+index 0000000000..289ea0e59b
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_projection_unittest.cc
+@@ -0,0 +1,346 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_projection.h"
++
++#include <algorithm>
++#include <cstddef>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "base/json/json_reader.h"
++#include "base/values.h"
++#include "components/optimization_guide/proto/features/common_quality_data.pb.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++
++namespace {
++
++using optimization_guide::proto::AnnotatedPageContent;
++using optimization_guide::proto::ContentAttributeType;
++using optimization_guide::proto::ContentNode;
++using optimization_guide::proto::FormControlType;
++using optimization_guide::proto::RedactionDecision;
++
++void SetNode(ContentNode* node, int dom_node_id, ContentAttributeType type) {
++  auto* attributes = node->mutable_content_attributes();
++  attributes->set_common_ancestor_dom_node_id(dom_node_id);
++  attributes->set_attribute_type(type);
++}
++
++ContentNode* AddNode(ContentNode* parent,
++                     int dom_node_id,
++                     ContentAttributeType type) {
++  ContentNode* node = parent->add_children_nodes();
++  SetNode(node, dom_node_id, type);
++  return node;
++}
++
++AnnotatedPageContent MakePageContent() {
++  AnnotatedPageContent page_content;
++  page_content.mutable_main_frame_data()
++      ->mutable_document_identifier()
++      ->set_serialized_token("main-doc");
++  SetNode(page_content.mutable_root_node(), 1,
++          optimization_guide::proto::CONTENT_ATTRIBUTE_ROOT);
++  return page_content;
++}
++
++ContentNode* AddFormControl(AnnotatedPageContent* page_content,
++                            int dom_node_id,
++                            std::string value,
++                            FormControlType control_type,
++                            RedactionDecision redaction_decision) {
++  ContentNode* node =
++      AddNode(page_content->mutable_root_node(), dom_node_id,
++              optimization_guide::proto::CONTENT_ATTRIBUTE_FORM_CONTROL);
++  auto* attributes = node->mutable_content_attributes();
++  attributes->set_label("Field " + std::to_string(dom_node_id));
++  attributes->set_redaction_decision(redaction_decision);
++  auto* form = attributes->mutable_form_control_data();
++  form->set_field_name("field-" + std::to_string(dom_node_id));
++  form->set_field_value(std::move(value));
++  form->set_form_control_type(control_type);
++  attributes->mutable_interaction_info()->set_is_focusable(true);
++  return node;
++}
++
++const SupervisionNormalizedNode* FindNormalizedNode(
++    const SupervisionBaseline& baseline,
++    std::string_view ref) {
++  auto found =
++      std::ranges::find(baseline.nodes, ref, &SupervisionNormalizedNode::ref);
++  return found == baseline.nodes.end() ? nullptr : &*found;
++}
++
++const base::DictValue* FindSerializedNode(const SupervisionBaseline& baseline,
++                                          std::string_view ref) {
++  std::optional<base::Value> parsed =
++      base::JSONReader::Read(baseline.serialized_json, base::JSON_PARSE_RFC);
++  if (!parsed || !parsed->is_dict()) {
++    return nullptr;
++  }
++  const base::ListValue* nodes = parsed->GetDict().FindList("nodes");
++  if (!nodes) {
++    return nullptr;
++  }
++  for (const base::Value& value : *nodes) {
++    if (!value.is_dict()) {
++      continue;
++    }
++    const std::string* candidate = value.GetDict().FindString("ref");
++    if (candidate && *candidate == ref) {
++      return &value.GetDict();
++    }
++  }
++  return nullptr;
++}
++
++bool ContainsKeyOrString(const base::Value& value,
++                         const std::vector<std::string>& forbidden) {
++  if (value.is_string()) {
++    return std::ranges::find(forbidden, value.GetString()) != forbidden.end();
++  }
++  if (value.is_list()) {
++    for (const base::Value& child : value.GetList()) {
++      if (ContainsKeyOrString(child, forbidden)) {
++        return true;
++      }
++    }
++  }
++  if (value.is_dict()) {
++    for (const auto [key, child] : value.GetDict()) {
++      if (std::ranges::find(forbidden, key) != forbidden.end() ||
++          ContainsKeyOrString(child, forbidden)) {
++        return true;
++      }
++    }
++  }
++  return false;
++}
++
++TEST(PrometheusSupervisionProjectionTest,
++     IdenticalApcProducesByteIdenticalAuthoritativeBaseline) {
++  AnnotatedPageContent page_content = MakePageContent();
++  ContentNode* heading =
++      AddNode(page_content.mutable_root_node(), 2,
++              optimization_guide::proto::CONTENT_ATTRIBUTE_HEADING);
++  heading->mutable_content_attributes()->set_label("Stable heading");
++
++  const SupervisionBaseline first =
++      BuildSupervisionBaseline(page_content, "main-doc");
++  const SupervisionBaseline second =
++      BuildSupervisionBaseline(page_content, "main-doc");
++
++  ASSERT_TRUE(first.authoritative());
++  EXPECT_EQ(first, second);
++  EXPECT_FALSE(first.serialized_json.empty());
++  EXPECT_NE(nullptr, FindNormalizedNode(first, "main-doc:2"));
++}
++
++TEST(PrometheusSupervisionProjectionTest,
++     ProjectsPrimaryAndSameSiteDocumentsInStableOrder) {
++  AnnotatedPageContent page_content = MakePageContent();
++  ContentNode* iframe =
++      AddNode(page_content.mutable_root_node(), 2,
++              optimization_guide::proto::CONTENT_ATTRIBUTE_IFRAME);
++  iframe->mutable_content_attributes()
++      ->mutable_iframe_data()
++      ->mutable_frame_data()
++      ->mutable_document_identifier()
++      ->set_serialized_token("same-site-doc");
++  ContentNode* child =
++      AddNode(iframe, 3, optimization_guide::proto::CONTENT_ATTRIBUTE_ANCHOR);
++  child->mutable_content_attributes()->set_label("Same-site child");
++
++  const SupervisionBaseline baseline =
++      BuildSupervisionBaseline(page_content, "main-doc");
++
++  ASSERT_TRUE(baseline.authoritative());
++  ASSERT_EQ(3u, baseline.nodes.size());
++  EXPECT_EQ("main-doc:1", baseline.nodes[0].ref);
++  EXPECT_EQ("main-doc:2", baseline.nodes[1].ref);
++  EXPECT_EQ("same-site-doc:3", baseline.nodes[2].ref);
++  EXPECT_EQ("main-doc:2", baseline.nodes[2].parent_ref);
++}
++
++TEST(PrometheusSupervisionProjectionTest,
++     RestrictedCrossSiteAndFencedFrameContentIsStructurallyAbsent) {
++  AnnotatedPageContent page_content = MakePageContent();
++  ContentNode* cross_site =
++      AddNode(page_content.mutable_root_node(), 2,
++              optimization_guide::proto::CONTENT_ATTRIBUTE_IFRAME);
++  cross_site->mutable_content_attributes()
++      ->mutable_iframe_data()
++      ->mutable_redacted_frame_metadata()
++      ->set_reason(
++          optimization_guide::proto::
++              IframeData_RedactedFrameMetadata_Reason_REASON_CROSS_SITE);
++  ContentNode* cross_site_secret =
++      AddNode(cross_site, 3, optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
++  cross_site_secret->mutable_content_attributes()
++      ->mutable_text_data()
++      ->set_text_content("restricted-cross-site-sentinel");
++
++  ContentNode* fenced =
++      AddNode(page_content.mutable_root_node(), 4,
++              optimization_guide::proto::CONTENT_ATTRIBUTE_IFRAME);
++  fenced->mutable_content_attributes()
++      ->mutable_iframe_data()
++      ->mutable_redacted_frame_metadata()
++      ->set_reason(
++          optimization_guide::proto::
++              IframeData_RedactedFrameMetadata_Reason_REASON_CROSS_ORIGIN);
++  ContentNode* fenced_secret =
++      AddNode(fenced, 5, optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
++  fenced_secret->mutable_content_attributes()
++      ->mutable_text_data()
++      ->set_text_content("restricted-fenced-sentinel");
++
++  const SupervisionBaseline baseline =
++      BuildSupervisionBaseline(page_content, "main-doc");
++
++  ASSERT_TRUE(baseline.authoritative());
++  const SupervisionNormalizedNode* cross_site_node =
++      FindNormalizedNode(baseline, "main-doc:2");
++  const SupervisionNormalizedNode* fenced_node =
++      FindNormalizedNode(baseline, "main-doc:4");
++  ASSERT_NE(nullptr, cross_site_node);
++  ASSERT_NE(nullptr, fenced_node);
++  EXPECT_TRUE(cross_site_node->frame_restricted);
++  EXPECT_TRUE(fenced_node->frame_restricted);
++  EXPECT_EQ(nullptr, FindNormalizedNode(baseline, "main-doc:3"));
++  EXPECT_EQ(nullptr, FindNormalizedNode(baseline, "main-doc:5"));
++  std::optional<base::Value> parsed =
++      base::JSONReader::Read(baseline.serialized_json, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(parsed.has_value());
++  EXPECT_FALSE(ContainsKeyOrString(*parsed, {"restricted-cross-site-sentinel",
++                                             "restricted-fenced-sentinel"}));
++}
++
++TEST(PrometheusSupervisionProjectionTest,
++     OmitsPasswordCustomPaymentOtpAndUnknownSensitiveValues) {
++  AnnotatedPageContent page_content = MakePageContent();
++  AddFormControl(
++      &page_content, 2, "password-value-sentinel",
++      optimization_guide::proto::FORM_CONTROL_TYPE_INPUT_PASSWORD,
++      optimization_guide::proto::REDACTION_DECISION_NO_REDACTION_NECESSARY);
++  AddFormControl(&page_content, 3, "custom-password-value-sentinel",
++                 optimization_guide::proto::FORM_CONTROL_TYPE_INPUT_TEXT,
++                 optimization_guide::proto::
++                     REDACTION_DECISION_REDACTED_CUSTOM_PASSWORD_CSS);
++  ContentNode* payment = AddFormControl(
++      &page_content, 4, "payment-value-sentinel",
++      optimization_guide::proto::FORM_CONTROL_TYPE_INPUT_TEXT,
++      optimization_guide::proto::
++          REDACTION_DECISION_REDACTED_IS_SENSITIVE_PAYMENT_FIELD);
++  payment->mutable_content_attributes()
++      ->mutable_form_control_data()
++      ->add_coarse_autofill_field_type(
++          optimization_guide::proto::COARSE_AUTOFILL_FIELD_TYPE_CREDIT_CARD);
++  ContentNode* otp = AddFormControl(
++      &page_content, 5, "otp-value-sentinel",
++      optimization_guide::proto::FORM_CONTROL_TYPE_INPUT_TEXT,
++      optimization_guide::proto::REDACTION_DECISION_REDACTED_IS_OTP);
++  otp->mutable_content_attributes()
++      ->mutable_form_control_data()
++      ->add_coarse_autofill_field_type(
++          optimization_guide::proto::COARSE_AUTOFILL_FIELD_TYPE_OTP);
++  AddFormControl(&page_content, 6, "unknown-redaction-value-sentinel",
++                 optimization_guide::proto::FORM_CONTROL_TYPE_INPUT_TEXT,
++                 static_cast<RedactionDecision>(999));
++  AddFormControl(
++      &page_content, 7, "explicitly-safe-value",
++      optimization_guide::proto::FORM_CONTROL_TYPE_INPUT_TEXT,
++      optimization_guide::proto::REDACTION_DECISION_NO_REDACTION_NECESSARY);
++
++  const SupervisionBaseline baseline =
++      BuildSupervisionBaseline(page_content, "main-doc");
++
++  ASSERT_TRUE(baseline.authoritative());
++  for (int id = 2; id <= 6; ++id) {
++    const std::string ref = "main-doc:" + std::to_string(id);
++    const SupervisionNormalizedNode* node = FindNormalizedNode(baseline, ref);
++    ASSERT_NE(nullptr, node) << ref;
++    EXPECT_FALSE(node->input_value.has_value()) << ref;
++    const base::DictValue* serialized = FindSerializedNode(baseline, ref);
++    ASSERT_NE(nullptr, serialized) << ref;
++    EXPECT_EQ(nullptr, serialized->Find("input_value")) << ref;
++  }
++  const SupervisionNormalizedNode* safe =
++      FindNormalizedNode(baseline, "main-doc:7");
++  ASSERT_NE(nullptr, safe);
++  ASSERT_TRUE(safe->input_value.has_value());
++  EXPECT_EQ("explicitly-safe-value", *safe->input_value);
++
++  std::optional<base::Value> parsed =
++      base::JSONReader::Read(baseline.serialized_json, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(parsed.has_value());
++  EXPECT_FALSE(ContainsKeyOrString(
++      *parsed, {"password-value-sentinel", "custom-password-value-sentinel",
++                "payment-value-sentinel", "otp-value-sentinel",
++                "unknown-redaction-value-sentinel"}));
++}
++
++TEST(PrometheusSupervisionProjectionTest,
++     NodeAndByteCapsNeverPublishPlausibleTruncation) {
++  EXPECT_EQ(500u, kDefaultSupervisionBaselineNodes);
++  EXPECT_EQ(200u * 1024u, kDefaultSupervisionBaselineBytes);
++
++  AnnotatedPageContent page_content = MakePageContent();
++  for (int id = 2; id <= 500; ++id) {
++    ContentNode* node =
++        AddNode(page_content.mutable_root_node(), id,
++                optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
++    node->mutable_content_attributes()->mutable_text_data()->set_text_content(
++        "bounded node");
++  }
++  SupervisionLimits limits;
++  limits.baseline_nodes = 500;
++  limits.baseline_bytes = kDefaultSupervisionBaselineBytes;
++  const SupervisionBaseline at_node_cap =
++      BuildSupervisionBaseline(page_content, "main-doc", limits);
++  ASSERT_TRUE(at_node_cap.authoritative());
++  EXPECT_EQ(500u, at_node_cap.nodes.size());
++  EXPECT_LE(at_node_cap.serialized_json.size(),
++            kDefaultSupervisionBaselineBytes);
++
++  AddNode(page_content.mutable_root_node(), 501,
++          optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
++  const SupervisionBaseline over_node_cap =
++      BuildSupervisionBaseline(page_content, "main-doc", limits);
++  EXPECT_FALSE(over_node_cap.authoritative());
++  EXPECT_TRUE(over_node_cap.nodes.empty());
++  EXPECT_TRUE(over_node_cap.serialized_json.empty());
++
++  AnnotatedPageContent byte_content = MakePageContent();
++  for (int id = 2; id <= 200; ++id) {
++    ContentNode* node = AddFormControl(
++        &byte_content, id, std::string(200, 'v'),
++        optimization_guide::proto::FORM_CONTROL_TYPE_INPUT_TEXT,
++        optimization_guide::proto::REDACTION_DECISION_NO_REDACTION_NECESSARY);
++    node->mutable_content_attributes()->set_label(std::string(80, 'n'));
++  }
++  limits.baseline_nodes = 500;
++  limits.baseline_bytes = kHardSupervisionBaselineBytes;
++  const SupervisionBaseline sized =
++      BuildSupervisionBaseline(byte_content, "main-doc", limits);
++  ASSERT_TRUE(sized.authoritative());
++  ASSERT_GT(sized.serialized_json.size(), 1u);
++
++  limits.baseline_bytes = sized.serialized_json.size();
++  EXPECT_TRUE(BuildSupervisionBaseline(byte_content, "main-doc", limits)
++                  .authoritative());
++  --limits.baseline_bytes;
++  const SupervisionBaseline over_byte_cap =
++      BuildSupervisionBaseline(byte_content, "main-doc", limits);
++  EXPECT_FALSE(over_byte_cap.authoritative());
++  EXPECT_TRUE(over_byte_cap.nodes.empty());
++  EXPECT_TRUE(over_byte_cap.serialized_json.empty());
++}
++
++}  // namespace
++}  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

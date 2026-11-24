@@ -1,0 +1,1292 @@
+From 71f3fae9632ca233bc271b8f75db39c21e71a947 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sun, 12 Jul 2026 20:59:11 -0500
+Subject: [PATCH 03/19] feat(19-02): add strict native MCP JSON codec
+
+---
+ .../prometheus_agent_route_unittest.cc        |  46 +-
+ .../prometheus/prometheus_agent_service.cc    |  16 +
+ .../prometheus_agent_transport_codec.cc       | 691 ++++++++++++++++++
+ .../prometheus_agent_transport_codec.h        |  24 +
+ .../prometheus_agent_transport_unittest.cc    | 233 ++++--
+ .../prometheus/prometheus_page_adapter.cc     |   4 +
+ 6 files changed, 935 insertions(+), 79 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_transport_codec.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_transport_codec.h
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_route_unittest.cc b/chrome/browser/prometheus/prometheus_agent_route_unittest.cc
+index 50a5c8342d..6f14545b32 100644
+--- a/chrome/browser/prometheus/prometheus_agent_route_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_route_unittest.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <optional>
+ #include <string_view>
++#include <utility>
+ 
+ #include "testing/gtest/include/gtest/gtest.h"
+ 
+@@ -14,8 +15,7 @@ namespace prometheus {
+ namespace {
+ 
+ TEST(PrometheusAgentRouteTest, ParsesKnownRouteStrings) {
+-  EXPECT_EQ(AgentRouteName::kListTabs,
+-            *AgentRouteNameFromString("list_tabs"));
++  EXPECT_EQ(AgentRouteName::kListTabs, *AgentRouteNameFromString("list_tabs"));
+   EXPECT_EQ(AgentRouteName::kOpenTab, *AgentRouteNameFromString("open_tab"));
+   EXPECT_EQ(AgentRouteName::kActivateTab,
+             *AgentRouteNameFromString("activate_tab"));
+@@ -34,8 +34,7 @@ TEST(PrometheusAgentRouteTest, ParsesPageReadRouteStrings) {
+             *AgentRouteNameFromString("get_dom_snapshot"));
+   EXPECT_EQ(AgentRouteName::kGetPageSnapshot,
+             *AgentRouteNameFromString("get_page_snapshot"));
+-  EXPECT_EQ(AgentRouteName::kGetText,
+-            *AgentRouteNameFromString("get_text"));
++  EXPECT_EQ(AgentRouteName::kGetText, *AgentRouteNameFromString("get_text"));
+   EXPECT_EQ(AgentRouteName::kGetAttribute,
+             *AgentRouteNameFromString("get_attribute"));
+   EXPECT_EQ(AgentRouteName::kDiagnostics,
+@@ -48,18 +47,15 @@ TEST(PrometheusAgentRouteTest, ParsesPageActionRouteStrings) {
+   EXPECT_EQ(AgentRouteName::kExecuteJs,
+             *AgentRouteNameFromString("execute_js"));
+   EXPECT_EQ(AgentRouteName::kClick, *AgentRouteNameFromString("click"));
+-  EXPECT_EQ(AgentRouteName::kTypeText,
+-            *AgentRouteNameFromString("type_text"));
+-  EXPECT_EQ(AgentRouteName::kPressKey,
+-            *AgentRouteNameFromString("press_key"));
++  EXPECT_EQ(AgentRouteName::kTypeText, *AgentRouteNameFromString("type_text"));
++  EXPECT_EQ(AgentRouteName::kPressKey, *AgentRouteNameFromString("press_key"));
+   EXPECT_EQ(AgentRouteName::kScroll, *AgentRouteNameFromString("scroll"));
+   EXPECT_EQ(AgentRouteName::kHover, *AgentRouteNameFromString("hover"));
+   EXPECT_EQ(AgentRouteName::kSelectOption,
+             *AgentRouteNameFromString("select_option"));
+   EXPECT_EQ(AgentRouteName::kClear, *AgentRouteNameFromString("clear"));
+   EXPECT_EQ(AgentRouteName::kDrag, *AgentRouteNameFromString("drag"));
+-  EXPECT_EQ(AgentRouteName::kDropFile,
+-            *AgentRouteNameFromString("drop_file"));
++  EXPECT_EQ(AgentRouteName::kDropFile, *AgentRouteNameFromString("drop_file"));
+ }
+ 
+ TEST(PrometheusAgentRouteTest, RejectsUnknownRouteStrings) {
+@@ -69,13 +65,11 @@ TEST(PrometheusAgentRouteTest, RejectsUnknownRouteStrings) {
+ }
+ 
+ TEST(PrometheusAgentRouteTest, SerializesRouteNames) {
+-  EXPECT_EQ("list_tabs",
+-            AgentRouteNameToString(AgentRouteName::kListTabs));
++  EXPECT_EQ("list_tabs", AgentRouteNameToString(AgentRouteName::kListTabs));
+   EXPECT_EQ("move_tab_to_new_window",
+             AgentRouteNameToString(AgentRouteName::kMoveTabToNewWindow));
+-  EXPECT_EQ(
+-      "unsupported_page_action",
+-      AgentRouteNameToString(AgentRouteName::kUnsupportedPageAction));
++  EXPECT_EQ("unsupported_page_action",
++            AgentRouteNameToString(AgentRouteName::kUnsupportedPageAction));
+ }
+ 
+ TEST(PrometheusAgentRouteTest, SerializesErrorCodes) {
+@@ -128,8 +122,8 @@ TEST(PrometheusAgentRouteTest, SerializesClosedDiagnosticStatuses) {
+             AgentDiagnosticStatusToString(AgentDiagnosticStatus::kDegraded));
+   EXPECT_EQ("not_ready",
+             AgentDiagnosticStatusToString(AgentDiagnosticStatus::kNotReady));
+-  EXPECT_EQ("unavailable", AgentDiagnosticStatusToString(
+-                               AgentDiagnosticStatus::kUnavailable));
++  EXPECT_EQ("unavailable",
++            AgentDiagnosticStatusToString(AgentDiagnosticStatus::kUnavailable));
+ }
+ 
+ TEST(PrometheusAgentRouteTest, ParsesClosedInternalSurfaces) {
+@@ -140,6 +134,12 @@ TEST(PrometheusAgentRouteTest, ParsesClosedInternalSurfaces) {
+   EXPECT_EQ(AgentInternalSurface::kControlPanel,
+             AgentInternalSurfaceFromString("control_panel"));
+   EXPECT_EQ(std::nullopt, AgentInternalSurfaceFromString("settings"));
++  EXPECT_EQ("new_tab",
++            AgentInternalSurfaceToString(AgentInternalSurface::kNewTab));
++  EXPECT_EQ("side_panel",
++            AgentInternalSurfaceToString(AgentInternalSurface::kSidePanel));
++  EXPECT_EQ("control_panel",
++            AgentInternalSurfaceToString(AgentInternalSurface::kControlPanel));
+ }
+ 
+ TEST(PrometheusAgentRouteTest, SuccessResultCarriesChangedState) {
+@@ -217,8 +217,7 @@ TEST(PrometheusAgentRouteTest, PageResultIsCopyableAndCarriesBoundedOutput) {
+   EXPECT_EQ(12u, copy.omitted_count);
+ }
+ 
+-TEST(PrometheusAgentRouteTest,
+-     RouteRequestAndResultCarryOptionalPagePayloads) {
++TEST(PrometheusAgentRouteTest, RouteRequestAndResultCarryOptionalPagePayloads) {
+   AgentRouteRequest request;
+   request.route_name = AgentRouteName::kReadPage;
+   request.page_request = AgentPageRequest();
+@@ -227,7 +226,8 @@ TEST(PrometheusAgentRouteTest,
+   EXPECT_TRUE(request.page_request.has_value());
+   EXPECT_EQ(2048u, request.page_request->read_options.max_chars);
+ 
+-  AgentRouteResult result = AgentRouteResult::Success({"visible_text_returned"});
++  AgentRouteResult result =
++      AgentRouteResult::Success({"visible_text_returned"});
+   result.page_result = AgentPageResult();
+   result.page_result->visible_text = "content";
+ 
+@@ -253,8 +253,7 @@ TEST(PrometheusAgentRouteTest, ExtendedRequestAndResultAreCopyable) {
+   AgentRouteRequest request_copy = request;
+   EXPECT_EQ(3, request_copy.target.tab_index);
+   EXPECT_TRUE(request_copy.foreground);
+-  EXPECT_EQ(AgentInternalSurface::kControlPanel,
+-            request_copy.internal_surface);
++  EXPECT_EQ(AgentInternalSurface::kControlPanel, request_copy.internal_surface);
+   ASSERT_TRUE(request_copy.visual_context.has_value());
+   EXPECT_EQ("Review the final result",
+             request_copy.visual_context->visual_reason);
+@@ -293,8 +292,7 @@ TEST(PrometheusAgentRouteTest, ExtendedRequestAndResultAreCopyable) {
+   ASSERT_TRUE(result_copy.element_read_result.has_value());
+   EXPECT_EQ("Submit", result_copy.element_read_result->value);
+   ASSERT_EQ(1u, result_copy.diagnostics.size());
+-  EXPECT_EQ(AgentDiagnosticStatus::kReady,
+-            result_copy.diagnostics[0].status);
++  EXPECT_EQ(AgentDiagnosticStatus::kReady, result_copy.diagnostics[0].status);
+ }
+ 
+ }  // namespace
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.cc b/chrome/browser/prometheus/prometheus_agent_service.cc
+index 34ec2c9184..bcbfd8e537 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service.cc
+@@ -62,6 +62,14 @@ AgentRouteResult UnsupportedRoute() {
+       "Use browser-owned tab/window/navigation routes only");
+ }
+ 
++AgentRouteResult NativeRouteNotReady(AgentRouteName route_name) {
++  return AgentRouteResult::Failure(
++      AgentErrorCode::kUnsupportedRoute,
++      std::string(AgentRouteNameToString(route_name)) +
++          " is not connected to browser dispatch yet",
++      "Retry after native diagnostics reports this capability ready");
++}
++
+ AgentRouteResult TabOutOfScope(std::string message) {
+   return AgentRouteResult::Failure(
+       AgentErrorCode::kTabOutOfScope, std::move(message),
+@@ -83,6 +91,8 @@ bool IsPageRoute(AgentRouteName route_name) {
+     case AgentRouteName::kReadPage:
+     case AgentRouteName::kGetDomSnapshot:
+     case AgentRouteName::kGetPageSnapshot:
++    case AgentRouteName::kGetText:
++    case AgentRouteName::kGetAttribute:
+     case AgentRouteName::kExecuteJs:
+     case AgentRouteName::kClick:
+     case AgentRouteName::kTypeText:
+@@ -421,9 +431,15 @@ AgentRouteResult PrometheusAgentService::ExecuteRouteSynchronously(
+               browser, request.target,
+               GURL(chrome::kChromeUIPrometheusControlPanelURL),
+               "prometheus_control_panel_opened", *session_result.session));
++    case AgentRouteName::kDiagnostics:
++    case AgentRouteName::kOpenInternalSurface:
++      return FinishRoute(request, timestamp, started_at,
++                         NativeRouteNotReady(request.route_name));
+     case AgentRouteName::kReadPage:
+     case AgentRouteName::kGetDomSnapshot:
+     case AgentRouteName::kGetPageSnapshot:
++    case AgentRouteName::kGetText:
++    case AgentRouteName::kGetAttribute:
+     case AgentRouteName::kExecuteJs:
+     case AgentRouteName::kClick:
+     case AgentRouteName::kTypeText:
+diff --git a/chrome/browser/prometheus/prometheus_agent_transport_codec.cc b/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
+new file mode 100644
+index 0000000000..fa62418273
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
+@@ -0,0 +1,691 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_transport_codec.h"
++
++#include <algorithm>
++#include <array>
++#include <cstdint>
++#include <initializer_list>
++#include <limits>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <utility>
++
++#include "base/json/json_reader.h"
++#include "base/json/json_writer.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
++#include "base/values.h"
++
++namespace prometheus {
++namespace {
++
++constexpr size_t kMaxInputBytes = 1'048'576;
++constexpr size_t kMaxOutputBytes = 2'097'152;
++constexpr size_t kMaxSessionIdBytes = 128;
++constexpr size_t kMaxUrlBytes = 4096;
++constexpr size_t kMaxElementRefBytes = 4096;
++constexpr size_t kMaxSelectorBytes = 4096;
++constexpr size_t kMaxDocumentTokenBytes = 4096;
++constexpr size_t kMaxJavascriptBytes = 20000;
++constexpr size_t kMaxTextBytes = 20000;
++constexpr size_t kMaxKeyBytes = 128;
++constexpr size_t kMaxAttributeBytes = 128;
++constexpr size_t kMaxVisualReasonBytes = 256;
++constexpr size_t kMaxVisualClientBytes = 80;
++constexpr size_t kMaxTabTitleBytes = 512;
++constexpr size_t kMaxElementReadBytes = 65536;
++constexpr size_t kMaxDiagnosticTextBytes = 256;
++constexpr int kMaxNodes = 10000;
++constexpr int kMaxChars = 200000;
++
++constexpr std::array<std::string_view, 10> kDiagnosticKeys = {
++    "browser",          "bridge",        "active_tab", "content_adapter",
++    "internal_adapter", "webui_adapter", "vault",      "provider",
++    "supervision",      "extensions"};
++
++AgentRouteResult Failure(AgentErrorCode code,
++                         std::string message,
++                         std::string recovery) {
++  return AgentRouteResult::Failure(code, std::move(message),
++                                   std::move(recovery));
++}
++
++AgentRouteResult InvalidRequest(std::string message) {
++  return Failure(AgentErrorCode::kInvalidRequest, std::move(message),
++                 "Provide a bounded request using only documented fields");
++}
++
++AgentRouteResult InvalidTarget(std::string message) {
++  return Failure(AgentErrorCode::kInvalidTarget, std::move(message),
++                 "Provide one unambiguous stable tab id or tabIndex");
++}
++
++AgentRouteResult RequestTooLarge(std::string message) {
++  return Failure(AgentErrorCode::kRequestTooLarge, std::move(message),
++                 "Reduce the request or requested result size and retry");
++}
++
++bool HasOnlyKeys(const base::DictValue& value,
++                 std::initializer_list<std::string_view> allowed) {
++  for (const auto [key, ignored] : value) {
++    static_cast<void>(ignored);
++    if (std::find(allowed.begin(), allowed.end(), key) == allowed.end()) {
++      return false;
++    }
++  }
++  return true;
++}
++
++bool IsBoundedUtf8(const std::string& value,
++                   size_t max_bytes,
++                   bool allow_empty = true) {
++  return (allow_empty || !value.empty()) && value.size() <= max_bytes &&
++         base::IsStringUTF8(value);
++}
++
++std::optional<int32_t> ParseInt32(const base::Value* value) {
++  if (!value) {
++    return std::nullopt;
++  }
++  if (value->is_int()) {
++    return value->GetInt();
++  }
++  if (!value->is_string()) {
++    return std::nullopt;
++  }
++  const std::string trimmed(base::TrimWhitespaceASCII(
++      value->GetString(), base::TrimPositions::TRIM_ALL));
++  if (trimmed.empty()) {
++    return std::nullopt;
++  }
++  int parsed = 0;
++  if (!base::StringToInt(trimmed, &parsed)) {
++    return std::nullopt;
++  }
++  return static_cast<int32_t>(parsed);
++}
++
++bool ReadOptionalInt32(const base::DictValue& dict,
++                       std::string_view key,
++                       std::optional<int32_t>* destination) {
++  const base::Value* value = dict.Find(key);
++  if (!value) {
++    return true;
++  }
++  std::optional<int32_t> parsed = ParseInt32(value);
++  if (!parsed.has_value()) {
++    return false;
++  }
++  *destination = *parsed;
++  return true;
++}
++
++bool ReadOptionalInt(const base::DictValue& dict,
++                     std::string_view key,
++                     std::optional<int>* destination) {
++  std::optional<int32_t> parsed;
++  if (!ReadOptionalInt32(dict, key, &parsed)) {
++    return false;
++  }
++  if (parsed.has_value()) {
++    *destination = *parsed;
++  }
++  return true;
++}
++
++bool ReadOptionalString(const base::DictValue& dict,
++                        std::string_view key,
++                        size_t max_bytes,
++                        std::optional<std::string>* destination,
++                        bool allow_empty = true) {
++  const base::Value* value = dict.Find(key);
++  if (!value) {
++    return true;
++  }
++  if (!value->is_string() ||
++      !IsBoundedUtf8(value->GetString(), max_bytes, allow_empty)) {
++    return false;
++  }
++  *destination = value->GetString();
++  return true;
++}
++
++std::optional<std::string> NormalizeBadge(std::string_view badge) {
++  struct BadgeEntry {
++    std::string_view normalized;
++    std::string_view canonical;
++  };
++  constexpr BadgeEntry kBadges[] = {
++      {"claude", "Claude"},
++      {"codex", "Codex"},
++      {"chatgpt", "ChatGPT"},
++      {"perplexity", "Perplexity"},
++      {"windsurf", "Windsurf"},
++      {"cursor", "Cursor"},
++      {"antigravity", "Antigravity"},
++      {"opencode", "OpenCode"},
++      {"openclaw", "OpenClaw"},
++      {"openclaw🦀", "OpenClaw 🦀"},
++      {"grok", "Grok"},
++      {"gemini", "Gemini"},
++      {"hermes", "Hermes"},
++  };
++
++  std::string normalized;
++  normalized.reserve(badge.size());
++  for (char character : badge) {
++    if (character == ' ' || character == '_' || character == '-') {
++      continue;
++    }
++    normalized.push_back(base::ToLowerASCII(character));
++  }
++  for (const auto& entry : kBadges) {
++    if (normalized == entry.normalized) {
++      return std::string(entry.canonical);
++    }
++  }
++  return std::nullopt;
++}
++
++base::expected<AgentTarget, AgentRouteResult> ParseTarget(
++    const base::DictValue& target) {
++  if (!HasOnlyKeys(target, {"browser_session_id", "window_session_id", "tab_id",
++                            "tabId", "tabIndex"})) {
++    return base::unexpected(InvalidRequest("Unknown target field"));
++  }
++
++  AgentTarget parsed;
++  if (!ReadOptionalInt32(target, "browser_session_id",
++                         &parsed.browser_session_id) ||
++      !ReadOptionalInt32(target, "window_session_id",
++                         &parsed.window_session_id)) {
++    return base::unexpected(InvalidTarget("Target ids must be int32 values"));
++  }
++  if ((parsed.browser_session_id.has_value() &&
++       *parsed.browser_session_id <= 0) ||
++      (parsed.window_session_id.has_value() &&
++       *parsed.window_session_id <= 0)) {
++    return base::unexpected(
++        InvalidTarget("Stable target ids must be positive"));
++  }
++
++  std::optional<int32_t> snake_id;
++  std::optional<int32_t> camel_id;
++  if (!ReadOptionalInt32(target, "tab_id", &snake_id) ||
++      !ReadOptionalInt32(target, "tabId", &camel_id) ||
++      !ReadOptionalInt(target, "tabIndex", &parsed.tab_index)) {
++    return base::unexpected(
++        InvalidTarget("Tab target values must be int32 values"));
++  }
++  if (snake_id.has_value() && camel_id.has_value() && snake_id != camel_id) {
++    return base::unexpected(
++        InvalidTarget("tab_id and tabId identify different tabs"));
++  }
++  if ((snake_id.has_value() || camel_id.has_value()) &&
++      parsed.tab_index.has_value()) {
++    return base::unexpected(
++        InvalidTarget("Stable tab ids cannot be combined with tabIndex"));
++  }
++  if ((snake_id.has_value() && *snake_id <= 0) ||
++      (camel_id.has_value() && *camel_id <= 0)) {
++    return base::unexpected(InvalidTarget("Stable tab ids must be positive"));
++  }
++  if (parsed.tab_index.has_value() && *parsed.tab_index < 0) {
++    return base::unexpected(
++        InvalidTarget("tabIndex must be a zero-based nonnegative index"));
++  }
++  const std::optional<int32_t> stable_id =
++      snake_id.has_value() ? snake_id : camel_id;
++  if (stable_id.has_value()) {
++    parsed.tab_handle = tabs::TabHandle(*stable_id);
++  }
++  return parsed;
++}
++
++base::expected<AgentVisualContext, AgentRouteResult> ParseVisual(
++    const base::DictValue& visual) {
++  if (!HasOnlyKeys(visual, {"visual_reason", "client", "is_final"})) {
++    return base::unexpected(InvalidRequest("Unknown visual field"));
++  }
++
++  AgentVisualContext context;
++  if (!ReadOptionalString(visual, "visual_reason", kMaxVisualReasonBytes,
++                          &context.visual_reason, false) ||
++      !ReadOptionalString(visual, "client", kMaxVisualClientBytes,
++                          &context.client, false)) {
++    return base::unexpected(
++        InvalidRequest("Visual labels must be nonempty bounded UTF-8"));
++  }
++  if (context.client.has_value()) {
++    std::optional<std::string> canonical = NormalizeBadge(*context.client);
++    if (!canonical.has_value()) {
++      return base::unexpected(Failure(
++          AgentErrorCode::kBadgeNotAllowed, "Unknown external client badge",
++          "Omit client or use a supported external client label"));
++    }
++    context.client = std::move(canonical);
++  }
++  if (const base::Value* is_final = visual.Find("is_final")) {
++    if (!is_final->is_bool()) {
++      return base::unexpected(InvalidRequest("is_final must be a boolean"));
++    }
++    context.is_final = is_final->GetBool();
++  }
++  return context;
++}
++
++base::expected<AgentFrameTarget, AgentRouteResult> ParseFrame(
++    const base::DictValue& frame) {
++  if (!HasOnlyKeys(frame, {"document_token", "render_process_id",
++                           "render_frame_routing_id"})) {
++    return base::unexpected(InvalidRequest("Unknown frame field"));
++  }
++  AgentFrameTarget parsed;
++  if (!ReadOptionalString(frame, "document_token", kMaxDocumentTokenBytes,
++                          &parsed.document_token) ||
++      !ReadOptionalInt32(frame, "render_process_id",
++                         &parsed.render_process_id) ||
++      !ReadOptionalInt32(frame, "render_frame_routing_id",
++                         &parsed.render_frame_routing_id)) {
++    return base::unexpected(InvalidRequest("Invalid bounded frame target"));
++  }
++  return parsed;
++}
++
++base::expected<AgentElementTarget, AgentRouteResult> ParseElement(
++    const base::DictValue& element) {
++  if (!HasOnlyKeys(element, {"element_ref", "selector", "accessible_name"})) {
++    return base::unexpected(InvalidRequest("Unknown element field"));
++  }
++  AgentElementTarget parsed;
++  if (!ReadOptionalString(element, "element_ref", kMaxElementRefBytes,
++                          &parsed.element_ref) ||
++      !ReadOptionalString(element, "selector", kMaxSelectorBytes,
++                          &parsed.selector) ||
++      !ReadOptionalString(element, "accessible_name", kMaxSelectorBytes,
++                          &parsed.accessible_name)) {
++    return base::unexpected(InvalidRequest("Invalid bounded element target"));
++  }
++  return parsed;
++}
++
++base::expected<AgentPageRequest, AgentRouteResult> ParseParams(
++    const base::DictValue& params,
++    AgentRouteName route,
++    std::optional<GURL>* url,
++    bool* foreground,
++    std::optional<AgentInternalSurface>* internal_surface) {
++  if (!HasOnlyKeys(params,
++                   {"url", "frame", "element", "text", "key", "option_value",
++                    "scroll_delta_x", "scroll_delta_y", "drop_file_tokens",
++                    "max_chars", "max_nodes", "compact", "javascript",
++                    "javascript_permission_granted", "verify_mutation",
++                    "attribute_name", "foreground", "surface"})) {
++    return base::unexpected(InvalidRequest("Unknown params field"));
++  }
++  if (route == AgentRouteName::kOpenInternalSurface &&
++      !HasOnlyKeys(params, {"surface"})) {
++    return base::unexpected(InvalidRequest(
++        "open_internal_surface accepts only the closed surface field"));
++  }
++
++  AgentPageRequest page;
++  if (const base::DictValue* frame = params.FindDict("frame")) {
++    auto parsed = ParseFrame(*frame);
++    if (!parsed.has_value()) {
++      return base::unexpected(std::move(parsed.error()));
++    }
++    page.frame = std::move(*parsed);
++  } else if (params.contains("frame")) {
++    return base::unexpected(InvalidRequest("frame must be an object"));
++  }
++  if (const base::DictValue* element = params.FindDict("element")) {
++    auto parsed = ParseElement(*element);
++    if (!parsed.has_value()) {
++      return base::unexpected(std::move(parsed.error()));
++    }
++    page.action.element = std::move(*parsed);
++  } else if (params.contains("element")) {
++    return base::unexpected(InvalidRequest("element must be an object"));
++  }
++
++  if (!ReadOptionalString(params, "text", kMaxTextBytes, &page.action.text) ||
++      !ReadOptionalString(params, "key", kMaxKeyBytes, &page.action.key) ||
++      !ReadOptionalString(params, "option_value", kMaxElementRefBytes,
++                          &page.action.option_value) ||
++      !ReadOptionalString(params, "javascript", kMaxJavascriptBytes,
++                          &page.javascript) ||
++      !ReadOptionalString(params, "attribute_name", kMaxAttributeBytes,
++                          &page.attribute_name) ||
++      !ReadOptionalInt(params, "scroll_delta_x", &page.action.scroll_delta_x) ||
++      !ReadOptionalInt(params, "scroll_delta_y", &page.action.scroll_delta_y)) {
++    return base::unexpected(InvalidRequest("Invalid bounded params value"));
++  }
++
++  std::optional<int> max_chars;
++  std::optional<int> max_nodes;
++  if (!ReadOptionalInt(params, "max_chars", &max_chars) ||
++      !ReadOptionalInt(params, "max_nodes", &max_nodes) ||
++      (max_chars.has_value() && (*max_chars < 1 || *max_chars > kMaxChars)) ||
++      (max_nodes.has_value() && (*max_nodes < 1 || *max_nodes > kMaxNodes))) {
++    return base::unexpected(
++        InvalidRequest("Read bounds must be positive and within limits"));
++  }
++  if (max_chars.has_value()) {
++    page.read_options.max_chars = static_cast<size_t>(*max_chars);
++  }
++  if (max_nodes.has_value()) {
++    page.read_options.max_nodes = static_cast<size_t>(*max_nodes);
++  }
++
++  auto read_bool = [&params](std::string_view key, bool* destination) -> bool {
++    const base::Value* value = params.Find(key);
++    if (!value) {
++      return true;
++    }
++    if (!value->is_bool()) {
++      return false;
++    }
++    *destination = value->GetBool();
++    return true;
++  };
++  if (!read_bool("compact", &page.read_options.compact) ||
++      !read_bool("javascript_permission_granted",
++                 &page.javascript_permission_granted) ||
++      !read_bool("verify_mutation", &page.verify_mutation) ||
++      !read_bool("foreground", foreground)) {
++    return base::unexpected(InvalidRequest("Boolean params must be booleans"));
++  }
++
++  if (const base::Value* url_value = params.Find("url")) {
++    if (!url_value->is_string() ||
++        !IsBoundedUtf8(url_value->GetString(), kMaxUrlBytes, false)) {
++      return base::unexpected(InvalidRequest("url must be bounded UTF-8"));
++    }
++    GURL parsed_url(url_value->GetString());
++    if (!parsed_url.is_valid()) {
++      return base::unexpected(InvalidRequest("url must be valid"));
++    }
++    *url = std::move(parsed_url);
++  }
++
++  if (const base::Value* tokens = params.Find("drop_file_tokens")) {
++    if (!tokens->is_list()) {
++      return base::unexpected(
++          InvalidRequest("drop_file_tokens must be an array"));
++    }
++    if (tokens->GetList().size() > 64) {
++      return base::unexpected(
++          InvalidRequest("drop_file_tokens exceeds the item limit"));
++    }
++    for (const base::Value& token : tokens->GetList()) {
++      if (!token.is_string() ||
++          !IsBoundedUtf8(token.GetString(), kMaxElementRefBytes, false)) {
++        return base::unexpected(
++            InvalidRequest("drop_file_tokens must contain bounded strings"));
++      }
++      page.action.drop_file_tokens.push_back(token.GetString());
++    }
++  }
++
++  const base::Value* surface = params.Find("surface");
++  if (route == AgentRouteName::kOpenInternalSurface) {
++    if (!surface || !surface->is_string()) {
++      return base::unexpected(
++          InvalidRequest("open_internal_surface requires params.surface"));
++    }
++    *internal_surface = AgentInternalSurfaceFromString(surface->GetString());
++    if (!internal_surface->has_value()) {
++      return base::unexpected(
++          InvalidRequest("surface must name a Prometheus internal surface"));
++    }
++  } else if (surface) {
++    return base::unexpected(
++        InvalidRequest("surface is valid only for open_internal_surface"));
++  }
++  return page;
++}
++
++bool IsDiagnosticKey(std::string_view key) {
++  return std::find(kDiagnosticKeys.begin(), kDiagnosticKeys.end(), key) !=
++         kDiagnosticKeys.end();
++}
++
++base::expected<void, AgentRouteResult> ValidateResultBounds(
++    const AgentRouteResult& result) {
++  if (!IsBoundedUtf8(result.message, 4096) ||
++      !IsBoundedUtf8(result.recovery, 4096) ||
++      result.changed_state.size() > 128) {
++    return base::unexpected(RequestTooLarge("Result metadata exceeds limits"));
++  }
++  for (const std::string& change : result.changed_state) {
++    if (!IsBoundedUtf8(change, 256)) {
++      return base::unexpected(
++          RequestTooLarge("Changed-state metadata exceeds limits"));
++    }
++  }
++  for (const AgentTabMetadata& tab : result.tabs) {
++    if (!IsBoundedUtf8(tab.title, kMaxTabTitleBytes) ||
++        tab.url.spec().size() > kMaxUrlBytes) {
++      return base::unexpected(RequestTooLarge("Tab metadata exceeds limits"));
++    }
++  }
++  for (const AgentWindowMetadata& window : result.windows) {
++    if (window.tab_count >
++        static_cast<size_t>(std::numeric_limits<int>::max())) {
++      return base::unexpected(
++          RequestTooLarge("Window metadata exceeds limits"));
++    }
++  }
++  if (result.element_read_result.has_value() &&
++      !IsBoundedUtf8(result.element_read_result->value, kMaxElementReadBytes)) {
++    return base::unexpected(
++        RequestTooLarge("Element read result exceeds limits"));
++  }
++  if (!result.diagnostics.empty() && result.diagnostics.size() != 10) {
++    return base::unexpected(
++        InvalidRequest("Diagnostics must contain exactly ten components"));
++  }
++  std::array<bool, kDiagnosticKeys.size()> seen_diagnostics = {};
++  for (const AgentDiagnosticComponent& diagnostic : result.diagnostics) {
++    if (!IsDiagnosticKey(diagnostic.key) ||
++        !IsBoundedUtf8(diagnostic.reason, kMaxDiagnosticTextBytes) ||
++        !IsBoundedUtf8(diagnostic.next_action, kMaxDiagnosticTextBytes)) {
++      return base::unexpected(InvalidRequest("Invalid diagnostic component"));
++    }
++    const auto key = std::find(kDiagnosticKeys.begin(), kDiagnosticKeys.end(),
++                               diagnostic.key);
++    const size_t index = static_cast<size_t>(key - kDiagnosticKeys.begin());
++    if (seen_diagnostics[index]) {
++      return base::unexpected(
++          InvalidRequest("Diagnostic component keys must be unique"));
++    }
++    seen_diagnostics[index] = true;
++  }
++  return base::ok();
++}
++
++base::DictValue TargetToValue(const AgentTarget& target) {
++  base::DictValue value;
++  if (target.browser_session_id.has_value()) {
++    value.Set("browser_session_id", *target.browser_session_id);
++  }
++  if (target.window_session_id.has_value()) {
++    value.Set("window_session_id", *target.window_session_id);
++  }
++  if (target.tab_handle.raw_value() != tabs::TabHandle::NullValue) {
++    value.Set("tab_id", target.tab_handle.raw_value());
++  }
++  if (target.tab_index.has_value()) {
++    value.Set("tabIndex", *target.tab_index);
++  }
++  return value;
++}
++
++base::DictValue PageResultToValue(const AgentPageResult& page) {
++  base::DictValue value;
++  value.Set("visible_text", page.visible_text);
++  value.Set("dom_snapshot_json", page.dom_snapshot_json);
++  value.Set("compact_snapshot_json", page.compact_snapshot_json);
++  value.Set("javascript_value_json", page.javascript_value_json);
++  value.Set("javascript_error", page.javascript_error);
++  value.Set("change_report_json", page.change_report_json);
++  value.Set("truncated", page.truncated);
++  value.Set("verification_succeeded", page.verification_succeeded);
++  value.Set("omitted_count", static_cast<double>(page.omitted_count));
++  return value;
++}
++
++}  // namespace
++
++base::expected<AgentRouteRequest, AgentRouteResult> ParseAgentTransportRequest(
++    std::string_view json) {
++  if (json.size() > kMaxInputBytes) {
++    return base::unexpected(RequestTooLarge("Request body exceeds 1 MiB"));
++  }
++  std::optional<base::DictValue> root =
++      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
++  if (!root.has_value()) {
++    return base::unexpected(
++        InvalidRequest("Request body must be a JSON object"));
++  }
++  if (!HasOnlyKeys(*root,
++                   {"route", "session_id", "target", "params", "visual"})) {
++    return base::unexpected(InvalidRequest("Unknown top-level field"));
++  }
++
++  const std::string* route_name = root->FindString("route");
++  const std::string* session_id = root->FindString("session_id");
++  if (!route_name || !session_id ||
++      !IsBoundedUtf8(*session_id, kMaxSessionIdBytes, false)) {
++    return base::unexpected(
++        InvalidRequest("route and bounded session_id strings are required"));
++  }
++  std::optional<AgentRouteName> route = AgentRouteNameFromString(*route_name);
++  if (!route.has_value()) {
++    return base::unexpected(Failure(
++        AgentErrorCode::kInvalidRoute, "Unknown native route",
++        "Use a canonical tool route returned by the external MCP bridge"));
++  }
++
++  AgentRouteRequest request;
++  request.route_name = *route;
++  request.session_id = *session_id;
++  if (const base::DictValue* target = root->FindDict("target")) {
++    auto parsed = ParseTarget(*target);
++    if (!parsed.has_value()) {
++      return base::unexpected(std::move(parsed.error()));
++    }
++    request.target = std::move(*parsed);
++  } else if (root->contains("target")) {
++    return base::unexpected(InvalidRequest("target must be an object"));
++  }
++
++  if (const base::DictValue* visual = root->FindDict("visual")) {
++    auto parsed = ParseVisual(*visual);
++    if (!parsed.has_value()) {
++      return base::unexpected(std::move(parsed.error()));
++    }
++    request.visual_context = std::move(*parsed);
++  } else if (root->contains("visual")) {
++    return base::unexpected(InvalidRequest("visual must be an object"));
++  }
++
++  if (const base::DictValue* params = root->FindDict("params")) {
++    auto parsed = ParseParams(*params, request.route_name, &request.url,
++                              &request.foreground, &request.internal_surface);
++    if (!parsed.has_value()) {
++      return base::unexpected(std::move(parsed.error()));
++    }
++    request.page_request = std::move(*parsed);
++  } else if (root->contains("params")) {
++    return base::unexpected(InvalidRequest("params must be an object"));
++  } else if (request.route_name == AgentRouteName::kOpenInternalSurface) {
++    return base::unexpected(
++        InvalidRequest("open_internal_surface requires params.surface"));
++  }
++  return request;
++}
++
++base::expected<std::string, AgentRouteResult> SerializeAgentTransportResult(
++    const AgentRouteResult& result) {
++  auto bounds = ValidateResultBounds(result);
++  if (!bounds.has_value()) {
++    return base::unexpected(std::move(bounds.error()));
++  }
++
++  base::DictValue root;
++  root.Set("ok", result.ok);
++  root.Set("error_code", AgentErrorCodeToString(result.error_code));
++  root.Set("message", result.message);
++  root.Set("recovery", result.recovery);
++  root.Set("elapsed_ms", result.elapsed.InMillisecondsF());
++  root.Set("target", TargetToValue(result.target));
++
++  base::ListValue changed_state;
++  for (const std::string& change : result.changed_state) {
++    changed_state.Append(change);
++  }
++  root.Set("changed_state", std::move(changed_state));
++
++  base::ListValue tabs;
++  for (const AgentTabMetadata& tab : result.tabs) {
++    base::DictValue value;
++    value.Set("tab_id", tab.tab_id);
++    value.Set("window_id", tab.window_id);
++    value.Set("index", tab.index);
++    value.Set("title", tab.title);
++    value.Set("url", tab.url.spec());
++    value.Set("active", tab.active);
++    value.Set("owned_by_session", tab.owned_by_session);
++    tabs.Append(std::move(value));
++  }
++  root.Set("tabs", std::move(tabs));
++
++  base::ListValue windows;
++  for (const AgentWindowMetadata& window : result.windows) {
++    base::DictValue value;
++    value.Set("window_id", window.window_id);
++    value.Set("active", window.active);
++    value.Set("tab_count", static_cast<int>(window.tab_count));
++    windows.Append(std::move(value));
++  }
++  root.Set("windows", std::move(windows));
++
++  if (result.page_result.has_value()) {
++    root.Set("page", PageResultToValue(*result.page_result));
++  }
++  if (result.element_read_result.has_value()) {
++    base::DictValue element;
++    element.Set("value", result.element_read_result->value);
++    element.Set("attribute_present",
++                result.element_read_result->attribute_present);
++    root.Set("element_read", std::move(element));
++  }
++
++  base::ListValue diagnostics;
++  for (const AgentDiagnosticComponent& diagnostic : result.diagnostics) {
++    base::DictValue value;
++    value.Set("key", diagnostic.key);
++    value.Set("status", AgentDiagnosticStatusToString(diagnostic.status));
++    value.Set("reason", diagnostic.reason);
++    value.Set("next_action", diagnostic.next_action);
++    diagnostics.Append(std::move(value));
++  }
++  root.Set("diagnostics", std::move(diagnostics));
++
++  std::optional<std::string> json = base::WriteJson(root);
++  if (!json.has_value()) {
++    return base::unexpected(InvalidRequest("Result could not be serialized"));
++  }
++  if (json->size() > kMaxOutputBytes) {
++    return base::unexpected(RequestTooLarge("Serialized result exceeds 2 MiB"));
++  }
++  return std::move(*json);
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_transport_codec.h b/chrome/browser/prometheus/prometheus_agent_transport_codec.h
+new file mode 100644
+index 0000000000..93900f9b20
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_transport_codec.h
+@@ -0,0 +1,24 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_TRANSPORT_CODEC_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_TRANSPORT_CODEC_H_
++
++#include <string>
++#include <string_view>
++
++#include "base/types/expected.h"
++#include "chrome/browser/prometheus/prometheus_agent_route.h"
++
++namespace prometheus {
++
++base::expected<AgentRouteRequest, AgentRouteResult> ParseAgentTransportRequest(
++    std::string_view json);
++
++base::expected<std::string, AgentRouteResult> SerializeAgentTransportResult(
++    const AgentRouteResult& result);
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_TRANSPORT_CODEC_H_
+diff --git a/chrome/browser/prometheus/prometheus_agent_transport_unittest.cc b/chrome/browser/prometheus/prometheus_agent_transport_unittest.cc
+index 4c870a17da..81b687554d 100644
+--- a/chrome/browser/prometheus/prometheus_agent_transport_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_transport_unittest.cc
+@@ -2,14 +2,14 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#include "chrome/browser/prometheus/prometheus_agent_transport_codec.h"
+-
+ #include <array>
+ #include <string>
+ #include <string_view>
++#include <utility>
+ 
+ #include "base/json/json_reader.h"
+ #include "chrome/browser/prometheus/prometheus_agent_audit.h"
++#include "chrome/browser/prometheus/prometheus_agent_transport_codec.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ 
+ namespace prometheus {
+@@ -34,9 +34,9 @@ TEST(PrometheusAgentTransportTest, ParsesClosedNativeRoutes) {
+         {"get_attribute", AgentRouteName::kGetAttribute},
+         {"diagnostics", AgentRouteName::kDiagnostics}}};
+   for (const auto& [route, expected] : kRoutes) {
+-    AgentRouteRequest request = ParseRequest(
+-        std::string("{\"route\":\"") + std::string(route) +
+-        "\",\"session_id\":\"session-1\"}");
++    AgentRouteRequest request =
++        ParseRequest(std::string("{\"route\":\"") + std::string(route) +
++                     "\",\"session_id\":\"session-1\"}");
+     EXPECT_EQ(expected, request.route_name);
+   }
+ 
+@@ -54,16 +54,19 @@ TEST(PrometheusAgentTransportTest, ParsesClosedNativeRoutes) {
+   }
+ }
+ 
+-TEST(PrometheusAgentTransportTest, RejectsOpenInternalSurfaceWithoutClosedValue) {
+-  ExpectParseError(
+-      R"({"route":"open_internal_surface","session_id":"s"})",
+-      AgentErrorCode::kInvalidRequest);
++TEST(PrometheusAgentTransportTest,
++     RejectsOpenInternalSurfaceWithoutClosedValue) {
++  ExpectParseError(R"({"route":"open_internal_surface","session_id":"s"})",
++                   AgentErrorCode::kInvalidRequest);
+   ExpectParseError(
+       R"({"route":"open_internal_surface","session_id":"s","params":{"surface":"settings"}})",
+       AgentErrorCode::kInvalidRequest);
+   ExpectParseError(
+       R"({"route":"open_internal_surface","session_id":"s","params":{"surface":"chrome://settings"}})",
+       AgentErrorCode::kInvalidRequest);
++  ExpectParseError(
++      R"({"route":"open_internal_surface","session_id":"s","params":{"surface":"new_tab","url":"chrome://settings"}})",
++      AgentErrorCode::kInvalidRequest);
+ }
+ 
+ TEST(PrometheusAgentTransportTest, RejectsUnknownRoutesFieldsAndOversizedBody) {
+@@ -75,10 +78,60 @@ TEST(PrometheusAgentTransportTest, RejectsUnknownRoutesFieldsAndOversizedBody) {
+   ExpectParseError(
+       R"({"route":"diagnostics","session_id":"s","target":{"mystery":1}})",
+       AgentErrorCode::kInvalidRequest);
++  ExpectParseError(
++      R"({"route":"click","session_id":"s","params":{"mystery":1}})",
++      AgentErrorCode::kInvalidRequest);
++  ExpectParseError(
++      R"({"route":"click","session_id":"s","params":{"frame":{"mystery":1}}})",
++      AgentErrorCode::kInvalidRequest);
++  ExpectParseError(
++      R"({"route":"click","session_id":"s","params":{"element":{"mystery":1}}})",
++      AgentErrorCode::kInvalidRequest);
++  ExpectParseError(
++      R"({"route":"click","session_id":"s","visual":{"mystery":1}})",
++      AgentErrorCode::kInvalidRequest);
+   ExpectParseError(std::string(1'048'577, 'x'),
+                    AgentErrorCode::kRequestTooLarge);
+ }
+ 
++TEST(PrometheusAgentTransportTest, EnforcesExistingPageInputBounds) {
++  for (std::string_view params : {R"("max_chars":0)", R"("max_chars":200001)",
++                                  R"("max_nodes":0)", R"("max_nodes":10001)"}) {
++    ExpectParseError(
++        std::string("{\"route\":\"read_page\",\"session_id\":\"s\","
++                    "\"params\":{") +
++            std::string(params) + "}}",
++        AgentErrorCode::kInvalidRequest);
++  }
++
++  struct BoundedField {
++    std::string_view prefix;
++    size_t oversized_length;
++  };
++  constexpr BoundedField kFields[] = {
++      {R"("text":")", 20001},
++      {R"("javascript":")", 20001},
++      {R"("key":")", 129},
++      {R"("attribute_name":")", 129},
++      {R"("frame":{"document_token":")", 4097},
++      {R"("element":{"element_ref":")", 4097},
++      {R"("element":{"selector":")", 4097},
++  };
++  for (const BoundedField& field : kFields) {
++    const bool nested = field.prefix.find("{") != std::string_view::npos;
++    ExpectParseError(std::string("{\"route\":\"click\",\"session_id\":\"s\","
++                                 "\"params\":{") +
++                         std::string(field.prefix) +
++                         std::string(field.oversized_length, 'x') +
++                         (nested ? "\"}}}" : "\"}}"),
++                     AgentErrorCode::kInvalidRequest);
++  }
++  ExpectParseError(std::string("{\"route\":\"open_tab\",\"session_id\":\"s\","
++                               "\"params\":{\"url\":\"https://example.test/") +
++                       std::string(4097, 'x') + "\"}}",
++                   AgentErrorCode::kInvalidRequest);
++}
++
+ TEST(PrometheusAgentTransportTest, NormalizesTargetSpellings) {
+   AgentRouteRequest snake = ParseRequest(
+       R"({"route":"activate_tab","session_id":"s","target":{"tab_id":42}})");
+@@ -91,6 +144,9 @@ TEST(PrometheusAgentTransportTest, NormalizesTargetSpellings) {
+   AgentRouteRequest index = ParseRequest(
+       R"({"route":"activate_tab","session_id":"s","target":{"tabIndex":7}})");
+   EXPECT_EQ(7, index.target.tab_index);
++  AgentRouteRequest first_index = ParseRequest(
++      R"({"route":"activate_tab","session_id":"s","target":{"tabIndex":0}})");
++  EXPECT_EQ(0, first_index.target.tab_index);
+ 
+   AgentRouteRequest dual = ParseRequest(
+       R"({"route":"activate_tab","session_id":"s","target":{"tab_id":42,"tabId":"42"}})");
+@@ -107,14 +163,22 @@ TEST(PrometheusAgentTransportTest, RejectsAmbiguousTargets) {
+   ExpectParseError(
+       R"({"route":"activate_tab","session_id":"s","target":{"tabId":42,"tabIndex":2}})",
+       AgentErrorCode::kInvalidTarget);
++  ExpectParseError(
++      R"({"route":"activate_tab","session_id":"s","target":{"tab_id":0}})",
++      AgentErrorCode::kInvalidTarget);
++  ExpectParseError(
++      R"({"route":"activate_tab","session_id":"s","target":{"tabIndex":-1}})",
++      AgentErrorCode::kInvalidTarget);
+ }
+ 
+ TEST(PrometheusAgentTransportTest, CoercesOnlyStrictInt32Strings) {
+-  EXPECT_EQ(42, ParseRequest(
+-                    R"({"route":"activate_tab","session_id":"s","target":{"tab_id":"42"}})")
+-                    .target.tab_handle.raw_value());
+-  for (std::string_view value : {"", " ", "+", "NaN", "Infinity", "1.5",
+-                                 "1e2", "2147483648", "-2147483649"}) {
++  EXPECT_EQ(
++      42,
++      ParseRequest(
++          R"({"route":"activate_tab","session_id":"s","target":{"tab_id":"42"}})")
++          .target.tab_handle.raw_value());
++  for (std::string_view value : {"", " ", "+", "NaN", "Infinity", "1.5", "1e2",
++                                 "2147483648", "-2147483649"}) {
+     ExpectParseError(
+         std::string("{\"route\":\"activate_tab\",\"session_id\":\"s\","
+                     "\"target\":{\"tab_id\":\"") +
+@@ -147,6 +211,31 @@ TEST(PrometheusAgentTransportTest, AcceptsIndependentVisualFields) {
+   EXPECT_EQ("Codex", all.visual_context->client);
+ }
+ 
++TEST(PrometheusAgentTransportTest, NormalizesTheClosedVisualBadgeAllowlist) {
++  constexpr std::array<std::pair<std::string_view, std::string_view>, 13>
++      kBadges = {{{"claude", "Claude"},
++                  {"CODEX", "Codex"},
++                  {"chat-gpt", "ChatGPT"},
++                  {"perplexity", "Perplexity"},
++                  {"wind_surf", "Windsurf"},
++                  {"cursor", "Cursor"},
++                  {"anti gravity", "Antigravity"},
++                  {"open-code", "OpenCode"},
++                  {"open_claw", "OpenClaw"},
++                  {"OpenClaw 🦀", "OpenClaw 🦀"},
++                  {"grok", "Grok"},
++                  {"gemini", "Gemini"},
++                  {"hermes", "Hermes"}}};
++  for (const auto& [input, expected] : kBadges) {
++    AgentRouteRequest request =
++        ParseRequest(std::string("{\"route\":\"click\",\"session_id\":\"s\","
++                                 "\"visual\":{\"client\":\"") +
++                     std::string(input) + "\"}}");
++    ASSERT_TRUE(request.visual_context.has_value());
++    EXPECT_EQ(expected, request.visual_context->client);
++  }
++}
++
+ TEST(PrometheusAgentTransportTest, RejectsInvalidVisualFields) {
+   ExpectParseError(
+       R"({"route":"click","session_id":"s","visual":{"client":"spoofed"}})",
+@@ -154,52 +243,55 @@ TEST(PrometheusAgentTransportTest, RejectsInvalidVisualFields) {
+   ExpectParseError(
+       R"({"route":"click","session_id":"s","visual":{"is_final":"true"}})",
+       AgentErrorCode::kInvalidRequest);
+-  ExpectParseError(
+-      std::string("{\"route\":\"click\",\"session_id\":\"s\","
+-                  "\"visual\":{\"visual_reason\":\"") +
+-          std::string(257, 'x') + "\"}}",
+-      AgentErrorCode::kInvalidRequest);
+-  ExpectParseError(
+-      std::string("{\"route\":\"click\",\"session_id\":\"s\","
+-                  "\"visual\":{\"client\":\"") +
+-          std::string(81, 'x') + "\"}}",
+-      AgentErrorCode::kInvalidRequest);
++  ExpectParseError(std::string("{\"route\":\"click\",\"session_id\":\"s\","
++                               "\"visual\":{\"visual_reason\":\"") +
++                       std::string(257, 'x') + "\"}}",
++                   AgentErrorCode::kInvalidRequest);
++  ExpectParseError(std::string("{\"route\":\"click\",\"session_id\":\"s\","
++                               "\"visual\":{\"client\":\"") +
++                       std::string(81, 'x') + "\"}}",
++                   AgentErrorCode::kInvalidRequest);
+ }
+ 
+ TEST(PrometheusAgentTransportTest, SerializesStructuredBoundedResults) {
+   AgentRouteResult result = AgentRouteResult::Success({"metadata_returned"});
+-  result.tabs.push_back(
+-      {.tab_id = 42,
+-       .window_id = 7,
+-       .index = 1,
+-       .title = "Example",
+-       .url = GURL("https://example.test/"),
+-       .active = true,
+-       .owned_by_session = true});
+-  result.windows.push_back(
+-      {.window_id = 7, .active = true, .tab_count = 1});
++  AgentTabMetadata tab;
++  tab.tab_id = 42;
++  tab.window_id = 7;
++  tab.index = 1;
++  tab.title = "Example";
++  tab.url = GURL("https://example.test/");
++  tab.active = true;
++  tab.owned_by_session = true;
++  result.tabs.push_back(std::move(tab));
++  AgentWindowMetadata window;
++  window.window_id = 7;
++  window.active = true;
++  window.tab_count = 1;
++  result.windows.push_back(std::move(window));
+   result.element_read_result = AgentElementReadResult();
+   result.element_read_result->value = "Submit";
+   result.element_read_result->attribute_present = true;
+ 
+   constexpr std::array<std::string_view, 10> kKeys = {
+-      "browser",          "bridge",  "active_tab", "content_adapter",
+-      "internal_adapter", "webui_adapter", "vault", "provider",
+-      "supervision",     "extensions"};
++      "browser",          "bridge",        "active_tab", "content_adapter",
++      "internal_adapter", "webui_adapter", "vault",      "provider",
++      "supervision",      "extensions"};
+   constexpr std::array<AgentDiagnosticStatus, 4> kStatuses = {
+       AgentDiagnosticStatus::kReady, AgentDiagnosticStatus::kDegraded,
+       AgentDiagnosticStatus::kNotReady, AgentDiagnosticStatus::kUnavailable};
+   for (size_t i = 0; i < kKeys.size(); ++i) {
+-    result.diagnostics.push_back(
+-        {.key = std::string(kKeys[i]),
+-         .status = kStatuses[i % kStatuses.size()],
+-         .reason = "bounded status",
+-         .next_action = "retry later"});
++    AgentDiagnosticComponent diagnostic;
++    diagnostic.key = std::string(kKeys[i]);
++    diagnostic.status = kStatuses[i % kStatuses.size()];
++    diagnostic.reason = "bounded status";
++    diagnostic.next_action = "retry later";
++    result.diagnostics.push_back(std::move(diagnostic));
+   }
+ 
+   auto serialized = SerializeAgentTransportResult(result);
+   ASSERT_TRUE(serialized.has_value());
+-  auto parsed = base::JSONReader::ReadDict(*serialized);
++  auto parsed = base::JSONReader::ReadDict(*serialized, base::JSON_PARSE_RFC);
+   ASSERT_TRUE(parsed.has_value());
+   EXPECT_TRUE(parsed->FindBool("ok").value_or(false));
+   ASSERT_NE(nullptr, parsed->FindList("tabs"));
+@@ -218,8 +310,35 @@ TEST(PrometheusAgentTransportTest, RejectsOversizedStructuredOutput) {
+   result.page_result->visible_text = std::string(2'097'152, 'x');
+   auto serialized = SerializeAgentTransportResult(result);
+   ASSERT_FALSE(serialized.has_value());
+-  EXPECT_EQ(AgentErrorCode::kRequestTooLarge,
+-            serialized.error().error_code);
++  EXPECT_EQ(AgentErrorCode::kRequestTooLarge, serialized.error().error_code);
++}
++
++TEST(PrometheusAgentTransportTest, RejectsMalformedDiagnosticSets) {
++  AgentRouteResult duplicate = AgentRouteResult::Success({});
++  for (size_t i = 0; i < 10; ++i) {
++    AgentDiagnosticComponent diagnostic;
++    diagnostic.key = "browser";
++    diagnostic.status = AgentDiagnosticStatus::kReady;
++    duplicate.diagnostics.push_back(std::move(diagnostic));
++  }
++  auto duplicate_result = SerializeAgentTransportResult(duplicate);
++  ASSERT_FALSE(duplicate_result.has_value());
++  EXPECT_EQ(AgentErrorCode::kInvalidRequest,
++            duplicate_result.error().error_code);
++
++  AgentRouteResult unknown = AgentRouteResult::Success({});
++  for (std::string_view key :
++       {"browser", "bridge", "active_tab", "content_adapter",
++        "internal_adapter", "webui_adapter", "vault", "provider", "supervision",
++        "unknown"}) {
++    AgentDiagnosticComponent diagnostic;
++    diagnostic.key = key;
++    diagnostic.status = AgentDiagnosticStatus::kReady;
++    unknown.diagnostics.push_back(std::move(diagnostic));
++  }
++  auto unknown_result = SerializeAgentTransportResult(unknown);
++  ASSERT_FALSE(unknown_result.has_value());
++  EXPECT_EQ(AgentErrorCode::kInvalidRequest, unknown_result.error().error_code);
+ }
+ 
+ TEST(PrometheusAgentTransportTest, ExcludesContentFromMetadataAndErrors) {
+@@ -232,25 +351,29 @@ TEST(PrometheusAgentTransportTest, ExcludesContentFromMetadataAndErrors) {
+   result.page_result->javascript_error = "token=private";
+   result.element_read_result = AgentElementReadResult();
+   result.element_read_result->value = "/Users/example/private-profile";
+-  result.diagnostics.push_back(
+-      {.key = "browser",
+-       .status = AgentDiagnosticStatus::kDegraded,
+-       .reason = "bounded status",
+-       .next_action = "retry"});
++  for (std::string_view key :
++       {"browser", "bridge", "active_tab", "content_adapter",
++        "internal_adapter", "webui_adapter", "vault", "provider", "supervision",
++        "extensions"}) {
++    AgentDiagnosticComponent diagnostic;
++    diagnostic.key = key;
++    diagnostic.status = AgentDiagnosticStatus::kDegraded;
++    diagnostic.reason = "bounded status";
++    diagnostic.next_action = "retry";
++    result.diagnostics.push_back(std::move(diagnostic));
++  }
+ 
+   auto serialized = SerializeAgentTransportResult(result);
+   ASSERT_TRUE(serialized.has_value());
+   EXPECT_NE(std::string::npos, serialized->find(kSecret));
+-  auto parsed = base::JSONReader::ReadDict(*serialized);
++  auto parsed = base::JSONReader::ReadDict(*serialized, base::JSON_PARSE_RFC);
+   ASSERT_TRUE(parsed.has_value());
+-  EXPECT_EQ(std::string::npos,
+-            parsed->FindString("message")->find(kSecret));
++  EXPECT_EQ(std::string::npos, parsed->FindString("message")->find(kSecret));
+   EXPECT_EQ(std::string::npos,
+             parsed->FindString("recovery")->find("token=private"));
+   const base::DictValue& diagnostic =
+       (*parsed->FindList("diagnostics"))[0].GetDict();
+-  EXPECT_EQ(std::string::npos,
+-            diagnostic.FindString("reason")->find(kSecret));
++  EXPECT_EQ(std::string::npos, diagnostic.FindString("reason")->find(kSecret));
+ 
+   AgentRouteAuditRecord audit;
+   audit.route_name = AgentRouteName::kGetText;
+diff --git a/chrome/browser/prometheus/prometheus_page_adapter.cc b/chrome/browser/prometheus/prometheus_page_adapter.cc
+index f3eeb70b48..0849743f1a 100644
+--- a/chrome/browser/prometheus/prometheus_page_adapter.cc
++++ b/chrome/browser/prometheus/prometheus_page_adapter.cc
+@@ -316,6 +316,10 @@ void PrometheusPageAdapter::Execute(const AgentRouteRequest& request,
+     case AgentRouteName::kOpenPrometheusNewTab:
+     case AgentRouteName::kOpenPrometheusSidePanel:
+     case AgentRouteName::kOpenPrometheusControlPanel:
++    case AgentRouteName::kGetText:
++    case AgentRouteName::kGetAttribute:
++    case AgentRouteName::kDiagnostics:
++    case AgentRouteName::kOpenInternalSurface:
+     case AgentRouteName::kUnsupportedPageAction:
+       std::move(callback).Run(UnsupportedPageRoute(request.route_name));
+       return;
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,103 @@
+From 9342456650b0ad860ef53d5bce378b5fb700524f Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 05:26:14 -0500
+Subject: [PATCH 16/19] fix(19-07): harden live MCP integration
+
+---
+ .../prometheus_agent_transport_codec.cc       | 46 ++++++++++++++++++-
+ .../prometheus_agent_transport_unittest.cc    | 15 ++++++
+ 2 files changed, 60 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_transport_codec.cc b/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
+index b6fad99966..e5e3b2e0ec 100644
+--- a/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
++++ b/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
+@@ -238,6 +238,46 @@ std::optional<std::string> NormalizeBadge(std::string_view badge) {
+   return std::nullopt;
+ }
+ 
++bool UsesActionFrame(AgentRouteName route) {
++  switch (route) {
++    case AgentRouteName::kGetText:
++    case AgentRouteName::kGetAttribute:
++    case AgentRouteName::kClick:
++    case AgentRouteName::kTypeText:
++    case AgentRouteName::kPressKey:
++    case AgentRouteName::kScroll:
++    case AgentRouteName::kHover:
++    case AgentRouteName::kSelectOption:
++    case AgentRouteName::kClear:
++    case AgentRouteName::kDrag:
++    case AgentRouteName::kDropFile:
++      return true;
++    case AgentRouteName::kListTabs:
++    case AgentRouteName::kListWindows:
++    case AgentRouteName::kOpenTab:
++    case AgentRouteName::kActivateTab:
++    case AgentRouteName::kCloseTab:
++    case AgentRouteName::kNavigate:
++    case AgentRouteName::kReload:
++    case AgentRouteName::kGoBack:
++    case AgentRouteName::kGoForward:
++    case AgentRouteName::kDuplicateTab:
++    case AgentRouteName::kMoveTabToNewWindow:
++    case AgentRouteName::kOpenPrometheusNewTab:
++    case AgentRouteName::kOpenPrometheusSidePanel:
++    case AgentRouteName::kOpenPrometheusControlPanel:
++    case AgentRouteName::kReadPage:
++    case AgentRouteName::kGetDomSnapshot:
++    case AgentRouteName::kGetPageSnapshot:
++    case AgentRouteName::kDiagnostics:
++    case AgentRouteName::kOpenInternalSurface:
++    case AgentRouteName::kExecuteJs:
++    case AgentRouteName::kUnsupportedPageAction:
++      return false;
++  }
++  return false;
++}
++
+ base::expected<AgentTarget, AgentRouteResult> ParseTarget(
+     const base::DictValue& target) {
+   if (!HasOnlyKeys(target, {"browser_session_id", "window_session_id", "tab_id",
+@@ -386,7 +426,11 @@ base::expected<AgentPageRequest, AgentRouteResult> ParseParams(
+     if (!parsed.has_value()) {
+       return base::unexpected(std::move(parsed.error()));
+     }
+-    page.frame = std::move(*parsed);
++    if (UsesActionFrame(route)) {
++      page.action.frame = std::move(*parsed);
++    } else {
++      page.frame = std::move(*parsed);
++    }
+   } else if (params.contains("frame")) {
+     return base::unexpected(InvalidRequest("frame must be an object"));
+   }
+diff --git a/chrome/browser/prometheus/prometheus_agent_transport_unittest.cc b/chrome/browser/prometheus/prometheus_agent_transport_unittest.cc
+index 5a225e7fc1..dc0dd43120 100644
+--- a/chrome/browser/prometheus/prometheus_agent_transport_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_transport_unittest.cc
+@@ -209,6 +209,21 @@ TEST(PrometheusAgentTransportTest, RejectsInvalidInt32Numbers) {
+       AgentErrorCode::kInvalidTarget);
+ }
+ 
++TEST(PrometheusAgentTransportTest, RoutesFrameToTheNativeConsumer) {
++  AgentRouteRequest element = ParseRequest(
++      R"({"route":"get_text","session_id":"s","params":{"frame":{"document_token":"child-document"},"element":{"element_ref":"child-document:1"}}})");
++  ASSERT_TRUE(element.page_request.has_value());
++  EXPECT_EQ("child-document",
++            element.page_request->action.frame.document_token);
++  EXPECT_FALSE(element.page_request->frame.document_token.has_value());
++
++  AgentRouteRequest read = ParseRequest(
++      R"({"route":"read_page","session_id":"s","params":{"frame":{"document_token":"child-document"}}})");
++  ASSERT_TRUE(read.page_request.has_value());
++  EXPECT_EQ("child-document", read.page_request->frame.document_token);
++  EXPECT_FALSE(read.page_request->action.frame.document_token.has_value());
++}
++
+ TEST(PrometheusAgentTransportTest, AcceptsIndependentVisualFields) {
+   AgentRouteRequest reason = ParseRequest(
+       R"({"route":"click","session_id":"s","visual":{"visual_reason":"Confirm the result"}})");
+-- 
+2.50.1 (Apple Git-155)
+

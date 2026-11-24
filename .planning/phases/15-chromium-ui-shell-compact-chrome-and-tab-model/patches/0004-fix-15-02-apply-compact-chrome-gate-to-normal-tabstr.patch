@@ -1,0 +1,41 @@
+From 0e0082e987dfb4ee1df18ce246a058f26741c843 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 00:46:29 -0500
+Subject: [PATCH 04/11] fix(15-02): apply compact chrome gate to normal
+ tabstrip layout
+
+---
+ .../frame/layout/browser_view_tabbed_layout_impl.cc    | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+index c2cf06e0de..a32f80e4e3 100644
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -695,6 +695,12 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+   bool needs_exclusion = true;
+   const bool adjust_for_cracking = AvoidCrackingForFractionalDisplay();
+   const HorizontalLayout& horizontal_layout = layout_data_->horizontal_layout;
++  const bool prometheus_compact_chrome =
++      ShouldUsePrometheusCompactChrome(browser()) &&
++      layout_data_->tab_strip_type == TabStripType::kHorizontal;
++  if (prometheus_compact_chrome) {
++    ApplyPrometheusCompactChromeReservation(params);
++  }
+ 
+   // Lay out horizontal tab strip region if present.
+   if (IsParentedTo(views().horizontal_tab_strip_region_view,
+@@ -704,6 +710,10 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+       const int leading_margin = GetHorizontalTabStripLeadingMargin(params);
+       tabstrip_bounds = GetBoundsWithExclusion(
+           params, views().horizontal_tab_strip_region_view, leading_margin);
++      if (prometheus_compact_chrome) {
++        tabstrip_bounds.set_height(std::max(
++            tabstrip_bounds.height(), kPrometheusCompactChromeHeight));
++      }
+       params.SetTop(tabstrip_bounds.bottom() -
+                     GetLayoutConstant(LayoutConstant::kTabstripToolbarOverlap));
+       needs_exclusion = false;
+-- 
+2.50.1 (Apple Git-155)
+

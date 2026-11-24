@@ -1,0 +1,210 @@
+From a4423116ff8082ff79e2af3cb073e4529a18beb4 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 01:23:41 -0500
+Subject: [PATCH 11/11] test(15-05): cover Prometheus tab commands
+
+---
+ .../prometheus_tab_commands_browsertest.cc    | 166 ++++++++++++++++++
+ chrome/browser/ui/views/prometheus/BUILD.gn   |   4 +
+ 2 files changed, 170 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_tab_commands_browsertest.cc
+
+diff --git a/chrome/browser/prometheus/prometheus_tab_commands_browsertest.cc b/chrome/browser/prometheus/prometheus_tab_commands_browsertest.cc
+new file mode 100644
+index 0000000000..fcda13169f
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_tab_commands_browsertest.cc
+@@ -0,0 +1,166 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_tab_commands.h"
++
++#include "base/run_loop.h"
++#include "base/task/single_thread_task_runner.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/prometheus/prometheus_chrome_mode.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/browser_tabstrip.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "chrome/browser/ui/tabs/tab_group_model.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/views/bubble/webui_bubble_manager.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/horizontal_tab_strip_region_view.h"
++#include "chrome/browser/ui/views/tab_search_bubble_host.h"
++#include "chrome/browser/ui/views/tabs/tab_strip.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
++#include "components/prefs/pref_service.h"
++#include "content/public/test/browser_test.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/views/test/views_test_utils.h"
++#include "ui/views/view_utils.h"
++#include "ui/views/widget/widget.h"
++#include "url/gurl.h"
++
++class PrometheusTabCommandsBrowserTest : public InProcessBrowserTest {
++ public:
++  TabStripModel* tab_strip_model() { return browser()->tab_strip_model(); }
++
++  void AddTabsUntil(int tab_count) {
++    while (tab_strip_model()->count() < tab_count) {
++      chrome::AddTabAt(browser(), GURL("about:blank"), -1,
++                       /*foreground=*/false);
++    }
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(PrometheusTabCommandsBrowserTest,
++                       DuplicateIncreasesTabCount) {
++  AddTabsUntil(3);
++  const int original_tab_count = tab_strip_model()->count();
++
++  EXPECT_TRUE(ExecutePrometheusTabCommand(
++      browser(), PrometheusTabCommand::kDuplicate, /*tab_index=*/1));
++
++  EXPECT_EQ(original_tab_count + 1, tab_strip_model()->count());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusTabCommandsBrowserTest,
++                       MoveToNewWindowCreatesBrowserWhenSupported) {
++  AddTabsUntil(3);
++  const size_t original_browser_count =
++      GlobalBrowserCollection::GetInstance()->GetSize();
++  const int original_tab_count = tab_strip_model()->count();
++
++  ui_test_utils::BrowserCreatedObserver browser_created_observer;
++  EXPECT_TRUE(ExecutePrometheusTabCommand(
++      browser(), PrometheusTabCommand::kMoveToNewWindow, /*tab_index=*/1));
++  Browser* const new_browser = browser_created_observer.Wait();
++  ui_test_utils::WaitUntilBrowserBecomeActive(new_browser);
++
++  EXPECT_NE(new_browser, browser());
++  EXPECT_EQ(original_browser_count + 1,
++            GlobalBrowserCollection::GetInstance()->GetSize());
++  EXPECT_EQ(original_tab_count - 1, tab_strip_model()->count());
++  EXPECT_EQ(1, new_browser->tab_strip_model()->count());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusTabCommandsBrowserTest,
++                       AddToNewGroupCreatesGroup) {
++  AddTabsUntil(3);
++  ASSERT_EQ(0u, tab_strip_model()->group_model()->ListTabGroups().size());
++  ASSERT_FALSE(tab_strip_model()->GetTabGroupForTab(1).has_value());
++
++  EXPECT_TRUE(ExecutePrometheusTabCommand(
++      browser(), PrometheusTabCommand::kAddToNewGroup, /*tab_index=*/1));
++
++  EXPECT_TRUE(tab_strip_model()->GetTabGroupForTab(1).has_value());
++  EXPECT_EQ(1u, tab_strip_model()->group_model()->ListTabGroups().size());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusTabCommandsBrowserTest,
++                       UnsupportedUnloadReturnsFalse) {
++  AddTabsUntil(3);
++  const int original_tab_count = tab_strip_model()->count();
++
++  EXPECT_FALSE(ExecutePrometheusTabCommand(
++      browser(), PrometheusTabCommand::kUnloadOrDiscard, /*tab_index=*/1));
++
++  EXPECT_EQ(original_tab_count, tab_strip_model()->count());
++}
++
++class PrometheusCompactTabSearchBrowserTest : public InProcessBrowserTest {
++ public:
++  BrowserView* browser_view() {
++    return BrowserView::GetBrowserViewForBrowser(browser());
++  }
++
++  HorizontalTabStripRegionView* tab_strip_region_view() {
++    return views::AsViewClass<HorizontalTabStripRegionView>(
++        browser_view()->tab_strip_view());
++  }
++
++  TabSearchBubbleHost* tab_search_bubble_host() {
++    return browser_view()->GetTabSearchBubbleHost();
++  }
++
++  WebUIBubbleManager* bubble_manager() {
++    return tab_search_bubble_host()->webui_bubble_manager_for_testing();
++  }
++
++  void RunUntilBubbleWidgetDestroyed() {
++    ASSERT_NE(nullptr, bubble_manager()->GetBubbleWidget());
++    base::RunLoop run_loop;
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, run_loop.QuitClosure());
++    run_loop.Run();
++    ASSERT_EQ(nullptr, bubble_manager()->GetBubbleWidget());
++  }
++
++  void SetPrometheusMode(PrometheusChromeMode mode) {
++    SetPrometheusChromeMode(*browser()->profile()->GetPrefs(), mode);
++    RunScheduledLayouts();
++  }
++
++  void ResizeBrowserTo(int width, int height) {
++    browser_view()->GetWidget()->SetBounds(gfx::Rect(0, 0, width, height));
++    browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++    RunScheduledLayouts();
++  }
++
++  void AddBackgroundTabs(int count) {
++    for (int i = 0; i < count; ++i) {
++      chrome::AddTabAt(browser(), GURL("about:blank"), -1,
++                       /*foreground=*/false);
++    }
++    RunScheduledLayouts();
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(PrometheusCompactTabSearchBrowserTest,
++                       PrometheusTabSearchBubbleOpensFromCompactChrome) {
++  SetPrometheusMode(PrometheusChromeMode::kCompact);
++  ResizeBrowserTo(800, 900);
++  AddBackgroundTabs(12);
++
++  ASSERT_TRUE(tab_strip_region_view());
++  ASSERT_TRUE(tab_strip_region_view()->GetVisible());
++  ASSERT_TRUE(tab_strip_region_view()->GetTabSearchButton());
++  ASSERT_EQ(nullptr, bubble_manager()->GetBubbleWidget());
++
++  EXPECT_TRUE(tab_search_bubble_host()->ShowTabSearchBubble());
++  ASSERT_NE(nullptr, bubble_manager()->GetBubbleWidget());
++
++  bubble_manager()->bubble_view_for_testing()->ShowUI();
++  EXPECT_TRUE(bubble_manager()->GetBubbleWidget()->IsVisible());
++
++  tab_search_bubble_host()->CloseTabSearchBubble();
++  ASSERT_TRUE(bubble_manager()->GetBubbleWidget()->IsClosed());
++  RunUntilBubbleWidgetDestroyed();
++}
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 14138e5f84..dc7ac64331 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -36,6 +36,7 @@ source_set("browser_tests") {
+   testonly = true
+   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+   sources = [
++    "../../../prometheus/prometheus_tab_commands_browsertest.cc",
+     "prometheus_compact_chrome_browsertest.cc",
+     "prometheus_token_gallery_browsertest.cc",
+     "prometheus_toolbar_entrypoint_browsertest.cc",
+@@ -45,8 +46,11 @@ source_set("browser_tests") {
+     ":prometheus",
+     "//base/test:test_support",
+     "//chrome/browser/prometheus:prometheus_chrome_mode",
++    "//chrome/browser/prometheus:prometheus_tab_commands",
+     "//chrome/browser/themes",
+     "//chrome/browser/ui",
++    "//chrome/browser/ui/browser_window",
++    "//chrome/browser/ui/views/bubble",
+     "//chrome/browser/ui/views/frame",
+     "//chrome/browser/ui/views/toolbar",
+     "//chrome/test:test_support",
+-- 
+2.50.1 (Apple Git-155)
+

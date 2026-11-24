@@ -1,0 +1,477 @@
+From 3ec04dc9e7a0d358d757213cb0719a997690ed32 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 03:51:04 -0500
+Subject: [PATCH 3/6] feat(17-03): add Prometheus tab ownership data
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  24 +++-
+ .../prometheus/prometheus_agent_tab_data.cc   | 116 ++++++++++++++++++
+ .../prometheus/prometheus_agent_tab_data.h    |  66 ++++++++++
+ .../prometheus_agent_tab_data_unittest.cc     |  92 ++++++++++++++
+ .../prometheus/prometheus_tab_state.cc        |  20 ++-
+ .../prometheus_tab_state_unittest.cc          |  44 +++++++
+ 6 files changed, 359 insertions(+), 3 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_tab_data.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_tab_data.h
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 8366177e65..b7be7622a8 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -38,13 +38,30 @@ source_set("prometheus_chrome_mode") {
+   ]
+ }
+ 
++source_set("prometheus_agent_tab_data") {
++  sources = [
++    "prometheus_agent_tab_data.cc",
++    "prometheus_agent_tab_data.h",
++  ]
++
++  deps = [
++    ":prometheus_agent_route",
++    "//components/tabs:public",
++    "//ui/base/unowned_user_data",
++  ]
++}
++
+ source_set("prometheus_tab_state") {
+   sources = [
+     "prometheus_tab_state.cc",
+     "prometheus_tab_state.h",
+   ]
+ 
+-  deps = [ "//content/public/browser" ]
++  deps = [
++    ":prometheus_agent_tab_data",
++    "//components/tabs:public",
++    "//content/public/browser",
++  ]
+ }
+ 
+ source_set("prometheus_tab_commands") {
+@@ -101,6 +118,7 @@ test("prometheus_unittests") {
+     "prometheus_action_unittest.cc",
+     "prometheus_agent_route_unittest.cc",
+     "prometheus_agent_session_unittest.cc",
++    "prometheus_agent_tab_data_unittest.cc",
+     "prometheus_asset_resource_unittest.cc",
+     "prometheus_chrome_mode_unittest.cc",
+     "prometheus_color_mixer_unittest.cc",
+@@ -118,6 +136,7 @@ test("prometheus_unittests") {
+     ":prometheus_action",
+     ":prometheus_agent_route",
+     ":prometheus_agent_session",
++    ":prometheus_agent_tab_data",
+     ":prometheus_ask_fsb_handoff",
+     ":prometheus_chrome_mode",
+     ":prometheus_tab_state",
+@@ -128,11 +147,14 @@ test("prometheus_unittests") {
+     "//chrome/browser/ui/color:mixers",
+     "//chrome/common:constants",
+     "//components/prefs:test_support",
++    "//components/tabs:test_support",
+     "//content/test:run_all_unittests",
+     "//content/test:test_support",
+     "//skia",
++    "//testing/gmock",
+     "//testing/gtest",
+     "//ui/base",
++    "//ui/base/unowned_user_data",
+     "//ui/color",
+     "//ui/color:color_headers",
+     "//ui/gfx",
+diff --git a/chrome/browser/prometheus/prometheus_agent_tab_data.cc b/chrome/browser/prometheus/prometheus_agent_tab_data.cc
+new file mode 100644
+index 0000000000..b91f813997
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_tab_data.cc
+@@ -0,0 +1,116 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
++
++#include <memory>
++#include <utility>
++
++#include "base/check.h"
++
++namespace prometheus {
++
++namespace {
++
++ui::UnownedUserDataHost& GetHostForTab(tabs::TabInterface* tab) {
++  CHECK(tab);
++  return tab->GetUnownedUserDataHost();
++}
++
++}  // namespace
++
++DEFINE_USER_DATA(PrometheusAgentTabData);
++
++PrometheusAgentTabData::PrometheusAgentTabData(tabs::TabInterface* tab)
++    : scoped_unowned_user_data_(GetHostForTab(tab), *this) {}
++
++PrometheusAgentTabData::~PrometheusAgentTabData() = default;
++
++// static
++PrometheusAgentTabData* PrometheusAgentTabData::From(
++    tabs::TabInterface* tab) {
++  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
++}
++
++// static
++std::unique_ptr<PrometheusAgentTabData>
++PrometheusAgentTabData::GetOrCreateForTab(tabs::TabInterface* tab) {
++  if (!tab || From(tab)) {
++    return nullptr;
++  }
++  return std::make_unique<PrometheusAgentTabData>(tab);
++}
++
++// static
++std::unique_ptr<PrometheusAgentTabData>
++PrometheusAgentTabData::ForTabForTesting(tabs::TabInterface* tab) {
++  return GetOrCreateForTab(tab);
++}
++
++AgentRouteResult PrometheusAgentTabData::CanControl(
++    std::string_view session_id) const {
++  if (!HasOwner() || owner_session_id_ == session_id) {
++    return AgentRouteResult::Success({});
++  }
++  return TabNotOwnedFailure();
++}
++
++AgentRouteResult PrometheusAgentTabData::ClaimIfUnowned(
++    std::string_view session_id,
++    std::string owner_label) {
++  if (session_id.empty()) {
++    return AgentRouteResult::Failure(
++        AgentErrorCode::kUnauthorized, "Missing agent session",
++        "Create a browser-issued agent session before claiming a tab");
++  }
++  if (HasOwner() && owner_session_id_ != session_id) {
++    return TabNotOwnedFailure();
++  }
++
++  owner_session_id_ = std::string(session_id);
++  owner_label_ = std::move(owner_label);
++  return AgentRouteResult::Success({"tab_claimed"});
++}
++
++AgentRouteResult PrometheusAgentTabData::ReleaseIfOwned(
++    std::string_view session_id) {
++  if (!HasOwner()) {
++    return AgentRouteResult::Success({"tab_unowned"});
++  }
++  if (owner_session_id_ != session_id) {
++    return TabNotOwnedFailure();
++  }
++
++  owner_session_id_.clear();
++  owner_label_.clear();
++  automation_active_ = false;
++  supervision_active_ = false;
++  health_ = PrometheusTabState::Health::kOk;
++  return AgentRouteResult::Success({"tab_released"});
++}
++
++PrometheusTabState PrometheusAgentTabData::ToTabState() const {
++  PrometheusTabState state;
++  if (!HasOwner()) {
++    return state;
++  }
++
++  state.owner_label = owner_label_;
++  state.automation_active = automation_active_;
++  state.supervision_active = supervision_active_;
++  state.health = health_;
++  return state;
++}
++
++bool PrometheusAgentTabData::HasOwner() const {
++  return !owner_session_id_.empty();
++}
++
++AgentRouteResult PrometheusAgentTabData::TabNotOwnedFailure() const {
++  return AgentRouteResult::Failure(
++      AgentErrorCode::kTabNotOwned, "Tab owned by another session",
++      "Switch sessions or choose an unowned tab");
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_tab_data.h b/chrome/browser/prometheus/prometheus_agent_tab_data.h
+new file mode 100644
+index 0000000000..984978205a
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_tab_data.h
+@@ -0,0 +1,66 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_TAB_DATA_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_TAB_DATA_H_
++
++#include <memory>
++#include <string>
++#include <string_view>
++
++#include "chrome/browser/prometheus/prometheus_agent_route.h"
++#include "chrome/browser/prometheus/prometheus_tab_state.h"
++#include "components/tabs/public/tab_interface.h"
++#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
++
++namespace prometheus {
++
++class PrometheusAgentTabData {
++ public:
++  explicit PrometheusAgentTabData(tabs::TabInterface* tab);
++  PrometheusAgentTabData(const PrometheusAgentTabData&) = delete;
++  PrometheusAgentTabData& operator=(const PrometheusAgentTabData&) = delete;
++  ~PrometheusAgentTabData();
++
++  DECLARE_USER_DATA(PrometheusAgentTabData);
++
++  static PrometheusAgentTabData* From(tabs::TabInterface* tab);
++  static std::unique_ptr<PrometheusAgentTabData> GetOrCreateForTab(
++      tabs::TabInterface* tab);
++  static std::unique_ptr<PrometheusAgentTabData> ForTabForTesting(
++      tabs::TabInterface* tab);
++
++  AgentRouteResult CanControl(std::string_view session_id) const;
++  AgentRouteResult ClaimIfUnowned(std::string_view session_id,
++                                   std::string owner_label);
++  AgentRouteResult ReleaseIfOwned(std::string_view session_id);
++  PrometheusTabState ToTabState() const;
++
++  const std::string& owner_session_id() const { return owner_session_id_; }
++  const std::string& owner_label() const { return owner_label_; }
++  bool automation_active() const { return automation_active_; }
++  bool supervision_active() const { return supervision_active_; }
++  PrometheusTabState::Health health() const { return health_; }
++
++  void set_automation_active(bool active) { automation_active_ = active; }
++  void set_supervision_active(bool active) { supervision_active_ = active; }
++  void set_health(PrometheusTabState::Health health) { health_ = health; }
++
++ private:
++  bool HasOwner() const;
++  AgentRouteResult TabNotOwnedFailure() const;
++
++  std::string owner_session_id_;
++  std::string owner_label_;
++  bool automation_active_ = false;
++  bool supervision_active_ = false;
++  PrometheusTabState::Health health_ = PrometheusTabState::Health::kOk;
++
++  ui::ScopedUnownedUserData<PrometheusAgentTabData>
++      scoped_unowned_user_data_;
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_TAB_DATA_H_
+diff --git a/chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc b/chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc
+new file mode 100644
+index 0000000000..3c3e0297a6
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc
+@@ -0,0 +1,92 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
++
++#include <memory>
++
++#include "components/tabs/public/mock_tab_interface.h"
++#include "testing/gmock/include/gmock/gmock.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "ui/base/unowned_user_data/unowned_user_data_host.h"
++
++namespace prometheus {
++
++namespace {
++
++using testing::ReturnRef;
++
++class PrometheusAgentTabDataTest : public testing::Test {
++ protected:
++  void SetUp() override {
++    ON_CALL(tab_, GetUnownedUserDataHost()).WillByDefault(ReturnRef(host_));
++  }
++
++  ui::UnownedUserDataHost host_;
++  tabs::MockTabInterface tab_;
++};
++
++TEST_F(PrometheusAgentTabDataTest, UnownedTabCanBeClaimedAndControlled) {
++  std::unique_ptr<PrometheusAgentTabData> data =
++      PrometheusAgentTabData::ForTabForTesting(&tab_);
++  ASSERT_NE(nullptr, data);
++
++  AgentRouteResult claim = data->ClaimIfUnowned("session-a", "Agent A");
++
++  EXPECT_TRUE(claim.ok);
++  EXPECT_EQ("session-a", data->owner_session_id());
++  EXPECT_EQ("Agent A", data->owner_label());
++  EXPECT_TRUE(data->CanControl("session-a").ok);
++}
++
++TEST_F(PrometheusAgentTabDataTest, CrossSessionControlReturnsTabNotOwned) {
++  std::unique_ptr<PrometheusAgentTabData> data =
++      PrometheusAgentTabData::ForTabForTesting(&tab_);
++  ASSERT_NE(nullptr, data);
++  ASSERT_TRUE(data->ClaimIfUnowned("session-a", "Agent A").ok);
++
++  AgentRouteResult control = data->CanControl("session-b");
++  AgentRouteResult release = data->ReleaseIfOwned("session-b");
++
++  EXPECT_FALSE(control.ok);
++  EXPECT_EQ(AgentErrorCode::kTabNotOwned, control.error_code);
++  EXPECT_EQ("TAB_NOT_OWNED", AgentErrorCodeToString(control.error_code));
++  EXPECT_FALSE(release.ok);
++  EXPECT_EQ(AgentErrorCode::kTabNotOwned, release.error_code);
++}
++
++TEST_F(PrometheusAgentTabDataTest, OwnerCanReleaseTab) {
++  std::unique_ptr<PrometheusAgentTabData> data =
++      PrometheusAgentTabData::ForTabForTesting(&tab_);
++  ASSERT_NE(nullptr, data);
++  ASSERT_TRUE(data->ClaimIfUnowned("session-a", "Agent A").ok);
++
++  AgentRouteResult release = data->ReleaseIfOwned("session-a");
++
++  EXPECT_TRUE(release.ok);
++  EXPECT_TRUE(data->owner_session_id().empty());
++  EXPECT_TRUE(data->owner_label().empty());
++  EXPECT_TRUE(data->CanControl("session-b").ok);
++}
++
++TEST_F(PrometheusAgentTabDataTest, ConvertsFieldsToPrometheusTabState) {
++  std::unique_ptr<PrometheusAgentTabData> data =
++      PrometheusAgentTabData::ForTabForTesting(&tab_);
++  ASSERT_NE(nullptr, data);
++  ASSERT_TRUE(data->ClaimIfUnowned("session-a", "Agent A").ok);
++  data->set_automation_active(true);
++  data->set_supervision_active(true);
++  data->set_health(PrometheusTabState::Health::kNeedsAttention);
++
++  PrometheusTabState state = data->ToTabState();
++
++  EXPECT_EQ("Agent A", state.owner_label);
++  EXPECT_TRUE(state.automation_active);
++  EXPECT_TRUE(state.supervision_active);
++  EXPECT_EQ(PrometheusTabState::Health::kNeedsAttention, state.health);
++}
++
++}  // namespace
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_tab_state.cc b/chrome/browser/prometheus/prometheus_tab_state.cc
+index e58ad9f465..5a1f49ff21 100644
+--- a/chrome/browser/prometheus/prometheus_tab_state.cc
++++ b/chrome/browser/prometheus/prometheus_tab_state.cc
+@@ -4,10 +4,26 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_tab_state.h"
+ 
++#include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
++#include "components/tabs/public/tab_interface.h"
++
+ PrometheusTabState PrometheusTabState::SafeDefault() {
+   return PrometheusTabState();
+ }
+ 
+-PrometheusTabState GetPrometheusTabStateForWebContents(content::WebContents*) {
+-  return PrometheusTabState::SafeDefault();
++PrometheusTabState GetPrometheusTabStateForWebContents(
++    content::WebContents* web_contents) {
++  tabs::TabInterface* tab =
++      tabs::TabInterface::MaybeGetFromContents(web_contents);
++  if (!tab) {
++    return PrometheusTabState::SafeDefault();
++  }
++
++  prometheus::PrometheusAgentTabData* tab_data =
++      prometheus::PrometheusAgentTabData::From(tab);
++  if (!tab_data) {
++    return PrometheusTabState::SafeDefault();
++  }
++
++  return tab_data->ToTabState();
+ }
+diff --git a/chrome/browser/prometheus/prometheus_tab_state_unittest.cc b/chrome/browser/prometheus/prometheus_tab_state_unittest.cc
+index af5c20735a..2c41776cb2 100644
+--- a/chrome/browser/prometheus/prometheus_tab_state_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_tab_state_unittest.cc
+@@ -9,12 +9,19 @@
+ #include <utility>
+ 
+ #include "base/supports_user_data.h"
++#include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
++#include "components/tabs/public/mock_tab_interface.h"
++#include "components/tabs/public/tab_interface.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/test/test_renderer_host.h"
++#include "testing/gmock/include/gmock/gmock.h"
+ #include "testing/gtest/include/gtest/gtest.h"
++#include "ui/base/unowned_user_data/unowned_user_data_host.h"
+ 
+ namespace {
+ 
++using testing::ReturnRef;
++
+ class CallerProvidedLabelUserData : public base::SupportsUserData::Data {
+  public:
+   explicit CallerProvidedLabelUserData(std::string label)
+@@ -54,3 +61,40 @@ TEST_F(PrometheusTabStateWebContentsTest, DoesNotTrustCallerProvidedLabel) {
+   EXPECT_FALSE(state.supervision_active);
+   EXPECT_EQ(PrometheusTabState::Health::kOk, state.health);
+ }
++
++TEST_F(PrometheusTabStateWebContentsTest, UnownedTabReturnsSafeDefault) {
++  ui::UnownedUserDataHost host;
++  tabs::MockTabInterface tab;
++  ON_CALL(tab, GetUnownedUserDataHost()).WillByDefault(ReturnRef(host));
++  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(), &tab);
++
++  const PrometheusTabState state =
++      GetPrometheusTabStateForWebContents(web_contents());
++
++  EXPECT_TRUE(state.owner_label.empty());
++  EXPECT_FALSE(state.automation_active);
++  EXPECT_FALSE(state.supervision_active);
++  EXPECT_EQ(PrometheusTabState::Health::kOk, state.health);
++}
++
++TEST_F(PrometheusTabStateWebContentsTest, ReadsBrowserOwnedTabData) {
++  ui::UnownedUserDataHost host;
++  tabs::MockTabInterface tab;
++  ON_CALL(tab, GetUnownedUserDataHost()).WillByDefault(ReturnRef(host));
++  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(), &tab);
++  std::unique_ptr<prometheus::PrometheusAgentTabData> tab_data =
++      prometheus::PrometheusAgentTabData::ForTabForTesting(&tab);
++  ASSERT_NE(nullptr, tab_data);
++  ASSERT_TRUE(tab_data->ClaimIfUnowned("session-a", "Agent A").ok);
++  tab_data->set_automation_active(true);
++  tab_data->set_supervision_active(true);
++  tab_data->set_health(PrometheusTabState::Health::kNeedsAttention);
++
++  const PrometheusTabState state =
++      GetPrometheusTabStateForWebContents(web_contents());
++
++  EXPECT_EQ("Agent A", state.owner_label);
++  EXPECT_TRUE(state.automation_active);
++  EXPECT_TRUE(state.supervision_active);
++  EXPECT_EQ(PrometheusTabState::Health::kNeedsAttention, state.health);
++}
+-- 
+2.50.1 (Apple Git-155)
+

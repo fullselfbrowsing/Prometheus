@@ -1,0 +1,132 @@
+From 3fb3071c9da5960dd8103984bf1f6887e323c370 Mon Sep 17 00:00:00 2001
+From: Lakshman Turlapati <lakshmantvnm@gmail.com>
+Date: Sun, 9 Aug 2026 23:24:42 -0500
+Subject: [PATCH] fix(22-05): stabilize packaged extension lifecycle smoke
+
+- allow canonical temp-profile validation in the gated test bootstrap
+- foreground the manager and discover its native uninstall dialog exactly
+---
+ .../prometheus_browser_main_extra_parts.cc    |  2 +
+ .../prometheus_extension_smoke_controller.cc  | 58 +++++++++++++------
+ 2 files changed, 41 insertions(+), 19 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index e747b16f17..2ef3d3f559 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -19,6 +19,7 @@
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/sequenced_task_runner.h"
++#include "base/threading/scoped_blocking_call.h"
+ #include "base/timer/timer.h"
+ #include "base/unguessable_token.h"
+ #include "chrome/browser/browser_process.h"
+@@ -2121,6 +2122,7 @@ bool IsDisposableSupervisionTestProfile(Profile* profile) {
+   const base::FilePath profile_path =
+       profile->GetPath().StripTrailingSeparators();
+   temporary_directory = temporary_directory.StripTrailingSeparators();
++  base::ScopedAllowBlockingForTesting allow_blocking;
+   const base::FilePath resolved_temporary_directory =
+       base::MakeAbsoluteFilePath(temporary_directory).StripTrailingSeparators();
+   const bool under_reported_temporary_directory =
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+index 91b87a1350..405e2f3257 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+@@ -19,6 +19,7 @@
+ #include "base/threading/thread_restrictions.h"
+ #include "base/time/time.h"
+ #include "build/build_config.h"
++#include "chrome/browser/extensions/extension_uninstall_dialog.h"
+ #include "chrome/browser/prometheus/prometheus_extension_policy_service.h"
+ #include "chrome/browser/prometheus/prometheus_extension_policy_service_factory.h"
+ #include "chrome/browser/profiles/profile.h"
+@@ -49,6 +50,8 @@
+ #include "ui/shell_dialogs/select_file_dialog_factory.h"
+ #include "ui/shell_dialogs/select_file_policy.h"
+ #include "ui/shell_dialogs/selected_file_info.h"
++#include "ui/views/interaction/element_tracker_views.h"
++#include "ui/views/view.h"
+ #include "ui/views/widget/widget.h"
+ #include "ui/views/widget/widget_delegate.h"
+ #include "ui/views/window/dialog_delegate.h"
+@@ -485,13 +488,13 @@ std::string ResultValueOrEmpty(const base::Value& value) {
+   return value.is_string() ? value.GetString() : std::string();
+ }
+ 
+-// Finds the visible native chrome.management.uninstall() confirmation dialog
+-// owned by `browser`'s window -- identified by the widget name the uninstall
+-// dialog itself publishes, never merely by being the first visible dialog -- and
+-// presses its real, public DialogDelegate::AcceptDialog() accept action, the same
+-// call the dialog's own OK button issues. This never bypasses, hides, or
+-// auto-answers the dialog before it exists: it only presses the already-shown
+-// dialog's real accept control.
++// Finds the visible native chrome.management.uninstall() confirmation dialog in
++// `browser`'s UI context -- identified by both its unique OK-button element ID
++// and the widget name the uninstall dialog publishes -- and presses its real,
++// public DialogDelegate::AcceptDialog() accept action, the same call the dialog's
++// own OK button issues. This never bypasses, hides, or auto-answers the dialog
++// before it exists: it only presses the already-shown dialog's real accept
++// control.
+ //
+ // The name match matters. A browser window legitimately owns other visible
+ // DialogDelegate widgets, so accepting the first one found would report success
+@@ -507,18 +510,21 @@ bool TryAcceptVisibleUninstallConfirmationDialog(Browser* browser) {
+   if (!browser_widget) {
+     return false;
+   }
+-  for (views::Widget* owned :
+-      views::Widget::GetAllOwnedWidgets(browser_widget->GetNativeView())) {
+-    if (!owned || !owned->IsVisible()) {
+-      continue;
+-    }
+-    views::WidgetDelegate* delegate = owned->widget_delegate();
+-    views::DialogDelegate* dialog =
+-        delegate ? delegate->AsDialogDelegate() : nullptr;
+-    if (dialog && owned->GetName() == kUninstallDialogWidgetName) {
+-      dialog->AcceptDialog();
+-      return true;
+-    }
++  views::View* const ok_button =
++      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
++          extensions::ExtensionUninstallDialog::kOkButtonElementId,
++          views::ElementTrackerViews::GetContextForWidget(browser_widget),
++          /*require_visible=*/true);
++  views::Widget* const dialog_widget =
++      ok_button ? ok_button->GetWidget() : nullptr;
++  views::WidgetDelegate* const delegate =
++      dialog_widget ? dialog_widget->widget_delegate() : nullptr;
++  views::DialogDelegate* const dialog =
++      delegate ? delegate->AsDialogDelegate() : nullptr;
++  if (dialog_widget && dialog_widget->IsVisible() && dialog &&
++      dialog_widget->GetName() == kUninstallDialogWidgetName) {
++    dialog->AcceptDialog();
++    return true;
+   }
+   return false;
+ }
+@@ -1400,6 +1406,20 @@ void PrometheusExtensionSmokeController::ClickRemove() {
+     Fail(stage_, "invalid_extension_id");
+     return;
+   }
++  content::WebContents* const manager_contents = ManagerWebContents();
++  if (!browser_ || !manager_contents) {
++    Fail(stage_, "manager_tab_lost");
++    return;
++  }
++  // OpenOptionsTab() deliberately made the fixture's options page the foreground
++  // tab so its visibility could be proven. Restore the manager as the active tab
++  // before routing real mouse input to its widget; hidden RenderWidgetHosts do
++  // not receive that input reliably.
++  browser_->ActivateContents(manager_contents);
++  if (!browser_->IsContentsActive(manager_contents)) {
++    Fail(stage_, "manager_tab_activation_failed");
++    return;
++  }
+   pending_transition_ = PrometheusExtensionSmokePendingTransition::kRemove;
+   ResolveRemoveButtonPoint(base::TimeTicks::Now() +
+                            kRemoveButtonActionableTimeout);
+-- 
+2.50.1 (Apple Git-155)
+

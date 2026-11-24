@@ -1,0 +1,112 @@
+From b74b2ebc790e47a98751bd88645f8c183158dda7 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 06:25:42 -0500
+Subject: [PATCH 18/19] test(19-07): specify bounded session churn
+
+---
+ .../prometheus_agent_session_unittest.cc      | 37 +++++++++++++++++
+ .../prometheus_mcp_integration_browsertest.cc | 40 +++++++++++++++++++
+ 2 files changed, 77 insertions(+)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_session_unittest.cc b/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
+index 6d49ddce86..1e4022858b 100644
+--- a/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_session_unittest.cc
+@@ -228,6 +228,43 @@ TEST_F(PrometheusAgentSessionTest, TouchSessionUpdatesLastSeenTime) {
+   EXPECT_EQ(later, session->last_seen_at);
+ }
+ 
++TEST_F(PrometheusAgentSessionTest, ClosedAndExpiredChurnErasesMetadata) {
++  AgentSessionRegistry registry(1, kAgentReconnectGrace);
++  std::vector<std::string> retired_ids;
++  base::Time current = now();
++
++  for (size_t index = 0; index < kMaximumAgentSessions * 2; ++index) {
++    AgentSessionResult created = registry.CreateSession("Closed", current);
++    ASSERT_TRUE(created.session.has_value()) << index;
++    retired_ids.push_back(created.session->id);
++    EXPECT_TRUE(registry.CloseSession(created.session->id).ok) << index;
++    EXPECT_EQ(0u, registry.active_session_count()) << index;
++    EXPECT_EQ(0u, registry.stored_session_count_for_testing()) << index;
++  }
++
++  for (size_t index = 0; index < kMaximumAgentSessions * 2; ++index) {
++    AgentSessionResult created = registry.CreateSession("Expired", current);
++    ASSERT_TRUE(created.session.has_value()) << index;
++    retired_ids.push_back(created.session->id);
++    current += kAgentReconnectGrace + base::Microseconds(1);
++    EXPECT_EQ(std::vector<std::string>({created.session->id}),
++              registry.ExpireSessions(current))
++        << index;
++    EXPECT_EQ(0u, registry.active_session_count()) << index;
++    EXPECT_EQ(0u, registry.stored_session_count_for_testing()) << index;
++  }
++
++  ASSERT_FALSE(retired_ids.empty());
++  for (const std::string& retired_id :
++       {retired_ids.front(), retired_ids.back()}) {
++    AgentSessionResult validation =
++        registry.ValidateSession(retired_id, current);
++    EXPECT_FALSE(validation.route_result.ok);
++    EXPECT_EQ(AgentErrorCode::kUnauthorized,
++              validation.route_result.error_code);
++  }
++}
++
+ }  // namespace
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+index aa7cd69697..f416089b78 100644
+--- a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+@@ -520,6 +520,46 @@ IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
+              "UNAUTHORIZED");
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
++                       SessionBindingChurnRemainsBounded) {
++  UseTestClock(base::Time::FromSecondsSinceUnixEpoch(3000));
++  std::vector<std::string> retired_ids;
++
++  for (size_t index = 0; index < kDefaultMaxAgentSessions * 2; ++index) {
++    const std::string session_id = SessionId(CreateSession("Closed churn"));
++    ASSERT_FALSE(session_id.empty()) << index;
++    retired_ids.push_back(session_id);
++    EXPECT_TRUE(SessionOperation("/v1/session/close", session_id)
++                    .FindBool("ok")
++                    .value_or(false))
++        << index;
++    EXPECT_EQ(0u, gateway_->session_binding_count_for_testing()) << index;
++  }
++
++  for (size_t index = 0; index < kDefaultMaxAgentSessions * 2; ++index) {
++    const std::string session_id = SessionId(CreateSession("Expired churn"));
++    ASSERT_FALSE(session_id.empty()) << index;
++    retired_ids.push_back(session_id);
++    EXPECT_EQ(1u, gateway_->session_binding_count_for_testing()) << index;
++    now_ += kAgentReconnectGrace + base::Milliseconds(1);
++  }
++
++  const std::string sentinel = SessionId(CreateSession("Sweep sentinel"));
++  ASSERT_FALSE(sentinel.empty());
++  EXPECT_EQ(1u, gateway_->session_binding_count_for_testing());
++  EXPECT_TRUE(SessionOperation("/v1/session/close", sentinel)
++                  .FindBool("ok")
++                  .value_or(false));
++  EXPECT_EQ(0u, gateway_->session_binding_count_for_testing());
++
++  ASSERT_FALSE(retired_ids.empty());
++  ExpectCode(SessionOperation("/v1/session/resume", retired_ids.front()),
++             "UNAUTHORIZED");
++  ExpectCode(SessionOperation("/v1/session/resume", retired_ids.back()),
++             "UNAUTHORIZED");
++  EXPECT_EQ(0u, gateway_->session_binding_count_for_testing());
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
+                        BackgroundTargetNeverActivates) {
+   const std::string session_id = SessionId(CreateSession("Background"));
+-- 
+2.50.1 (Apple Git-155)
+

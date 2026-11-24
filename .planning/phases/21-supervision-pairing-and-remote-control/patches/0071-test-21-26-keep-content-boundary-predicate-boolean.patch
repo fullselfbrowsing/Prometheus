@@ -1,0 +1,29 @@
+From 2c93cf8831c961f0a7d0c35909f0da89d02a0b59 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sat, 25 Jul 2026 20:19:32 -0500
+Subject: [PATCH 71/71] test(21-26): keep content-boundary predicate boolean
+
+---
+ .../ui/webui/prometheus/prometheus_web_ui_browsertest.cc    | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 5eff91b0f2..cc68f8fec8 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -2723,9 +2723,9 @@ IN_PROC_BROWSER_TEST_F(
+           !document.querySelector('iframe, frame, object, embed') &&
+           !forbiddenControl &&
+           supervision.querySelector('h2')?.textContent === 'Target & access' &&
+-          supervision.querySelector('#control-supervision-target') &&
+-          supervision.querySelector('#control-supervision-create') &&
+-          supervision.querySelector(
++          !!supervision.querySelector('#control-supervision-target') &&
++          !!supervision.querySelector('#control-supervision-create') &&
++          !!supervision.querySelector(
+               '[data-prometheus-sensitive="pairing-code"]');
+     })();
+   )")
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,1953 @@
+From 94a6f20b16021febff83f4db9ac0d0e73e554216 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 23:12:33 -0500
+Subject: [PATCH] feat(20-12): bind local control runtime
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   2 +
+ .../prometheus/prometheus_agent_gateway.cc    |   2 +-
+ .../prometheus_browser_main_extra_parts.cc    | 563 ++++++++++++++++++
+ .../prometheus_provider_registry.cc           |  39 +-
+ .../prometheus/prometheus_provider_registry.h |   4 +
+ .../prometheus_runtime_profile_service.cc     |  36 +-
+ .../prometheus_runtime_profile_service.h      |  13 +-
+ ...etheus_runtime_profile_service_unittest.cc |   9 +-
+ .../prometheus/prometheus_runtime_store.cc    |   8 +
+ .../prometheus/prometheus_runtime_store.h     |   1 +
+ chrome/browser/ui/views/prometheus/BUILD.gn   |   4 +
+ .../prometheus_side_panel_runtime.cc          |  19 +
+ .../prometheus_side_panel_runtime.h           |  59 ++
+ .../prometheus_tab_control_web_ui.cc          |   9 -
+ .../ui/webui/prometheus/prometheus_web_ui.cc  | 443 +++++++++++++-
+ .../ui/webui/prometheus/prometheus_web_ui.h   |  42 ++
+ .../prometheus_web_ui_browsertest.cc          | 198 +++++-
+ 17 files changed, 1417 insertions(+), 34 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 9bfcd3e5e4..b23bd95d1d 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -421,6 +421,7 @@ source_set("prometheus_runtime_profile_service") {
+     ":prometheus_runtime_prefs",
+     ":prometheus_runtime_store",
+     ":prometheus_runtime_test_bootstrap",
++    ":prometheus_runtime_transport_codec",
+     ":prometheus_runtime_types",
+     ":prometheus_secret_store",
+     ":prometheus_vault_service",
+@@ -478,6 +479,7 @@ source_set("prometheus_agent_gateway") {
+     ":prometheus_agent_route",
+     ":prometheus_agent_transport_codec",
+     ":prometheus_endpoint_descriptor",
++    ":prometheus_provider_registry",
+     ":prometheus_runtime_profile_service",
+     ":prometheus_runtime_transport_codec",
+     "//base",
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.cc b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+index 58bbf788a4..f7ebeebf8a 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+@@ -1069,7 +1069,7 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+     }
+     case RuntimeRouteName::kSetProviderConfig: {
+       RuntimeProfileStatus status = runtime->SetProviders(
+-          RuntimeProviderMutationCaller::kMcp, {});
++          RuntimeCallerOrigin::kMcp, {});
+       return RuntimeStatusFailure(
+           request.route_name, status,
+           "Use the Prometheus local control panel to change provider settings");
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index 8231556e61..29b7c1ff39 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -5,6 +5,7 @@
+ #include "chrome/browser/prometheus/prometheus_browser_main_extra_parts.h"
+ 
+ #include <algorithm>
++#include <map>
+ #include <optional>
+ #include <string>
+ #include <utility>
+@@ -12,15 +13,22 @@
+ #include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "base/run_loop.h"
++#include "base/timer/timer.h"
++#include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/prometheus/prometheus_agent_gateway.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
++#include "chrome/browser/prometheus/prometheus_provider_registry.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
++#include "chrome/browser/prometheus/prometheus_runtime_transport_codec.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+ #include "chrome/common/chrome_switches.h"
+ #include "components/tabs/public/tab_interface.h"
++#include "content/public/browser/web_contents.h"
++#include "url/gurl.h"
+ 
+ namespace prometheus {
+ namespace {
+@@ -295,6 +303,559 @@ std::unique_ptr<PrometheusSidePanelRuntime> CreateSidePanelRuntime(
+       service, exact_browser, stable_tab_id, std::move(result.principal));
+ }
+ 
++constexpr size_t kMaxControlSnapshotRecords = 128;
++
++base::DictValue ControlOperationValue(RuntimeProfileStatus status,
++                                      std::string recovery = std::string()) {
++  base::DictValue value;
++  value.Set("status", RuntimeProfileStatusToString(status));
++  value.Set("accepted", status == RuntimeProfileStatus::kOk ||
++                            status == RuntimeProfileStatus::kCancelled);
++  if (!recovery.empty()) {
++    value.Set("recovery", std::move(recovery));
++  }
++  return value;
++}
++
++std::string SanitizedResultPreview(std::string_view result) {
++  std::string safe = DeriveRuntimeSafeTitle(result);
++  constexpr std::string_view kPrefix = "Task: ";
++  if (safe.starts_with(kPrefix)) {
++    safe.erase(0, kPrefix.size());
++  }
++  return safe;
++}
++
++template <typename Records, typename Append>
++void AppendBoundedNewest(const Records& records, Append append) {
++  const size_t begin =
++      records.size() > kMaxControlSnapshotRecords
++          ? records.size() - kMaxControlSnapshotRecords
++          : 0u;
++  for (size_t index = begin; index < records.size(); ++index) {
++    append(records[index]);
++  }
++}
++
++base::DictValue SanitizedControlSnapshotValue(
++    RuntimeSidePanelSnapshotResult result,
++    const std::vector<PrometheusProviderConfig>& provider_configs,
++    const RuntimePolicy& policy,
++    size_t active_agent_count) {
++  base::DictValue value;
++  value.Set("status", RuntimeProfileStatusToString(result.status));
++  if (!result.recovery.empty()) {
++    value.Set("recovery", std::move(result.recovery));
++  }
++
++  base::ListValue tasks;
++  AppendBoundedNewest(result.snapshot.tasks,
++                      [&](const RuntimeStoredTask& stored_task) {
++    std::optional<base::DictValue> task =
++        RuntimeTaskSnapshotToValue(stored_task.snapshot);
++    if (!task) {
++      return;
++    }
++    const auto metadata = std::ranges::find(
++        result.task_metadata, stored_task.snapshot.task_id,
++        &RuntimeSidePanelSnapshotResult::TaskMetadata::task_id);
++    if (metadata != result.task_metadata.end()) {
++      task->Set("provider_id", metadata->provider_id);
++      task->Set("provider_label", metadata->provider_label);
++      task->Set("model_id", metadata->model_id);
++      task->Set("provider_kind",
++                PrometheusProviderKindToString(metadata->provider_kind));
++      task->Set("route_class",
++                PrometheusProviderRouteClassToString(metadata->route_class));
++    }
++    task->Set("event_count", static_cast<int>(std::ranges::count(
++                                 result.snapshot.events,
++                                 stored_task.snapshot.task_id,
++                                 &RuntimeEventRecord::task_id)));
++    task->Set("action_count", static_cast<int>(std::ranges::count(
++                                  result.snapshot.actions,
++                                  stored_task.snapshot.task_id,
++                                  &RuntimeActionRecord::task_id)));
++    if (stored_task.result) {
++      task->Set("result_preview",
++                SanitizedResultPreview(stored_task.result->text));
++      task->Set("result_truncated", stored_task.result->truncated);
++    }
++    const std::string recovery =
++        RecoveryForTaskError(stored_task.snapshot.error_code);
++    if (!recovery.empty()) {
++      task->Set("recovery", recovery);
++    }
++    tasks.Append(std::move(*task));
++  });
++  value.Set("tasks", std::move(tasks));
++
++  base::ListValue providers;
++  for (const PrometheusProviderConfig& provider : provider_configs) {
++    base::DictValue provider_value;
++    provider_value.Set("provider_id", provider.provider_id);
++    provider_value.Set("label", provider.label);
++    provider_value.Set("kind", PrometheusProviderKindToString(provider.kind));
++    provider_value.Set("route_class",
++                       PrometheusProviderRouteClassToString(
++                           provider.route_class));
++    provider_value.Set("canonical_origin",
++                       GURL(provider.canonical_endpoint)
++                           .DeprecatedGetOriginAsURL()
++                           .spec());
++    provider_value.Set("model_id", provider.model_id);
++    provider_value.Set("enabled", provider.enabled);
++    provider_value.Set("health",
++                       PrometheusProviderHealthToString(provider.health));
++    provider_value.Set("discovery_state",
++                       PrometheusProviderDiscoveryStateToString(
++                           provider.discovery_state));
++    provider_value.Set("secret_configured", provider.secret_configured);
++    provider_value.Set("fallback_rank", provider.fallback_rank);
++    provider_value.Set("input_rate_microunits",
++                       static_cast<double>(provider.input_rate_microunits));
++    provider_value.Set("output_rate_microunits",
++                       static_cast<double>(provider.output_rate_microunits));
++    provider_value.Set("trusted", provider.trusted);
++    base::ListValue models;
++    for (const std::string& model : provider.discovered_models) {
++      models.Append(model);
++    }
++    provider_value.Set("discovered_models", std::move(models));
++    providers.Append(std::move(provider_value));
++  }
++  value.Set("providers", std::move(providers));
++
++  base::ListValue events;
++  AppendBoundedNewest(result.snapshot.events,
++                      [&](const RuntimeEventRecord& event) {
++    base::DictValue item;
++    item.Set("task_id", event.task_id);
++    item.Set("kind", RuntimeEventKindToString(event.kind));
++    item.Set("error_code", RuntimeErrorCodeToString(event.error_code));
++    item.Set("timestamp_ms", static_cast<double>(event.timestamp_ms));
++    item.Set("value", static_cast<double>(event.value));
++    events.Append(std::move(item));
++  });
++  value.Set("events", std::move(events));
++
++  base::ListValue actions;
++  AppendBoundedNewest(result.snapshot.actions,
++                      [&](const RuntimeActionRecord& action) {
++    base::DictValue item;
++    item.Set("task_id", action.task_id);
++    item.Set("kind", RuntimeActionKindToString(action.kind));
++    item.Set("timestamp_ms", static_cast<double>(action.timestamp_ms));
++    item.Set("succeeded", action.succeeded);
++    actions.Append(std::move(item));
++  });
++  value.Set("actions", std::move(actions));
++
++  base::ListValue diagnostics;
++  AppendBoundedNewest(result.snapshot.diagnostics,
++                      [&](const RuntimeDiagnosticRecord& diagnostic) {
++    base::DictValue item;
++    item.Set("kind", RuntimeDiagnosticKindToString(diagnostic.kind));
++    item.Set("timestamp_ms", static_cast<double>(diagnostic.timestamp_ms));
++    item.Set("count", static_cast<double>(diagnostic.count));
++    diagnostics.Append(std::move(item));
++  });
++  value.Set("diagnostics", std::move(diagnostics));
++  value.Set("aggregate_usage",
++            RuntimeUsageValue(result.snapshot.aggregate_usage));
++
++  const size_t active_task_count = std::ranges::count_if(
++      result.snapshot.tasks, [](const RuntimeStoredTask& task) {
++        return !IsTerminalRuntimeTaskState(task.snapshot.state);
++      });
++  base::DictValue permissions;
++  permissions.Set("active_tasks", static_cast<int>(active_task_count));
++  permissions.Set("max_concurrent_tasks",
++                  static_cast<int>(policy.limits.max_concurrent_tasks));
++  permissions.Set("active_agents", static_cast<int>(active_agent_count));
++  permissions.Set("max_active_agents",
++                  static_cast<int>(policy.max_active_agents));
++  permissions.Set("allow_internal_surfaces",
++                  policy.allow_internal_surfaces);
++  permissions.Set("allow_background_actions",
++                  policy.allow_background_actions);
++  permissions.Set("telemetry_enabled", policy.telemetry_enabled);
++  permissions.Set("tab_ownership_required", policy.tab_ownership_required);
++  permissions.Set("vault_native_only", policy.vault_native_only);
++  permissions.Set("vault_confirm_each_use", policy.vault_confirm_each_use);
++  permissions.Set("supervision", "not_ready");
++  value.Set("permissions", std::move(permissions));
++
++  base::DictValue mcp;
++  mcp.Set("status", "native_runtime");
++  mcp.Set("provider_mutation", "LOCAL_UI_REQUIRED");
++  value.Set("mcp", std::move(mcp));
++  return value;
++}
++
++class NativePrometheusControlPanelRuntime final
++    : public PrometheusControlPanelRuntime,
++      public PrometheusRuntimeProfileService::Observer {
++ public:
++  NativePrometheusControlPanelRuntime(
++      PrometheusRuntimeProfileService* service,
++      PrometheusAgentProfileService* agent_service,
++      Profile* exact_profile,
++      content::WebContents* exact_web_contents)
++      : service_(service->GetWeakPtr()),
++        agent_service_(agent_service),
++        exact_profile_(exact_profile),
++        exact_web_contents_(exact_web_contents) {
++    service->AddObserver(this);
++    observing_ = true;
++  }
++
++  ~NativePrometheusControlPanelRuntime() override { StopObserving(); }
++
++  bool IsBoundTo(Profile* exact_profile,
++                 content::WebContents* exact_web_contents) const override {
++    return service_ && exact_profile_ && exact_web_contents_ &&
++           exact_profile == exact_profile_ &&
++           exact_web_contents == exact_web_contents_ &&
++           exact_profile_->IsRegularProfile() &&
++           exact_web_contents_->GetBrowserContext() == exact_profile_;
++  }
++
++  bool IsObserving() const override { return observing_ && service_; }
++
++  void SetSnapshotCallback(SnapshotCallback callback) override {
++    snapshot_callback_ = std::move(callback);
++  }
++
++  base::DictValue GetSanitizedSnapshot() override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    return SanitizedControlSnapshotValue(
++        service_->GetControlPanelSnapshot(),
++        service_->ListProvidersForTransport(),
++        service_->effective_policy_for_testing(),
++        agent_service_ ? agent_service_->ActiveSessionCount() : 0u);
++  }
++
++  base::DictValue CancelTask(std::string task_id) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    const RuntimeProfileStatus status = service_->CancelTask(task_id);
++    return ControlOperationValue(
++        status, status == RuntimeProfileStatus::kCancelled
++                    ? std::string()
++                    : "Refresh the profile task list and retry");
++  }
++
++  base::DictValue SaveProvider(
++      PrometheusControlProviderMutation mutation) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    const std::optional<PrometheusProviderKind> kind =
++        PrometheusProviderKindFromString(mutation.kind);
++    const std::optional<PrometheusProviderRouteClass> route_class =
++        PrometheusProviderRouteClassFromString(mutation.route_class);
++    if (!kind || !route_class ||
++        *route_class != ExpectedPrometheusProviderRouteClass(*kind)) {
++      return InvalidProviderOperation();
++    }
++    const std::optional<std::string> endpoint =
++        CanonicalizePrometheusProviderEndpoint(*kind, *route_class,
++                                               mutation.endpoint);
++    if (!endpoint) {
++      return InvalidProviderOperation();
++    }
++
++    std::vector<PrometheusProviderConfig> providers =
++        service_->ListProvidersForTransport();
++    std::ranges::sort(providers, {},
++                      &PrometheusProviderConfig::fallback_rank);
++    PrometheusProviderConfig provider;
++    auto existing = std::ranges::find(
++        providers, mutation.provider_id,
++        &PrometheusProviderConfig::provider_id);
++    if (existing != providers.end()) {
++      provider = *existing;
++      providers.erase(existing);
++    } else {
++      provider.health = PrometheusProviderHealth::kUnknown;
++      provider.capabilities.model_discovery =
++          *kind == PrometheusProviderKind::kLMStudio ||
++          *kind == PrometheusProviderKind::kLocal ||
++          *kind == PrometheusProviderKind::kCustom;
++      provider.discovery_state =
++          provider.capabilities.model_discovery
++              ? PrometheusProviderDiscoveryState::kNotStarted
++              : PrometheusProviderDiscoveryState::kNotSupported;
++    }
++    provider.provider_id = std::move(mutation.provider_id);
++    provider.label = std::move(mutation.label);
++    provider.kind = *kind;
++    provider.family = ExpectedPrometheusProviderFamily(*kind);
++    provider.route_class = *route_class;
++    provider.canonical_endpoint = *endpoint;
++    provider.model_id = std::move(mutation.model_id);
++    provider.enabled = mutation.enabled;
++    provider.input_rate_microunits = mutation.input_rate_microunits;
++    provider.output_rate_microunits = mutation.output_rate_microunits;
++    provider.trusted = mutation.trusted;
++    if (!provider.capabilities.model_discovery) {
++      provider.discovery_state =
++          PrometheusProviderDiscoveryState::kNotSupported;
++      provider.discovered_models.clear();
++    }
++    const size_t insertion_index = std::min(
++        static_cast<size_t>(mutation.fallback_rank), providers.size());
++    providers.insert(providers.begin() + insertion_index, std::move(provider));
++    NormalizeFallbackRanks(&providers);
++    return SetProviders(std::move(providers));
++  }
++
++  base::DictValue DeleteProvider(std::string provider_id) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    std::vector<PrometheusProviderConfig> providers =
++        service_->ListProvidersForTransport();
++    const size_t old_size = providers.size();
++    std::erase_if(providers, [&](const PrometheusProviderConfig& provider) {
++      return provider.provider_id == provider_id;
++    });
++    if (providers.size() == old_size) {
++      return ControlOperationValue(RuntimeProfileStatus::kInvalidRequest,
++                                   "Refresh the provider list and retry");
++    }
++    NormalizeFallbackRanks(&providers);
++    return SetProviders(std::move(providers));
++  }
++
++  base::DictValue SetProviderEnabled(std::string provider_id,
++                                     bool enabled) override {
++    std::vector<PrometheusProviderConfig> providers =
++        service_ ? service_->ListProvidersForTransport()
++                 : std::vector<PrometheusProviderConfig>();
++    auto provider = std::ranges::find(
++        providers, provider_id, &PrometheusProviderConfig::provider_id);
++    if (!IsBoundTo(exact_profile_, exact_web_contents_) ||
++        provider == providers.end()) {
++      return InvalidProviderOperation();
++    }
++    provider->enabled = enabled;
++    return SetProviders(std::move(providers));
++  }
++
++  base::DictValue MoveProvider(std::string provider_id,
++                               bool move_up) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    std::vector<PrometheusProviderConfig> providers =
++        service_->ListProvidersForTransport();
++    std::ranges::sort(providers, {},
++                      &PrometheusProviderConfig::fallback_rank);
++    const auto provider = std::ranges::find(
++        providers, provider_id, &PrometheusProviderConfig::provider_id);
++    if (provider == providers.end()) {
++      return InvalidProviderOperation();
++    }
++    const size_t index = static_cast<size_t>(provider - providers.begin());
++    if ((move_up && index == 0u) ||
++        (!move_up && index + 1u >= providers.size())) {
++      return ControlOperationValue(RuntimeProfileStatus::kInvalidRequest,
++                                   "The provider is already at that boundary");
++    }
++    const size_t other = move_up ? index - 1u : index + 1u;
++    std::swap(providers[index], providers[other]);
++    NormalizeFallbackRanks(&providers);
++    return SetProviders(std::move(providers));
++  }
++
++  base::DictValue DiscoverModels(std::string provider_id) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    std::vector<PrometheusProviderConfig> providers =
++        service_->ListProvidersForTransport();
++    auto provider = std::ranges::find(
++        providers, provider_id, &PrometheusProviderConfig::provider_id);
++    if (provider == providers.end() ||
++        !provider->capabilities.model_discovery) {
++      return InvalidProviderOperation();
++    }
++    provider->discovery_state =
++        PrometheusProviderDiscoveryState::kDiscovering;
++    provider->discovered_models.clear();
++    if (service_->SetProviders(RuntimeCallerOrigin::kLocalControlUi,
++                               std::move(providers)) !=
++        RuntimeProfileStatus::kOk) {
++      return InvalidProviderOperation();
++    }
++
++    RuntimeDiscoveryResult discovery =
++        service_->DiscoverModels(provider_id);
++    if (discovery.pending) {
++      pending_discoveries_.emplace(discovery.operation_id,
++                                   std::move(provider_id));
++      EnsureDiscoveryPolling();
++    } else {
++      ApplyDiscovery(provider_id, discovery);
++    }
++    base::DictValue operation = ControlOperationValue(
++        discovery.status,
++        discovery.status == RuntimeProfileStatus::kOk
++            ? std::string()
++            : "Model discovery is unavailable for this provider");
++    operation.Set("pending", discovery.pending);
++    operation.Set("operation_id",
++                  static_cast<double>(discovery.operation_id));
++    return operation;
++  }
++
++  base::DictValue ClearLogs() override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    return ControlOperationValue(service_->ClearRuntimeLogs(
++        RuntimeCallerOrigin::kLocalControlUi));
++  }
++
++  void OnRuntimeSidePanelSnapshotChanged() override {
++    if (snapshot_callback_) {
++      snapshot_callback_.Run(GetSanitizedSnapshot());
++    }
++  }
++
++ private:
++  static void NormalizeFallbackRanks(
++      std::vector<PrometheusProviderConfig>* providers) {
++    for (size_t index = 0; index < providers->size(); ++index) {
++      (*providers)[index].fallback_rank = static_cast<int>(index);
++    }
++  }
++
++  base::DictValue InvalidProviderOperation() const {
++    return ControlOperationValue(RuntimeProfileStatus::kInvalidRequest,
++                                 "Review the provider metadata and retry");
++  }
++
++  base::DictValue SetProviders(
++      std::vector<PrometheusProviderConfig> providers) {
++    const RuntimeProfileStatus status = service_->SetProviders(
++        RuntimeCallerOrigin::kLocalControlUi, std::move(providers));
++    return ControlOperationValue(
++        status, status == RuntimeProfileStatus::kOk
++                    ? std::string()
++                    : "Review the provider metadata and retry");
++  }
++
++  void EnsureDiscoveryPolling() {
++    if (discovery_poll_timer_.IsRunning()) {
++      return;
++    }
++    discovery_poll_timer_.Start(
++        FROM_HERE, base::Milliseconds(100),
++        base::BindRepeating(
++            &NativePrometheusControlPanelRuntime::PollDiscoveries,
++            base::Unretained(this)));
++  }
++
++  void PollDiscoveries() {
++    if (!service_) {
++      pending_discoveries_.clear();
++      discovery_poll_timer_.Stop();
++      return;
++    }
++    std::vector<uint64_t> completed;
++    for (const auto& [operation_id, provider_id] : pending_discoveries_) {
++      std::optional<RuntimeDiscoveryResult> result =
++          service_->GetDiscovery(operation_id);
++      if (!result || result->pending) {
++        continue;
++      }
++      ApplyDiscovery(provider_id, *result);
++      completed.push_back(operation_id);
++    }
++    for (uint64_t operation_id : completed) {
++      pending_discoveries_.erase(operation_id);
++    }
++    if (pending_discoveries_.empty()) {
++      discovery_poll_timer_.Stop();
++    }
++  }
++
++  void ApplyDiscovery(std::string_view provider_id,
++                      const RuntimeDiscoveryResult& discovery) {
++    if (!service_) {
++      return;
++    }
++    std::vector<PrometheusProviderConfig> providers =
++        service_->ListProvidersForTransport();
++    auto provider = std::ranges::find(
++        providers, provider_id, &PrometheusProviderConfig::provider_id);
++    if (provider == providers.end()) {
++      return;
++    }
++    provider->discovery_state =
++        discovery.status == RuntimeProfileStatus::kOk &&
++                discovery.state == ProviderModelListState::kReady
++            ? PrometheusProviderDiscoveryState::kReady
++            : PrometheusProviderDiscoveryState::kFailed;
++    provider->discovered_models =
++        provider->discovery_state == PrometheusProviderDiscoveryState::kReady
++            ? discovery.models
++            : std::vector<std::string>();
++    service_->SetProviders(RuntimeCallerOrigin::kLocalControlUi,
++                           std::move(providers));
++  }
++
++  void StopObserving() {
++    discovery_poll_timer_.Stop();
++    pending_discoveries_.clear();
++    if (observing_ && service_) {
++      service_->RemoveObserver(this);
++    }
++    observing_ = false;
++  }
++
++  base::WeakPtr<PrometheusRuntimeProfileService> service_;
++  raw_ptr<PrometheusAgentProfileService> agent_service_;
++  raw_ptr<Profile> exact_profile_;
++  raw_ptr<content::WebContents> exact_web_contents_;
++  SnapshotCallback snapshot_callback_;
++  std::map<uint64_t, std::string> pending_discoveries_;
++  base::RepeatingTimer discovery_poll_timer_;
++  bool observing_ = false;
++};
++
++std::unique_ptr<PrometheusControlPanelRuntime> CreateControlPanelRuntime(
++    Profile* exact_profile,
++    content::WebContents* exact_web_contents) {
++  if (!exact_profile || !exact_profile->IsRegularProfile() ||
++      !exact_web_contents ||
++      exact_web_contents->GetBrowserContext() != exact_profile) {
++    return nullptr;
++  }
++  PrometheusRuntimeProfileService* const service =
++      PrometheusRuntimeProfileServiceFactory::GetForProfile(exact_profile);
++  PrometheusAgentProfileService* const agent_service =
++      PrometheusAgentProfileServiceFactory::GetForProfile(exact_profile);
++  if (!service || !agent_service) {
++    return nullptr;
++  }
++  return std::make_unique<NativePrometheusControlPanelRuntime>(
++      service, agent_service, exact_profile, exact_web_contents);
++}
++
+ }  // namespace
+ 
+ PrometheusBrowserMainExtraParts::PrometheusBrowserMainExtraParts(
+@@ -304,6 +865,8 @@ PrometheusBrowserMainExtraParts::PrometheusBrowserMainExtraParts(
+   PrometheusRuntimeProfileServiceFactory::GetInstance();
+   SetPrometheusSidePanelRuntimeFactory(
+       base::BindRepeating(&CreateSidePanelRuntime));
++  SetPrometheusControlPanelRuntimeFactory(
++      base::BindRepeating(&CreateControlPanelRuntime));
+ }
+ 
+ PrometheusBrowserMainExtraParts::~PrometheusBrowserMainExtraParts() = default;
+diff --git a/chrome/browser/prometheus/prometheus_provider_registry.cc b/chrome/browser/prometheus/prometheus_provider_registry.cc
+index 5f4c21b654..121aa1c116 100644
+--- a/chrome/browser/prometheus/prometheus_provider_registry.cc
++++ b/chrome/browser/prometheus/prometheus_provider_registry.cc
+@@ -5,6 +5,7 @@
+ #include "chrome/browser/prometheus/prometheus_provider_registry.h"
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <set>
+ #include <utility>
+ 
+@@ -39,6 +40,9 @@ constexpr char kModelDiscoveryKey[] = "model_discovery";
+ constexpr char kResponsesApiKey[] = "responses_api";
+ constexpr char kSecretConfiguredKey[] = "secret_configured";
+ constexpr char kFallbackRankKey[] = "fallback_rank";
++constexpr char kInputRateMicrounitsKey[] = "input_rate_microunits";
++constexpr char kOutputRateMicrounitsKey[] = "output_rate_microunits";
++constexpr char kTrustedKey[] = "trusted";
+ constexpr char kDiscoveredModelsKey[] = "discovered_models";
+ 
+ bool IsKnownProviderKind(PrometheusProviderKind kind) {
+@@ -248,13 +252,22 @@ base::DictValue ProviderToValue(const PrometheusProviderConfig& provider) {
+   value.Set(kCapabilitiesKey, std::move(capabilities));
+   value.Set(kSecretConfiguredKey, provider.secret_configured);
+   value.Set(kFallbackRankKey, provider.fallback_rank);
++  value.Set(kInputRateMicrounitsKey,
++            static_cast<double>(provider.input_rate_microunits));
++  value.Set(kOutputRateMicrounitsKey,
++            static_cast<double>(provider.output_rate_microunits));
++  value.Set(kTrustedKey, provider.trusted);
+   value.Set(kDiscoveredModelsKey, std::move(discovered_models));
+   return value;
+ }
+ 
+ std::optional<PrometheusProviderConfig> ProviderFromValue(
+     const base::DictValue& value) {
+-  if (value.size() != 15u ||
++  const bool has_control_metadata =
++      value.Find(kInputRateMicrounitsKey) ||
++      value.Find(kOutputRateMicrounitsKey) || value.Find(kTrustedKey);
++  if ((value.size() != 15u && value.size() != 18u) ||
++      (has_control_metadata && value.size() != 18u) ||
+       value.FindInt(kSchemaVersionKey) != kProviderRecordSchemaVersion) {
+     return std::nullopt;
+   }
+@@ -275,17 +288,32 @@ std::optional<PrometheusProviderConfig> ProviderFromValue(
+   std::optional<bool> enabled = value.FindBool(kEnabledKey);
+   std::optional<bool> secret_configured = value.FindBool(kSecretConfiguredKey);
+   std::optional<int> fallback_rank = value.FindInt(kFallbackRankKey);
++  std::optional<double> input_rate =
++      value.FindDouble(kInputRateMicrounitsKey);
++  std::optional<double> output_rate =
++      value.FindDouble(kOutputRateMicrounitsKey);
++  std::optional<bool> trusted = value.FindBool(kTrustedKey);
+   if (!provider_id || !label || !kind_string || !family_string ||
+       !route_class_string || !canonical_endpoint || !model_id ||
+       !health_string || !discovery_state_string || !capabilities ||
+       capabilities->size() != 3u || !discovered_models || !enabled ||
+       !secret_configured || !fallback_rank ||
++      (has_control_metadata && (!input_rate || !output_rate || !trusted)) ||
+       !IsValidProviderId(*provider_id) || !IsValidLabel(*label) ||
+       !IsValidModelId(*model_id) ||
+       canonical_endpoint->size() > kMaxPrometheusProviderEndpointBytes ||
+       discovered_models->size() > kMaxPrometheusDiscoveredModels) {
+     return std::nullopt;
+   }
++  if (has_control_metadata &&
++      (!std::isfinite(*input_rate) || !std::isfinite(*output_rate) ||
++       std::trunc(*input_rate) != *input_rate ||
++       std::trunc(*output_rate) != *output_rate || *input_rate < 0 ||
++       *output_rate < 0 ||
++       *input_rate > kMaxPrometheusProviderRateMicrounits ||
++       *output_rate > kMaxPrometheusProviderRateMicrounits)) {
++    return std::nullopt;
++  }
+ 
+   std::optional<PrometheusProviderKind> kind =
+       PrometheusProviderKindFromString(*kind_string);
+@@ -322,6 +350,11 @@ std::optional<PrometheusProviderConfig> ProviderFromValue(
+                        .responses_api = *responses_api},
+       .secret_configured = *secret_configured,
+       .fallback_rank = *fallback_rank,
++      .input_rate_microunits =
++          has_control_metadata ? static_cast<int64_t>(*input_rate) : 0,
++      .output_rate_microunits =
++          has_control_metadata ? static_cast<int64_t>(*output_rate) : 0,
++      .trusted = has_control_metadata ? *trusted : false,
+   };
+   for (const base::Value& model : *discovered_models) {
+     if (!model.is_string() || !IsValidModelId(model.GetString())) {
+@@ -681,6 +714,10 @@ PrometheusProviderError ValidatePrometheusProviderConfig(
+       !IsValidProviderId(config.provider_id) || !IsValidLabel(config.label) ||
+       !IsValidModelId(config.model_id) || config.fallback_rank < 0 ||
+       config.fallback_rank >= static_cast<int>(kMaxPrometheusProviders) ||
++      config.input_rate_microunits < 0 ||
++      config.input_rate_microunits > kMaxPrometheusProviderRateMicrounits ||
++      config.output_rate_microunits < 0 ||
++      config.output_rate_microunits > kMaxPrometheusProviderRateMicrounits ||
+       config.family != ExpectedPrometheusProviderFamily(config.kind) ||
+       config.route_class != ExpectedPrometheusProviderRouteClass(config.kind)) {
+     return PrometheusProviderError::kInvalidArgument;
+diff --git a/chrome/browser/prometheus/prometheus_provider_registry.h b/chrome/browser/prometheus/prometheus_provider_registry.h
+index da17be5d57..f4593fe612 100644
+--- a/chrome/browser/prometheus/prometheus_provider_registry.h
++++ b/chrome/browser/prometheus/prometheus_provider_registry.h
+@@ -24,6 +24,7 @@ inline constexpr size_t kMaxPrometheusProviderIdBytes = 64;
+ inline constexpr size_t kMaxPrometheusProviderLabelBytes = 128;
+ inline constexpr size_t kMaxPrometheusProviderModelIdBytes = 128;
+ inline constexpr size_t kMaxPrometheusDiscoveredModels = 128;
++inline constexpr int64_t kMaxPrometheusProviderRateMicrounits = 1'000'000'000;
+ 
+ enum class PrometheusProviderKind {
+   kOpenAI,
+@@ -109,6 +110,9 @@ struct PrometheusProviderConfig {
+   PrometheusProviderCapabilities capabilities;
+   bool secret_configured = false;
+   int fallback_rank = 0;
++  int64_t input_rate_microunits = 0;
++  int64_t output_rate_microunits = 0;
++  bool trusted = false;
+   std::vector<std::string> discovered_models;
+ 
+   bool operator==(const PrometheusProviderConfig&) const = default;
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+index b00bd3b137..f6be3ffa44 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+@@ -21,6 +21,7 @@
+ #include "chrome/browser/prometheus/prometheus_provider_registry.h"
+ #include "chrome/browser/prometheus/prometheus_provider_transport.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
++#include "chrome/browser/prometheus/prometheus_runtime_transport_codec.h"
+ #include "chrome/browser/prometheus/prometheus_secret_store.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "components/prefs/pref_service.h"
+@@ -534,6 +535,11 @@ PrometheusRuntimeProfileService::GetSidePanelSnapshot(
+   if (authority_status != RuntimeProfileStatus::kOk) {
+     return {.status = authority_status, .recovery = kAuthorityRecovery};
+   }
++  return GetControlPanelSnapshot();
++}
++
++RuntimeSidePanelSnapshotResult
++PrometheusRuntimeProfileService::GetControlPanelSnapshot() const {
+   RuntimeSidePanelSnapshotResult result{
+       .status = RuntimeProfileStatus::kOk,
+       .snapshot = GetRuntimeSnapshotForTransport(),
+@@ -561,7 +567,9 @@ PrometheusRuntimeProfileService::GetSidePanelSnapshot(
+     }
+     result.task_metadata.push_back({
+         .task_id = stored_task.snapshot.task_id,
++        .provider_id = runtime_task->second.provider.provider_id,
+         .provider_label = runtime_task->second.provider.label,
++        .model_id = runtime_task->second.provider.model_id,
+         .provider_kind = runtime_task->second.provider.kind,
+         .route_class = runtime_task->second.provider.route_class,
+     });
+@@ -1343,18 +1351,34 @@ PrometheusRuntimeProfileService::ListVaultMetadataForTransport(
+ }
+ 
+ RuntimeProfileStatus PrometheusRuntimeProfileService::SetProviders(
+-    RuntimeProviderMutationCaller caller,
++    RuntimeCallerOrigin caller,
+     std::vector<PrometheusProviderConfig> providers) {
+-  if (caller != RuntimeProviderMutationCaller::kLocalUi) {
++  if (caller != RuntimeCallerOrigin::kLocalControlUi) {
+     return RuntimeProfileStatus::kLocalUiRequired;
+   }
+   if (!hooks_.set_providers) {
+     return RuntimeProfileStatus::kOk;
+   }
+-  return hooks_.set_providers.Run(std::move(providers)) ==
+-                 PrometheusProviderError::kNone
+-             ? RuntimeProfileStatus::kOk
+-             : RuntimeProfileStatus::kInvalidRequest;
++  if (hooks_.set_providers.Run(std::move(providers)) !=
++      PrometheusProviderError::kNone) {
++    return RuntimeProfileStatus::kInvalidRequest;
++  }
++  for (Observer& observer : observers_) {
++    observer.OnRuntimeSidePanelSnapshotChanged();
++  }
++  return RuntimeProfileStatus::kOk;
++}
++
++RuntimeProfileStatus PrometheusRuntimeProfileService::ClearRuntimeLogs(
++    RuntimeCallerOrigin caller) {
++  if (caller != RuntimeCallerOrigin::kLocalControlUi) {
++    return RuntimeProfileStatus::kLocalUiRequired;
++  }
++  if (!owned_runtime_store_ || shutdown_) {
++    return RuntimeProfileStatus::kNotImplemented;
++  }
++  owned_runtime_store_->ClearObservabilityRecords();
++  return RuntimeProfileStatus::kOk;
+ }
+ 
+ RuntimeProfileStatus PrometheusRuntimeProfileService::CancelTask(
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.h b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+index 465d99ed9f..8b2cb96131 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+@@ -70,11 +70,6 @@ enum class RuntimeSafeTool {
+   kClear,
+ };
+ 
+-enum class RuntimeProviderMutationCaller {
+-  kLocalUi,
+-  kMcp,
+-};
+-
+ enum class RuntimeCompletionSource {
+   kProvider,
+   kTool,
+@@ -133,6 +128,8 @@ struct RuntimeDiscoveryResult {
+   bool pending = false;
+ };
+ 
++enum class RuntimeCallerOrigin;
++
+ // Narrow callbacks make every browser/process boundary independently fakeable
+ // in the owned contract suite. Production construction binds the same seams to
+ // the regular-profile stores and Agent authority.
+@@ -233,7 +230,9 @@ struct RuntimeSidePanelSnapshotResult {
+   };
+   struct TaskMetadata {
+     std::string task_id;
++    std::string provider_id;
+     std::string provider_label;
++    std::string model_id;
+     PrometheusProviderKind provider_kind = PrometheusProviderKind::kOpenAI;
+     PrometheusProviderRouteClass route_class =
+         PrometheusProviderRouteClass::kHosted;
+@@ -269,6 +268,7 @@ class PrometheusRuntimeProfileService
+                                            std::string_view prompt);
+   RuntimeSidePanelSnapshotResult GetSidePanelSnapshot(
+       LocalRuntimePrincipal& principal) const;
++  RuntimeSidePanelSnapshotResult GetControlPanelSnapshot() const;
+   RuntimeSubmitResult SubmitTask(RuntimeSubmitRequest request);
+   RuntimeSubmitResult SubmitTask(
+       LocalRuntimePrincipal& principal,
+@@ -313,8 +313,9 @@ class PrometheusRuntimeProfileService
+   std::vector<PrometheusVaultMetadata> ListVaultMetadataForTransport(
+       std::optional<PrometheusVaultKind> kind) const;
+   RuntimeProfileStatus SetProviders(
+-      RuntimeProviderMutationCaller caller,
++      RuntimeCallerOrigin caller,
+       std::vector<PrometheusProviderConfig> providers);
++  RuntimeProfileStatus ClearRuntimeLogs(RuntimeCallerOrigin caller);
+   RuntimeProfileStatus CancelTask(std::string_view task_id);
+   RuntimeProfileStatus CancelTask(LocalRuntimePrincipal& principal,
+                                   std::string_view task_id);
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+index 1805d2cf59..02c9c19e19 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_runtime_transport_codec.h"
+ 
+ #include <cstdint>
+ #include <deque>
+@@ -1124,9 +1125,9 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+ TEST_F(PrometheusRuntimeProfileServiceTest,
+        McpProviderMutationRequiresLocalUi) {
+   EXPECT_EQ(RuntimeProfileStatus::kLocalUiRequired,
+-            service_->SetProviders(RuntimeProviderMutationCaller::kMcp, {}));
++            service_->SetProviders(RuntimeCallerOrigin::kMcp, {}));
+   EXPECT_EQ(RuntimeProfileStatus::kOk,
+-            service_->SetProviders(RuntimeProviderMutationCaller::kLocalUi,
++            service_->SetProviders(RuntimeCallerOrigin::kLocalControlUi,
+                                    boundaries_.ListProviders()));
+ }
+ 
+@@ -1302,7 +1303,7 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+       EXPECT_EQ(RuntimeProfileStatus::kOk, submit().status);
+     } else if (*scenario == "mcp_provider_mutation") {
+       provider_mutation = std::string(RuntimeProfileStatusToString(
+-          service.SetProviders(RuntimeProviderMutationCaller::kMcp, {})));
++          service.SetProviders(RuntimeCallerOrigin::kMcp, {})));
+     } else if (*scenario == "discovery_ready") {
+       discovery = service.DiscoverModels("provider-1");
+     } else if (*scenario == "discovery_unsupported") {
+@@ -1363,7 +1364,7 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+           boundaries.ListProviders();
+       provider_mutation =
+           std::string(RuntimeProfileStatusToString(service.SetProviders(
+-              RuntimeProviderMutationCaller::kLocalUi, providers)));
++              RuntimeCallerOrigin::kLocalControlUi, providers)));
+       EXPECT_EQ(1u, service.ListMemory("caller-1").size());
+       EXPECT_EQ(1u, service.ListSiteGuides("caller-1").size());
+       EXPECT_EQ(RuntimeProfileStatus::kOk, submit().status);
+diff --git a/chrome/browser/prometheus/prometheus_runtime_store.cc b/chrome/browser/prometheus/prometheus_runtime_store.cc
+index 385b2f8ba5..35ffcc9e22 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_store.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_store.cc
+@@ -865,6 +865,14 @@ RuntimeStoreSnapshot PrometheusRuntimeStore::GetSnapshot() const {
+   return snapshot;
+ }
+ 
++void PrometheusRuntimeStore::ClearObservabilityRecords() {
++  events_.clear();
++  actions_.clear();
++  diagnostics_.clear();
++  Persist();
++  NotifyObservers();
++}
++
+ void PrometheusRuntimeStore::Shutdown(int64_t timestamp_ms) {
+   if (timestamp_ms < 0) {
+     return;
+diff --git a/chrome/browser/prometheus/prometheus_runtime_store.h b/chrome/browser/prometheus/prometheus_runtime_store.h
+index 1287a7ba5a..ba6b98b727 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_store.h
++++ b/chrome/browser/prometheus/prometheus_runtime_store.h
+@@ -197,6 +197,7 @@ class PrometheusRuntimeStore {
+   void AddObserver(Observer* observer);
+   void RemoveObserver(Observer* observer);
+   RuntimeStoreSnapshot GetSnapshot() const;
++  void ClearObservabilityRecords();
+   void Shutdown(int64_t timestamp_ms);
+ 
+  private:
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index c70beb9d7a..604cd8c12c 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -84,6 +84,10 @@ source_set("browser_tests") {
+     "//chrome/browser/prometheus:prometheus_agent_session",
+     "//chrome/browser/prometheus:prometheus_agent_tab_data",
+     "//chrome/browser/prometheus:prometheus_chrome_mode",
++    "//chrome/browser/prometheus:prometheus_provider_registry",
++    "//chrome/browser/prometheus:prometheus_runtime_prefs",
++    "//chrome/browser/prometheus:prometheus_runtime_profile_service",
++    "//chrome/browser/prometheus:prometheus_runtime_transport_codec",
+     "//chrome/browser/prometheus:prometheus_tab_commands",
+     "//chrome/browser/prometheus:prometheus_vault_service",
+     "//chrome/browser/themes",
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+index f2e61c9c06..b6c13c9bbe 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+@@ -16,6 +16,11 @@ PrometheusSidePanelRuntimeFactory& RuntimeFactory() {
+   return *factory;
+ }
+ 
++PrometheusControlPanelRuntimeFactory& ControlRuntimeFactory() {
++  static base::NoDestructor<PrometheusControlPanelRuntimeFactory> factory;
++  return *factory;
++}
++
+ }  // namespace
+ 
+ void SetPrometheusSidePanelRuntimeFactory(
+@@ -32,4 +37,18 @@ std::unique_ptr<PrometheusSidePanelRuntime> CreatePrometheusSidePanelRuntime(
+   return RuntimeFactory().Run(exact_browser, stable_tab_id);
+ }
+ 
++void SetPrometheusControlPanelRuntimeFactory(
++    PrometheusControlPanelRuntimeFactory factory) {
++  ControlRuntimeFactory() = std::move(factory);
++}
++
++std::unique_ptr<PrometheusControlPanelRuntime>
++CreatePrometheusControlPanelRuntime(Profile* exact_profile,
++                                    content::WebContents* exact_web_contents) {
++  if (!ControlRuntimeFactory()) {
++    return nullptr;
++  }
++  return ControlRuntimeFactory().Run(exact_profile, exact_web_contents);
++}
++
+ }  // namespace prometheus
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+index 456099f571..167f1e92d1 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+@@ -15,6 +15,11 @@
+ #include "base/values.h"
+ 
+ class BrowserWindowInterface;
++class Profile;
++
++namespace content {
++class WebContents;
++}  // namespace content
+ 
+ namespace prometheus {
+ 
+@@ -51,6 +56,60 @@ std::unique_ptr<PrometheusSidePanelRuntime> CreatePrometheusSidePanelRuntime(
+     BrowserWindowInterface* exact_browser,
+     int32_t stable_tab_id);
+ 
++// Renderer input that has passed the WebUI handler's structural and bounded
++// field checks. The browser-process implementation still performs canonical
++// provider validation before committing any mutation.
++struct PrometheusControlProviderMutation {
++  std::string provider_id;
++  std::string label;
++  std::string kind;
++  std::string route_class;
++  std::string endpoint;
++  std::string model_id;
++  bool enabled = true;
++  int fallback_rank = 0;
++  int64_t input_rate_microunits = 0;
++  int64_t output_rate_microunits = 0;
++  bool trusted = false;
++};
++
++// Browser-process-only authority for one regular-profile control WebUI. It
++// exposes sanitized DTOs rather than profile, caller, session, or secret data.
++class PrometheusControlPanelRuntime {
++ public:
++  using SnapshotCallback =
++      base::RepeatingCallback<void(base::DictValue snapshot)>;
++
++  virtual ~PrometheusControlPanelRuntime() = default;
++
++  virtual bool IsBoundTo(Profile* exact_profile,
++                         content::WebContents* exact_web_contents) const = 0;
++  virtual bool IsObserving() const = 0;
++  virtual void SetSnapshotCallback(SnapshotCallback callback) = 0;
++  virtual base::DictValue GetSanitizedSnapshot() = 0;
++  virtual base::DictValue CancelTask(std::string task_id) = 0;
++  virtual base::DictValue SaveProvider(
++      PrometheusControlProviderMutation mutation) = 0;
++  virtual base::DictValue DeleteProvider(std::string provider_id) = 0;
++  virtual base::DictValue SetProviderEnabled(std::string provider_id,
++                                             bool enabled) = 0;
++  virtual base::DictValue MoveProvider(std::string provider_id,
++                                       bool move_up) = 0;
++  virtual base::DictValue DiscoverModels(std::string provider_id) = 0;
++  virtual base::DictValue ClearLogs() = 0;
++};
++
++using PrometheusControlPanelRuntimeFactory =
++    base::RepeatingCallback<std::unique_ptr<PrometheusControlPanelRuntime>(
++        Profile*,
++        content::WebContents*)>;
++
++void SetPrometheusControlPanelRuntimeFactory(
++    PrometheusControlPanelRuntimeFactory factory);
++std::unique_ptr<PrometheusControlPanelRuntime>
++CreatePrometheusControlPanelRuntime(Profile* exact_profile,
++                                    content::WebContents* exact_web_contents);
++
+ }  // namespace prometheus
+ 
+ #endif  // CHROME_BROWSER_UI_WEBUI_PROMETHEUS_PROMETHEUS_SIDE_PANEL_RUNTIME_H_
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_tab_control_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_tab_control_web_ui.cc
+index 83efc866e5..6ab3eab175 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_tab_control_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_tab_control_web_ui.cc
+@@ -113,14 +113,5 @@ PrometheusNewTabUI::PrometheusNewTabUI(content::WebUI* web_ui)
+ 
+ PrometheusNewTabUI::~PrometheusNewTabUI() = default;
+ 
+-PrometheusControlPanelUI::PrometheusControlPanelUI(content::WebUI* web_ui)
+-    : content::WebUIController(web_ui) {
+-  ConfigurePrometheusDataSource(web_ui,
+-                                chrome::kChromeUIPrometheusControlPanelHost,
+-                                IDR_PROMETHEUS_CONTROL_PANEL_HTML);
+-}
+-
+-PrometheusControlPanelUI::~PrometheusControlPanelUI() = default;
+-
+ WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusNewTabUI)
+ WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusControlPanelUI)
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index d315157cbd..2b85d85e04 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -7,10 +7,13 @@
+ #include <memory>
+ #include <optional>
+ #include <string>
++#include <string_view>
+ #include <utility>
+ 
++#include "base/check.h"
+ #include "base/functional/bind.h"
+ #include "base/memory/raw_ptr.h"
++#include "base/strings/string_util.h"
+ #include "base/values.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/prometheus/prometheus_ask_fsb_handoff.h"
+@@ -22,6 +25,7 @@
+ #include "content/public/browser/web_ui.h"
+ #include "content/public/browser/web_ui_data_source.h"
+ #include "content/public/browser/web_ui_message_handler.h"
++#include "content/public/browser/web_contents.h"
+ #include "content/public/common/url_constants.h"
+ 
+ namespace {
+@@ -29,11 +33,39 @@ namespace {
+ constexpr size_t kMaxSidePanelPromptBytes = 64 * 1024;
+ constexpr size_t kMaxSidePanelProviderIdBytes = 64;
+ constexpr size_t kMaxSidePanelTaskIdBytes = 128;
++constexpr size_t kMaxControlProviderIdBytes = 64;
++constexpr size_t kMaxControlProviderLabelBytes = 256;
++constexpr size_t kMaxControlModelIdBytes = 256;
++constexpr size_t kMaxControlEndpointBytes = 2048;
++constexpr int kMaxControlProviders = 32;
++constexpr int kMaxControlRateMicrounits = 1'000'000'000;
++
++size_t g_live_control_handler_count = 0;
++size_t g_total_control_snapshot_delivery_count = 0;
+ 
+ bool IsRequestedExecution(std::string_view value) {
+   return value == "auto" || value == "provider" || value == "local";
+ }
+ 
++bool IsControlProviderKind(std::string_view value) {
++  return value == "openai" || value == "anthropic" || value == "gemini" ||
++         value == "xai" || value == "openrouter" || value == "lm_studio" ||
++         value == "hosted" || value == "routed" || value == "local" ||
++         value == "custom";
++}
++
++bool IsControlRouteClass(std::string_view value) {
++  return value == "hosted" || value == "routed" || value == "local" ||
++         value == "custom";
++}
++
++bool IsBoundedControlString(std::string_view value,
++                            size_t max_bytes,
++                            bool require_nonempty = true) {
++  return (!require_nonempty || !value.empty()) && value.size() <= max_bytes &&
++         base::IsStringUTF8(value);
++}
++
+ base::DictValue RuntimeErrorValue(std::string status, std::string recovery) {
+   base::DictValue value;
+   value.Set("status", std::move(status));
+@@ -50,6 +82,239 @@ base::DictValue RuntimeUnavailableSnapshot() {
+   return value;
+ }
+ 
++base::DictValue ControlErrorValue(std::string recovery,
++                                  std::string status = "INVALID_REQUEST") {
++  base::DictValue value;
++  value.Set("status", std::move(status));
++  value.Set("accepted", false);
++  value.Set("recovery", std::move(recovery));
++  return value;
++}
++
++class PrometheusControlMessageHandler : public content::WebUIMessageHandler {
++ public:
++  explicit PrometheusControlMessageHandler(
++      base::WeakPtr<PrometheusControlPanelUI> owner)
++      : owner_(std::move(owner)) {
++    ++g_live_control_handler_count;
++  }
++  PrometheusControlMessageHandler(const PrometheusControlMessageHandler&) =
++      delete;
++  PrometheusControlMessageHandler& operator=(
++      const PrometheusControlMessageHandler&) = delete;
++  ~PrometheusControlMessageHandler() override {
++    CHECK_GT(g_live_control_handler_count, 0u);
++    --g_live_control_handler_count;
++  }
++
++ private:
++  void RegisterMessages() override {
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlInitialize",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleInitialize,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlRefresh",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleInitialize,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlCancelTask",
++        base::BindRepeating(&PrometheusControlMessageHandler::HandleCancelTask,
++                            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlSaveProvider",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleSaveProvider,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlDeleteProvider",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleDeleteProvider,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlSetProviderEnabled",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleSetProviderEnabled,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlMoveProvider",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleMoveProvider,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlDiscoverModels",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleDiscoverModels,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlClearLogs",
++        base::BindRepeating(&PrometheusControlMessageHandler::HandleClearLogs,
++                            base::Unretained(this)));
++  }
++
++  void Reject(std::string recovery) {
++    if (owner_) {
++      owner_->HandleInvalidControlMessageForWebUI(std::move(recovery));
++    }
++  }
++
++  void HandleInitialize(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (!args.empty()) {
++      Reject("Refresh the control panel and retry");
++      return;
++    }
++    owner_->HandleControlInitializeForWebUI();
++  }
++
++  void HandleCancelTask(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 1u || !args[0].is_string() ||
++        !IsBoundedControlString(args[0].GetString(),
++                                kMaxSidePanelTaskIdBytes)) {
++      Reject("Refresh the task list and retry");
++      return;
++    }
++    owner_->HandleControlCancelTaskForWebUI(args[0].GetString());
++  }
++
++  void HandleSaveProvider(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 1u || !args[0].is_dict()) {
++      Reject("Review the provider metadata and retry");
++      return;
++    }
++    const base::DictValue& value = args[0].GetDict();
++    const std::string* provider_id = value.FindString("provider_id");
++    const std::string* label = value.FindString("label");
++    const std::string* kind = value.FindString("kind");
++    const std::string* route_class = value.FindString("route_class");
++    const std::string* endpoint = value.FindString("endpoint");
++    const std::string* model_id = value.FindString("model_id");
++    const std::optional<bool> enabled = value.FindBool("enabled");
++    const std::optional<int> fallback_rank = value.FindInt("fallback_rank");
++    const std::optional<int> input_rate =
++        value.FindInt("input_rate_microunits");
++    const std::optional<int> output_rate =
++        value.FindInt("output_rate_microunits");
++    const std::optional<bool> trusted = value.FindBool("trusted");
++    if (value.size() != 11u || !provider_id || !label || !kind ||
++        !route_class || !endpoint || !model_id || !enabled ||
++        !fallback_rank || !input_rate || !output_rate || !trusted ||
++        !IsBoundedControlString(*provider_id, kMaxControlProviderIdBytes) ||
++        !IsBoundedControlString(*label, kMaxControlProviderLabelBytes) ||
++        !IsBoundedControlString(*kind, 32u) ||
++        !IsControlProviderKind(*kind) ||
++        !IsBoundedControlString(*route_class, 16u) ||
++        !IsControlRouteClass(*route_class) ||
++        !IsBoundedControlString(*endpoint, kMaxControlEndpointBytes) ||
++        !IsBoundedControlString(*model_id, kMaxControlModelIdBytes) ||
++        *fallback_rank < 0 || *fallback_rank >= kMaxControlProviders ||
++        *input_rate < 0 || *input_rate > kMaxControlRateMicrounits ||
++        *output_rate < 0 || *output_rate > kMaxControlRateMicrounits) {
++      Reject("Review the bounded provider metadata and retry");
++      return;
++    }
++    owner_->HandleControlSaveProviderForWebUI({
++        .provider_id = *provider_id,
++        .label = *label,
++        .kind = *kind,
++        .route_class = *route_class,
++        .endpoint = *endpoint,
++        .model_id = *model_id,
++        .enabled = *enabled,
++        .fallback_rank = *fallback_rank,
++        .input_rate_microunits = *input_rate,
++        .output_rate_microunits = *output_rate,
++        .trusted = *trusted,
++    });
++  }
++
++  void HandleDeleteProvider(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 1u || !args[0].is_string() ||
++        !IsBoundedControlString(args[0].GetString(),
++                                kMaxControlProviderIdBytes)) {
++      Reject("Refresh the provider list and retry");
++      return;
++    }
++    owner_->HandleControlDeleteProviderForWebUI(args[0].GetString());
++  }
++
++  void HandleSetProviderEnabled(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 2u || !args[0].is_string() || !args[1].is_bool() ||
++        !IsBoundedControlString(args[0].GetString(),
++                                kMaxControlProviderIdBytes)) {
++      Reject("Refresh the provider list and retry");
++      return;
++    }
++    owner_->HandleControlSetProviderEnabledForWebUI(args[0].GetString(),
++                                                    args[1].GetBool());
++  }
++
++  void HandleMoveProvider(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 2u || !args[0].is_string() || !args[1].is_string() ||
++        !IsBoundedControlString(args[0].GetString(),
++                                kMaxControlProviderIdBytes) ||
++        (args[1].GetString() != "up" && args[1].GetString() != "down")) {
++      Reject("Refresh the fallback order and retry");
++      return;
++    }
++    owner_->HandleControlMoveProviderForWebUI(args[0].GetString(),
++                                              args[1].GetString() == "up");
++  }
++
++  void HandleDiscoverModels(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 1u || !args[0].is_string() ||
++        !IsBoundedControlString(args[0].GetString(),
++                                kMaxControlProviderIdBytes)) {
++      Reject("Refresh the provider list and retry");
++      return;
++    }
++    owner_->HandleControlDiscoverModelsForWebUI(args[0].GetString());
++  }
++
++  void HandleClearLogs(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (!args.empty()) {
++      Reject("Confirm log clearing and retry");
++      return;
++    }
++    owner_->HandleControlClearLogsForWebUI();
++  }
++
++  base::WeakPtr<PrometheusControlPanelUI> owner_;
++};
++
+ class PrometheusSidePanelMessageHandler : public content::WebUIMessageHandler {
+  public:
+   explicit PrometheusSidePanelMessageHandler(
+@@ -186,10 +451,12 @@ void AddPrometheusCommonResourcePaths(content::WebUIDataSource* source) {
+   source->AddResourcePath("svg/fa_wrench.svg", IDR_PROMETHEUS_ICON_FA_WRENCH);
+ }
+ 
+-void ConfigurePrometheusSidePanelDataSource(content::WebUI* web_ui) {
++void ConfigurePrometheusDataSource(content::WebUI* web_ui,
++                                   const char* host,
++                                   int default_resource) {
+   auto* source = content::WebUIDataSource::CreateAndAdd(
+-      Profile::FromWebUI(web_ui), chrome::kChromeUIPrometheusSidePanelHost);
+-  source->SetDefaultResource(IDR_PROMETHEUS_SIDE_PANEL_HTML);
++      Profile::FromWebUI(web_ui), host);
++  source->SetDefaultResource(default_resource);
+   AddPrometheusCommonResourcePaths(source);
+ }
+ 
+@@ -201,7 +468,8 @@ PrometheusSidePanelUIConfig::PrometheusSidePanelUIConfig()
+ 
+ PrometheusSidePanelUI::PrometheusSidePanelUI(content::WebUI* web_ui)
+     : TopChromeWebUIController(web_ui, /*enable_chrome_send=*/true) {
+-  ConfigurePrometheusSidePanelDataSource(web_ui);
++  ConfigurePrometheusDataSource(web_ui, chrome::kChromeUIPrometheusSidePanelHost,
++                                IDR_PROMETHEUS_SIDE_PANEL_HTML);
+   web_ui->AddMessageHandler(std::make_unique<PrometheusSidePanelMessageHandler>(
+       weak_factory_.GetWeakPtr()));
+   SetBrowserWindowInterface(
+@@ -327,4 +595,171 @@ void PrometheusSidePanelUI::RetireLocalPrincipal(bool target_lost) {
+   runtime_.reset();
+ }
+ 
++PrometheusControlPanelUI::PrometheusControlPanelUI(content::WebUI* web_ui)
++    : content::WebUIController(web_ui) {
++  ConfigurePrometheusDataSource(web_ui,
++                                chrome::kChromeUIPrometheusControlPanelHost,
++                                IDR_PROMETHEUS_CONTROL_PANEL_HTML);
++
++  Profile* const candidate_profile = Profile::FromWebUI(web_ui);
++  content::WebContents* const candidate_web_contents =
++      web_ui->GetWebContents();
++  if (!candidate_profile || !candidate_profile->IsRegularProfile() ||
++      !candidate_web_contents ||
++      candidate_web_contents->GetBrowserContext() != candidate_profile) {
++    return;
++  }
++
++  // The concrete factory resolves PrometheusRuntimeProfileServiceFactory in
++  // the already runtime-linked browser-process target, avoiding a dependency
++  // cycle back through the Prometheus side-panel views.
++  std::unique_ptr<prometheus::PrometheusControlPanelRuntime> runtime =
++      prometheus::CreatePrometheusControlPanelRuntime(candidate_profile,
++                                                      candidate_web_contents);
++  if (!runtime ||
++      !runtime->IsBoundTo(candidate_profile, candidate_web_contents)) {
++    return;
++  }
++
++  profile_ = candidate_profile;
++  bound_web_contents_ = candidate_web_contents;
++  control_runtime_ = std::move(runtime);
++  control_runtime_->SetSnapshotCallback(
++      base::BindRepeating(&PrometheusControlPanelUI::SendControlSnapshot,
++                          weak_factory_.GetWeakPtr()));
++  web_ui->AddMessageHandler(std::make_unique<PrometheusControlMessageHandler>(
++      weak_factory_.GetWeakPtr()));
++  control_handler_registered_ = true;
++}
++
++PrometheusControlPanelUI::~PrometheusControlPanelUI() {
++  weak_factory_.InvalidateWeakPtrs();
++  control_runtime_.reset();
++  bound_web_contents_ = nullptr;
++  profile_ = nullptr;
++}
++
++void PrometheusControlPanelUI::HandleControlInitializeForWebUI() {
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlCancelTaskForWebUI(
++    std::string task_id) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->CancelTask(std::move(task_id))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlSaveProviderForWebUI(
++    prometheus::PrometheusControlProviderMutation mutation) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->SaveProvider(std::move(mutation))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlDeleteProviderForWebUI(
++    std::string provider_id) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->DeleteProvider(std::move(provider_id))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlSetProviderEnabledForWebUI(
++    std::string provider_id,
++    bool enabled) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->SetProviderEnabled(std::move(provider_id),
++                                                 enabled)
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlMoveProviderForWebUI(
++    std::string provider_id,
++    bool move_up) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->MoveProvider(std::move(provider_id), move_up)
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlDiscoverModelsForWebUI(
++    std::string provider_id) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->DiscoverModels(std::move(provider_id))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlClearLogsForWebUI() {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->ClearLogs()
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleInvalidControlMessageForWebUI(
++    std::string recovery) {
++  SendControlOperation(ControlErrorValue(std::move(recovery)));
++  SendFreshControlSnapshot();
++}
++
++bool PrometheusControlPanelUI::has_runtime_observer_for_testing() const {
++  return control_runtime_ && control_runtime_->IsObserving();
++}
++
++size_t PrometheusControlPanelUI::live_control_handler_count_for_testing() {
++  return g_live_control_handler_count;
++}
++
++size_t
++PrometheusControlPanelUI::total_control_snapshot_delivery_count_for_testing() {
++  return g_total_control_snapshot_delivery_count;
++}
++
++bool PrometheusControlPanelUI::HasExactControlBinding() const {
++  return profile_ && bound_web_contents_ && control_runtime_ &&
++         profile_->IsRegularProfile() &&
++         bound_web_contents_->GetBrowserContext() == profile_ &&
++         control_runtime_->IsBoundTo(profile_, bound_web_contents_);
++}
++
++void PrometheusControlPanelUI::SendControlSnapshot(base::DictValue snapshot) {
++  ++runtime_observer_delivery_count_;
++  ++g_total_control_snapshot_delivery_count;
++  web_ui()->CallJavascriptFunctionUnsafe("prometheusControlReceiveSnapshot",
++                                         base::Value(std::move(snapshot)));
++}
++
++void PrometheusControlPanelUI::SendFreshControlSnapshot() {
++  SendControlSnapshot(
++      HasExactControlBinding()
++          ? control_runtime_->GetSanitizedSnapshot()
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++}
++
++void PrometheusControlPanelUI::SendControlOperation(
++    base::DictValue operation) {
++  web_ui()->CallJavascriptFunctionUnsafe("prometheusControlReceiveOperation",
++                                         base::Value(std::move(operation)));
++}
++
+ WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusSidePanelUI)
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+index e34d48430d..be2a4dc6d8 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+@@ -24,6 +24,7 @@
+ 
+ namespace content {
+ class WebUI;
++class WebContents;
+ }  // namespace content
+ 
+ class BrowserWindowInterface;
+@@ -33,6 +34,8 @@ class PrometheusSidePanelUI;
+ class PrometheusControlPanelUI;
+ 
+ namespace prometheus {
++struct PrometheusControlProviderMutation;
++class PrometheusControlPanelRuntime;
+ class PrometheusSidePanelRuntime;
+ }  // namespace prometheus
+ 
+@@ -121,7 +124,46 @@ class PrometheusControlPanelUI : public content::WebUIController {
+   explicit PrometheusControlPanelUI(content::WebUI* web_ui);
+   ~PrometheusControlPanelUI() override;
+ 
++  void HandleControlInitializeForWebUI();
++  void HandleControlCancelTaskForWebUI(std::string task_id);
++  void HandleControlSaveProviderForWebUI(
++      prometheus::PrometheusControlProviderMutation mutation);
++  void HandleControlDeleteProviderForWebUI(std::string provider_id);
++  void HandleControlSetProviderEnabledForWebUI(std::string provider_id,
++                                               bool enabled);
++  void HandleControlMoveProviderForWebUI(std::string provider_id,
++                                         bool move_up);
++  void HandleControlDiscoverModelsForWebUI(std::string provider_id);
++  void HandleControlClearLogsForWebUI();
++  void HandleInvalidControlMessageForWebUI(std::string recovery);
++
++  Profile* profile_for_testing() const { return profile_; }
++  content::WebContents* bound_web_contents_for_testing() const {
++    return bound_web_contents_;
++  }
++  size_t control_handler_count_for_testing() const {
++    return control_handler_registered_ ? 1u : 0u;
++  }
++  bool has_runtime_observer_for_testing() const;
++  size_t runtime_observer_delivery_count_for_testing() const {
++    return runtime_observer_delivery_count_;
++  }
++  static size_t live_control_handler_count_for_testing();
++  static size_t total_control_snapshot_delivery_count_for_testing();
++
+  private:
++  bool HasExactControlBinding() const;
++  void SendControlSnapshot(base::DictValue snapshot);
++  void SendFreshControlSnapshot();
++  void SendControlOperation(base::DictValue operation);
++
++  raw_ptr<Profile> profile_ = nullptr;
++  raw_ptr<content::WebContents> bound_web_contents_ = nullptr;
++  std::unique_ptr<prometheus::PrometheusControlPanelRuntime> control_runtime_;
++  size_t runtime_observer_delivery_count_ = 0;
++  bool control_handler_registered_ = false;
++  base::WeakPtrFactory<PrometheusControlPanelUI> weak_factory_{this};
++
+   WEB_UI_CONTROLLER_TYPE_DECL();
+ };
+ 
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 62ab2749d8..1d5c03a3c1 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -7,6 +7,7 @@
+ #include <array>
+ #include <string>
+ #include <utility>
++#include <vector>
+ 
+ #include "base/test/run_until.h"
+ #include "base/test/scoped_feature_list.h"
+@@ -15,6 +16,9 @@
+ #include "chrome/browser/prometheus/prometheus_provider_registry.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
++#include "chrome/browser/prometheus/prometheus_runtime_transport_codec.h"
++#include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/browser_window.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+@@ -33,6 +37,7 @@
+ #include "content/public/common/content_features.h"
+ #include "content/public/test/browser_test.h"
+ #include "content/public/test/browser_test_utils.h"
++#include "components/prefs/pref_service.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ #include "ui/gfx/geometry/rect.h"
+ #include "ui/views/controls/webview/webview.h"
+@@ -68,8 +73,12 @@ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
+ 
+  protected:
+   content::WebContents* NavigateTo(const char* url) {
+-    EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(url)));
+-    return browser()->tab_strip_model()->GetActiveWebContents();
++    return NavigateTo(browser(), url);
++  }
++
++  content::WebContents* NavigateTo(Browser* target_browser, const char* url) {
++    EXPECT_TRUE(ui_test_utils::NavigateToURL(target_browser, GURL(url)));
++    return target_browser->tab_strip_model()->GetActiveWebContents();
+   }
+ 
+   bool BodyContains(content::WebContents* web_contents,
+@@ -162,7 +171,7 @@ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
+     provider.fallback_rank = 0;
+     EXPECT_EQ(prometheus::RuntimeProfileStatus::kOk,
+               service->SetProviders(
+-                  prometheus::RuntimeProviderMutationCaller::kLocalUi,
++                  prometheus::RuntimeCallerOrigin::kLocalControlUi,
+                   {std::move(provider)}));
+     return service;
+   }
+@@ -401,6 +410,189 @@ IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
+                   .ExtractBool());
+ }
+ 
++IN_PROC_BROWSER_TEST_F(
++    PrometheusControlPanelBrowserTest,
++    ControlHandlerInitializesRegularProfileAndRejectsOffTheRecord) {
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(web_contents);
++  PrometheusControlPanelUI* const controller =
++      web_contents->GetWebUI()->GetController()->GetAs<
++          PrometheusControlPanelUI>();
++  ASSERT_TRUE(controller);
++
++  EXPECT_EQ(browser()->profile(), controller->profile_for_testing());
++  EXPECT_EQ(web_contents, controller->bound_web_contents_for_testing());
++  EXPECT_EQ(1u, controller->control_handler_count_for_testing());
++  EXPECT_TRUE(controller->has_runtime_observer_for_testing());
++  EXPECT_EQ(1u,
++            PrometheusControlPanelUI::live_control_handler_count_for_testing());
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusControlReceiveSnapshot = snapshot => {
++      window.prometheusControlSnapshotForTesting = snapshot;
++    };
++    chrome.send('prometheusControlInitialize');
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlSnapshotForTesting?.status || '';
++    )")
++               .ExtractString() == "OK";
++  }));
++
++  Browser* const otr_browser = CreateIncognitoBrowser(browser()->profile());
++  ASSERT_TRUE(otr_browser);
++  content::WebContents* const otr_contents = NavigateTo(
++      otr_browser, chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(otr_contents);
++  PrometheusControlPanelUI* const otr_controller =
++      otr_contents->GetWebUI()->GetController()->GetAs<
++          PrometheusControlPanelUI>();
++  ASSERT_TRUE(otr_controller);
++  EXPECT_EQ(nullptr, otr_controller->profile_for_testing());
++  EXPECT_EQ(nullptr, otr_controller->bound_web_contents_for_testing());
++  EXPECT_EQ(0u, otr_controller->control_handler_count_for_testing());
++  EXPECT_FALSE(otr_controller->has_runtime_observer_for_testing());
++  EXPECT_EQ(nullptr, prometheus::PrometheusRuntimeProfileServiceFactory::
++                         GetForProfile(otr_browser->profile()));
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusControlPanelBrowserTest,
++    ControlHandlerAllowsBoundLocalMutationAndKeepsMcpStateIdentical) {
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(web_contents);
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusControlReceiveOperation = operation => {
++      window.prometheusControlOperationForTesting = operation;
++    };
++    window.prometheusControlReceiveSnapshot = snapshot => {
++      window.prometheusControlSnapshotForTesting = snapshot;
++    };
++  )"));
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    chrome.send('prometheusControlSaveProvider', [{
++      provider_id: 'control-local',
++      label: 'Control Local',
++      kind: 'lm_studio',
++      route_class: 'local',
++      endpoint: 'http://127.0.0.1:12345/v1/',
++      model_id: 'control-model',
++      enabled: true,
++      fallback_rank: 0,
++      input_rate_microunits: 7,
++      output_rate_microunits: 11,
++      trusted: true,
++    }]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlOperationForTesting?.accepted === true;
++    )")
++        .ExtractBool();
++  }));
++
++  auto* const service =
++      prometheus::PrometheusRuntimeProfileServiceFactory::GetForProfile(
++          browser()->profile());
++  ASSERT_TRUE(service);
++  const std::vector<prometheus::PrometheusProviderConfig> providers_before =
++      service->ListProvidersForTransport();
++  ASSERT_EQ(1u, providers_before.size());
++  const base::DictValue prefs_before =
++      browser()->profile()->GetPrefs()->GetDict(
++          prometheus::kPrometheusRuntimeProfileData)
++          .Clone();
++
++  EXPECT_EQ(prometheus::RuntimeProfileStatus::kLocalUiRequired,
++            service->SetProviders(
++                prometheus::RuntimeCallerOrigin::kMcp, {}));
++  EXPECT_EQ(providers_before, service->ListProvidersForTransport());
++  EXPECT_EQ(prefs_before,
++            browser()->profile()->GetPrefs()->GetDict(
++                prometheus::kPrometheusRuntimeProfileData));
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusControlPanelBrowserTest,
++    ControlHandlerSanitizesSnapshotsAndInvalidatesCallbacksOnTeardown) {
++  constexpr char kSensitivePrompt[] =
++      "Open https://control.example/?token=CHARLIE and type password=iris";
++  constexpr char kSensitiveTitle[] = "Task: Open [link] and type [redacted]";
++
++  prometheus::PrometheusRuntimeProfileService* const runtime_service =
++      ConfigureLocalRuntimeProvider();
++  ASSERT_TRUE(runtime_service);
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(web_contents);
++  PrometheusControlPanelUI* const controller =
++      web_contents->GetWebUI()->GetController()->GetAs<
++          PrometheusControlPanelUI>();
++  ASSERT_TRUE(controller);
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusControlReceiveOperation = operation => {
++      window.prometheusControlOperationForTesting = operation;
++    };
++    window.prometheusControlReceiveSnapshot = snapshot => {
++      window.prometheusControlSnapshotForTesting = snapshot;
++    };
++    chrome.send('prometheusControlInitialize');
++  )"));
++
++  tabs::TabInterface* const tab = browser()->GetActiveTabInterface();
++  ASSERT_TRUE(tab);
++  prometheus::RuntimePrincipalResult principal_result =
++      runtime_service->CreateSidePanelPrincipal(
++          browser(), tab->GetHandle().raw_value());
++  ASSERT_TRUE(principal_result.principal);
++  const prometheus::RuntimeSubmitResult submit = runtime_service->SubmitTask(
++      *principal_result.principal, kSensitivePrompt,
++      prometheus::RequestedExecution::kAuto);
++  ASSERT_TRUE(submit.task);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, content::JsReplace(R"(
++      window.prometheusControlSnapshotForTesting?.tasks?.some(
++          task => task.safe_title === $1);
++    )",
++                                                            kSensitiveTitle))
++        .ExtractBool();
++  }));
++
++  const std::string serialized = content::EvalJs(web_contents, R"(
++    JSON.stringify({
++      snapshot: window.prometheusControlSnapshotForTesting,
++      dom: document.documentElement.outerHTML,
++    });
++  )")
++                                     .ExtractString();
++  for (const std::string& sentinel :
++       std::vector<std::string>{kSensitivePrompt, "control.example", "CHARLIE",
++                                "iris", "\"prompt\"", "authorization",
++                                "ciphertext", "caller_id", "agent_session_id",
++                                "profile_path", "owner_id", "session_id"}) {
++    EXPECT_EQ(std::string::npos, serialized.find(sentinel)) << sentinel;
++  }
++
++  const size_t deliveries_before_teardown =
++      PrometheusControlPanelUI::
++          total_control_snapshot_delivery_count_for_testing();
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
++  ASSERT_TRUE(base::test::RunUntil([]() {
++    return PrometheusControlPanelUI::
++               live_control_handler_count_for_testing() == 0u;
++  }));
++  EXPECT_EQ(prometheus::RuntimeProfileStatus::kOk,
++            runtime_service->SetProviders(
++                prometheus::RuntimeCallerOrigin::kLocalControlUi,
++                runtime_service->ListProvidersForTransport()));
++  EXPECT_EQ(deliveries_before_teardown,
++            PrometheusControlPanelUI::
++                total_control_snapshot_delivery_count_for_testing());
++}
++
+ IN_PROC_BROWSER_TEST_F(
+     PrometheusWebUIFoundationBrowserTest,
+     RuntimeComposerSubmitsSanitizedSnapshotsObservesAndCancelsOnce) {
+-- 
+2.50.1 (Apple Git-155)
+

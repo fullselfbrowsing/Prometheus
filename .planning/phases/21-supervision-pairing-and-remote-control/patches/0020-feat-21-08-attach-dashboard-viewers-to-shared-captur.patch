@@ -1,0 +1,905 @@
+From c56fa48e791a9374d2b9a5260bfa6522ed87cf23 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 01:46:20 -0500
+Subject: [PATCH] feat(21-08): attach dashboard viewers to shared capture hub
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   1 +
+ .../prometheus_supervision_capture_hub.h      |   8 +-
+ .../prometheus_supervision_profile_service.cc | 328 +++++++++++++++++-
+ .../prometheus_supervision_profile_service.h  |  41 ++-
+ ...us_supervision_profile_service_unittest.cc | 249 ++++++++++++-
+ 5 files changed, 606 insertions(+), 21 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index f9dbb01812..0a087b1b99 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -346,6 +346,7 @@ source_set("prometheus_supervision_profile_service") {
+   deps = [
+     ":prometheus_agent_profile_service",
+     ":prometheus_agent_service",
++    ":prometheus_supervision_capture_hub",
+     ":prometheus_supervision_types",
+     "//base",
+     "//chrome/browser/profiles",
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub.h b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+index 417f408bb9..92a9a037f6 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+@@ -96,6 +96,9 @@ class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
+ 
+   size_t consumer_count() const { return consumers_.size(); }
+   bool ConsumerNeedsBaseline(SupervisionCaptureConsumerId consumer_id) const;
++  bool CanReleaseAfterLastConsumer() const {
++    return consumers_.empty() && !capture_in_flight_;
++  }
+ 
+   // Deterministic lifecycle hooks and counters. They expose no endpoint or
+   // document identity and are used only by native/browser verification.
+@@ -151,9 +154,8 @@ class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
+                     bool overflow);
+   void OnFrameDisconnected(content::RenderFrameHost* render_frame_host,
+                            uint64_t frame_generation);
+-  void RecoverDisconnectedSubframe(
+-      content::RenderFrameHost* render_frame_host,
+-      uint64_t frame_generation);
++  void RecoverDisconnectedSubframe(content::RenderFrameHost* render_frame_host,
++                                   uint64_t frame_generation);
+   void RequestCapture(bool force_baseline);
+   void OnCapturedForTesting(uint64_t capture_generation,
+                             bool force_baseline,
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+index 1f5d50850e..23187e3e11 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+@@ -95,6 +95,17 @@ SupervisionServiceResult ServiceFailure(SupervisionErrorCode error_code,
+                                            std::move(recovery));
+ }
+ 
++std::unique_ptr<PrometheusSupervisionCaptureHub> CreateProductionCaptureHub(
++    content::WebContents* web_contents,
++    int32_t stable_tab_id,
++    const SupervisionLimits& limits) {
++  if (!web_contents) {
++    return nullptr;
++  }
++  return std::make_unique<PrometheusSupervisionCaptureHub>(
++      web_contents, stable_tab_id, limits);
++}
++
+ }  // namespace
+ 
+ SupervisionServiceResult SupervisionServiceResult::Success() {
+@@ -169,6 +180,7 @@ struct PrometheusSupervisionProfileService::ViewerSession {
+       SupervisionStreamState::kPreparingBaseline;
+   SupervisionTerminalReason terminal_reason = SupervisionTerminalReason::kNone;
+   uint64_t authority_generation = 1;
++  std::optional<CaptureConsumerToken> capture_consumer_token;
+ };
+ 
+ struct PrometheusSupervisionProfileService::ObservedTab {
+@@ -186,6 +198,13 @@ struct PrometheusSupervisionProfileService::RecentTerminalSession {
+   base::Time retained_until;
+ };
+ 
++struct PrometheusSupervisionProfileService::CaptureHubEntry {
++  int32_t stable_tab_id = 0;
++  raw_ptr<tabs::TabInterface> tab = nullptr;
++  base::WeakPtr<BrowserWindowInterface> exact_browser;
++  std::unique_ptr<PrometheusSupervisionCaptureHub> hub;
++};
++
+ PrometheusSupervisionProfileService::PrometheusSupervisionProfileService(
+     Profile* profile,
+     SupervisionProfileKind profile_kind,
+@@ -203,15 +222,20 @@ PrometheusSupervisionProfileService::PrometheusSupervisionProfileService(
+     ObserveTabDataCallback observe_tab_data,
+     NowCallback now_callback,
+     PairingCodeGenerator pairing_code_generator,
+-    SupervisionLimits limits)
++    SupervisionLimits limits,
++    CaptureHubFactory capture_hub_factory)
+     : profile_(profile),
+       profile_kind_(profile_kind),
+       observe_tab_data_(std::move(observe_tab_data)),
+       now_callback_(std::move(now_callback)),
+       pairing_code_generator_(std::move(pairing_code_generator)),
+-      limits_(ClampSupervisionLimits(limits)) {
++      limits_(ClampSupervisionLimits(limits)),
++      capture_hub_factory_(std::move(capture_hub_factory)) {
+   CHECK(profile_);
+   CHECK(now_callback_);
++  if (!capture_hub_factory_) {
++    capture_hub_factory_ = base::BindRepeating(&CreateProductionCaptureHub);
++  }
+ }
+ 
+ PrometheusSupervisionProfileService::~PrometheusSupervisionProfileService() {
+@@ -412,6 +436,28 @@ SupervisionRedemptionResult PrometheusSupervisionProfileService::RedeemPairing(
+       observed->lease.data()->owner_session_id();
+   base::WeakPtr<BrowserWindowInterface> exact_browser = pairing->exact_browser;
+   raw_ptr<tabs::TabInterface> exact_tab = pairing->tab;
++  const base::Time viewer_expiry = now + ViewerTtl(limits_);
++  CaptureHubEntry* capture_hub =
++      GetOrCreateCaptureHub(exact_browser.get(), exact_tab);
++  if (!capture_hub || !capture_hub->hub) {
++    ReleaseCaptureHubIfUnused(stable_tab_id);
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kStaleTarget,
++                       "The paired tab cannot start supervised capture",
++                       "Create a new pairing for a live tab");
++    return result;
++  }
++  const std::optional<CaptureConsumerToken> capture_consumer_token =
++      capture_hub->hub->AttachConsumer(
++          SupervisionCaptureConsumerKind::kDashboard, viewer_expiry);
++  if (!capture_consumer_token.has_value()) {
++    ReleaseCaptureHubIfUnused(stable_tab_id);
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kTooLarge,
++                       "The dashboard capture consumer limit has been reached",
++                       "End an existing viewer session and retry");
++    return result;
++  }
+   pending_pairings_.erase(stable_tab_id);
+ 
+   auto viewer = std::make_unique<ViewerSession>();
+@@ -423,7 +469,8 @@ SupervisionRedemptionResult PrometheusSupervisionProfileService::RedeemPairing(
+   viewer->client_label = DeriveSupervisionSafeClientLabel(client_label);
+   viewer->connected_at = now;
+   viewer->last_seen_at = now;
+-  viewer->expires_at = now + ViewerTtl(limits_);
++  viewer->expires_at = viewer_expiry;
++  viewer->capture_consumer_token = capture_consumer_token;
+ 
+   result.dashboard_session = viewer->dashboard_session;
+   result.stable_tab_id = stable_tab_id;
+@@ -443,6 +490,150 @@ SupervisionRedemptionResult PrometheusSupervisionProfileService::RedeemPairing(
+   return result;
+ }
+ 
++SupervisionDashboardBaselineResult
++PrometheusSupervisionProfileService::ReadDashboardBaseline(
++    const base::UnguessableToken& dashboard_session) {
++  SupervisionDashboardBaselineResult result;
++  if (shutdown_) {
++    static_cast<SupervisionServiceResult&>(result) = UnavailableResult();
++    return result;
++  }
++  SweepExpired();
++  if (!viewers_.contains(dashboard_session)) {
++    static_cast<SupervisionServiceResult&>(result) = UnknownSessionResult();
++    return result;
++  }
++  if (!RevalidateViewerOwner(dashboard_session)) {
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kUnknownSession,
++                       "The dashboard session no longer has target authority",
++                       "Create and redeem a new pairing");
++    return result;
++  }
++
++  auto viewer = viewers_.find(dashboard_session);
++  CaptureHubEntry* capture_hub = FindCaptureHub(*viewer->second);
++  if (!capture_hub || !viewer->second->capture_consumer_token.has_value()) {
++    TerminateViewer(dashboard_session, SupervisionViewerState::kTargetClosed,
++                    SupervisionTerminalReason::kTargetClosed,
++                    SupervisionAuditEvent::kTargetClosed,
++                    SupervisionErrorCode::kStaleTarget);
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kStaleTarget,
++                       "The dashboard capture target is no longer available",
++                       "Create and redeem a new pairing");
++    return result;
++  }
++
++  result.delivery =
++      capture_hub->hub->ReadBaseline(*viewer->second->capture_consumer_token);
++  viewer->second->last_seen_at = Now();
++  if (result.delivery.has_value() &&
++      viewer->second->stream_state !=
++          SupervisionStreamState::kPreparingBaseline) {
++    viewer->second->stream_state = SupervisionStreamState::kResyncing;
++  }
++  static_cast<SupervisionServiceResult&>(result) =
++      SupervisionServiceResult::Success();
++  return result;
++}
++
++SupervisionDashboardDiffResult
++PrometheusSupervisionProfileService::ReadDashboardDiff(
++    const base::UnguessableToken& dashboard_session) {
++  SupervisionDashboardDiffResult result;
++  if (shutdown_) {
++    static_cast<SupervisionServiceResult&>(result) = UnavailableResult();
++    return result;
++  }
++  SweepExpired();
++  if (!viewers_.contains(dashboard_session)) {
++    static_cast<SupervisionServiceResult&>(result) = UnknownSessionResult();
++    return result;
++  }
++  if (!RevalidateViewerOwner(dashboard_session)) {
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kUnknownSession,
++                       "The dashboard session no longer has target authority",
++                       "Create and redeem a new pairing");
++    return result;
++  }
++
++  auto viewer = viewers_.find(dashboard_session);
++  CaptureHubEntry* capture_hub = FindCaptureHub(*viewer->second);
++  if (!capture_hub || !viewer->second->capture_consumer_token.has_value()) {
++    TerminateViewer(dashboard_session, SupervisionViewerState::kTargetClosed,
++                    SupervisionTerminalReason::kTargetClosed,
++                    SupervisionAuditEvent::kTargetClosed,
++                    SupervisionErrorCode::kStaleTarget);
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kStaleTarget,
++                       "The dashboard capture target is no longer available",
++                       "Create and redeem a new pairing");
++    return result;
++  }
++
++  const CaptureConsumerToken consumer_token =
++      *viewer->second->capture_consumer_token;
++  if (capture_hub->hub->ConsumerNeedsBaseline(consumer_token)) {
++    viewer->second->stream_state = SupervisionStreamState::kResyncing;
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kResyncRequired,
++                       "A fresh dashboard baseline is required",
++                       "Read and acknowledge the current baseline");
++    return result;
++  }
++
++  result.delivery = capture_hub->hub->ReadNext(consumer_token);
++  if (!result.delivery.has_value() &&
++      capture_hub->hub->ConsumerNeedsBaseline(consumer_token)) {
++    viewer->second->stream_state = SupervisionStreamState::kResyncing;
++    static_cast<SupervisionServiceResult&>(result) =
++        ServiceFailure(SupervisionErrorCode::kResyncRequired,
++                       "The dashboard diff cursor is no longer retained",
++                       "Read and acknowledge the current baseline");
++    return result;
++  }
++  viewer->second->last_seen_at = Now();
++  static_cast<SupervisionServiceResult&>(result) =
++      SupervisionServiceResult::Success();
++  return result;
++}
++
++SupervisionServiceResult PrometheusSupervisionProfileService::AckDashboard(
++    const base::UnguessableToken& dashboard_session,
++    const SupervisionStreamStamp& stamp) {
++  if (shutdown_) {
++    return UnavailableResult();
++  }
++  SweepExpired();
++  if (!viewers_.contains(dashboard_session)) {
++    return UnknownSessionResult();
++  }
++  if (!RevalidateViewerOwner(dashboard_session)) {
++    return ServiceFailure(SupervisionErrorCode::kUnknownSession,
++                          "The dashboard session no longer has authority",
++                          "Create and redeem a new pairing");
++  }
++
++  auto viewer = viewers_.find(dashboard_session);
++  CaptureHubEntry* capture_hub = FindCaptureHub(*viewer->second);
++  if (!capture_hub || !viewer->second->capture_consumer_token.has_value()) {
++    return ServiceFailure(SupervisionErrorCode::kStaleTarget,
++                          "The dashboard capture target is unavailable",
++                          "Create and redeem a new pairing");
++  }
++  if (!capture_hub->hub->Ack(*viewer->second->capture_consumer_token, stamp)) {
++    viewer->second->stream_state = SupervisionStreamState::kResyncing;
++    return ServiceFailure(SupervisionErrorCode::kResyncRequired,
++                          "The dashboard acknowledgement is stale",
++                          "Read and acknowledge the current baseline");
++  }
++  viewer->second->last_seen_at = Now();
++  viewer->second->stream_state = SupervisionStreamState::kLive;
++  return SupervisionServiceResult::Success();
++}
++
+ SupervisionServiceResult PrometheusSupervisionProfileService::EnableControl(
+     const base::UnguessableToken& dashboard_session) {
+   if (shutdown_) {
+@@ -599,7 +790,11 @@ void PrometheusSupervisionProfileService::Shutdown() {
+   shutdown_ = true;
+   weak_factory_.InvalidateWeakPtrs();
+   controllers_.clear();
++  for (auto& [dashboard_session, viewer] : viewers_) {
++    DetachCaptureConsumer(*viewer);
++  }
+   viewers_.clear();
++  capture_hubs_.clear();
+   pending_pairings_.clear();
+   recent_terminal_sessions_.clear();
+   failed_attempts_.clear();
+@@ -636,13 +831,28 @@ size_t PrometheusSupervisionProfileService::controller_count_for_testing()
+ 
+ size_t PrometheusSupervisionProfileService::capture_hub_count_for_testing()
+     const {
+-  return 0u;
++  return capture_hubs_.size();
+ }
+ 
+-size_t
+-PrometheusSupervisionProfileService::capture_consumer_count_for_testing(
++size_t PrometheusSupervisionProfileService::capture_consumer_count_for_testing(
+     int32_t stable_tab_id) const {
+-  return 0u;
++  auto capture_hub = capture_hubs_.find(stable_tab_id);
++  return capture_hub == capture_hubs_.end()
++             ? 0u
++             : capture_hub->second->hub->consumer_count();
++}
++
++size_t PrometheusSupervisionProfileService::
++    released_capture_disable_count_for_testing() const {
++  return released_capture_disable_count_for_testing_;
++}
++
++PrometheusSupervisionCaptureHub*
++PrometheusSupervisionProfileService::capture_hub_for_testing(
++    int32_t stable_tab_id) {
++  auto capture_hub = capture_hubs_.find(stable_tab_id);
++  return capture_hub == capture_hubs_.end() ? nullptr
++                                            : capture_hub->second->hub.get();
+ }
+ 
+ size_t PrometheusSupervisionProfileService::audit_count_for_testing() const {
+@@ -788,6 +998,93 @@ tabs::TabInterface* PrometheusSupervisionProfileService::ResolveExactTarget(
+   return viewer.tab;
+ }
+ 
++PrometheusSupervisionProfileService::CaptureHubEntry*
++PrometheusSupervisionProfileService::GetOrCreateCaptureHub(
++    BrowserWindowInterface* exact_browser,
++    tabs::TabInterface* stable_tab) {
++  if (!IsEligibleTarget(profile_, exact_browser, stable_tab)) {
++    return nullptr;
++  }
++  const int32_t stable_tab_id = stable_tab->GetHandle().raw_value();
++  auto existing = capture_hubs_.find(stable_tab_id);
++  if (existing != capture_hubs_.end()) {
++    CaptureHubEntry* entry = existing->second.get();
++    return entry->tab == stable_tab && entry->exact_browser &&
++                   entry->exact_browser.get() == exact_browser
++               ? entry
++               : nullptr;
++  }
++
++  base::WeakPtr<BrowserWindowInterface> exact_browser_weak =
++      exact_browser->GetWeakPtr();
++  if (!exact_browser_weak) {
++    return nullptr;
++  }
++  std::unique_ptr<PrometheusSupervisionCaptureHub> hub =
++      capture_hub_factory_.Run(stable_tab->GetContents(), stable_tab_id,
++                               limits_);
++  if (!hub) {
++    return nullptr;
++  }
++  auto entry = std::make_unique<CaptureHubEntry>();
++  entry->stable_tab_id = stable_tab_id;
++  entry->tab = stable_tab;
++  entry->exact_browser = std::move(exact_browser_weak);
++  entry->hub = std::move(hub);
++  CaptureHubEntry* result = entry.get();
++  capture_hubs_.emplace(stable_tab_id, std::move(entry));
++  return result;
++}
++
++PrometheusSupervisionProfileService::CaptureHubEntry*
++PrometheusSupervisionProfileService::FindCaptureHub(
++    const ViewerSession& viewer) {
++  return const_cast<CaptureHubEntry*>(
++      std::as_const(*this).FindCaptureHub(viewer));
++}
++
++const PrometheusSupervisionProfileService::CaptureHubEntry*
++PrometheusSupervisionProfileService::FindCaptureHub(
++    const ViewerSession& viewer) const {
++  auto capture_hub = capture_hubs_.find(viewer.stable_tab_id);
++  if (capture_hub == capture_hubs_.end()) {
++    return nullptr;
++  }
++  const CaptureHubEntry* entry = capture_hub->second.get();
++  if (!entry->hub || entry->tab != viewer.tab || !entry->exact_browser ||
++      !viewer.exact_browser ||
++      entry->exact_browser.get() != viewer.exact_browser.get()) {
++    return nullptr;
++  }
++  return entry;
++}
++
++void PrometheusSupervisionProfileService::DetachCaptureConsumer(
++    ViewerSession& viewer) {
++  if (!viewer.capture_consumer_token.has_value()) {
++    return;
++  }
++  auto capture_hub = capture_hubs_.find(viewer.stable_tab_id);
++  if (capture_hub != capture_hubs_.end() &&
++      capture_hub->second->tab == viewer.tab) {
++    capture_hub->second->hub->DetachConsumer(*viewer.capture_consumer_token);
++  }
++  viewer.capture_consumer_token.reset();
++  ReleaseCaptureHubIfUnused(viewer.stable_tab_id);
++}
++
++void PrometheusSupervisionProfileService::ReleaseCaptureHubIfUnused(
++    int32_t stable_tab_id) {
++  auto capture_hub = capture_hubs_.find(stable_tab_id);
++  if (capture_hub == capture_hubs_.end() ||
++      !capture_hub->second->hub->CanReleaseAfterLastConsumer()) {
++    return;
++  }
++  released_capture_disable_count_for_testing_ +=
++      capture_hub->second->hub->disable_count_for_testing();
++  capture_hubs_.erase(capture_hub);
++}
++
+ PrometheusSupervisionProfileService::ObservedTab*
+ PrometheusSupervisionProfileService::AcquireObservedTab(
+     tabs::TabInterface* tab) {
+@@ -884,6 +1181,7 @@ void PrometheusSupervisionProfileService::TerminateViewer(
+   viewer->stream_state = SupervisionStreamState::kEnded;
+   viewer->terminal_reason = reason;
+   ++viewer->authority_generation;
++  DetachCaptureConsumer(*viewer);
+ 
+   SupervisionSessionSnapshot snapshot;
+   snapshot.client.display_label = viewer->client_label;
+@@ -935,21 +1233,19 @@ bool PrometheusSupervisionProfileService::RevalidateViewerOwner(
+   if (viewer == viewers_.end()) {
+     return false;
+   }
+-  auto observed = observed_tabs_.find(viewer->second->stable_tab_id);
++  const int32_t stable_tab_id = viewer->second->stable_tab_id;
++  auto observed = observed_tabs_.find(stable_tab_id);
+   if (!ResolveExactTarget(*viewer->second) ||
+       observed == observed_tabs_.end() || !observed->second->lease.data()) {
+-    TerminateViewer(dashboard_session, SupervisionViewerState::kTargetClosed,
+-                    SupervisionTerminalReason::kTargetClosed,
+-                    SupervisionAuditEvent::kTargetClosed,
+-                    SupervisionErrorCode::kStaleTarget);
++    HandleTargetLost(stable_tab_id);
+     return false;
+   }
+   if (observed->second->lease.data()->owner_session_id() !=
+       viewer->second->immutable_owner_session_id) {
+-    TerminateViewer(dashboard_session, SupervisionViewerState::kAuthorityLost,
+-                    SupervisionTerminalReason::kAuthorityLost,
+-                    SupervisionAuditEvent::kAuthorityLost,
+-                    SupervisionErrorCode::kViewOnly);
++    TerminateViewersForTab(
++        stable_tab_id, SupervisionViewerState::kAuthorityLost,
++        SupervisionTerminalReason::kAuthorityLost,
++        SupervisionAuditEvent::kAuthorityLost, SupervisionErrorCode::kViewOnly);
+     return false;
+   }
+   return true;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.h b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+index 69040c575e..5055987749 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+@@ -21,12 +21,17 @@
+ #include "base/time/time.h"
+ #include "base/unguessable_token.h"
+ #include "chrome/browser/prometheus/prometheus_agent_service.h"
++#include "chrome/browser/prometheus/prometheus_supervision_capture_hub.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_types.h"
+ #include "components/keyed_service/core/keyed_service.h"
+ 
+ class BrowserWindowInterface;
+ class Profile;
+ 
++namespace content {
++class WebContents;
++}
++
+ namespace tabs {
+ class TabInterface;
+ }
+@@ -65,6 +70,14 @@ struct SupervisionRedemptionResult : SupervisionServiceResult {
+   base::Time expires_at;
+ };
+ 
++struct SupervisionDashboardBaselineResult : SupervisionServiceResult {
++  std::optional<SupervisionCaptureBaselineDelivery> delivery;
++};
++
++struct SupervisionDashboardDiffResult : SupervisionServiceResult {
++  std::optional<SupervisionCaptureDiffDelivery> delivery;
++};
++
+ // In-memory, regular-profile authority for pairing and viewer/controller
+ // lifecycles. It can observe tab ownership only through the narrow Agent-owned
+ // move-only lease callback supplied by composition.
+@@ -83,6 +96,11 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+           PrometheusAgentTabData::Observer*)>;
+   using NowCallback = base::RepeatingCallback<base::Time()>;
+   using PairingCodeGenerator = base::RepeatingCallback<std::string()>;
++  using CaptureHubFactory =
++      base::RepeatingCallback<std::unique_ptr<PrometheusSupervisionCaptureHub>(
++          content::WebContents*,
++          int32_t,
++          const SupervisionLimits&)>;
+ 
+   PrometheusSupervisionProfileService(Profile* profile,
+                                       SupervisionProfileKind profile_kind,
+@@ -93,7 +111,8 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+       ObserveTabDataCallback observe_tab_data,
+       NowCallback now_callback,
+       PairingCodeGenerator pairing_code_generator,
+-      SupervisionLimits limits = SupervisionLimits());
++      SupervisionLimits limits = SupervisionLimits(),
++      CaptureHubFactory capture_hub_factory = CaptureHubFactory());
+   PrometheusSupervisionProfileService(
+       const PrometheusSupervisionProfileService&) = delete;
+   PrometheusSupervisionProfileService& operator=(
+@@ -106,6 +125,13 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+   SupervisionServiceResult CancelPairing(int32_t stable_tab_id);
+   SupervisionRedemptionResult RedeemPairing(std::string_view pairing_code,
+                                             std::string_view client_label);
++  SupervisionDashboardBaselineResult ReadDashboardBaseline(
++      const base::UnguessableToken& dashboard_session);
++  SupervisionDashboardDiffResult ReadDashboardDiff(
++      const base::UnguessableToken& dashboard_session);
++  SupervisionServiceResult AckDashboard(
++      const base::UnguessableToken& dashboard_session,
++      const SupervisionStreamStamp& stamp);
+   SupervisionServiceResult EnableControl(
+       const base::UnguessableToken& dashboard_session);
+   SupervisionServiceResult StopControl(
+@@ -128,6 +154,9 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+   size_t controller_count_for_testing() const;
+   size_t capture_hub_count_for_testing() const;
+   size_t capture_consumer_count_for_testing(int32_t stable_tab_id) const;
++  size_t released_capture_disable_count_for_testing() const;
++  PrometheusSupervisionCaptureHub* capture_hub_for_testing(
++      int32_t stable_tab_id);
+   size_t audit_count_for_testing() const;
+   size_t global_failed_attempt_count_for_testing() const;
+   std::optional<std::string> immutable_owner_for_testing(
+@@ -141,6 +170,7 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+   struct ViewerSession;
+   struct ObservedTab;
+   struct RecentTerminalSession;
++  struct CaptureHubEntry;
+ 
+   base::Time Now() const;
+   std::string GeneratePairingCode() const;
+@@ -151,6 +181,12 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+   PendingPairing* FindPendingPairing(std::string_view normalized_code);
+   tabs::TabInterface* ResolveExactTarget(const PendingPairing& pairing) const;
+   tabs::TabInterface* ResolveExactTarget(const ViewerSession& viewer) const;
++  CaptureHubEntry* GetOrCreateCaptureHub(BrowserWindowInterface* exact_browser,
++                                         tabs::TabInterface* stable_tab);
++  CaptureHubEntry* FindCaptureHub(const ViewerSession& viewer);
++  const CaptureHubEntry* FindCaptureHub(const ViewerSession& viewer) const;
++  void DetachCaptureConsumer(ViewerSession& viewer);
++  void ReleaseCaptureHubIfUnused(int32_t stable_tab_id);
+   ObservedTab* AcquireObservedTab(tabs::TabInterface* tab);
+   void ReleaseObservedTabIfUnused(int32_t stable_tab_id);
+   void ScheduleObservedTabRelease(int32_t stable_tab_id);
+@@ -185,16 +221,19 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+   NowCallback now_callback_;
+   PairingCodeGenerator pairing_code_generator_;
+   const SupervisionLimits limits_;
++  CaptureHubFactory capture_hub_factory_;
+   bool shutdown_ = false;
+   uint64_t next_pairing_serial_ = 0;
+   std::map<int32_t, std::unique_ptr<PendingPairing>> pending_pairings_;
+   std::map<base::UnguessableToken, std::unique_ptr<ViewerSession>> viewers_;
+   std::map<int32_t, std::unique_ptr<ObservedTab>> observed_tabs_;
++  std::map<int32_t, std::unique_ptr<CaptureHubEntry>> capture_hubs_;
+   std::map<int32_t, base::UnguessableToken> controllers_;
+   std::deque<RecentTerminalSession> recent_terminal_sessions_;
+   std::deque<base::Time> failed_attempts_;
+   std::deque<std::pair<int32_t, SupervisionAuditSnapshot>> audit_;
+   std::map<int32_t, SupervisionPairingState> last_pairing_states_;
++  size_t released_capture_disable_count_for_testing_ = 0;
+   base::ObserverList<Observer> observers_;
+   base::WeakPtrFactory<PrometheusSupervisionProfileService> weak_factory_{this};
+ };
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+index 249076ed1f..85422352b2 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"
+ 
++#include <deque>
+ #include <memory>
+ #include <optional>
+ #include <string>
+@@ -50,6 +51,38 @@ class NoopTabDataObserver final : public PrometheusAgentTabData::Observer {
+   void OnPrometheusAgentTabDataDestroying() override {}
+ };
+ 
++SupervisionBaseline MakeServiceBaseline(std::string name) {
++  SupervisionNormalizedNode node;
++  node.ref = "document:1";
++  node.tag = "root";
++  node.name = std::move(name);
++
++  SupervisionBaseline baseline;
++  baseline.state = SupervisionProjectionState::kAuthoritative;
++  baseline.nodes.push_back(std::move(node));
++  baseline.serialized_json = "{\"safe\":true}";
++  return baseline;
++}
++
++class ServiceCaptureSource {
++ public:
++  void Capture(base::OnceCallback<void(SupervisionBaseline)> callback) {
++    pending_.push_back(std::move(callback));
++  }
++
++  size_t pending_count() const { return pending_.size(); }
++
++  void CompleteNext(SupervisionBaseline baseline) {
++    ASSERT_FALSE(pending_.empty());
++    auto callback = std::move(pending_.front());
++    pending_.pop_front();
++    std::move(callback).Run(std::move(baseline));
++  }
++
++ private:
++  std::deque<base::OnceCallback<void(SupervisionBaseline)>> pending_;
++};
++
+ class PrometheusSupervisionProfileServiceTest : public testing::Test {
+  public:
+   PrometheusSupervisionProfileServiceTest()
+@@ -102,7 +135,10 @@ class PrometheusSupervisionProfileServiceTest : public testing::Test {
+         base::BindRepeating(
+             &PrometheusSupervisionProfileServiceTest::NextPairingCode,
+             base::Unretained(this)),
+-        limits);
++        limits,
++        base::BindRepeating(
++            &PrometheusSupervisionProfileServiceTest::CreateCaptureHub,
++            base::Unretained(this)));
+     service_->AddObserver(&observer_);
+   }
+ 
+@@ -121,6 +157,19 @@ class PrometheusSupervisionProfileServiceTest : public testing::Test {
+     return agent_service_->ObserveOrCreateTabData(tab, observer);
+   }
+ 
++  std::unique_ptr<PrometheusSupervisionCaptureHub> CreateCaptureHub(
++      content::WebContents*,
++      int32_t stable_tab_id,
++      const SupervisionLimits& limits) {
++    auto hub = std::make_unique<PrometheusSupervisionCaptureHub>(
++        stable_tab_id, limits,
++        base::BindRepeating(&ServiceCaptureSource::Capture,
++                            base::Unretained(&capture_source_)));
++    hub->SetNowCallbackForTesting(base::BindRepeating(
++        [](base::Time* now) { return *now; }, base::Unretained(&now_)));
++    return hub;
++  }
++
+   SupervisionPairingCreationResult CreatePairing() {
+     return service_->CreatePairing(&browser_, &tab_);
+   }
+@@ -148,6 +197,7 @@ class PrometheusSupervisionProfileServiceTest : public testing::Test {
+   size_t next_pairing_code_ = 0;
+   NoopTabDataObserver observer_tab_data_;
+   RecordingSupervisionObserver observer_;
++  ServiceCaptureSource capture_source_;
+   std::unique_ptr<PrometheusSupervisionProfileService> service_;
+ };
+ 
+@@ -643,5 +693,202 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+   EXPECT_EQ(0u, service_->capture_hub_count_for_testing());
+ }
+ 
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       HubDashboardBaselineDiffAndAckStayConsumerLocal) {
++  SupervisionPairingCreationResult first = CreatePairing();
++  ASSERT_TRUE(first.ok);
++  SupervisionRedemptionResult viewer_a = Redeem(first, "Viewer A");
++  ASSERT_TRUE(viewer_a.ok);
++  SupervisionPairingCreationResult second = CreatePairing();
++  ASSERT_TRUE(second.ok);
++  SupervisionRedemptionResult viewer_b = Redeem(second, "Viewer B");
++  ASSERT_TRUE(viewer_b.ok);
++  ASSERT_EQ(1u, capture_source_.pending_count());
++
++  capture_source_.CompleteNext(MakeServiceBaseline("shared baseline"));
++  SupervisionDashboardBaselineResult baseline_a =
++      service_->ReadDashboardBaseline(viewer_a.dashboard_session);
++  SupervisionDashboardBaselineResult baseline_b =
++      service_->ReadDashboardBaseline(viewer_b.dashboard_session);
++  ASSERT_TRUE(baseline_a.ok);
++  ASSERT_TRUE(baseline_b.ok);
++  ASSERT_TRUE(baseline_a.delivery.has_value());
++  ASSERT_TRUE(baseline_b.delivery.has_value());
++  EXPECT_EQ(baseline_a.delivery->baseline, baseline_b.delivery->baseline);
++  EXPECT_NE(baseline_a.delivery->stamp.session,
++            baseline_b.delivery->stamp.session);
++  ASSERT_TRUE(
++      service_
++          ->AckDashboard(viewer_a.dashboard_session, baseline_a.delivery->stamp)
++          .ok);
++  ASSERT_TRUE(
++      service_
++          ->AckDashboard(viewer_b.dashboard_session, baseline_b.delivery->stamp)
++          .ok);
++
++  PrometheusSupervisionCaptureHub* hub =
++      service_->capture_hub_for_testing(first.stable_tab_id);
++  ASSERT_NE(nullptr, hub);
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  capture_source_.CompleteNext(MakeServiceBaseline("shared mutation"));
++  SupervisionDashboardDiffResult diff_a =
++      service_->ReadDashboardDiff(viewer_a.dashboard_session);
++  SupervisionDashboardDiffResult diff_b =
++      service_->ReadDashboardDiff(viewer_b.dashboard_session);
++  ASSERT_TRUE(diff_a.ok);
++  ASSERT_TRUE(diff_b.ok);
++  ASSERT_TRUE(diff_a.delivery.has_value());
++  ASSERT_TRUE(diff_b.delivery.has_value());
++  EXPECT_EQ(diff_a.delivery->diff, diff_b.delivery->diff);
++  ASSERT_TRUE(
++      service_->AckDashboard(viewer_a.dashboard_session, diff_a.delivery->stamp)
++          .ok);
++  EXPECT_FALSE(service_->ReadDashboardDiff(viewer_a.dashboard_session)
++                   .delivery.has_value());
++  SupervisionDashboardDiffResult unread_b =
++      service_->ReadDashboardDiff(viewer_b.dashboard_session);
++  ASSERT_TRUE(unread_b.ok);
++  ASSERT_TRUE(unread_b.delivery.has_value());
++  EXPECT_EQ(diff_b.delivery->stamp.sequence, unread_b.delivery->stamp.sequence);
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       HubLaggingViewerResyncDoesNotAdvanceCurrentViewer) {
++  SupervisionLimits limits;
++  limits.retained_batches = 1;
++  ResetService(SupervisionProfileKind::kRegular, limits);
++  SupervisionPairingCreationResult first = CreatePairing();
++  ASSERT_TRUE(first.ok);
++  SupervisionRedemptionResult lagging = Redeem(first, "Lagging");
++  ASSERT_TRUE(lagging.ok);
++  SupervisionPairingCreationResult second = CreatePairing();
++  ASSERT_TRUE(second.ok);
++  SupervisionRedemptionResult current = Redeem(second, "Current");
++  ASSERT_TRUE(current.ok);
++
++  capture_source_.CompleteNext(MakeServiceBaseline("baseline"));
++  SupervisionDashboardBaselineResult lagging_baseline =
++      service_->ReadDashboardBaseline(lagging.dashboard_session);
++  SupervisionDashboardBaselineResult current_baseline =
++      service_->ReadDashboardBaseline(current.dashboard_session);
++  ASSERT_TRUE(lagging_baseline.delivery.has_value());
++  ASSERT_TRUE(current_baseline.delivery.has_value());
++  ASSERT_TRUE(service_
++                  ->AckDashboard(lagging.dashboard_session,
++                                 lagging_baseline.delivery->stamp)
++                  .ok);
++  ASSERT_TRUE(service_
++                  ->AckDashboard(current.dashboard_session,
++                                 current_baseline.delivery->stamp)
++                  .ok);
++
++  PrometheusSupervisionCaptureHub* hub =
++      service_->capture_hub_for_testing(first.stable_tab_id);
++  ASSERT_NE(nullptr, hub);
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  capture_source_.CompleteNext(MakeServiceBaseline("mutation one"));
++  SupervisionDashboardDiffResult first_current =
++      service_->ReadDashboardDiff(current.dashboard_session);
++  ASSERT_TRUE(first_current.delivery.has_value());
++  ASSERT_TRUE(service_
++                  ->AckDashboard(current.dashboard_session,
++                                 first_current.delivery->stamp)
++                  .ok);
++
++  hub->NotifyDirtyForTesting(/*overflow=*/false);
++  capture_source_.CompleteNext(MakeServiceBaseline("mutation two"));
++  SupervisionDashboardDiffResult lagged =
++      service_->ReadDashboardDiff(lagging.dashboard_session);
++  EXPECT_FALSE(lagged.ok);
++  EXPECT_EQ(SupervisionErrorCode::kResyncRequired, lagged.error_code);
++  SupervisionDashboardDiffResult second_current =
++      service_->ReadDashboardDiff(current.dashboard_session);
++  ASSERT_TRUE(second_current.ok);
++  ASSERT_TRUE(second_current.delivery.has_value());
++
++  SupervisionDashboardBaselineResult replacement =
++      service_->ReadDashboardBaseline(lagging.dashboard_session);
++  ASSERT_TRUE(replacement.ok);
++  ASSERT_TRUE(replacement.delivery.has_value());
++  EXPECT_EQ(second_current.delivery->stamp.sequence,
++            replacement.delivery->stamp.sequence);
++  EXPECT_TRUE(
++      service_
++          ->AckDashboard(lagging.dashboard_session, replacement.delivery->stamp)
++          .ok);
++  EXPECT_TRUE(service_->ReadDashboardDiff(current.dashboard_session)
++                  .delivery.has_value());
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       HubViewerExpiryRevokeAndEndDetachExactlyOnce) {
++  SupervisionLimits limits;
++  limits.viewer_ttl_ms = base::Minutes(2).InMilliseconds();
++  ResetService(SupervisionProfileKind::kRegular, limits);
++  SupervisionPairingCreationResult first = CreatePairing();
++  ASSERT_TRUE(first.ok);
++  SupervisionRedemptionResult expiring = Redeem(first, "Expiring");
++  ASSERT_TRUE(expiring.ok);
++  now_ += base::Minutes(1);
++  SupervisionPairingCreationResult second = CreatePairing();
++  ASSERT_TRUE(second.ok);
++  SupervisionRedemptionResult surviving = Redeem(second, "Surviving");
++  ASSERT_TRUE(surviving.ok);
++  ASSERT_EQ(2u,
++            service_->capture_consumer_count_for_testing(first.stable_tab_id));
++
++  now_ += base::Seconds(90);
++  service_->GetSanitizedSnapshot(first.stable_tab_id);
++  EXPECT_EQ(1u, service_->viewer_count_for_testing(first.stable_tab_id));
++  EXPECT_EQ(1u,
++            service_->capture_consumer_count_for_testing(first.stable_tab_id));
++  EXPECT_FALSE(service_->EndSession(expiring.dashboard_session).ok);
++  EXPECT_EQ(1u,
++            service_->capture_consumer_count_for_testing(first.stable_tab_id));
++  EXPECT_TRUE(service_->RevokeSession(surviving.dashboard_session).ok);
++  EXPECT_EQ(0u, service_->capture_hub_count_for_testing());
++  EXPECT_EQ(1u, service_->released_capture_disable_count_for_testing());
++  EXPECT_FALSE(service_->RevokeSession(surviving.dashboard_session).ok);
++  EXPECT_EQ(1u, service_->released_capture_disable_count_for_testing());
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       HubOwnerAndTargetLossDetachEveryConsumerBeforeDispatch) {
++  PrometheusAgentTabObservationLease owner_lease =
++      agent_service_->ObserveOrCreateTabData(&tab_, &observer_tab_data_);
++  ASSERT_NE(nullptr, owner_lease.data());
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-a", "Agent A").ok);
++  SupervisionPairingCreationResult first = CreatePairing();
++  ASSERT_TRUE(first.ok);
++  SupervisionRedemptionResult viewer_a = Redeem(first, "Viewer A");
++  ASSERT_TRUE(viewer_a.ok);
++  SupervisionPairingCreationResult second = CreatePairing();
++  ASSERT_TRUE(second.ok);
++  SupervisionRedemptionResult viewer_b = Redeem(second, "Viewer B");
++  ASSERT_TRUE(viewer_b.ok);
++
++  ASSERT_TRUE(owner_lease.data()->ReleaseIfOwned("owner-a").ok);
++  EXPECT_EQ(0u, service_->viewer_count_for_testing(first.stable_tab_id));
++  EXPECT_EQ(0u, service_->capture_hub_count_for_testing());
++  EXPECT_EQ(1u, service_->released_capture_disable_count_for_testing());
++  EXPECT_FALSE(service_->ReadDashboardBaseline(viewer_a.dashboard_session).ok);
++
++  SupervisionPairingCreationResult replacement = CreatePairing();
++  ASSERT_TRUE(replacement.ok);
++  SupervisionRedemptionResult viewer_c = Redeem(replacement, "Viewer C");
++  ASSERT_TRUE(viewer_c.ok);
++  SupervisionPairingCreationResult replacement_two = CreatePairing();
++  ASSERT_TRUE(replacement_two.ok);
++  SupervisionRedemptionResult viewer_d = Redeem(replacement_two, "Viewer D");
++  ASSERT_TRUE(viewer_d.ok);
++  ASSERT_EQ(1u, service_->capture_hub_count_for_testing());
++  ASSERT_EQ(2u, service_->viewer_count_for_testing(replacement.stable_tab_id));
++  browser_weak_factory_.InvalidateWeakPtrs();
++  EXPECT_FALSE(service_->ReadDashboardDiff(viewer_c.dashboard_session).ok);
++  EXPECT_EQ(0u, service_->viewer_count_for_testing(replacement.stable_tab_id));
++  EXPECT_EQ(0u, service_->capture_hub_count_for_testing());
++  EXPECT_EQ(2u, service_->released_capture_disable_count_for_testing());
++}
++
+ }  // namespace
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

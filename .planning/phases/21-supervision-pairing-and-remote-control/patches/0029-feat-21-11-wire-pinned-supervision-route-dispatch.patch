@@ -1,0 +1,1346 @@
+From 1e9f98949f753d8a2cead18dc5fd939a2779eb31 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 05:44:34 -0500
+Subject: [PATCH] feat(21-11): wire pinned supervision route dispatch
+
+Route all five Agent names through exact SessionBinding browser scope and bind Agent/dashboard semantics only in the browser composition root.
+---
+ chrome/browser/BUILD.gn                       |   4 +-
+ chrome/browser/prometheus/BUILD.gn            |  30 +-
+ .../prometheus/prometheus_agent_gateway.cc    | 137 +++--
+ .../prometheus_agent_profile_service.h        |   6 +-
+ .../prometheus/prometheus_agent_service.cc    | 164 +++++-
+ .../prometheus/prometheus_agent_service.h     |  16 +-
+ .../prometheus_agent_service_unittest.cc      | 112 +++-
+ .../prometheus_browser_main_extra_parts.cc    | 482 +++++++++++++++++-
+ .../prometheus_browser_main_extra_parts.h     |   2 +
+ .../prometheus_supervision_profile_service.cc |  44 ++
+ .../prometheus_supervision_profile_service.h  |   8 +
+ ...eus_supervision_profile_service_factory.cc |   4 +-
+ 12 files changed, 935 insertions(+), 74 deletions(-)
+
+diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
+index a6a18ea5c6..dc1687faa8 100644
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -1397,11 +1397,11 @@ source_set("core") {
+       "//chrome/browser/device_api",
+       "//chrome/browser/device_api:impl",
+       "//chrome/browser/direct_sockets",
+-      "//chrome/browser/prometheus:prometheus_agent_gateway",
+-      "//chrome/browser/ui/views/prometheus:runtime_dialogs",
++      "//chrome/browser/prometheus:prometheus_browser_composition",
+       "//chrome/browser/ui:browser_actions_impl",
+       "//chrome/browser/ui/lens",
+       "//chrome/browser/ui/tabs/tab_drag_api/desktop_tab_drag_impl",
++      "//chrome/browser/ui/views/prometheus:runtime_dialogs",
+       "//chrome/browser/ui/waap:waap_utils",
+       "//chrome/browser/ui/webui:chrome_content_browser_client_webui_part",
+       "//chrome/browser/ui/webui/image",
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index b870c226a2..b992fb646f 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -567,8 +567,6 @@ source_set("prometheus_agent_gateway") {
+   sources = [
+     "prometheus_agent_gateway.cc",
+     "prometheus_agent_gateway.h",
+-    "prometheus_browser_main_extra_parts.cc",
+-    "prometheus_browser_main_extra_parts.h",
+   ]
+ 
+   deps = [
+@@ -582,13 +580,39 @@ source_set("prometheus_agent_gateway") {
+     ":prometheus_runtime_transport_codec",
+     ":prometheus_supervision_transport_codec",
+     "//base",
++    "//chrome/browser/profiles",
++    "//chrome/browser/ui/browser_window",
++    "//chrome/common",
++    "//components/tabs:public",
++    "//net",
++  ]
++}
++
++source_set("prometheus_browser_composition") {
++  sources = [
++    "prometheus_browser_main_extra_parts.cc",
++    "prometheus_browser_main_extra_parts.h",
++  ]
++
++  deps = [
++    ":prometheus_agent_gateway",
++    ":prometheus_agent_profile_service",
++    ":prometheus_agent_service",
++    ":prometheus_endpoint_descriptor",
++    ":prometheus_provider_registry",
++    ":prometheus_runtime_profile_service",
++    ":prometheus_runtime_transport_codec",
++    ":prometheus_supervision_profile_service",
++    "//base",
+     "//chrome/browser:main_extra_parts",
+     "//chrome/browser/profiles",
+     "//chrome/browser/ui/browser_window",
+     "//chrome/browser/ui/webui/prometheus:side_panel_ui",
+     "//chrome/common",
++    "//components/optimization_guide/content/browser",
+     "//components/tabs:public",
+-    "//net",
++    "//content/public/browser",
++    "//url",
+   ]
+ }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.cc b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+index a7872bb3e0..dbd99f1119 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+@@ -72,6 +72,26 @@ bool IsProviderPolicyOperable(const PrometheusProviderConfig& provider) {
+           provider.secret_configured);
+ }
+ 
++bool IsAgentSupervisionRoute(AgentRouteName route_name) {
++  switch (route_name) {
++    case AgentRouteName::kCreateSupervisionPairing:
++    case AgentRouteName::kStartSupervisionSession:
++    case AgentRouteName::kGetSupervisionSnapshot:
++    case AgentRouteName::kGetSupervisionDiff:
++    case AgentRouteName::kEndSupervisionSession:
++      return true;
++    default:
++      return false;
++  }
++}
++
++bool HasCallerSelectedSupervisionTarget(const AgentTarget& target) {
++  return target.browser_session_id.has_value() ||
++         target.window_session_id.has_value() ||
++         target.tab_handle.raw_value() != tabs::TabHandle::NullValue ||
++         target.tab_index.has_value();
++}
++
+ const net::NetworkTrafficAnnotationTag kGatewayTrafficAnnotation =
+     net::DefineNetworkTrafficAnnotation("prometheus_agent_gateway", R"(
+       semantics {
+@@ -696,9 +716,8 @@ AgentRouteResult BuildPrometheusGatewayHealthForTesting(
+       valid_supervision_readiness
+           ? ToAgentDiagnosticStatus(supervision_readiness->status)
+           : AgentDiagnosticStatus::kNotReady,
+-      valid_supervision_readiness
+-          ? supervision_readiness->reason
+-          : "Supervision diagnostics are not ready",
++      valid_supervision_readiness ? supervision_readiness->reason
++                                  : "Supervision diagnostics are not ready",
+       valid_supervision_readiness
+           ? supervision_readiness->next_action
+           : "Open a regular Prometheus browser window and retry");
+@@ -781,9 +800,8 @@ class PrometheusAgentGateway::IOThreadData : public net::HttpServer::Delegate {
+   void NotifyRequestTerminated(uint64_t request_id) {
+     ui_task_runner_->PostTask(
+         FROM_HERE,
+-        base::BindOnce(
+-            &PrometheusAgentGateway::OnTransportRequestTerminated, owner_,
+-            request_id));
++        base::BindOnce(&PrometheusAgentGateway::OnTransportRequestTerminated,
++                       owner_, request_id));
+   }
+ 
+   void Stop(base::OnceClosure callback) {
+@@ -1158,7 +1176,8 @@ void PrometheusAgentGateway::HandleRequest(uint64_t request_id,
+     request_handler_for_testing_.Run(path, body, std::move(callback));
+     return;
+   }
+-  HandleNativeRequest(path, body, SupervisionGatewayCancellationToken{request_id},
++  HandleNativeRequest(path, body,
++                      SupervisionGatewayCancellationToken{request_id},
+                       std::move(callback));
+ }
+ 
+@@ -1208,9 +1227,8 @@ void PrometheusAgentGateway::CancelOutstandingSupervisionRequests(
+     }
+     if (complete_unavailable) {
+       std::move(request.callback)
+-          .Run(net::HTTP_OK,
+-               SerializeSupervisionResponse(
+-                   SupervisionUnavailable(request.operation)));
++          .Run(net::HTTP_OK, SerializeSupervisionResponse(
++                                 SupervisionUnavailable(request.operation)));
+     }
+   }
+ }
+@@ -1792,10 +1810,9 @@ void PrometheusAgentGateway::HandleNativeRequest(
+       return;
+     }
+     if (!supervision_dispatcher_) {
+-      std::move(callback).Run(
+-          net::HTTP_OK,
+-          SerializeSupervisionResponse(
+-              SupervisionUnavailable(request->operation)));
++      std::move(callback).Run(net::HTTP_OK,
++                              SerializeSupervisionResponse(
++                                  SupervisionUnavailable(request->operation)));
+       return;
+     }
+ 
+@@ -1817,9 +1834,8 @@ void PrometheusAgentGateway::HandleNativeRequest(
+     supervision_dispatcher_->dispatch.Run(
+         SupervisionGatewayRequest{.transport = std::move(request.value()),
+                                   .cancellation_token = cancellation},
+-        base::BindOnce(
+-            &PrometheusAgentGateway::OnSupervisionRequestCompleted,
+-            weak_ptr_factory_.GetWeakPtr(), cancellation));
++        base::BindOnce(&PrometheusAgentGateway::OnSupervisionRequestCompleted,
++                       weak_ptr_factory_.GetWeakPtr(), cancellation));
+     return;
+   }
+ 
+@@ -1953,28 +1969,71 @@ void PrometheusAgentGateway::HandleNativeRequest(
+                             "Create a new browser-issued session and retry"));
+       return;
+     }
+-    service->ExecuteRoute(
+-        *request,
+-        base::BindOnce(
+-            [](ResponseCallback callback, AgentRouteResult result) {
+-              auto serialized = SerializeAgentTransportResult(result);
+-              if (serialized.has_value()) {
+-                std::move(callback).Run(net::HTTP_OK,
+-                                        std::move(serialized.value()));
+-                return;
+-              }
+-              AgentRouteResult failure = AgentRouteResult::Failure(
+-                  AgentErrorCode::kRequestTooLarge,
+-                  "Native route result exceeded transport bounds",
+-                  "Reduce requested output bounds and retry");
+-              auto failure_json = SerializeAgentTransportResult(failure);
+-              std::move(callback).Run(
+-                  net::HTTP_OK,
+-                  failure_json.has_value()
+-                      ? std::move(failure_json.value())
+-                      : R"({"ok":false,"error_code":"REQUEST_TOO_LARGE"})");
+-            },
+-            std::move(callback)));
++    const bool is_supervision = IsAgentSupervisionRoute(request->route_name);
++    BrowserWindowInterface* exact_browser = nullptr;
++    AgentRouteRequest canonical_request = *request;
++    if (is_supervision) {
++      if (HasCallerSelectedSupervisionTarget(request->target)) {
++        std::move(callback).Run(
++            net::HTTP_OK,
++            SerializeRouteFailure(
++                AgentErrorCode::kInvalidTarget,
++                "Supervision scope is derived from the authenticated session",
++                "Remove caller-selected browser, window, tab, and index "
++                "fields"));
++        return;
++      }
++      Profile* const profile = binding->second.profile.get();
++      exact_browser = binding->second.browser.get();
++      const int32_t stable_tab_id = binding->second.stable_tab_id;
++      tabs::TabInterface* const stable_tab =
++          stable_tab_id > 0 ? tabs::TabHandle(stable_tab_id).Get() : nullptr;
++      if (!profile || !profile->IsRegularProfile() || !exact_browser ||
++          exact_browser->IsDeleteScheduled() ||
++          exact_browser->GetType() != BrowserWindowInterface::TYPE_NORMAL ||
++          exact_browser->GetProfile() != profile || !stable_tab ||
++          stable_tab->GetHandle().raw_value() != stable_tab_id ||
++          stable_tab->GetBrowserWindowInterface() != exact_browser) {
++        std::move(callback).Run(
++            net::HTTP_OK,
++            SerializeRouteFailure(
++                AgentErrorCode::kStaleTarget,
++                "The authenticated supervision browser or tab is unavailable",
++                "Create a new browser-issued session from the intended tab"));
++        return;
++      }
++      const int32_t window_id = exact_browser->GetSessionID().id();
++      canonical_request.target.browser_session_id = window_id;
++      canonical_request.target.window_session_id = window_id;
++      canonical_request.target.tab_handle = stable_tab->GetHandle();
++    }
++
++    auto route_callback = base::BindOnce(
++        [](ResponseCallback callback, AgentRouteResult result) {
++          auto serialized = SerializeAgentTransportResult(result);
++          if (serialized.has_value()) {
++            std::move(callback).Run(net::HTTP_OK,
++                                    std::move(serialized.value()));
++            return;
++          }
++          AgentRouteResult failure = AgentRouteResult::Failure(
++              AgentErrorCode::kRequestTooLarge,
++              "Native route result exceeded transport bounds",
++              "Reduce requested output bounds and retry");
++          auto failure_json = SerializeAgentTransportResult(failure);
++          std::move(callback).Run(
++              net::HTTP_OK,
++              failure_json.has_value()
++                  ? std::move(failure_json.value())
++                  : R"({"ok":false,"error_code":"REQUEST_TOO_LARGE"})");
++        },
++        std::move(callback));
++    if (is_supervision) {
++      service->ExecuteBrowserLocalRoute(exact_browser, canonical_request,
++                                        std::move(route_callback));
++    } else {
++      service->ExecuteRoute(canonical_request, std::move(route_callback));
++    }
+     return;
+   }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.h b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+index 9d8ec39cbd..5128a531af 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+@@ -77,13 +77,15 @@ class PrometheusAgentProfileService : public KeyedService {
+       PrometheusAgentService::ConfirmedVaultTargetInspector inspector);
+   void SetConfirmedVaultFieldInserterForTesting(
+       PrometheusAgentService::ConfirmedVaultFieldInserter inserter);
++  Profile* profile_for_composition() const { return profile_; }
++  base::WeakPtr<PrometheusAgentProfileService> GetWeakPtr() {
++    return weak_factory_.GetWeakPtr();
++  }
+   void AddObserver(Observer* observer);
+   void RemoveObserver(Observer* observer);
+   void Shutdown() override;
+ 
+  private:
+-  friend class PrometheusSupervisionProfileServiceFactory;
+-
+   PrometheusAgentProfileService(Profile* profile, size_t max_active_agents);
+   base::Time Now() const;
+   void SweepExpiredSessions();
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.cc b/chrome/browser/prometheus/prometheus_agent_service.cc
+index 38ec69fb2b..99e0b4d1f2 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service.cc
+@@ -226,8 +226,7 @@ namespace {
+ 
+ PrometheusAgentService::SupervisionRouteDispatcher&
+ SupervisionRouteDispatcherStorage() {
+-  static base::NoDestructor<
+-      PrometheusAgentService::SupervisionRouteDispatcher>
++  static base::NoDestructor<PrometheusAgentService::SupervisionRouteDispatcher>
+       supervision_route_dispatcher_;
+   return *supervision_route_dispatcher_;
+ }
+@@ -335,6 +334,21 @@ AgentRouteResult NativeRouteNotReady(AgentRouteName route_name) {
+       "Retry after native diagnostics reports this capability ready");
+ }
+ 
++AgentRouteResult SupervisionRouteNotReady(AgentRouteName route_name) {
++  return AgentRouteResult::Failure(
++      AgentErrorCode::kCapabilityNotReady,
++      std::string(AgentRouteNameToString(route_name)) +
++          " is not bound to native supervision",
++      "Retry after native diagnostics reports supervision ready");
++}
++
++AgentRouteResult BrowserShuttingDown() {
++  return AgentRouteResult::Failure(
++      AgentErrorCode::kBrowserShuttingDown,
++      "The native supervision route ended during browser shutdown",
++      "Restart Prometheus and create a new Agent session");
++}
++
+ AgentRouteResult TabOutOfScope(std::string message) {
+   return AgentRouteResult::Failure(
+       AgentErrorCode::kTabOutOfScope, std::move(message),
+@@ -369,7 +383,72 @@ bool IsPageRoute(AgentRouteName route_name) {
+     case AgentRouteName::kDrag:
+     case AgentRouteName::kDropFile:
+       return true;
+-    default:
++    case AgentRouteName::kListTabs:
++    case AgentRouteName::kListWindows:
++    case AgentRouteName::kOpenTab:
++    case AgentRouteName::kActivateTab:
++    case AgentRouteName::kCloseTab:
++    case AgentRouteName::kNavigate:
++    case AgentRouteName::kReload:
++    case AgentRouteName::kGoBack:
++    case AgentRouteName::kGoForward:
++    case AgentRouteName::kDuplicateTab:
++    case AgentRouteName::kMoveTabToNewWindow:
++    case AgentRouteName::kOpenPrometheusNewTab:
++    case AgentRouteName::kOpenPrometheusSidePanel:
++    case AgentRouteName::kOpenPrometheusControlPanel:
++    case AgentRouteName::kDiagnostics:
++    case AgentRouteName::kOpenInternalSurface:
++    case AgentRouteName::kCreateSupervisionPairing:
++    case AgentRouteName::kStartSupervisionSession:
++    case AgentRouteName::kGetSupervisionSnapshot:
++    case AgentRouteName::kGetSupervisionDiff:
++    case AgentRouteName::kEndSupervisionSession:
++    case AgentRouteName::kUnsupportedPageAction:
++      return false;
++  }
++}
++
++bool IsSupervisionRoute(AgentRouteName route_name) {
++  switch (route_name) {
++    case AgentRouteName::kCreateSupervisionPairing:
++    case AgentRouteName::kStartSupervisionSession:
++    case AgentRouteName::kGetSupervisionSnapshot:
++    case AgentRouteName::kGetSupervisionDiff:
++    case AgentRouteName::kEndSupervisionSession:
++      return true;
++    case AgentRouteName::kListTabs:
++    case AgentRouteName::kListWindows:
++    case AgentRouteName::kOpenTab:
++    case AgentRouteName::kActivateTab:
++    case AgentRouteName::kCloseTab:
++    case AgentRouteName::kNavigate:
++    case AgentRouteName::kReload:
++    case AgentRouteName::kGoBack:
++    case AgentRouteName::kGoForward:
++    case AgentRouteName::kDuplicateTab:
++    case AgentRouteName::kMoveTabToNewWindow:
++    case AgentRouteName::kOpenPrometheusNewTab:
++    case AgentRouteName::kOpenPrometheusSidePanel:
++    case AgentRouteName::kOpenPrometheusControlPanel:
++    case AgentRouteName::kReadPage:
++    case AgentRouteName::kGetDomSnapshot:
++    case AgentRouteName::kGetPageSnapshot:
++    case AgentRouteName::kGetText:
++    case AgentRouteName::kGetAttribute:
++    case AgentRouteName::kDiagnostics:
++    case AgentRouteName::kOpenInternalSurface:
++    case AgentRouteName::kExecuteJs:
++    case AgentRouteName::kClick:
++    case AgentRouteName::kTypeText:
++    case AgentRouteName::kPressKey:
++    case AgentRouteName::kScroll:
++    case AgentRouteName::kHover:
++    case AgentRouteName::kSelectOption:
++    case AgentRouteName::kClear:
++    case AgentRouteName::kDrag:
++    case AgentRouteName::kDropFile:
++    case AgentRouteName::kUnsupportedPageAction:
+       return false;
+   }
+ }
+@@ -659,6 +738,10 @@ bool PrometheusAgentService::HasTabObservations(int32_t tab_handle) const {
+ void PrometheusAgentService::ExecuteRoute(BrowserWindowInterface* browser,
+                                           const AgentRouteRequest& request,
+                                           RouteCallback callback) {
++  if (IsSupervisionRoute(request.route_name)) {
++    ExecuteSupervisionRoute(browser, request, std::move(callback));
++    return;
++  }
+   if (IsPageRoute(request.route_name)) {
+     ExecutePageRoute(browser, request, std::move(callback));
+     return;
+@@ -666,6 +749,81 @@ void PrometheusAgentService::ExecuteRoute(BrowserWindowInterface* browser,
+   std::move(callback).Run(ExecuteRouteSynchronously(browser, request));
+ }
+ 
++void PrometheusAgentService::ExecuteSupervisionRoute(
++    BrowserWindowInterface* browser,
++    const AgentRouteRequest& request,
++    RouteCallback callback) {
++  const base::Time timestamp = Now();
++  const base::TimeTicks started_at = base::TimeTicks::Now();
++  auto finish = [&](AgentRouteResult result) {
++    std::move(callback).Run(
++        FinishRoute(request, timestamp, started_at, std::move(result)));
++  };
++
++  AgentSessionResult session_result =
++      session_registry_->ValidateSession(request.session_id, timestamp);
++  if (!session_result.route_result.ok) {
++    finish(std::move(session_result.route_result));
++    return;
++  }
++  AgentRouteResult touch_result =
++      session_registry_->TouchSession(request.session_id, Now());
++  if (!touch_result.ok) {
++    finish(std::move(touch_result));
++    return;
++  }
++
++  if (!browser || browser->IsDeleteScheduled() ||
++      browser->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
++    finish(InvalidTarget("Missing or closing regular browser target"));
++    return;
++  }
++  const int32_t browser_session_id = browser->GetSessionID().id();
++  if (!request.target.browser_session_id.has_value() ||
++      !request.target.window_session_id.has_value() ||
++      *request.target.browser_session_id != browser_session_id ||
++      *request.target.window_session_id != browser_session_id ||
++      request.target.tab_index.has_value() ||
++      IsNullTabHandle(request.target.tab_handle)) {
++    finish(InvalidTarget("Supervision requires one exact browser and tab"));
++    return;
++  }
++  tabs::TabInterface* const tab = request.target.tab_handle.Get();
++  if (!tab || tab->GetHandle() != request.target.tab_handle ||
++      tab->GetBrowserWindowInterface() != browser) {
++    finish(StaleTarget("The pinned supervision tab is no longer live"));
++    return;
++  }
++
++  SupervisionRouteDispatcher dispatcher = SupervisionRouteDispatcherStorage();
++  if (!dispatcher) {
++    finish(SupervisionRouteNotReady(request.route_name));
++    return;
++  }
++  dispatcher.Run(
++      browser, request,
++      base::BindOnce(&PrometheusAgentService::OnSupervisionRouteComplete,
++                     weak_factory_.GetWeakPtr(), request, timestamp, started_at,
++                     std::move(callback)));
++}
++
++// static
++void PrometheusAgentService::OnSupervisionRouteComplete(
++    base::WeakPtr<PrometheusAgentService> service,
++    AgentRouteRequest request,
++    base::Time timestamp,
++    base::TimeTicks started_at,
++    RouteCallback callback,
++    AgentRouteResult result) {
++  if (service) {
++    result =
++        service->FinishRoute(request, timestamp, started_at, std::move(result));
++  } else {
++    result = BrowserShuttingDown();
++  }
++  std::move(callback).Run(std::move(result));
++}
++
+ void PrometheusAgentService::ExecuteConfirmedVaultInsertion(
+     BrowserWindowInterface* exact_browser,
+     ConfirmedVaultInsertionRequest request,
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.h b/chrome/browser/prometheus/prometheus_agent_service.h
+index cb5820ee73..39cb41d9cc 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_service.h
+@@ -191,10 +191,8 @@ class PrometheusAgentService {
+  public:
+   using NowCallback = base::RepeatingCallback<base::Time()>;
+   using RouteCallback = base::OnceCallback<void(AgentRouteResult)>;
+-  using SupervisionRouteDispatcher = base::RepeatingCallback<void(
+-      BrowserWindowInterface*,
+-      const AgentRouteRequest&,
+-      RouteCallback)>;
++  using SupervisionRouteDispatcher = base::RepeatingCallback<
++      void(BrowserWindowInterface*, const AgentRouteRequest&, RouteCallback)>;
+   using ConfirmedVaultCallback =
+       base::OnceCallback<void(ConfirmedVaultInsertionResult)>;
+   using ConfirmedVaultTargetInspector =
+@@ -279,6 +277,16 @@ class PrometheusAgentService {
+   base::Time Now() const;
+   AgentRouteResult ExecuteRouteSynchronously(BrowserWindowInterface* browser,
+                                              const AgentRouteRequest& request);
++  void ExecuteSupervisionRoute(BrowserWindowInterface* browser,
++                               const AgentRouteRequest& request,
++                               RouteCallback callback);
++  static void OnSupervisionRouteComplete(
++      base::WeakPtr<PrometheusAgentService> service,
++      AgentRouteRequest request,
++      base::Time timestamp,
++      base::TimeTicks started_at,
++      RouteCallback callback,
++      AgentRouteResult result);
+   void ExecutePageRoute(BrowserWindowInterface* browser,
+                         const AgentRouteRequest& request,
+                         RouteCallback callback);
+diff --git a/chrome/browser/prometheus/prometheus_agent_service_unittest.cc b/chrome/browser/prometheus/prometheus_agent_service_unittest.cc
+index c00b529ad8..a3bf70b9bd 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service_unittest.cc
+@@ -151,8 +151,7 @@ class PrometheusAgentServiceTest : public testing::Test {
+     ON_CALL(supervision_browser_, GetSessionID())
+         .WillByDefault(testing::ReturnRef(supervision_browser_session_id_));
+     ON_CALL(supervision_browser_, GetType())
+-        .WillByDefault(
+-            testing::Return(BrowserWindowInterface::TYPE_NORMAL));
++        .WillByDefault(testing::Return(BrowserWindowInterface::TYPE_NORMAL));
+     ON_CALL(supervision_browser_, IsDeleteScheduled())
+         .WillByDefault(testing::Return(false));
+     ON_CALL(other_supervision_browser_, GetProfile())
+@@ -161,8 +160,7 @@ class PrometheusAgentServiceTest : public testing::Test {
+         .WillByDefault(
+             testing::ReturnRef(other_supervision_browser_session_id_));
+     ON_CALL(other_supervision_browser_, GetType())
+-        .WillByDefault(
+-            testing::Return(BrowserWindowInterface::TYPE_NORMAL));
++        .WillByDefault(testing::Return(BrowserWindowInterface::TYPE_NORMAL));
+     ON_CALL(other_supervision_browser_, IsDeleteScheduled())
+         .WillByDefault(testing::Return(false));
+     ON_CALL(supervision_tab_, GetBrowserWindowInterface())
+@@ -182,14 +180,13 @@ class PrometheusAgentServiceTest : public testing::Test {
+   AgentRouteResult ExecuteAgentRoute(BrowserWindowInterface* browser,
+                                      const AgentRouteRequest& request) {
+     std::optional<AgentRouteResult> result;
+-    service_.ExecuteRoute(
+-        browser, request,
+-        base::BindOnce(
+-            [](std::optional<AgentRouteResult>* output,
+-               AgentRouteResult route_result) {
+-              output->emplace(std::move(route_result));
+-            },
+-            &result));
++    service_.ExecuteRoute(browser, request,
++                          base::BindOnce(
++                              [](std::optional<AgentRouteResult>* output,
++                                 AgentRouteResult route_result) {
++                                output->emplace(std::move(route_result));
++                              },
++                              &result));
+     CHECK(result.has_value());
+     return std::move(*result);
+   }
+@@ -262,6 +259,97 @@ TEST_F(PrometheusAgentServiceTest,
+   EXPECT_EQ(dispatch_count, std::size(kRoutes));
+ }
+ 
++TEST_F(PrometheusAgentServiceTest,
++       SupervisionInvalidTargetsAndUnboundDispatcherFailClosed) {
++  ConfigureSupervisionTarget();
++  const AgentRouteRequest exact =
++      SupervisionRequest(AgentRouteName::kGetSupervisionSnapshot);
++
++  AgentRouteResult unbound = ExecuteAgentRoute(&supervision_browser_, exact);
++  EXPECT_FALSE(unbound.ok);
++  EXPECT_EQ(unbound.error_code, AgentErrorCode::kCapabilityNotReady);
++
++  size_t dispatch_count = 0;
++  PrometheusAgentService::SetSupervisionRouteDispatcher(base::BindRepeating(
++      [](size_t* dispatch_count, BrowserWindowInterface*,
++         const AgentRouteRequest&,
++         PrometheusAgentService::RouteCallback callback) {
++        ++*dispatch_count;
++        std::move(callback).Run(AgentRouteResult::Success({"supervision"}));
++      },
++      &dispatch_count));
++
++  std::vector<AgentRouteRequest> invalid_requests;
++  AgentRouteRequest missing_window = exact;
++  missing_window.target.window_session_id.reset();
++  invalid_requests.push_back(missing_window);
++  AgentRouteRequest wrong_window = exact;
++  wrong_window.target.window_session_id =
++      other_supervision_browser_session_id_.id();
++  invalid_requests.push_back(wrong_window);
++  AgentRouteRequest caller_index = exact;
++  caller_index.target.tab_index = 0;
++  invalid_requests.push_back(caller_index);
++  AgentRouteRequest missing_tab = exact;
++  missing_tab.target.tab_handle = tabs::TabHandle();
++  invalid_requests.push_back(missing_tab);
++  AgentRouteRequest invalid_session = exact;
++  invalid_session.session_id = "unknown-session";
++  invalid_requests.push_back(invalid_session);
++
++  for (const AgentRouteRequest& invalid : invalid_requests) {
++    EXPECT_FALSE(ExecuteAgentRoute(&supervision_browser_, invalid).ok);
++  }
++  EXPECT_FALSE(ExecuteAgentRoute(nullptr, exact).ok);
++  EXPECT_FALSE(ExecuteAgentRoute(&other_supervision_browser_, exact).ok);
++  EXPECT_EQ(dispatch_count, 0u);
++
++  PrometheusAgentService::SetSupervisionRouteDispatcher({});
++  PrometheusAgentService::SetSupervisionRouteDispatcher({});
++  EXPECT_FALSE(ExecuteAgentRoute(&supervision_browser_, exact).ok);
++  EXPECT_EQ(dispatch_count, 0u);
++}
++
++TEST_F(PrometheusAgentServiceTest,
++       SupervisionLateCompletionAfterServiceDestructionFailsShutdown) {
++  ConfigureSupervisionTarget();
++  AgentSessionRegistry registry(kDefaultMaxAgentSessions, base::Hours(1));
++  auto service = std::make_unique<PrometheusAgentService>(
++      &registry, base::BindRepeating([](base::Time* now) { return *now; },
++                                     base::Unretained(&now_)));
++  AgentSessionResult session = service->CreateSession("late completion");
++  ASSERT_TRUE(session.session.has_value());
++  AgentRouteRequest request =
++      SupervisionRequest(AgentRouteName::kGetSupervisionDiff);
++  request.session_id = session.session->id;
++
++  std::optional<PrometheusAgentService::RouteCallback> pending;
++  PrometheusAgentService::SetSupervisionRouteDispatcher(base::BindRepeating(
++      [](std::optional<PrometheusAgentService::RouteCallback>* pending,
++         BrowserWindowInterface*, const AgentRouteRequest&,
++         PrometheusAgentService::RouteCallback callback) {
++        pending->emplace(std::move(callback));
++      },
++      &pending));
++  std::optional<AgentRouteResult> completed;
++  service->ExecuteRoute(&supervision_browser_, request,
++                        base::BindOnce(
++                            [](std::optional<AgentRouteResult>* completed,
++                               AgentRouteResult result) {
++                              completed->emplace(std::move(result));
++                            },
++                            &completed));
++  ASSERT_TRUE(pending.has_value());
++  EXPECT_FALSE(completed.has_value());
++
++  PrometheusAgentService::SetSupervisionRouteDispatcher({});
++  service.reset();
++  std::move(*pending).Run(AgentRouteResult::Success({"late"}));
++  ASSERT_TRUE(completed.has_value());
++  EXPECT_FALSE(completed->ok);
++  EXPECT_EQ(completed->error_code, AgentErrorCode::kBrowserShuttingDown);
++}
++
+ TEST_F(PrometheusAgentServiceTest,
+        ConfirmedVaultMoveOnlySequentialSuccessAndPostCompletionWiping) {
+   static_assert(!std::is_copy_constructible_v<ConfirmedVaultInsertionRequest>);
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index be47dbc5fb..1a015efa32 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -12,9 +12,12 @@
+ 
+ #include "base/command_line.h"
+ #include "base/functional/bind.h"
++#include "base/memory/weak_ptr.h"
+ #include "base/run_loop.h"
+ #include "base/timer/timer.h"
++#include "chrome/browser/browser_process.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/profiles/profile_manager.h"
+ #include "chrome/browser/prometheus/prometheus_agent_gateway.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+@@ -23,6 +26,8 @@
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_transport_codec.h"
++#include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+ #include "chrome/browser/ui/webui/webui_embedding_context.h"
+@@ -1294,20 +1299,477 @@ std::unique_ptr<PrometheusControlPanelRuntime> CreateControlPanelRuntime(
+ 
+ }  // namespace
+ 
++class PrometheusSupervisionComposition {
++ public:
++  PrometheusSupervisionComposition() = default;
++  PrometheusSupervisionComposition(const PrometheusSupervisionComposition&) =
++      delete;
++  PrometheusSupervisionComposition& operator=(
++      const PrometheusSupervisionComposition&) = delete;
++  ~PrometheusSupervisionComposition() { Shutdown(); }
++
++  base::WeakPtr<PrometheusSupervisionComposition> GetWeakPtr() {
++    return weak_factory_.GetWeakPtr();
++  }
++
++  SupervisionGatewayDispatcher CreateDashboardDispatcher() {
++    SupervisionGatewayDispatcher dispatcher;
++    dispatcher.dispatch =
++        base::BindRepeating(&PrometheusSupervisionComposition::Dispatch,
++                            weak_factory_.GetWeakPtr());
++    dispatcher.cancel = base::BindRepeating(
++        &PrometheusSupervisionComposition::Cancel, weak_factory_.GetWeakPtr());
++    dispatcher.readiness = base::BindRepeating(
++        [](base::WeakPtr<PrometheusSupervisionComposition> composition) {
++          return composition
++                     ? composition->Readiness()
++                     : SupervisionGatewayReadiness{
++                           SupervisionGatewayReadinessStatus::kUnavailable,
++                           "Native supervision composition is unavailable",
++                           "Restart Prometheus"};
++        },
++        weak_factory_.GetWeakPtr());
++    dispatcher.shutdown =
++        base::BindRepeating(&PrometheusSupervisionComposition::Shutdown,
++                            weak_factory_.GetWeakPtr());
++    return dispatcher;
++  }
++
++  void DispatchAgentRoute(BrowserWindowInterface* exact_browser,
++                          const AgentRouteRequest& request,
++                          PrometheusAgentService::RouteCallback callback) {
++    Profile* const profile =
++        exact_browser ? exact_browser->GetProfile() : nullptr;
++    PrometheusSupervisionProfileService* const service =
++        profile && profile->IsRegularProfile()
++            ? PrometheusSupervisionProfileServiceFactory::GetForProfile(profile)
++            : nullptr;
++    if (!service || !exact_browser || exact_browser->IsDeleteScheduled()) {
++      std::move(callback).Run(AgentRouteResult::Failure(
++          AgentErrorCode::kCapabilityNotReady,
++          "Native supervision is unavailable for the exact browser",
++          "Create a new Agent session from a regular browser tab"));
++      return;
++    }
++    service->ExecuteCompatibilityRoute(exact_browser, request,
++                                       std::move(callback));
++  }
++
++ private:
++  struct DashboardOwner {
++    base::WeakPtr<PrometheusSupervisionProfileService> service;
++    base::UnguessableToken session;
++    int32_t stable_tab_id = 0;
++    std::optional<SupervisionStreamStamp> last_delivery;
++  };
++
++  struct PendingDiff {
++    std::string dashboard_session;
++    base::UnguessableToken service_session;
++    base::UnguessableToken wait_token;
++    SupervisionGatewayDispatcher::ResultCallback callback;
++  };
++
++  static SupervisionGatewayResult Result(SupervisionTransportResult result) {
++    return SupervisionGatewayResult{std::move(result)};
++  }
++
++  static SupervisionTransportResult Failure(
++      SupervisionTransportOperation operation,
++      const SupervisionServiceResult& service_result) {
++    return SupervisionTransportResult::SupervisionFailure(
++        operation, service_result.error_code, service_result.message,
++        service_result.recovery);
++  }
++
++  std::vector<PrometheusSupervisionProfileService*> LoadedServices() const {
++    constexpr size_t kMaxLoadedProfiles = 64;
++    std::vector<PrometheusSupervisionProfileService*> services;
++    if (!g_browser_process || !g_browser_process->profile_manager()) {
++      return services;
++    }
++    for (Profile* profile :
++         g_browser_process->profile_manager()->GetLoadedProfiles()) {
++      if (services.size() >= kMaxLoadedProfiles) {
++        break;
++      }
++      if (!profile || !profile->IsRegularProfile()) {
++        continue;
++      }
++      if (auto* service =
++              PrometheusSupervisionProfileServiceFactory::GetForProfile(
++                  profile)) {
++        services.push_back(service);
++      }
++    }
++    return services;
++  }
++
++  DashboardOwner* FindOwner(std::string_view wire_session) {
++    auto owner = dashboard_owners_.find(wire_session);
++    if (owner == dashboard_owners_.end() || !owner->second.service ||
++        !owner->second.service->OwnsDashboardSessionForComposition(
++            owner->second.session)) {
++      if (owner != dashboard_owners_.end()) {
++        dashboard_owners_.erase(owner);
++      }
++      return nullptr;
++    }
++    return &owner->second;
++  }
++
++  void Complete(SupervisionGatewayDispatcher::ResultCallback callback,
++                SupervisionTransportResult result) {
++    std::move(callback).Run(Result(std::move(result)));
++  }
++
++  void Dispatch(SupervisionGatewayRequest request,
++                SupervisionGatewayDispatcher::ResultCallback callback) {
++    if (shutdown_) {
++      Complete(std::move(callback),
++               SupervisionTransportResult::TransportFailure(
++                   request.transport.operation,
++                   SupervisionTransportErrorCode::kUnavailable,
++                   "Native supervision composition is shutting down",
++                   "Restart Prometheus and redeem a new pairing"));
++      return;
++    }
++    switch (request.transport.operation) {
++      case SupervisionTransportOperation::kRedeem:
++        Redeem(request, std::move(callback));
++        return;
++      case SupervisionTransportOperation::kBaseline:
++        Baseline(request, std::move(callback));
++        return;
++      case SupervisionTransportOperation::kDiff:
++        Diff(request, std::move(callback));
++        return;
++      case SupervisionTransportOperation::kAck:
++        Ack(request, std::move(callback));
++        return;
++      case SupervisionTransportOperation::kHeartbeat:
++        Heartbeat(request, std::move(callback));
++        return;
++      case SupervisionTransportOperation::kEnd:
++        End(request, std::move(callback));
++        return;
++      case SupervisionTransportOperation::kAction:
++        Complete(std::move(callback),
++                 SupervisionTransportResult::TransportFailure(
++                     request.transport.operation,
++                     SupervisionTransportErrorCode::kUnavailable,
++                     "Remote actions are not connected to native control",
++                     "Continue in view-only mode"));
++        return;
++    }
++  }
++
++  void Redeem(const SupervisionGatewayRequest& request,
++              SupervisionGatewayDispatcher::ResultCallback callback) {
++    const auto& params =
++        std::get<SupervisionRedeemParams>(request.transport.params);
++    PrometheusSupervisionProfileService* owner = nullptr;
++    for (PrometheusSupervisionProfileService* service : LoadedServices()) {
++      if (!service->MatchesPendingPairingForComposition(params.pairing_code)) {
++        continue;
++      }
++      if (owner) {
++        Complete(std::move(callback),
++                 SupervisionTransportResult::TransportFailure(
++                     request.transport.operation,
++                     SupervisionTransportErrorCode::kInternal,
++                     "Pairing authority is ambiguous",
++                     "Cancel the local pairing and create a new code"));
++        return;
++      }
++      owner = service;
++    }
++    if (!owner) {
++      Complete(std::move(callback),
++               SupervisionTransportResult::TransportFailure(
++                   request.transport.operation,
++                   SupervisionTransportErrorCode::kUnavailable,
++                   "No loaded regular profile owns this pairing",
++                   "Create a fresh local pairing and retry"));
++      return;
++    }
++    SupervisionRedemptionResult redeemed =
++        owner->RedeemPairing(params.pairing_code, params.client_label);
++    if (!redeemed.ok) {
++      Complete(std::move(callback),
++               Failure(request.transport.operation, redeemed));
++      return;
++    }
++    const std::string wire_session = redeemed.dashboard_session.ToString();
++    dashboard_owners_[wire_session] = DashboardOwner{
++        .service = owner->GetWeakPtr(),
++        .session = redeemed.dashboard_session,
++        .stable_tab_id = redeemed.stable_tab_id,
++    };
++    SupervisionTransportResult result =
++        SupervisionTransportResult::Success(request.transport.operation);
++    result.dashboard_authority =
++        SupervisionDashboardWireAuthority{.dashboard_session = wire_session};
++    result.sanitized_snapshot =
++        owner->GetSanitizedSnapshot(redeemed.stable_tab_id);
++    Complete(std::move(callback), std::move(result));
++  }
++
++  void Baseline(const SupervisionGatewayRequest& request,
++                SupervisionGatewayDispatcher::ResultCallback callback) {
++    const auto& params =
++        std::get<SupervisionBaselineParams>(request.transport.params);
++    DashboardOwner* owner = FindOwner(params.dashboard_session);
++    if (!owner) {
++      CompleteUnknown(request.transport.operation, std::move(callback));
++      return;
++    }
++    SupervisionDashboardBaselineResult baseline =
++        owner->service->ReadDashboardBaseline(owner->session);
++    if (!baseline.ok) {
++      Complete(std::move(callback),
++               Failure(request.transport.operation, baseline));
++      return;
++    }
++    SupervisionTransportResult result =
++        SupervisionTransportResult::Success(request.transport.operation);
++    result.sanitized_snapshot =
++        owner->service->GetSanitizedSnapshot(owner->stable_tab_id);
++    if (baseline.delivery) {
++      owner->last_delivery = baseline.delivery->stamp;
++      result.dashboard_authority = SupervisionDashboardWireAuthority{
++          .dashboard_session = params.dashboard_session,
++          .document_epoch = baseline.delivery->stamp.document_epoch.ToString(),
++          .sequence = baseline.delivery->stamp.sequence,
++      };
++    } else {
++      result.no_change = true;
++    }
++    Complete(std::move(callback), std::move(result));
++  }
++
++  void Diff(const SupervisionGatewayRequest& request,
++            SupervisionGatewayDispatcher::ResultCallback callback) {
++    const auto& params =
++        std::get<SupervisionDiffParams>(request.transport.params);
++    DashboardOwner* owner = FindOwner(params.dashboard_session);
++    if (!owner) {
++      CompleteUnknown(request.transport.operation, std::move(callback));
++      return;
++    }
++    SupervisionDashboardDiffResult diff =
++        owner->service->ReadDashboardDiff(owner->session);
++    if (!diff.ok) {
++      Complete(std::move(callback), Failure(request.transport.operation, diff));
++      return;
++    }
++    if (diff.delivery) {
++      CompleteDiff(params.dashboard_session, *owner, std::move(callback),
++                   std::move(diff));
++      return;
++    }
++    SupervisionDashboardDiffWaitRegistration wait =
++        owner->service->BeginDashboardDiffWait(
++            owner->session,
++            base::BindOnce(&PrometheusSupervisionComposition::OnDiffReady,
++                           weak_factory_.GetWeakPtr(),
++                           request.cancellation_token));
++    if (!wait.ok) {
++      Complete(std::move(callback), Failure(request.transport.operation, wait));
++      return;
++    }
++    pending_diffs_.emplace(request.cancellation_token.value,
++                           PendingDiff{params.dashboard_session, owner->session,
++                                       wait.wait_token, std::move(callback)});
++  }
++
++  void OnDiffReady(SupervisionGatewayCancellationToken token,
++                   SupervisionDashboardDiffResult diff) {
++    auto pending = pending_diffs_.find(token.value);
++    if (pending == pending_diffs_.end()) {
++      return;
++    }
++    PendingDiff operation = std::move(pending->second);
++    pending_diffs_.erase(pending);
++    DashboardOwner* owner = FindOwner(operation.dashboard_session);
++    if (!owner) {
++      CompleteUnknown(SupervisionTransportOperation::kDiff,
++                      std::move(operation.callback));
++      return;
++    }
++    if (!diff.ok) {
++      Complete(std::move(operation.callback),
++               Failure(SupervisionTransportOperation::kDiff, diff));
++      return;
++    }
++    CompleteDiff(operation.dashboard_session, *owner,
++                 std::move(operation.callback), std::move(diff));
++  }
++
++  void CompleteDiff(std::string_view wire_session,
++                    DashboardOwner& owner,
++                    SupervisionGatewayDispatcher::ResultCallback callback,
++                    SupervisionDashboardDiffResult diff) {
++    SupervisionTransportResult result = SupervisionTransportResult::Success(
++        SupervisionTransportOperation::kDiff);
++    result.sanitized_snapshot =
++        owner.service->GetSanitizedSnapshot(owner.stable_tab_id);
++    if (diff.delivery) {
++      owner.last_delivery = diff.delivery->stamp;
++      result.dashboard_authority = SupervisionDashboardWireAuthority{
++          .dashboard_session = std::string(wire_session),
++          .document_epoch = diff.delivery->stamp.document_epoch.ToString(),
++          .sequence = diff.delivery->stamp.sequence,
++      };
++    } else {
++      result.no_change = true;
++    }
++    Complete(std::move(callback), std::move(result));
++  }
++
++  void Ack(const SupervisionGatewayRequest& request,
++           SupervisionGatewayDispatcher::ResultCallback callback) {
++    const auto& params =
++        std::get<SupervisionAckParams>(request.transport.params);
++    DashboardOwner* owner = FindOwner(params.dashboard_session);
++    if (!owner || !owner->last_delivery ||
++        owner->last_delivery->document_epoch.ToString() !=
++            params.document_epoch ||
++        owner->last_delivery->sequence != params.sequence) {
++      CompleteUnknown(request.transport.operation, std::move(callback));
++      return;
++    }
++    SupervisionServiceResult ack =
++        owner->service->AckDashboard(owner->session, *owner->last_delivery);
++    SupervisionTransportResult result =
++        ack.ok
++            ? SupervisionTransportResult::Success(request.transport.operation)
++            : Failure(request.transport.operation, ack);
++    Complete(std::move(callback), std::move(result));
++  }
++
++  void Heartbeat(const SupervisionGatewayRequest& request,
++                 SupervisionGatewayDispatcher::ResultCallback callback) {
++    const auto& params =
++        std::get<SupervisionHeartbeatParams>(request.transport.params);
++    DashboardOwner* owner = FindOwner(params.dashboard_session);
++    if (!owner) {
++      CompleteUnknown(request.transport.operation, std::move(callback));
++      return;
++    }
++    SupervisionTransportResult result =
++        SupervisionTransportResult::Success(request.transport.operation);
++    result.sanitized_snapshot =
++        owner->service->GetSanitizedSnapshot(owner->stable_tab_id);
++    Complete(std::move(callback), std::move(result));
++  }
++
++  void End(const SupervisionGatewayRequest& request,
++           SupervisionGatewayDispatcher::ResultCallback callback) {
++    const auto& params =
++        std::get<SupervisionEndParams>(request.transport.params);
++    DashboardOwner* owner = FindOwner(params.dashboard_session);
++    if (!owner) {
++      CompleteUnknown(request.transport.operation, std::move(callback));
++      return;
++    }
++    SupervisionServiceResult ended = owner->service->EndSession(owner->session);
++    dashboard_owners_.erase(params.dashboard_session);
++    SupervisionTransportResult result =
++        ended.ok
++            ? SupervisionTransportResult::Success(request.transport.operation)
++            : Failure(request.transport.operation, ended);
++    if (ended.ok) {
++      result.ended = true;
++    }
++    Complete(std::move(callback), std::move(result));
++  }
++
++  void CompleteUnknown(SupervisionTransportOperation operation,
++                       SupervisionGatewayDispatcher::ResultCallback callback) {
++    Complete(std::move(callback),
++             SupervisionTransportResult::TransportFailure(
++                 operation, SupervisionTransportErrorCode::kUnavailable,
++                 "The dashboard session is unknown or expired",
++                 "Redeem a fresh local pairing"));
++  }
++
++  void Cancel(SupervisionGatewayCancellationToken token) {
++    auto pending = pending_diffs_.find(token.value);
++    if (pending == pending_diffs_.end()) {
++      return;
++    }
++    DashboardOwner* owner = FindOwner(pending->second.dashboard_session);
++    if (owner) {
++      owner->service->CancelDashboardDiffWait(pending->second.service_session,
++                                              pending->second.wait_token);
++    }
++    pending_diffs_.erase(pending);
++  }
++
++  SupervisionGatewayReadiness Readiness() {
++    if (shutdown_) {
++      return {SupervisionGatewayReadinessStatus::kUnavailable,
++              "Native supervision composition is stopped",
++              "Restart Prometheus"};
++    }
++    if (LoadedServices().empty()) {
++      return {SupervisionGatewayReadinessStatus::kNotReady,
++              "No loaded regular supervision service",
++              "Open a regular browser window"};
++    }
++    return {SupervisionGatewayReadinessStatus::kReady,
++            "Native supervision service is available",
++            "Create a local pairing to begin"};
++  }
++
++  void Shutdown() {
++    if (shutdown_) {
++      return;
++    }
++    shutdown_ = true;
++    std::vector<uint64_t> tokens;
++    tokens.reserve(pending_diffs_.size());
++    for (const auto& [token, ignored] : pending_diffs_) {
++      static_cast<void>(ignored);
++      tokens.push_back(token);
++    }
++    for (uint64_t token : tokens) {
++      Cancel(SupervisionGatewayCancellationToken{token});
++    }
++    pending_diffs_.clear();
++    dashboard_owners_.clear();
++    weak_factory_.InvalidateWeakPtrs();
++  }
++
++  std::map<std::string, DashboardOwner, std::less<>> dashboard_owners_;
++  std::map<uint64_t, PendingDiff> pending_diffs_;
++  bool shutdown_ = false;
++  base::WeakPtrFactory<PrometheusSupervisionComposition> weak_factory_{this};
++};
++
+ PrometheusBrowserMainExtraParts::PrometheusBrowserMainExtraParts(
+     bool is_integration_test)
+     : is_integration_test_(is_integration_test) {
+   PrometheusAgentProfileServiceFactory::GetInstance();
+   PrometheusRuntimeProfileServiceFactory::GetInstance();
++  PrometheusSupervisionProfileServiceFactory::GetInstance();
+   SetPrometheusSidePanelRuntimeFactory(
+       base::BindRepeating(&CreateSidePanelRuntime));
+   SetPrometheusControlPanelRuntimeFactory(
+       base::BindRepeating(&CreateControlPanelRuntime));
+ }
+ 
+-PrometheusBrowserMainExtraParts::~PrometheusBrowserMainExtraParts() = default;
++PrometheusBrowserMainExtraParts::~PrometheusBrowserMainExtraParts() {
++  PrometheusAgentService::SetSupervisionRouteDispatcher({});
++}
+ 
+ void PrometheusBrowserMainExtraParts::PostBrowserStart() {
++  supervision_composition_ =
++      std::make_unique<PrometheusSupervisionComposition>();
++  PrometheusAgentService::SetSupervisionRouteDispatcher(
++      base::BindRepeating(&PrometheusSupervisionComposition::DispatchAgentRoute,
++                          supervision_composition_->GetWeakPtr()));
+   const base::CommandLine& command_line =
+       *base::CommandLine::ForCurrentProcess();
+   if (is_integration_test_ &&
+@@ -1324,18 +1786,24 @@ void PrometheusBrowserMainExtraParts::PostBrowserStart() {
+   PrometheusAgentGateway::Options options;
+   options.descriptor_path = std::move(descriptor_path);
+   gateway_ = std::make_unique<PrometheusAgentGateway>(std::move(options));
++  gateway_->SetSupervisionGatewayDispatcher(
++      supervision_composition_->CreateDashboardDispatcher());
+   gateway_->Start(
+       base::BindOnce([](bool started) { static_cast<void>(started); }));
+ }
+ 
+ void PrometheusBrowserMainExtraParts::PostMainMessageLoopRun() {
+-  if (!gateway_) {
+-    return;
++  if (gateway_) {
++    gateway_->SetSupervisionGatewayDispatcher({});
++  }
++  PrometheusAgentService::SetSupervisionRouteDispatcher({});
++  if (gateway_) {
++    base::RunLoop stopped;
++    gateway_->Shutdown(stopped.QuitClosure());
++    stopped.Run();
++    gateway_.reset();
+   }
+-  base::RunLoop stopped;
+-  gateway_->Shutdown(stopped.QuitClosure());
+-  stopped.Run();
+-  gateway_.reset();
++  supervision_composition_.reset();
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
+index f395087e78..6b3213d439 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h
+@@ -12,6 +12,7 @@
+ namespace prometheus {
+ 
+ class PrometheusAgentGateway;
++class PrometheusSupervisionComposition;
+ 
+ class PrometheusBrowserMainExtraParts final
+     : public ChromeBrowserMainExtraParts {
+@@ -28,6 +29,7 @@ class PrometheusBrowserMainExtraParts final
+ 
+  private:
+   const bool is_integration_test_;
++  std::unique_ptr<PrometheusSupervisionComposition> supervision_composition_;
+   std::unique_ptr<PrometheusAgentGateway> gateway_;
+ };
+ 
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+index faad839eca..e8568d1a9e 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+@@ -891,6 +891,50 @@ SupervisionServiceResult PrometheusSupervisionProfileService::EndSession(
+   return SupervisionServiceResult::Success();
+ }
+ 
++void PrometheusSupervisionProfileService::ExecuteCompatibilityRoute(
++    BrowserWindowInterface* exact_browser,
++    const AgentRouteRequest& request,
++    PrometheusAgentService::RouteCallback callback) {
++  if (shutdown_ || profile_kind_ != SupervisionProfileKind::kRegular ||
++      !exact_browser || exact_browser->IsDeleteScheduled() ||
++      exact_browser->GetProfile() != profile_) {
++    std::move(callback).Run(AgentRouteResult::Failure(
++        AgentErrorCode::kStaleTarget,
++        "The exact regular supervision target is unavailable",
++        "Create a new Agent session from the intended tab"));
++    return;
++  }
++  std::move(callback).Run(AgentRouteResult::Failure(
++      AgentErrorCode::kCapabilityNotReady,
++      std::string(AgentRouteNameToString(request.route_name)) +
++          " compatibility semantics are not ready",
++      "Retry after native diagnostics reports supervision ready"));
++}
++
++bool PrometheusSupervisionProfileService::MatchesPendingPairingForComposition(
++    std::string_view pairing_code) {
++  if (shutdown_ || profile_kind_ != SupervisionProfileKind::kRegular) {
++    return false;
++  }
++  SweepExpired();
++  return FindPendingPairing(NormalizePairingCode(pairing_code)) != nullptr;
++}
++
++bool PrometheusSupervisionProfileService::OwnsDashboardSessionForComposition(
++    const base::UnguessableToken& dashboard_session) {
++  if (shutdown_ || profile_kind_ != SupervisionProfileKind::kRegular ||
++      !dashboard_session) {
++    return false;
++  }
++  SweepExpired();
++  return viewers_.contains(dashboard_session);
++}
++
++base::WeakPtr<PrometheusSupervisionProfileService>
++PrometheusSupervisionProfileService::GetWeakPtr() {
++  return weak_factory_.GetWeakPtr();
++}
++
+ void PrometheusSupervisionProfileService::HandleTargetLost(
+     int32_t stable_tab_id) {
+   if (shutdown_) {
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.h b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+index f94e0f2cb8..844a695022 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+@@ -152,6 +152,14 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+       const base::UnguessableToken& dashboard_session);
+   SupervisionServiceResult EndSession(
+       const base::UnguessableToken& dashboard_session);
++  void ExecuteCompatibilityRoute(
++      BrowserWindowInterface* exact_browser,
++      const AgentRouteRequest& request,
++      PrometheusAgentService::RouteCallback callback);
++  bool MatchesPendingPairingForComposition(std::string_view pairing_code);
++  bool OwnsDashboardSessionForComposition(
++      const base::UnguessableToken& dashboard_session);
++  base::WeakPtr<PrometheusSupervisionProfileService> GetWeakPtr();
+   void HandleTargetLost(int32_t stable_tab_id);
+ 
+   SanitizedSupervisionSnapshot GetSanitizedSnapshot(int32_t stable_tab_id);
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc
+index 08247f4ad9..e1ec8e9337 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc
+@@ -87,13 +87,13 @@ PrometheusSupervisionProfileServiceFactory::BuildForRegularProfile(
+     Profile* profile,
+     PrometheusAgentProfileService* agent_profile_service) {
+   if (!profile || !agent_profile_service ||
+-      agent_profile_service->profile_ != profile) {
++      agent_profile_service->profile_for_composition() != profile) {
+     return nullptr;
+   }
+   return std::make_unique<PrometheusSupervisionProfileService>(
+       profile, SupervisionProfileKind::kRegular,
+       base::BindRepeating(&ForwardAgentTabObservation,
+-                          agent_profile_service->weak_factory_.GetWeakPtr()));
++                          agent_profile_service->GetWeakPtr()));
+ }
+ 
+ bool PrometheusSupervisionProfileServiceFactory::
+-- 
+2.50.1 (Apple Git-155)
+

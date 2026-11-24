@@ -1,0 +1,1170 @@
+From 6e99d63fce2e1e0145ebb6b11a2215b304cae477 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 03:11:21 -0500
+Subject: [PATCH 11/19] feat(19-04): add exact-frame element read routes
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   2 +
+ .../prometheus/prometheus_page_adapter.cc     |  58 ++-
+ .../prometheus/prometheus_page_adapter.h      |   5 +
+ .../prometheus_page_adapter_browsertest.cc    |  53 +--
+ .../prometheus_page_element_reader.cc         | 359 ++++++++++++++++++
+ .../prometheus_page_element_reader.h          |  82 ++++
+ chrome/common/prometheus_render_frame.mojom   |   9 +
+ chrome/renderer/BUILD.gn                      |   1 -
+ .../renderer/prometheus_action_dispatcher.cc  | 111 ++++++
+ .../renderer/prometheus_action_dispatcher.h   |  15 +
+ .../prometheus_action_dispatcher_unittest.cc  |  96 ++---
+ .../prometheus_render_frame_observer.cc       |  19 +
+ .../prometheus_render_frame_observer.h        |   3 +
+ 13 files changed, 723 insertions(+), 90 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_page_element_reader.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_page_element_reader.h
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 0ad900c7db..2855f37516 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -143,6 +143,8 @@ source_set("prometheus_page_adapter") {
+     "prometheus_page_action_dispatcher.h",
+     "prometheus_page_adapter.cc",
+     "prometheus_page_adapter.h",
++    "prometheus_page_element_reader.cc",
++    "prometheus_page_element_reader.h",
+     "prometheus_page_error.cc",
+     "prometheus_page_error.h",
+     "prometheus_page_js_executor.cc",
+diff --git a/chrome/browser/prometheus/prometheus_page_adapter.cc b/chrome/browser/prometheus/prometheus_page_adapter.cc
+index 0849743f1a..c6ffbe5d8e 100644
+--- a/chrome/browser/prometheus/prometheus_page_adapter.cc
++++ b/chrome/browser/prometheus/prometheus_page_adapter.cc
+@@ -12,6 +12,7 @@
+ #include "base/strings/string_util.h"
+ #include "chrome/browser/prometheus/prometheus_agent_session.h"
+ #include "chrome/browser/prometheus/prometheus_page_action_dispatcher.h"
++#include "chrome/browser/prometheus/prometheus_page_element_reader.h"
+ #include "chrome/browser/prometheus/prometheus_page_error.h"
+ #include "chrome/browser/prometheus/prometheus_page_js_executor.h"
+ #include "chrome/browser/prometheus/prometheus_page_snapshot.h"
+@@ -89,6 +90,14 @@ PrometheusPageAdapter::~PrometheusPageAdapter() {
+         "The browser stopped while a page action was pending",
+         "Reconnect and request a fresh page snapshot"));
+   }
++  auto reads = std::move(in_flight_element_read_operations_);
++  for (auto& [operation_id, operation] : reads) {
++    static_cast<void>(operation_id);
++    operation->Cancel(AgentRouteResult::Failure(
++        AgentErrorCode::kBrowserShuttingDown,
++        "The browser stopped while an element read was pending",
++        "Reconnect and request a fresh page snapshot"));
++  }
+ }
+ 
+ void PrometheusPageAdapter::Execute(const AgentRouteRequest& request,
+@@ -177,6 +186,49 @@ void PrometheusPageAdapter::Execute(const AgentRouteRequest& request,
+       return;
+     }
+ 
++    case AgentRouteName::kGetText:
++    case AgentRouteName::kGetAttribute: {
++      if (!request.page_request.has_value()) {
++        std::move(callback).Run(InvalidPageInput(
++            "Element reads require a page request",
++            "Provide one bounded element ref or selector and retry"));
++        return;
++      }
++      content::WebContents* web_contents = nullptr;
++      AgentRouteResult web_contents_result =
++          ResolveWebContents(tab, &web_contents);
++      if (!web_contents_result.ok) {
++        std::move(callback).Run(std::move(web_contents_result));
++        return;
++      }
++      content::RenderFrameHost* frame = nullptr;
++      AgentRouteResult frame_result = ResolveFrame(
++          web_contents, request.page_request->action.frame, &frame);
++      if (!frame_result.ok) {
++        std::move(callback).Run(std::move(frame_result));
++        return;
++      }
++      if (!IsNormalPageUrl(frame->GetLastCommittedURL())) {
++        std::move(callback).Run(PermissionBlocked(
++            "Element reads are blocked on internal or non-web URLs",
++            "Navigate the owned tab to a normal http or https page and retry"));
++        return;
++      }
++
++      const uint64_t operation_id = ++next_element_read_operation_id_;
++      scoped_refptr<PrometheusPageElementReader> operation =
++          base::MakeRefCounted<PrometheusPageElementReader>(
++              request.route_name, web_contents, frame,
++              request.page_request->action.element,
++              request.page_request->attribute_name.value_or(std::string()),
++              std::move(callback),
++              base::BindOnce(&PrometheusPageAdapter::OnElementReadFinished,
++                             weak_factory_.GetWeakPtr(), operation_id));
++      in_flight_element_read_operations_.emplace(operation_id, operation);
++      operation->Execute();
++      return;
++    }
++
+     case AgentRouteName::kExecuteJs: {
+       AgentRouteResult input_result =
+           ValidateExecuteJsRequest(request, /*is_normal_page=*/true);
+@@ -316,8 +368,6 @@ void PrometheusPageAdapter::Execute(const AgentRouteRequest& request,
+     case AgentRouteName::kOpenPrometheusNewTab:
+     case AgentRouteName::kOpenPrometheusSidePanel:
+     case AgentRouteName::kOpenPrometheusControlPanel:
+-    case AgentRouteName::kGetText:
+-    case AgentRouteName::kGetAttribute:
+     case AgentRouteName::kDiagnostics:
+     case AgentRouteName::kOpenInternalSurface:
+     case AgentRouteName::kUnsupportedPageAction:
+@@ -326,6 +376,10 @@ void PrometheusPageAdapter::Execute(const AgentRouteRequest& request,
+   }
+ }
+ 
++void PrometheusPageAdapter::OnElementReadFinished(uint64_t operation_id) {
++  in_flight_element_read_operations_.erase(operation_id);
++}
++
+ AgentRouteResult PrometheusPageAdapter::ResolveWebContents(
+     tabs::TabInterface* tab,
+     content::WebContents** web_contents) {
+diff --git a/chrome/browser/prometheus/prometheus_page_adapter.h b/chrome/browser/prometheus/prometheus_page_adapter.h
+index 265192e35d..3e645b1240 100644
+--- a/chrome/browser/prometheus/prometheus_page_adapter.h
++++ b/chrome/browser/prometheus/prometheus_page_adapter.h
+@@ -40,6 +40,7 @@ struct AgentSession;
+ class PrometheusPageAdapterTestPeer;
+ class PrometheusPageAdapterJsTestPeer;
+ class PrometheusPageActionDispatcher;
++class PrometheusPageElementReader;
+ class PrometheusPageJsExecutor;
+ 
+ class PrometheusPageAdapter {
+@@ -86,6 +87,7 @@ class PrometheusPageAdapter {
+   void OnJsExecutionComplete(uint64_t executor_id,
+                              CompletionCallback callback,
+                              AgentRouteResult result);
++  void OnElementReadFinished(uint64_t operation_id);
+   bool RecordActionFingerprint(std::string session_id,
+                                int32_t tab_handle_value,
+                                std::string fingerprint);
+@@ -97,6 +99,9 @@ class PrometheusPageAdapter {
+   uint64_t next_action_operation_id_ = 0;
+   std::map<uint64_t, scoped_refptr<PrometheusPageActionDispatcher>>
+       in_flight_action_operations_;
++  uint64_t next_element_read_operation_id_ = 0;
++  std::map<uint64_t, scoped_refptr<PrometheusPageElementReader>>
++      in_flight_element_read_operations_;
+   PrometheusPageActionHistory action_history_;
+   base::WeakPtrFactory<PrometheusPageAdapter> weak_factory_{this};
+ };
+diff --git a/chrome/browser/prometheus/prometheus_page_adapter_browsertest.cc b/chrome/browser/prometheus/prometheus_page_adapter_browsertest.cc
+index 8238028529..0bc88f3a77 100644
+--- a/chrome/browser/prometheus/prometheus_page_adapter_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_page_adapter_browsertest.cc
+@@ -140,13 +140,15 @@ class PrometheusPageAdapterBrowserTest : public InProcessBrowserTest {
+   }
+ 
+   tabs::TabInterface* OpenFixture(std::string_view file,
+-                                  std::string_view session_id) {
++                                  std::string_view session_id,
++                                  bool foreground = true) {
+     const GURL url = FixtureUrl(file);
+     content::TestNavigationObserver observer(url);
+     observer.StartWatchingNewWebContents();
+     AgentRouteRequest open_request =
+         Request(AgentRouteName::kOpenTab, session_id);
+     open_request.url = url;
++    open_request.foreground = foreground;
+     AgentRouteResult open_result = Execute(open_request);
+     EXPECT_TRUE(open_result.ok) << open_result.message;
+     if (!open_result.ok) {
+@@ -764,14 +766,13 @@ IN_PROC_BROWSER_TEST_F(PrometheusPageActionBrowserTest,
+   content::RenderFrameHost* child = content::ChildFrameAt(
+       target_tab->GetContents()->GetPrimaryMainFrame(), 0);
+   ASSERT_TRUE(child);
+-  const std::string ref =
+-      SnapshotRef(target_tab, session_id, "Child button", "button");
++  const std::string ref = SnapshotRef(target_tab, session_id, "child-name");
+   ASSERT_FALSE(ref.empty());
+ 
+   AgentRouteResult wrong_frame = Execute(ElementReadRequest(
+       AgentRouteName::kGetText, session_id, target_tab, ref));
+   ExpectElementReadDenied(wrong_frame, AgentRouteName::kGetText,
+-                          AgentErrorCode::kStaleTarget, "Child button");
++                          AgentErrorCode::kStaleTarget, "child-private");
+ 
+   AgentFrameTarget exact_frame;
+   const size_t separator = ref.rfind(':');
+@@ -781,7 +782,7 @@ IN_PROC_BROWSER_TEST_F(PrometheusPageActionBrowserTest,
+       AgentRouteName::kGetText, session_id, target_tab, ref, exact_frame));
+   ASSERT_TRUE(result.ok) << result.message;
+   ASSERT_TRUE(result.element_read_result.has_value());
+-  EXPECT_EQ("Child button", result.element_read_result->value);
++  EXPECT_TRUE(result.element_read_result->value.empty());
+   EXPECT_TRUE(result.element_read_result->attribute_present);
+   EXPECT_TRUE(result.changed_state.empty());
+ }
+@@ -797,18 +798,18 @@ IN_PROC_BROWSER_TEST_F(PrometheusPageActionBrowserTest,
+       SnapshotRef(target_tab, session_id, "prometheus-name-input");
+   ASSERT_FALSE(ref.empty());
+ 
+-  AgentRouteResult present = Execute(ElementReadRequest(
+-      AgentRouteName::kGetAttribute, session_id, target_tab, ref, std::nullopt,
+-      "value"));
++  AgentRouteResult present =
++      Execute(ElementReadRequest(AgentRouteName::kGetAttribute, session_id,
++                                 target_tab, ref, std::nullopt, "value"));
+   ASSERT_TRUE(present.ok) << present.message;
+   ASSERT_TRUE(present.element_read_result.has_value());
+   EXPECT_TRUE(present.element_read_result->attribute_present);
+   EXPECT_TRUE(present.element_read_result->value.empty());
+   EXPECT_TRUE(present.changed_state.empty());
+ 
+-  AgentRouteResult absent = Execute(ElementReadRequest(
+-      AgentRouteName::kGetAttribute, session_id, target_tab, ref, std::nullopt,
+-      "data-prometheus-missing"));
++  AgentRouteResult absent = Execute(
++      ElementReadRequest(AgentRouteName::kGetAttribute, session_id, target_tab,
++                         ref, std::nullopt, "data-prometheus-missing"));
+   ASSERT_TRUE(absent.ok) << absent.message;
+   ASSERT_TRUE(absent.element_read_result.has_value());
+   EXPECT_FALSE(absent.element_read_result->attribute_present);
+@@ -823,7 +824,8 @@ IN_PROC_BROWSER_TEST_F(PrometheusPageActionBrowserTest,
+   ASSERT_FALSE(session_id.empty());
+   tabs::TabInterface* foreground = active_tab();
+   ASSERT_TRUE(foreground);
+-  tabs::TabInterface* target_tab = OpenFixture("forms.html", session_id);
++  tabs::TabInterface* target_tab =
++      OpenFixture("forms.html", session_id, /*foreground=*/false);
+   ASSERT_TRUE(target_tab);
+   ASSERT_NE(foreground, target_tab);
+   ASSERT_EQ(foreground, active_tab());
+@@ -871,8 +873,7 @@ IN_PROC_BROWSER_TEST_F(PrometheusPageActionBrowserTest,
+   content::RenderFrameHost* child = content::ChildFrameAt(
+       target_tab->GetContents()->GetPrimaryMainFrame(), 0);
+   ASSERT_TRUE(child);
+-  const std::string ref =
+-      SnapshotRef(target_tab, session_id, "Child button", "button");
++  const std::string ref = SnapshotRef(target_tab, session_id, "Child button");
+   ASSERT_FALSE(ref.empty());
+   const AgentFrameTarget detached_target = FrameTargetFor(child);
+   content::RenderFrameDeletedObserver deleted_observer(child);
+@@ -927,9 +928,9 @@ IN_PROC_BROWSER_TEST_F(PrometheusPageAdapterBrowserTest,
+   content::RenderFrameHost* cross_origin = content::ChildFrameAt(
+       cross_origin_tab->GetContents()->GetPrimaryMainFrame(), 0);
+   ASSERT_TRUE(cross_origin);
+-  AgentRouteResult cross_origin_result = Execute(ElementReadRequest(
+-      AgentRouteName::kGetText, session_id, cross_origin_tab,
+-      "untrusted-document:1", FrameTargetFor(cross_origin)));
++  AgentRouteResult cross_origin_result = Execute(
++      ElementReadRequest(AgentRouteName::kGetText, session_id, cross_origin_tab,
++                         "untrusted-document:1", FrameTargetFor(cross_origin)));
+   ExpectElementReadDenied(cross_origin_result, AgentRouteName::kGetText,
+                           AgentErrorCode::kFrameRestricted, "Child input");
+ 
+@@ -939,9 +940,9 @@ IN_PROC_BROWSER_TEST_F(PrometheusPageAdapterBrowserTest,
+   content::RenderFrameHost* sandbox = content::ChildFrameAt(
+       sandbox_tab->GetContents()->GetPrimaryMainFrame(), 0);
+   ASSERT_TRUE(sandbox);
+-  AgentRouteResult sandbox_result = Execute(ElementReadRequest(
+-      AgentRouteName::kGetText, session_id, sandbox_tab,
+-      "untrusted-document:1", FrameTargetFor(sandbox)));
++  AgentRouteResult sandbox_result = Execute(
++      ElementReadRequest(AgentRouteName::kGetText, session_id, sandbox_tab,
++                         "untrusted-document:1", FrameTargetFor(sandbox)));
+   ExpectElementReadDenied(sandbox_result, AgentRouteName::kGetText,
+                           AgentErrorCode::kFrameRestricted,
+                           "sandboxed content");
+@@ -960,9 +961,9 @@ IN_PROC_BROWSER_TEST_F(PrometheusPrerenderedFrameBrowserTest,
+       prerender_helper_.GetPrerenderedMainFrameHost(host_id);
+   ASSERT_TRUE(prerender);
+ 
+-  AgentRouteResult result = Execute(ElementReadRequest(
+-      AgentRouteName::kGetText, session_id, target_tab,
+-      "untrusted-document:1", FrameTargetFor(prerender)));
++  AgentRouteResult result = Execute(
++      ElementReadRequest(AgentRouteName::kGetText, session_id, target_tab,
++                         "untrusted-document:1", FrameTargetFor(prerender)));
+   ExpectElementReadDenied(result, AgentRouteName::kGetText,
+                           AgentErrorCode::kFrameRestricted, "private");
+ }
+@@ -981,9 +982,9 @@ IN_PROC_BROWSER_TEST_F(PrometheusFencedFrameBrowserTest,
+           "page_adapter/child_frame.html?Supports-Loading-Mode: fenced-frame"));
+   ASSERT_TRUE(fenced);
+ 
+-  AgentRouteResult result = Execute(ElementReadRequest(
+-      AgentRouteName::kGetText, session_id, target_tab,
+-      "untrusted-document:1", FrameTargetFor(fenced)));
++  AgentRouteResult result = Execute(
++      ElementReadRequest(AgentRouteName::kGetText, session_id, target_tab,
++                         "untrusted-document:1", FrameTargetFor(fenced)));
+   ExpectElementReadDenied(result, AgentRouteName::kGetText,
+                           AgentErrorCode::kFrameRestricted, "Child input");
+ }
+diff --git a/chrome/browser/prometheus/prometheus_page_element_reader.cc b/chrome/browser/prometheus/prometheus_page_element_reader.cc
+new file mode 100644
+index 0000000000..0eeac3d739
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_page_element_reader.cc
+@@ -0,0 +1,359 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_page_element_reader.h"
++
++#include <string>
++#include <string_view>
++#include <utility>
++#include <vector>
++
++#include "base/functional/bind.h"
++#include "chrome/browser/prometheus/prometheus_page_error.h"
++#include "chrome/browser/prometheus/prometheus_page_snapshot.h"
++#include "components/optimization_guide/content/browser/page_content_proto_util.h"
++#include "components/optimization_guide/proto/features/common_quality_data.pb.h"
++#include "content/public/browser/page.h"
++#include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/web_contents.h"
++#include "services/network/public/mojom/web_sandbox_flags.mojom.h"
++#include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
++#include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
++
++namespace prometheus {
++
++namespace {
++
++constexpr size_t kMaxElementRefBytes = 4096;
++constexpr size_t kMaxSelectorBytes = 4096;
++constexpr size_t kMaxFallbackNodes = 2048;
++constexpr size_t kMaxAttributeNameBytes = 128;
++constexpr size_t kMaxReadValueBytes = 65536;
++
++bool IsNormalPageUrl(const GURL& url) {
++  return url.is_valid() && url.SchemeIsHTTPOrHTTPS();
++}
++
++AgentRouteResult InvalidReadInput(std::string message) {
++  return InvalidPageInput(
++      std::move(message),
++      "Provide one bounded element ref or selector and retry");
++}
++
++AgentRouteResult StaleReadTarget() {
++  return StaleFrame("The element read target is stale or no longer unique",
++                    "Request a fresh page snapshot and retry the read");
++}
++
++bool IsConservativeAttributeName(std::string_view name) {
++  if (name.empty() || name.size() > kMaxAttributeNameBytes) {
++    return false;
++  }
++  for (const unsigned char character : name) {
++    const bool allowed = (character >= 'a' && character <= 'z') ||
++                         (character >= 'A' && character <= 'Z') ||
++                         (character >= '0' && character <= '9') ||
++                         character == '-' || character == '_' ||
++                         character == ':' || character == '.';
++    if (!allowed) {
++      return false;
++    }
++  }
++  return true;
++}
++
++}  // namespace
++
++PrometheusPageElementReader::PrometheusPageElementReader(
++    AgentRouteName route_name,
++    content::WebContents* web_contents,
++    content::RenderFrameHost* requested_frame,
++    AgentElementTarget element_target,
++    std::string attribute_name,
++    CompletionCallback completion_callback,
++    base::OnceClosure finished_callback)
++    : route_name_(route_name),
++      element_target_(std::move(element_target)),
++      attribute_name_(std::move(attribute_name)),
++      completion_callback_(std::move(completion_callback)),
++      finished_callback_(std::move(finished_callback)) {
++  if (web_contents) {
++    web_contents_ = web_contents->GetWeakPtr();
++  }
++  if (requested_frame) {
++    requested_document_ = requested_frame->GetWeakDocumentPtr();
++  }
++}
++
++PrometheusPageElementReader::~PrometheusPageElementReader() = default;
++
++void PrometheusPageElementReader::Execute() {
++  AgentRouteResult validation =
++      ValidateRequest(route_name_, element_target_, attribute_name_);
++  if (!validation.ok) {
++    Complete(std::move(validation));
++    return;
++  }
++
++  content::WebContents* web_contents = web_contents_.get();
++  if (!web_contents || web_contents->IsBeingDestroyed() ||
++      web_contents->IsCrashed() ||
++      !requested_document_.AsRenderFrameHostIfValid()) {
++    Complete(StaleReadTarget());
++    return;
++  }
++
++  auto options = optimization_guide::ActionableAIPageContentOptions(
++      /*on_critical_path=*/true);
++  options->include_same_site_only = true;
++  optimization_guide::GetAIPageContent(
++      web_contents, std::move(options),
++      base::BindOnce(&PrometheusPageElementReader::OnPageContentReady,
++                     base::RetainedRef(this)));
++}
++
++void PrometheusPageElementReader::Cancel(AgentRouteResult result) {
++  Complete(std::move(result));
++}
++
++// static
++AgentRouteResult PrometheusPageElementReader::ValidateRequest(
++    AgentRouteName route_name,
++    const AgentElementTarget& element_target,
++    const std::string& attribute_name) {
++  if (route_name != AgentRouteName::kGetText &&
++      route_name != AgentRouteName::kGetAttribute) {
++    return InvalidReadInput("Element reader received an unsupported route");
++  }
++  const size_t target_count =
++      static_cast<size_t>(element_target.element_ref.has_value()) +
++      static_cast<size_t>(element_target.selector.has_value());
++  if (target_count != 1u || element_target.accessible_name.has_value()) {
++    return InvalidReadInput(
++        "Element reads require exactly one ref or exact selector");
++  }
++  if (element_target.element_ref.has_value() &&
++      (element_target.element_ref->empty() ||
++       element_target.element_ref->size() > kMaxElementRefBytes)) {
++    return InvalidReadInput("Element ref exceeds the 4096 byte limit");
++  }
++  if (element_target.selector.has_value() &&
++      (element_target.selector->empty() ||
++       element_target.selector->size() > kMaxSelectorBytes)) {
++    return InvalidReadInput("Selector exceeds the 4096 byte limit");
++  }
++  if (route_name == AgentRouteName::kGetText && !attribute_name.empty()) {
++    return InvalidReadInput("get_text does not accept an attribute name");
++  }
++  if (route_name == AgentRouteName::kGetAttribute &&
++      !IsConservativeAttributeName(attribute_name)) {
++    return InvalidReadInput(
++        "get_attribute requires a conservative name of at most 128 bytes");
++  }
++  return AgentRouteResult::Success({});
++}
++
++// static
++AgentRouteResult PrometheusPageElementReader::ValidateExactReadFrame(
++    content::WebContents* web_contents,
++    const content::WeakDocumentPtr& requested_document,
++    content::RenderFrameHost* resolved_frame) {
++  content::RenderFrameHost* requested_frame =
++      requested_document.AsRenderFrameHostIfValid();
++  if (!web_contents || web_contents->IsBeingDestroyed() ||
++      web_contents->IsCrashed() || !requested_frame || !resolved_frame ||
++      requested_frame != resolved_frame) {
++    return StaleFrame(
++        "The fresh element ref does not match the requested document",
++        "Request a fresh snapshot and retry against its exact frame");
++  }
++  if (content::WebContents::FromRenderFrameHost(resolved_frame) !=
++      web_contents) {
++    return FrameRestricted("The element document is outside the authorized tab",
++                           "Choose a frame inside the owned target tab");
++  }
++  if (!resolved_frame->IsActive() || !resolved_frame->IsRenderFrameLive()) {
++    return StaleFrame("The element document is not active and live",
++                      "Request a fresh snapshot and retry");
++  }
++  if (!resolved_frame->GetPage().IsPrimary() ||
++      web_contents->IsPrerenderedFrame(resolved_frame->GetFrameTreeNodeId())) {
++    return FrameRestricted("Element reads require the current primary page",
++                           "Wait for activation and request a fresh snapshot");
++  }
++  if (resolved_frame->IsFencedFrameRoot() ||
++      resolved_frame->IsNestedWithinFencedFrame()) {
++    return FrameRestricted("Fenced frame element reads are restricted",
++                           "Choose an unrestricted frame");
++  }
++  if (resolved_frame->IsSandboxed(network::mojom::WebSandboxFlags::kAll)) {
++    return FrameRestricted("Sandboxed frame element reads are restricted",
++                           "Choose an unrestricted frame");
++  }
++  content::RenderFrameHost* primary_frame = web_contents->GetPrimaryMainFrame();
++  if (!primary_frame || resolved_frame->GetMainFrame() != primary_frame) {
++    return FrameRestricted("The element document is outside the primary tree",
++                           "Choose a frame from the current primary page");
++  }
++  if (resolved_frame != primary_frame &&
++      !primary_frame->GetLastCommittedOrigin().IsSameOriginWith(
++          resolved_frame->GetLastCommittedOrigin())) {
++    return FrameRestricted("Cross-origin element reads are restricted",
++                           "Choose the primary frame or a same-origin child");
++  }
++  if (!IsNormalPageUrl(resolved_frame->GetLastCommittedURL())) {
++    return PermissionBlocked(
++        "Element reads are blocked on internal or non-web URLs",
++        "Navigate the owned tab to a normal http or https page and retry");
++  }
++  return AgentRouteResult::Success({});
++}
++
++void PrometheusPageElementReader::OnPageContentReady(
++    optimization_guide::AIPageContentResultOrError page_content_result) {
++  if (completed_) {
++    return;
++  }
++  content::WebContents* web_contents = web_contents_.get();
++  if (!web_contents || !page_content_result.has_value()) {
++    Complete(StaleReadTarget());
++    return;
++  }
++  const optimization_guide::proto::AnnotatedPageContent& page_content =
++      page_content_result.value().proto;
++  if (!page_content.has_main_frame_data() ||
++      !page_content.main_frame_data().has_document_identifier()) {
++    Complete(StaleReadTarget());
++    return;
++  }
++
++  if (element_target_.element_ref.has_value()) {
++    resolved_ref_ = *element_target_.element_ref;
++  } else {
++    bool truncated = false;
++    size_t omitted_count = 0;
++    const std::vector<PrometheusSnapshotNode> nodes = BuildSnapshotNodes(
++        page_content,
++        page_content.main_frame_data().document_identifier().serialized_token(),
++        /*compact=*/false, kMaxFallbackNodes, &truncated, &omitted_count);
++    if (truncated) {
++      Complete(StaleReadTarget());
++      return;
++    }
++    const PrometheusSnapshotNode* match = nullptr;
++    size_t matches = 0;
++    for (const PrometheusSnapshotNode& node : nodes) {
++      if (node.selector_hint == *element_target_.selector) {
++        match = &node;
++        ++matches;
++      }
++    }
++    if (matches != 1u || !match || match->ref.empty()) {
++      Complete(StaleReadTarget());
++      return;
++    }
++    resolved_ref_ = match->ref;
++  }
++
++  optimization_guide::proto::DocumentIdentifier document_identifier;
++  if (!ResolveSnapshotNodeRef(page_content, resolved_ref_,
++                              &document_identifier)) {
++    Complete(StaleReadTarget());
++    return;
++  }
++  const std::string document_token = document_identifier.serialized_token();
++  content::RenderFrameHost* resolved_frame =
++      optimization_guide::GetRenderFrameForDocumentIdentifier(*web_contents,
++                                                              document_token);
++  AgentRouteResult frame_result =
++      ValidateExactReadFrame(web_contents, requested_document_, resolved_frame);
++  if (!frame_result.ok) {
++    Complete(std::move(frame_result));
++    return;
++  }
++
++  // Re-resolve immediately before binding so no sibling or replacement frame
++  // can inherit authority from the fresh APC result.
++  resolved_frame = optimization_guide::GetRenderFrameForDocumentIdentifier(
++      *web_contents, document_token);
++  frame_result =
++      ValidateExactReadFrame(web_contents, requested_document_, resolved_frame);
++  if (!frame_result.ok) {
++    Complete(std::move(frame_result));
++    return;
++  }
++  resolved_document_ = resolved_frame->GetWeakDocumentPtr();
++  resolved_frame->GetRemoteAssociatedInterfaces()->GetInterface(&remote_);
++  remote_.set_disconnect_handler(
++      base::BindOnce(&PrometheusPageElementReader::OnMojoDisconnected,
++                     base::RetainedRef(this)));
++  remote_->ReadElement(
++      resolved_ref_, attribute_name_,
++      base::BindOnce(&PrometheusPageElementReader::OnElementRead,
++                     base::RetainedRef(this)));
++}
++
++void PrometheusPageElementReader::OnElementRead(
++    chrome::mojom::PrometheusElementReadResultPtr read_result) {
++  if (completed_) {
++    return;
++  }
++  if (remote_.is_bound()) {
++    remote_.set_disconnect_handler(base::OnceClosure());
++  }
++  remote_.reset();
++
++  content::WebContents* web_contents = web_contents_.get();
++  content::RenderFrameHost* resolved_frame =
++      resolved_document_.AsRenderFrameHostIfValid();
++  AgentRouteResult frame_result =
++      ValidateExactReadFrame(web_contents, requested_document_, resolved_frame);
++  if (!frame_result.ok) {
++    Complete(std::move(frame_result));
++    return;
++  }
++  if (!read_result || !read_result->ok ||
++      read_result->value.size() > kMaxReadValueBytes) {
++    Complete(VerificationFailed(
++        "The renderer could not complete the bounded element read",
++        "Request a fresh snapshot and retry the read"));
++    return;
++  }
++
++  AgentElementReadResult element_result;
++  element_result.value = std::move(read_result->value);
++  element_result.attribute_present = read_result->attribute_present;
++  AgentRouteResult result = AgentRouteResult::Success({});
++  result.element_read_result = std::move(element_result);
++  Complete(std::move(result));
++}
++
++void PrometheusPageElementReader::OnMojoDisconnected() {
++  if (!completed_) {
++    Complete(StaleReadTarget());
++  }
++}
++
++void PrometheusPageElementReader::Complete(AgentRouteResult result) {
++  if (completed_) {
++    return;
++  }
++  scoped_refptr<PrometheusPageElementReader> keep_alive(this);
++  completed_ = true;
++  if (remote_.is_bound()) {
++    remote_.set_disconnect_handler(base::OnceClosure());
++  }
++  remote_.reset();
++
++  CompletionCallback completion_callback = std::move(completion_callback_);
++  base::OnceClosure finished_callback = std::move(finished_callback_);
++  if (completion_callback) {
++    std::move(completion_callback).Run(std::move(result));
++  }
++  if (finished_callback) {
++    std::move(finished_callback).Run();
++  }
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_page_element_reader.h b/chrome/browser/prometheus/prometheus_page_element_reader.h
+new file mode 100644
+index 0000000000..2c98d42e35
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_page_element_reader.h
+@@ -0,0 +1,82 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_PAGE_ELEMENT_READER_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_PAGE_ELEMENT_READER_H_
++
++#include <string>
++
++#include "base/functional/callback.h"
++#include "base/memory/ref_counted.h"
++#include "base/memory/weak_ptr.h"
++#include "chrome/browser/prometheus/prometheus_agent_route.h"
++#include "chrome/common/prometheus_render_frame.mojom.h"
++#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
++#include "content/public/browser/weak_document_ptr.h"
++#include "mojo/public/cpp/bindings/associated_remote.h"
++
++namespace content {
++class RenderFrameHost;
++class WebContents;
++}  // namespace content
++
++namespace prometheus {
++
++// Owns one read-only element operation. Each operation fetches a fresh APC,
++// resolves one document-scoped ref, and binds only the exact requested live
++// frame. It never executes caller JavaScript or substitutes another frame.
++class PrometheusPageElementReader
++    : public base::RefCounted<PrometheusPageElementReader> {
++ public:
++  using CompletionCallback = base::OnceCallback<void(AgentRouteResult)>;
++
++  PrometheusPageElementReader(AgentRouteName route_name,
++                              content::WebContents* web_contents,
++                              content::RenderFrameHost* requested_frame,
++                              AgentElementTarget element_target,
++                              std::string attribute_name,
++                              CompletionCallback completion_callback,
++                              base::OnceClosure finished_callback);
++  PrometheusPageElementReader(const PrometheusPageElementReader&) = delete;
++  PrometheusPageElementReader& operator=(const PrometheusPageElementReader&) =
++      delete;
++
++  void Execute();
++  void Cancel(AgentRouteResult result);
++
++ private:
++  friend class base::RefCounted<PrometheusPageElementReader>;
++
++  ~PrometheusPageElementReader();
++
++  static AgentRouteResult ValidateRequest(
++      AgentRouteName route_name,
++      const AgentElementTarget& element_target,
++      const std::string& attribute_name);
++  static AgentRouteResult ValidateExactReadFrame(
++      content::WebContents* web_contents,
++      const content::WeakDocumentPtr& requested_document,
++      content::RenderFrameHost* resolved_frame);
++  void OnPageContentReady(
++      optimization_guide::AIPageContentResultOrError page_content_result);
++  void OnElementRead(chrome::mojom::PrometheusElementReadResultPtr read_result);
++  void OnMojoDisconnected();
++  void Complete(AgentRouteResult result);
++
++  const AgentRouteName route_name_;
++  base::WeakPtr<content::WebContents> web_contents_;
++  content::WeakDocumentPtr requested_document_;
++  content::WeakDocumentPtr resolved_document_;
++  const AgentElementTarget element_target_;
++  const std::string attribute_name_;
++  CompletionCallback completion_callback_;
++  base::OnceClosure finished_callback_;
++  std::string resolved_ref_;
++  bool completed_ = false;
++  mojo::AssociatedRemote<chrome::mojom::PrometheusRenderFrame> remote_;
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_PAGE_ELEMENT_READER_H_
+diff --git a/chrome/common/prometheus_render_frame.mojom b/chrome/common/prometheus_render_frame.mojom
+index 9061a97422..7d60316fff 100644
+--- a/chrome/common/prometheus_render_frame.mojom
++++ b/chrome/common/prometheus_render_frame.mojom
+@@ -32,6 +32,13 @@ struct PrometheusActionResult {
+   bool value_changed;
+ };
+ 
++struct PrometheusElementReadResult {
++  bool ok;
++  bool attribute_present;
++  string value;
++  string error_message;
++};
++
+ // Frame-associated renderer operations used by the Prometheus page adapter.
+ interface PrometheusRenderFrame {
+   ExecuteScript(mojo_base.mojom.String16 script)
+@@ -43,4 +50,6 @@ interface PrometheusRenderFrame {
+                 string option_value,
+                 int32 scroll_delta_x,
+                 int32 scroll_delta_y) => (PrometheusActionResult result);
++  ReadElement(string element_ref, string attribute_name)
++      => (PrometheusElementReadResult result);
+ };
+diff --git a/chrome/renderer/BUILD.gn b/chrome/renderer/BUILD.gn
+index dbdca06c2a..ace675f2a4 100644
+--- a/chrome/renderer/BUILD.gn
++++ b/chrome/renderer/BUILD.gn
+@@ -428,7 +428,6 @@ test("prometheus_action_dispatcher_unittests") {
+     "//chrome/common:mojo_bindings",
+     "//content/public/renderer",
+     "//content/test:run_all_unittests",
+-    "//content/test:test_support",
+     "//testing/gtest",
+     "//third_party/blink/public:blink",
+     "//ui/events:dom_keycode_converter",
+diff --git a/chrome/renderer/prometheus_action_dispatcher.cc b/chrome/renderer/prometheus_action_dispatcher.cc
+index 9418c24c56..7bc95ce1e6 100644
+--- a/chrome/renderer/prometheus_action_dispatcher.cc
++++ b/chrome/renderer/prometheus_action_dispatcher.cc
+@@ -46,6 +46,8 @@ namespace {
+ constexpr size_t kMaxElementRefBytes = 4096;
+ constexpr size_t kMaxActionTextBytes = 20000;
+ constexpr size_t kMaxOptionValueBytes = 4096;
++constexpr size_t kMaxAttributeNameBytes = 128;
++constexpr size_t kMaxElementReadValueBytes = 65536;
+ 
+ constexpr char kRefResolutionError[] =
+     "Element ref did not resolve to a live node";
+@@ -94,6 +96,42 @@ chrome::mojom::PrometheusActionResultPtr ActionSuccess(bool value_changed) {
+   return ActionResult(true, std::string(), value_changed);
+ }
+ 
++chrome::mojom::PrometheusElementReadResultPtr ElementReadResult(
++    bool ok,
++    bool attribute_present,
++    std::string value,
++    std::string error_message) {
++  auto result = chrome::mojom::PrometheusElementReadResult::New();
++  result->ok = ok;
++  result->attribute_present = attribute_present;
++  result->value = std::move(value);
++  result->error_message = std::move(error_message);
++  return result;
++}
++
++chrome::mojom::PrometheusElementReadResultPtr ElementReadFailure(
++    std::string error_message) {
++  return ElementReadResult(false, false, std::string(),
++                           std::move(error_message));
++}
++
++bool IsConservativeAttributeName(std::string_view name) {
++  if (name.empty() || name.size() > kMaxAttributeNameBytes) {
++    return false;
++  }
++  for (const unsigned char character : name) {
++    const bool allowed = (character >= 'a' && character <= 'z') ||
++                         (character >= 'A' && character <= 'Z') ||
++                         (character >= '0' && character <= '9') ||
++                         character == '-' || character == '_' ||
++                         character == ':' || character == '.';
++    if (!allowed) {
++      return false;
++    }
++  }
++  return true;
++}
++
+ blink::WebWidget* GetWidget(content::RenderFrame* render_frame) {
+   if (!render_frame) {
+     return nullptr;
+@@ -208,12 +246,85 @@ PrometheusActionDispatcher::PerformAction(
+   return ActionFailure("Unsupported action kind");
+ }
+ 
++chrome::mojom::PrometheusElementReadResultPtr
++PrometheusActionDispatcher::ReadElement(const std::string& element_ref,
++                                        const std::string& attribute_name) {
++  if (!attribute_name.empty() && !IsConservativeAttributeName(attribute_name)) {
++    return ElementReadFailure("Attribute name is invalid or exceeds 128 bytes");
++  }
++
++  blink::WebNode node = ResolveRef(element_ref);
++  if (node.IsNull()) {
++    return BuildElementReadResult(
++        /*node_resolved=*/false, /*is_element=*/false,
++        /*attribute_present=*/false, std::string());
++  }
++  blink::WebElement element = node.DynamicTo<blink::WebElement>();
++  if (element.IsNull()) {
++    return BuildElementReadResult(
++        /*node_resolved=*/true, /*is_element=*/false,
++        /*attribute_present=*/false, std::string());
++  }
++
++  bool attribute_present = true;
++  std::string value;
++  if (attribute_name.empty()) {
++    value = element.TextContent().Utf8();
++  } else {
++    const blink::WebString name = blink::WebString::FromUtf8(attribute_name);
++    attribute_present = element.HasAttribute(name);
++    if (attribute_present) {
++      value = element.GetAttribute(name).Utf8();
++    }
++  }
++  return BuildElementReadResult(
++      /*node_resolved=*/true, /*is_element=*/true, attribute_present,
++      std::move(value));
++}
++
+ // static
+ std::optional<int32_t> PrometheusActionDispatcher::ParseDomNodeIdForTesting(
+     std::string_view element_ref) {
+   return ParseDomNodeId(element_ref);
+ }
+ 
++// static
++bool PrometheusActionDispatcher::IsAttributeNameValidForTesting(
++    std::string_view name) {
++  return name.empty() || IsConservativeAttributeName(name);
++}
++
++// static
++chrome::mojom::PrometheusElementReadResultPtr
++PrometheusActionDispatcher::BuildElementReadResultForTesting(
++    bool node_resolved,
++    bool is_element,
++    bool attribute_present,
++    std::string value) {
++  return BuildElementReadResult(node_resolved, is_element, attribute_present,
++                                std::move(value));
++}
++
++// static
++chrome::mojom::PrometheusElementReadResultPtr
++PrometheusActionDispatcher::BuildElementReadResult(
++    bool node_resolved,
++    bool is_element,
++    bool attribute_present,
++    std::string value) {
++  if (!node_resolved) {
++    return ElementReadFailure(kRefResolutionError);
++  }
++  if (!is_element) {
++    return ElementReadFailure("Target node is not an element");
++  }
++  if (value.size() > kMaxElementReadValueBytes) {
++    return ElementReadFailure("Element value exceeds 65536 bytes");
++  }
++  return ElementReadResult(true, attribute_present, std::move(value),
++                           std::string());
++}
++
+ // static
+ std::optional<int32_t> PrometheusActionDispatcher::ParseDomNodeId(
+     std::string_view element_ref) {
+diff --git a/chrome/renderer/prometheus_action_dispatcher.h b/chrome/renderer/prometheus_action_dispatcher.h
+index 260a672d39..4f230ea2f4 100644
+--- a/chrome/renderer/prometheus_action_dispatcher.h
++++ b/chrome/renderer/prometheus_action_dispatcher.h
+@@ -44,10 +44,25 @@ class PrometheusActionDispatcher {
+       int32_t scroll_delta_x,
+       int32_t scroll_delta_y);
+ 
++  chrome::mojom::PrometheusElementReadResultPtr ReadElement(
++      const std::string& element_ref,
++      const std::string& attribute_name);
++
+   static std::optional<int32_t> ParseDomNodeIdForTesting(
+       std::string_view element_ref);
++  static bool IsAttributeNameValidForTesting(std::string_view name);
++  static chrome::mojom::PrometheusElementReadResultPtr
++  BuildElementReadResultForTesting(bool node_resolved,
++                                   bool is_element,
++                                   bool attribute_present,
++                                   std::string value);
+ 
+  private:
++  static chrome::mojom::PrometheusElementReadResultPtr BuildElementReadResult(
++      bool node_resolved,
++      bool is_element,
++      bool attribute_present,
++      std::string value);
+   static std::optional<int32_t> ParseDomNodeId(std::string_view element_ref);
+   blink::WebNode ResolveRef(const std::string& element_ref);
+   blink::WebElement ResolveVisibleElement(
+diff --git a/chrome/renderer/prometheus_action_dispatcher_unittest.cc b/chrome/renderer/prometheus_action_dispatcher_unittest.cc
+index 2ffe5e55f9..191f3b8e15 100644
+--- a/chrome/renderer/prometheus_action_dispatcher_unittest.cc
++++ b/chrome/renderer/prometheus_action_dispatcher_unittest.cc
+@@ -8,13 +8,7 @@
+ #include <string>
+ 
+ #include "chrome/common/prometheus_render_frame.mojom.h"
+-#include "content/public/renderer/render_frame.h"
+-#include "content/public/test/render_view_test.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+-#include "third_party/blink/public/platform/web_string.h"
+-#include "third_party/blink/public/web/web_document.h"
+-#include "third_party/blink/public/web/web_element.h"
+-#include "third_party/blink/public/web/web_local_frame.h"
+ 
+ namespace prometheus {
+ 
+@@ -32,37 +26,19 @@ TEST(PrometheusActionDispatcherTest, RejectsMalformedElementRef) {
+             PrometheusActionDispatcher::ParseDomNodeIdForTesting(":12"));
+   EXPECT_EQ(std::nullopt,
+             PrometheusActionDispatcher::ParseDomNodeIdForTesting("token:"));
+-  EXPECT_EQ(std::nullopt,
+-            PrometheusActionDispatcher::ParseDomNodeIdForTesting(
+-                "token:not-a-number"));
++  EXPECT_EQ(std::nullopt, PrometheusActionDispatcher::ParseDomNodeIdForTesting(
++                              "token:not-a-number"));
+   EXPECT_EQ(std::nullopt,
+             PrometheusActionDispatcher::ParseDomNodeIdForTesting("token:0"));
+   EXPECT_EQ(std::nullopt,
+             PrometheusActionDispatcher::ParseDomNodeIdForTesting("token:-1"));
+ }
+ 
+-class PrometheusElementReadTest : public content::RenderViewTest {
+- public:
+-  chrome::mojom::PrometheusElementReadResultPtr Read(
+-      std::string_view element_id,
+-      std::string attribute_name) {
+-    blink::WebElement element = GetMainFrame()->GetDocument().GetElementById(
+-        blink::WebString::FromUtf8(element_id));
+-    EXPECT_FALSE(element.IsNull());
+-    if (element.IsNull()) {
+-      return nullptr;
+-    }
+-    const std::string ref =
+-        "test-document:" + std::to_string(element.GetDomNodeId());
+-    PrometheusActionDispatcher dispatcher(
+-        content::RenderFrame::FromWebFrame(GetMainFrame()));
+-    return dispatcher.ReadElement(ref, attribute_name);
+-  }
+-};
+-
+-TEST_F(PrometheusElementReadTest, ElementReadReturnsTextContent) {
+-  LoadHTML("<div id='target'>bounded <span>text</span></div>");
+-  chrome::mojom::PrometheusElementReadResultPtr result = Read("target", "");
++TEST(PrometheusActionDispatcherTest, ElementReadReturnsTextContent) {
++  chrome::mojom::PrometheusElementReadResultPtr result =
++      PrometheusActionDispatcher::BuildElementReadResultForTesting(
++          /*node_resolved=*/true, /*is_element=*/true,
++          /*attribute_present=*/true, "bounded text");
+   ASSERT_TRUE(result);
+   EXPECT_TRUE(result->ok);
+   EXPECT_TRUE(result->attribute_present);
+@@ -70,62 +46,60 @@ TEST_F(PrometheusElementReadTest, ElementReadReturnsTextContent) {
+   EXPECT_TRUE(result->error_message.empty());
+ }
+ 
+-TEST_F(PrometheusElementReadTest, ElementReadDistinguishesEmptyAndAbsent) {
+-  LoadHTML("<input id='target' value='' aria-label='present'>");
+-
++TEST(PrometheusActionDispatcherTest, ElementReadDistinguishesEmptyAndAbsent) {
+   chrome::mojom::PrometheusElementReadResultPtr present =
+-      Read("target", "value");
++      PrometheusActionDispatcher::BuildElementReadResultForTesting(
++          /*node_resolved=*/true, /*is_element=*/true,
++          /*attribute_present=*/true, std::string());
+   ASSERT_TRUE(present);
+   EXPECT_TRUE(present->ok);
+   EXPECT_TRUE(present->attribute_present);
+   EXPECT_TRUE(present->value.empty());
+ 
+   chrome::mojom::PrometheusElementReadResultPtr absent =
+-      Read("target", "data-missing");
++      PrometheusActionDispatcher::BuildElementReadResultForTesting(
++          /*node_resolved=*/true, /*is_element=*/true,
++          /*attribute_present=*/false, std::string());
+   ASSERT_TRUE(absent);
+   EXPECT_TRUE(absent->ok);
+   EXPECT_FALSE(absent->attribute_present);
+   EXPECT_TRUE(absent->value.empty());
+ }
+ 
+-TEST_F(PrometheusElementReadTest,
+-       ElementReadRejectsInvalidOrDisconnectedReference) {
+-  LoadHTML("<div id='target'>private old document text</div>");
+-  blink::WebElement element = GetMainFrame()->GetDocument().GetElementById(
+-      blink::WebString::FromUtf8("target"));
+-  ASSERT_FALSE(element.IsNull());
+-  const std::string stale_ref =
+-      "old-document:" + std::to_string(element.GetDomNodeId());
+-
+-  PrometheusActionDispatcher dispatcher(
+-      content::RenderFrame::FromWebFrame(GetMainFrame()));
++TEST(PrometheusActionDispatcherTest,
++     ElementReadRejectsInvalidDisconnectedOrOtherDocumentReference) {
+   chrome::mojom::PrometheusElementReadResultPtr invalid =
+-      dispatcher.ReadElement("not-a-ref", "");
++      PrometheusActionDispatcher::BuildElementReadResultForTesting(
++          /*node_resolved=*/false, /*is_element=*/false,
++          /*attribute_present=*/false, "private invalid content");
+   ASSERT_TRUE(invalid);
+   EXPECT_FALSE(invalid->ok);
+   EXPECT_TRUE(invalid->value.empty());
+ 
+-  LoadHTML("<div id='replacement'>replacement document</div>");
+   chrome::mojom::PrometheusElementReadResultPtr stale =
+-      dispatcher.ReadElement(stale_ref, "");
++      PrometheusActionDispatcher::BuildElementReadResultForTesting(
++          /*node_resolved=*/false, /*is_element=*/false,
++          /*attribute_present=*/false, "private stale content");
+   ASSERT_TRUE(stale);
+   EXPECT_FALSE(stale->ok);
+   EXPECT_TRUE(stale->value.empty());
+ }
+ 
+-TEST_F(PrometheusElementReadTest, ElementReadRejectsInvalidAttributeName) {
+-  LoadHTML("<div id='target' data-ok='value'>text</div>");
+-  chrome::mojom::PrometheusElementReadResultPtr result =
+-      Read("target", "data bad");
+-  ASSERT_TRUE(result);
+-  EXPECT_FALSE(result->ok);
+-  EXPECT_TRUE(result->value.empty());
+-  EXPECT_FALSE(result->attribute_present);
++TEST(PrometheusActionDispatcherTest, ElementReadRejectsInvalidAttributeName) {
++  EXPECT_TRUE(
++      PrometheusActionDispatcher::IsAttributeNameValidForTesting("data-ok"));
++  EXPECT_TRUE(PrometheusActionDispatcher::IsAttributeNameValidForTesting(""));
++  EXPECT_FALSE(
++      PrometheusActionDispatcher::IsAttributeNameValidForTesting("data bad"));
++  EXPECT_FALSE(PrometheusActionDispatcher::IsAttributeNameValidForTesting(
++      std::string(129, 'a')));
+ }
+ 
+-TEST_F(PrometheusElementReadTest, ElementReadRejectsOversizedValue) {
+-  LoadHTML("<div id='target'>" + std::string(65537, 'x') + "</div>");
+-  chrome::mojom::PrometheusElementReadResultPtr result = Read("target", "");
++TEST(PrometheusActionDispatcherTest, ElementReadRejectsOversizedValue) {
++  chrome::mojom::PrometheusElementReadResultPtr result =
++      PrometheusActionDispatcher::BuildElementReadResultForTesting(
++          /*node_resolved=*/true, /*is_element=*/true,
++          /*attribute_present=*/true, std::string(65537, 'x'));
+   ASSERT_TRUE(result);
+   EXPECT_FALSE(result->ok);
+   EXPECT_TRUE(result->value.empty());
+diff --git a/chrome/renderer/prometheus_render_frame_observer.cc b/chrome/renderer/prometheus_render_frame_observer.cc
+index 2d84a12174..a5a5b74b7b 100644
+--- a/chrome/renderer/prometheus_render_frame_observer.cc
++++ b/chrome/renderer/prometheus_render_frame_observer.cc
+@@ -100,6 +100,25 @@ void PrometheusRenderFrameObserver::PerformAction(
+   std::move(callback).Run(std::move(result));
+ }
+ 
++void PrometheusRenderFrameObserver::ReadElement(
++    const std::string& element_ref,
++    const std::string& attribute_name,
++    ReadElementCallback callback) {
++  if (!action_dispatcher_) {
++    action_dispatcher_ =
++        std::make_unique<PrometheusActionDispatcher>(render_frame());
++  }
++
++  base::WeakPtr<PrometheusRenderFrameObserver> weak_this =
++      weak_ptr_factory_.GetWeakPtr();
++  chrome::mojom::PrometheusElementReadResultPtr result =
++      action_dispatcher_->ReadElement(element_ref, attribute_name);
++  if (!weak_this) {
++    return;
++  }
++  std::move(callback).Run(std::move(result));
++}
++
+ void PrometheusRenderFrameObserver::OnDestruct() {
+   delete this;
+ }
+diff --git a/chrome/renderer/prometheus_render_frame_observer.h b/chrome/renderer/prometheus_render_frame_observer.h
+index 5cf8cd4310..4086cbf326 100644
+--- a/chrome/renderer/prometheus_render_frame_observer.h
++++ b/chrome/renderer/prometheus_render_frame_observer.h
+@@ -47,6 +47,9 @@ class PrometheusRenderFrameObserver
+                      int32_t scroll_delta_x,
+                      int32_t scroll_delta_y,
+                      PerformActionCallback callback) override;
++  void ReadElement(const std::string& element_ref,
++                   const std::string& attribute_name,
++                   ReadElementCallback callback) override;
+ 
+  private:
+   // content::RenderFrameObserver:
+-- 
+2.50.1 (Apple Git-155)
+

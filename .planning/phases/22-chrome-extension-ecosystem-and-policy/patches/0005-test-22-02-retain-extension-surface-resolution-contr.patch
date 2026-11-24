@@ -1,0 +1,1034 @@
+From edc9f831181f5338118d9c71dc7119343d3cebb8 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 28 Jul 2026 18:33:01 -0500
+Subject: [PATCH] test(22-02): retain extension surface resolution contract
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  28 ++
+ .../prometheus/prometheus_agent_route.cc      |  21 ++
+ .../prometheus/prometheus_agent_route.h       |  10 +
+ .../prometheus_agent_route_unittest.cc        |  17 +
+ .../prometheus_agent_transport_codec.cc       |  29 +-
+ ...ometheus_agent_transport_codec_unittest.cc |  98 ++++++
+ ...rometheus_extension_surface_browsertest.cc |  38 +++
+ .../prometheus_extension_surface_resolver.cc  | 152 +++++++++
+ .../prometheus_extension_surface_resolver.h   | 142 +++++++++
+ ...eus_extension_surface_resolver_unittest.cc | 293 ++++++++++++++++++
+ chrome/browser/ui/views/prometheus/BUILD.gn   |   2 +
+ 11 files changed, 828 insertions(+), 2 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_surface_browsertest.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_surface_resolver.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_surface_resolver.h
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_surface_resolver_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 86a24e67e1..908da23681 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -314,6 +314,32 @@ source_set("prometheus_extension_policy_service") {
+   ]
+ }
+ 
++source_set("prometheus_extension_surface_resolver") {
++  sources = [
++    "prometheus_extension_surface_resolver.cc",
++    "prometheus_extension_surface_resolver.h",
++  ]
++
++  deps = [
++    ":prometheus_agent_route",
++    ":prometheus_extension_policy_service",
++    "//base",
++    "//chrome/browser/extensions",
++    "//chrome/browser/profiles:profile",
++    "//chrome/browser/ui",
++    "//chrome/browser/ui/browser_window",
++    "//chrome/browser/ui/side_panel",
++    "//chrome/browser/ui/tabs:tab_features",
++    "//chrome/browser/ui/views/extensions",
++    "//chrome/browser/ui/views/side_panel/extensions",
++    "//components/tabs:public",
++    "//content/public/browser",
++    "//extensions/browser",
++    "//extensions/common",
++    "//url",
++  ]
++}
++
+ source_set("prometheus_supervision_types") {
+   sources = [
+     "prometheus_supervision_types.cc",
+@@ -725,6 +751,7 @@ test("prometheus_unittests") {
+     "prometheus_color_mixer_unittest.cc",
+     "prometheus_css_emission_unittest.cc",
+     "prometheus_extension_policy_service_unittest.cc",
++    "prometheus_extension_surface_resolver_unittest.cc",
+     "prometheus_memory_store_unittest.cc",
+     "prometheus_page_action_dispatcher_unittest.cc",
+     "prometheus_page_action_history_unittest.cc",
+@@ -776,6 +803,7 @@ test("prometheus_unittests") {
+     ":prometheus_extension_policy_prefs",
+     ":prometheus_extension_policy_service",
+     ":prometheus_extension_policy_types",
++    ":prometheus_extension_surface_resolver",
+     ":prometheus_memory_store",
+     ":prometheus_page_action_history",
+     ":prometheus_page_adapter",
+diff --git a/chrome/browser/prometheus/prometheus_agent_route.cc b/chrome/browser/prometheus/prometheus_agent_route.cc
+index 9f34da0069..d5711536df 100644
+--- a/chrome/browser/prometheus/prometheus_agent_route.cc
++++ b/chrome/browser/prometheus/prometheus_agent_route.cc
+@@ -272,6 +272,27 @@ std::string_view AgentInternalSurfaceToString(AgentInternalSurface surface) {
+   }
+ }
+ 
++std::optional<AgentExtensionSurfaceSelector>
++AgentExtensionSurfaceSelectorFromString(std::string_view surface) {
++  if (surface == "popup") {
++    return AgentExtensionSurfaceSelector::kPopup;
++  }
++  if (surface == "side_panel") {
++    return AgentExtensionSurfaceSelector::kSidePanel;
++  }
++  return std::nullopt;
++}
++
++std::string_view AgentExtensionSurfaceSelectorToString(
++    AgentExtensionSurfaceSelector surface) {
++  switch (surface) {
++    case AgentExtensionSurfaceSelector::kPopup:
++      return "popup";
++    case AgentExtensionSurfaceSelector::kSidePanel:
++      return "side_panel";
++  }
++}
++
+ std::string_view AgentDiagnosticStatusToString(AgentDiagnosticStatus status) {
+   switch (status) {
+     case AgentDiagnosticStatus::kReady:
+diff --git a/chrome/browser/prometheus/prometheus_agent_route.h b/chrome/browser/prometheus/prometheus_agent_route.h
+index 19f4cd60b9..0b61ebb311 100644
+--- a/chrome/browser/prometheus/prometheus_agent_route.h
++++ b/chrome/browser/prometheus/prometheus_agent_route.h
+@@ -96,6 +96,11 @@ enum class AgentInternalSurface {
+   kControlPanel,
+ };
+ 
++enum class AgentExtensionSurfaceSelector {
++  kPopup,
++  kSidePanel,
++};
++
+ enum class AgentDiagnosticStatus {
+   kReady,
+   kDegraded,
+@@ -172,6 +177,7 @@ struct AgentTarget {
+   std::optional<int32_t> window_session_id;
+   tabs::TabHandle tab_handle;
+   std::optional<int> tab_index;
++  std::optional<AgentExtensionSurfaceSelector> extension_surface;
+ };
+ 
+ // Identifies a specific frame within a page target. All fields are data-only
+@@ -410,6 +416,10 @@ std::string_view AgentErrorCodeToString(AgentErrorCode error_code);
+ std::optional<AgentInternalSurface> AgentInternalSurfaceFromString(
+     std::string_view surface);
+ std::string_view AgentInternalSurfaceToString(AgentInternalSurface surface);
++std::optional<AgentExtensionSurfaceSelector>
++AgentExtensionSurfaceSelectorFromString(std::string_view surface);
++std::string_view AgentExtensionSurfaceSelectorToString(
++    AgentExtensionSurfaceSelector surface);
+ std::string_view AgentDiagnosticStatusToString(AgentDiagnosticStatus status);
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_route_unittest.cc b/chrome/browser/prometheus/prometheus_agent_route_unittest.cc
+index 6f14545b32..24fe61b582 100644
+--- a/chrome/browser/prometheus/prometheus_agent_route_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_route_unittest.cc
+@@ -142,6 +142,19 @@ TEST(PrometheusAgentRouteTest, ParsesClosedInternalSurfaces) {
+             AgentInternalSurfaceToString(AgentInternalSurface::kControlPanel));
+ }
+ 
++TEST(PrometheusAgentRouteTest, ParsesClosedExtensionSurfaceSelectors) {
++  EXPECT_EQ(AgentExtensionSurfaceSelector::kPopup,
++            AgentExtensionSurfaceSelectorFromString("popup"));
++  EXPECT_EQ(AgentExtensionSurfaceSelector::kSidePanel,
++            AgentExtensionSurfaceSelectorFromString("side_panel"));
++  EXPECT_EQ(std::nullopt,
++            AgentExtensionSurfaceSelectorFromString("background"));
++  EXPECT_EQ("popup", AgentExtensionSurfaceSelectorToString(
++                         AgentExtensionSurfaceSelector::kPopup));
++  EXPECT_EQ("side_panel", AgentExtensionSurfaceSelectorToString(
++                              AgentExtensionSurfaceSelector::kSidePanel));
++}
++
+ TEST(PrometheusAgentRouteTest, SuccessResultCarriesChangedState) {
+   AgentRouteResult result = AgentRouteResult::Success({"tab_opened"});
+ 
+@@ -241,6 +254,8 @@ TEST(PrometheusAgentRouteTest, ExtendedRequestAndResultAreCopyable) {
+   AgentRouteRequest request;
+   request.route_name = AgentRouteName::kOpenInternalSurface;
+   request.target.tab_index = 3;
++  request.target.extension_surface =
++      AgentExtensionSurfaceSelector::kSidePanel;
+   request.foreground = true;
+   request.internal_surface = AgentInternalSurface::kControlPanel;
+   request.visual_context = AgentVisualContext();
+@@ -252,6 +267,8 @@ TEST(PrometheusAgentRouteTest, ExtendedRequestAndResultAreCopyable) {
+ 
+   AgentRouteRequest request_copy = request;
+   EXPECT_EQ(3, request_copy.target.tab_index);
++  EXPECT_EQ(AgentExtensionSurfaceSelector::kSidePanel,
++            request_copy.target.extension_surface);
+   EXPECT_TRUE(request_copy.foreground);
+   EXPECT_EQ(AgentInternalSurface::kControlPanel, request_copy.internal_surface);
+   ASSERT_TRUE(request_copy.visual_context.has_value());
+diff --git a/chrome/browser/prometheus/prometheus_agent_transport_codec.cc b/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
+index e32132a5d6..07cc9a848b 100644
+--- a/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
++++ b/chrome/browser/prometheus/prometheus_agent_transport_codec.cc
+@@ -405,7 +405,7 @@ bool IsSupervisionRoute(AgentRouteName route) {
+ base::expected<AgentTarget, AgentRouteResult> ParseTarget(
+     const base::DictValue& target) {
+   if (!HasOnlyKeys(target, {"browser_session_id", "window_session_id", "tab_id",
+-                            "tabId", "tabIndex"})) {
++                            "tabId", "tabIndex", "extension_surface"})) {
+     return base::unexpected(InvalidRequest("Unknown target field"));
+   }
+ 
+@@ -449,6 +449,26 @@ base::expected<AgentTarget, AgentRouteResult> ParseTarget(
+     return base::unexpected(
+         InvalidTarget("tabIndex must be a zero-based nonnegative index"));
+   }
++
++  if (target.contains("extension_surface")) {
++    const std::string* surface = target.FindString("extension_surface");
++    if (!surface) {
++      return base::unexpected(
++          InvalidTarget("extension_surface must be popup or side_panel"));
++    }
++    parsed.extension_surface =
++        AgentExtensionSurfaceSelectorFromString(*surface);
++    if (!parsed.extension_surface.has_value()) {
++      return base::unexpected(
++          InvalidTarget("Unknown extension_surface selector"));
++    }
++    if (!snake_id.has_value() || camel_id.has_value() ||
++        parsed.tab_index.has_value()) {
++      return base::unexpected(InvalidTarget(
++          "extension_surface requires one positive stable tab_id"));
++    }
++  }
++
+   const std::optional<int32_t> stable_id =
+       snake_id.has_value() ? snake_id : camel_id;
+   if (stable_id.has_value()) {
+@@ -914,7 +934,8 @@ bool IsEmptyAgentTarget(const AgentTarget& target) {
+   return !target.browser_session_id.has_value() &&
+          !target.window_session_id.has_value() &&
+          target.tab_handle.raw_value() == tabs::TabHandle::NullValue &&
+-         !target.tab_index.has_value();
++         !target.tab_index.has_value() &&
++         !target.extension_surface.has_value();
+ }
+ 
+ bool HasClosedSupervisionEnvelope(const AgentRouteResult& result) {
+@@ -1017,6 +1038,10 @@ base::DictValue TargetToValue(const AgentTarget& target) {
+   if (target.tab_index.has_value()) {
+     value.Set("tabIndex", *target.tab_index);
+   }
++  if (target.extension_surface.has_value()) {
++    value.Set("extension_surface", AgentExtensionSurfaceSelectorToString(
++                                       *target.extension_surface));
++  }
+   return value;
+ }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc b/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc
+index 25857a0253..f362c3e16a 100644
+--- a/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc
+@@ -121,6 +121,103 @@ void ExpectNoAuthorityOrSecretFields(std::string_view serialized) {
+   }
+ }
+ 
++TEST(PrometheusAgentTransportCodecTest,
++     ExtensionSurfaceSelectorsRequireExactStableTabAndRoundTrip) {
++  for (const auto& [name, selector] :
++       std::array<std::pair<std::string_view, AgentExtensionSurfaceSelector>, 2>{
++           {std::pair{"popup", AgentExtensionSurfaceSelector::kPopup},
++            std::pair{"side_panel",
++                      AgentExtensionSurfaceSelector::kSidePanel}}}) {
++    SCOPED_TRACE(name);
++    auto parsed = ParseAgentTransportRequest(
++        RequestJson("read_page",
++                    "{\"tab_id\":19,\"extension_surface\":\"" +
++                        std::string(name) + "\"}"));
++    ASSERT_TRUE(parsed.has_value()) << parsed.error().message;
++    EXPECT_EQ(19, parsed->target.tab_handle.raw_value());
++    EXPECT_EQ(selector, parsed->target.extension_surface);
++    EXPECT_FALSE(parsed->target.tab_index.has_value());
++
++    AgentRouteResult result = AgentRouteResult::Success({"read_complete"});
++    result.target = parsed->target;
++    auto root = SerializeRoot(result);
++    ASSERT_TRUE(root.has_value()) << root.error().message;
++    const base::DictValue* target = root->FindDict("target");
++    ASSERT_TRUE(target);
++    EXPECT_EQ(2u, target->size());
++    EXPECT_EQ(19, target->FindInt("tab_id"));
++    const std::string* serialized_surface =
++        target->FindString("extension_surface");
++    ASSERT_TRUE(serialized_surface);
++    EXPECT_EQ(name, *serialized_surface);
++    EXPECT_FALSE(target->contains("extension_id"));
++    EXPECT_FALSE(target->contains("url"));
++    EXPECT_FALSE(target->contains("renderer_id"));
++  }
++}
++
++TEST(PrometheusAgentTransportCodecTest,
++     ExtensionSurfaceSelectorsRejectMissingOrUnstableTabAnchors) {
++  for (std::string_view target : {
++           R"({"extension_surface":"popup"})",
++           R"({"tabIndex":0,"extension_surface":"popup"})",
++           R"({"tabId":7,"extension_surface":"side_panel"})",
++           R"({"tab_id":0,"extension_surface":"popup"})",
++           R"({"tab_id":-1,"extension_surface":"popup"})",
++       }) {
++    SCOPED_TRACE(target);
++    AgentRouteResult error = ParseError(RequestJson("read_page", target));
++    EXPECT_EQ(AgentErrorCode::kInvalidTarget, error.error_code);
++  }
++}
++
++TEST(PrometheusAgentTransportCodecTest,
++     ExtensionSurfaceSelectorsRejectUnknownWrongTypeAndAmbiguity) {
++  for (std::string_view target : {
++           R"({"tab_id":7,"extension_surface":"background"})",
++           R"({"tab_id":7,"extension_surface":true})",
++           R"({"tab_id":7,"extension_surface":1})",
++           R"({"tab_id":7,"extension_surface":null})",
++           R"({"tab_id":7,"extension_surface":["popup","side_panel"]})",
++       }) {
++    SCOPED_TRACE(target);
++    AgentRouteResult error = ParseError(RequestJson("read_page", target));
++    EXPECT_EQ(AgentErrorCode::kInvalidTarget, error.error_code);
++  }
++}
++
++TEST(PrometheusAgentTransportCodecTest,
++     ExtensionSurfaceSelectorsRejectDuplicateOrConflictingTabAliases) {
++  for (std::string_view target : {
++           R"({"tab_id":7,"tabId":7,"extension_surface":"popup"})",
++           R"({"tab_id":7,"tabId":8,"extension_surface":"popup"})",
++           R"({"tab_id":7,"tabIndex":0,"extension_surface":"side_panel"})",
++       }) {
++    SCOPED_TRACE(target);
++    AgentRouteResult error = ParseError(RequestJson("read_page", target));
++    EXPECT_EQ(AgentErrorCode::kInvalidTarget, error.error_code);
++  }
++}
++
++TEST(PrometheusAgentTransportCodecTest,
++     ExtensionSurfaceSelectorsRejectCallerSuppliedIdentity) {
++  for (std::string_view identity : {
++           R"("extension_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")",
++           R"("url":"chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/popup.html")",
++           R"("frame_id":4)",
++           R"("renderer_id":5)",
++           R"("ordinal":0)",
++           R"("web_contents":1)",
++       }) {
++    SCOPED_TRACE(identity);
++    const std::string target =
++        "{\"tab_id\":7,\"extension_surface\":\"popup\"," +
++        std::string(identity) + "}";
++    AgentRouteResult error = ParseError(RequestJson("read_page", target));
++    EXPECT_EQ(AgentErrorCode::kInvalidRequest, error.error_code);
++  }
++}
++
+ TEST(PrometheusAgentTransportCodecTest,
+      SupervisionManifestHasExactlyFiveBijectiveRoutes) {
+   static_assert(kSupervisionRoutes.size() == 5u);
+@@ -173,6 +270,7 @@ TEST(PrometheusAgentTransportCodecTest,
+     EXPECT_FALSE(parsed->target.browser_session_id.has_value());
+     EXPECT_FALSE(parsed->target.window_session_id.has_value());
+     EXPECT_FALSE(parsed->target.tab_index.has_value());
++    EXPECT_FALSE(parsed->target.extension_surface.has_value());
+     EXPECT_FALSE(parsed->page_request.has_value());
+     EXPECT_FALSE(parsed->visual_context.has_value());
+     EXPECT_FALSE(parsed->url.has_value());
+diff --git a/chrome/browser/prometheus/prometheus_extension_surface_browsertest.cc b/chrome/browser/prometheus/prometheus_extension_surface_browsertest.cc
+new file mode 100644
+index 0000000000..7e1b8eb9f4
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_surface_browsertest.cc
+@@ -0,0 +1,38 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_extension_surface_resolver.h"
++
++#include "chrome/test/base/in_process_browser_test.h"
++#include "content/public/test/browser_test.h"
++
++namespace prometheus {
++
++class PrometheusExtensionSurfaceBrowserTest : public InProcessBrowserTest {};
++
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionSurfaceBrowserTest,
++                       VisibleTabContractIsBrowserOwned) {
++  ASSERT_TRUE(ExtensionSurfaceResolutionContractImplementedForTesting())
++      << "retained RED: visible extension tabs need browser-owned proof";
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionSurfaceBrowserTest,
++                       ShownPopupContractIsBrowserOwned) {
++  ASSERT_TRUE(ExtensionSurfaceResolutionContractImplementedForTesting())
++      << "retained RED: extension popups need exact shown-owner proof";
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionSurfaceBrowserTest,
++                       ActiveSidePanelContractIsBrowserOwned) {
++  ASSERT_TRUE(ExtensionSurfaceResolutionContractImplementedForTesting())
++      << "retained RED: extension side panels need exact active-entry proof";
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionSurfaceBrowserTest,
++                       HiddenContextsRemainDenied) {
++  ASSERT_TRUE(ExtensionSurfaceResolutionContractImplementedForTesting())
++      << "retained RED: hidden extension contexts need typed denial proof";
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_surface_resolver.cc b/chrome/browser/prometheus/prometheus_extension_surface_resolver.cc
+new file mode 100644
+index 0000000000..e11754ba65
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_surface_resolver.cc
+@@ -0,0 +1,152 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_extension_surface_resolver.h"
++
++#include <utility>
++
++namespace prometheus {
++namespace {
++
++PrometheusExtensionSurfaceClassification Deny(
++    PrometheusExtensionSurfaceDenial denial,
++    AgentErrorCode error_code) {
++  return {.kind = std::nullopt,
++          .denial = denial,
++          .error_code = error_code};
++}
++
++PrometheusExtensionSurfaceClassification Accept(
++    PrometheusExtensionSurfaceKind kind) {
++  return {.kind = kind,
++          .denial = PrometheusExtensionSurfaceDenial::kNone,
++          .error_code = AgentErrorCode::kNone};
++}
++
++}  // namespace
++
++PrometheusExtensionSurfaceResolver::PrometheusExtensionSurfaceResolver(
++    PrometheusExtensionPolicyService* policy_service)
++    : policy_service_(policy_service) {}
++
++PrometheusExtensionSurfaceResolver::~PrometheusExtensionSurfaceResolver() =
++    default;
++
++base::expected<PrometheusResolvedExtensionSurface, AgentRouteResult>
++PrometheusExtensionSurfaceResolver::Resolve(
++    Browser* browser,
++    tabs::TabInterface* anchor_tab,
++    std::optional<AgentExtensionSurfaceSelector> selector,
++    std::optional<uint64_t> expected_policy_generation) const {
++  static_cast<void>(browser);
++  static_cast<void>(anchor_tab);
++  static_cast<void>(selector);
++  static_cast<void>(expected_policy_generation);
++  return base::unexpected(AgentRouteResult::Failure(
++      AgentErrorCode::kInvalidTarget,
++      "The selected extension surface is not available",
++      "Show the extension surface in the selected tab and retry"));
++}
++
++// static
++PrometheusExtensionSurfaceClassification
++PrometheusExtensionSurfaceResolver::ClassifyEvidenceForTesting(
++    const PrometheusExtensionSurfaceEvidence& evidence) {
++  if (evidence.expected_policy_generation.has_value() &&
++      *evidence.expected_policy_generation != evidence.policy_generation) {
++    return Deny(PrometheusExtensionSurfaceDenial::kStaleGeneration,
++                AgentErrorCode::kStaleTarget);
++  }
++  if (!evidence.lifecycle_alive) {
++    return Deny(PrometheusExtensionSurfaceDenial::kLifecycleLost,
++                AgentErrorCode::kStaleTarget);
++  }
++  if (!evidence.extension_system_ready) {
++    return Deny(PrometheusExtensionSurfaceDenial::kSystemUnavailable,
++                AgentErrorCode::kStaleTarget);
++  }
++  if (!evidence.extension_enabled || evidence.extension_terminated) {
++    return Deny(PrometheusExtensionSurfaceDenial::kExtensionUnavailable,
++                AgentErrorCode::kStaleTarget);
++  }
++  if (evidence.selector.has_value()) {
++    if (evidence.selector_match_count == 0u) {
++      return Deny(PrometheusExtensionSurfaceDenial::kNoSelectorMatch,
++                  AgentErrorCode::kInvalidTarget);
++    }
++    if (evidence.selector_match_count != 1u) {
++      return Deny(PrometheusExtensionSurfaceDenial::kAmbiguousSelectorMatch,
++                  AgentErrorCode::kInvalidTarget);
++    }
++  }
++  if (!evidence.primary_frame_committed) {
++    return Deny(PrometheusExtensionSurfaceDenial::kUncommittedPrimaryFrame,
++                AgentErrorCode::kStaleTarget);
++  }
++  if (!evidence.extension_origin ||
++      !evidence.origin_matches_browser_identity) {
++    return Deny(PrometheusExtensionSurfaceDenial::kMismatchedExtensionOrigin,
++                AgentErrorCode::kInvalidTarget);
++  }
++  if (!evidence.exact_browser) {
++    return Deny(PrometheusExtensionSurfaceDenial::kWrongBrowser,
++                AgentErrorCode::kInvalidTarget);
++  }
++  if (!evidence.exact_browser_context) {
++    return Deny(PrometheusExtensionSurfaceDenial::kWrongBrowserContext,
++                AgentErrorCode::kInvalidTarget);
++  }
++  if (!evidence.visible) {
++    return Deny(PrometheusExtensionSurfaceDenial::kHiddenSurface,
++                AgentErrorCode::kInvalidTarget);
++  }
++  if (!evidence.browser_ui_owned) {
++    return Deny(PrometheusExtensionSurfaceDenial::kUnownedSurface,
++                AgentErrorCode::kInvalidTarget);
++  }
++
++  switch (evidence.observed_context) {
++    case PrometheusExtensionObservedContext::kTabContents:
++      if (evidence.selector.has_value()) {
++        return Deny(PrometheusExtensionSurfaceDenial::kWrongSelectorKind,
++                    AgentErrorCode::kInvalidTarget);
++      }
++      return Accept(evidence.options_page
++                        ? PrometheusExtensionSurfaceKind::kOptionsPage
++                        : PrometheusExtensionSurfaceKind::kTab);
++    case PrometheusExtensionObservedContext::kPopup:
++      if (evidence.selector != AgentExtensionSurfaceSelector::kPopup) {
++        return Deny(PrometheusExtensionSurfaceDenial::kWrongSelectorKind,
++                    AgentErrorCode::kInvalidTarget);
++      }
++      return Accept(PrometheusExtensionSurfaceKind::kPopup);
++    case PrometheusExtensionObservedContext::kSidePanel:
++      if (evidence.selector != AgentExtensionSurfaceSelector::kSidePanel) {
++        return Deny(PrometheusExtensionSurfaceDenial::kWrongSelectorKind,
++                    AgentErrorCode::kInvalidTarget);
++      }
++      return Accept(PrometheusExtensionSurfaceKind::kSidePanel);
++    case PrometheusExtensionObservedContext::kOptionsGuest:
++      if (evidence.selector.has_value() ||
++          !evidence.options_guest_primary_frame ||
++          evidence.options_guest_ambiguous) {
++        return Deny(PrometheusExtensionSurfaceDenial::kAmbiguousOptionsGuest,
++                    AgentErrorCode::kInvalidTarget);
++      }
++      return Accept(PrometheusExtensionSurfaceKind::kOptionsGuest);
++    case PrometheusExtensionObservedContext::kBackgroundPage:
++    case PrometheusExtensionObservedContext::kBackgroundContents:
++    case PrometheusExtensionObservedContext::kOffscreenDocument:
++    case PrometheusExtensionObservedContext::kDeveloperTools:
++    case PrometheusExtensionObservedContext::kUnknown:
++      return Deny(PrometheusExtensionSurfaceDenial::kUnsupportedContext,
++                  AgentErrorCode::kInvalidTarget);
++  }
++}
++
++bool ExtensionSurfaceResolutionContractImplementedForTesting() {
++  return false;
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_surface_resolver.h b/chrome/browser/prometheus/prometheus_extension_surface_resolver.h
+new file mode 100644
+index 0000000000..4f7688bc51
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_surface_resolver.h
+@@ -0,0 +1,142 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_SURFACE_RESOLVER_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_SURFACE_RESOLVER_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <optional>
++#include <string>
++
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "base/types/expected.h"
++#include "chrome/browser/prometheus/prometheus_agent_route.h"
++#include "content/public/browser/global_routing_id.h"
++
++class Browser;
++
++namespace content {
++class WebContents;
++}
++
++namespace tabs {
++class TabInterface;
++}
++
++namespace prometheus {
++
++class PrometheusExtensionPolicyService;
++
++enum class PrometheusExtensionSurfaceKind {
++  kTab,
++  kOptionsPage,
++  kPopup,
++  kSidePanel,
++  kOptionsGuest,
++};
++
++enum class PrometheusExtensionObservedContext {
++  kTabContents,
++  kPopup,
++  kSidePanel,
++  kOptionsGuest,
++  kBackgroundPage,
++  kBackgroundContents,
++  kOffscreenDocument,
++  kDeveloperTools,
++  kUnknown,
++};
++
++enum class PrometheusExtensionSurfaceDenial {
++  kNone,
++  kNoSelectorMatch,
++  kAmbiguousSelectorMatch,
++  kWrongSelectorKind,
++  kWrongBrowser,
++  kWrongBrowserContext,
++  kUncommittedPrimaryFrame,
++  kMismatchedExtensionOrigin,
++  kUnsupportedContext,
++  kHiddenSurface,
++  kUnownedSurface,
++  kAmbiguousOptionsGuest,
++  kSystemUnavailable,
++  kExtensionUnavailable,
++  kStaleGeneration,
++  kLifecycleLost,
++};
++
++struct PrometheusExtensionSurfaceEvidence {
++  std::optional<AgentExtensionSurfaceSelector> selector;
++  PrometheusExtensionObservedContext observed_context =
++      PrometheusExtensionObservedContext::kUnknown;
++  size_t selector_match_count = 1;
++  bool exact_browser = true;
++  bool exact_browser_context = true;
++  bool primary_frame_committed = true;
++  bool extension_origin = true;
++  bool origin_matches_browser_identity = true;
++  bool extension_system_ready = true;
++  bool extension_enabled = true;
++  bool extension_terminated = false;
++  bool visible = true;
++  bool browser_ui_owned = true;
++  bool options_page = false;
++  bool options_guest_primary_frame = true;
++  bool options_guest_ambiguous = false;
++  bool lifecycle_alive = true;
++  uint64_t policy_generation = 1;
++  std::optional<uint64_t> expected_policy_generation;
++};
++
++struct PrometheusExtensionSurfaceClassification {
++  std::optional<PrometheusExtensionSurfaceKind> kind;
++  PrometheusExtensionSurfaceDenial denial =
++      PrometheusExtensionSurfaceDenial::kNone;
++  AgentErrorCode error_code = AgentErrorCode::kNone;
++
++  bool accepted() const { return kind.has_value(); }
++};
++
++struct PrometheusResolvedExtensionSurface {
++  std::string extension_id;
++  PrometheusExtensionSurfaceKind kind =
++      PrometheusExtensionSurfaceKind::kTab;
++  uint64_t policy_generation = 0;
++  bool private_mode = false;
++  base::WeakPtr<tabs::TabInterface> anchor_tab;
++  base::WeakPtr<content::WebContents> web_contents;
++  content::GlobalRenderFrameHostId primary_frame_id;
++};
++
++class PrometheusExtensionSurfaceResolver {
++ public:
++  explicit PrometheusExtensionSurfaceResolver(
++      PrometheusExtensionPolicyService* policy_service);
++  PrometheusExtensionSurfaceResolver(
++      const PrometheusExtensionSurfaceResolver&) = delete;
++  PrometheusExtensionSurfaceResolver& operator=(
++      const PrometheusExtensionSurfaceResolver&) = delete;
++  ~PrometheusExtensionSurfaceResolver();
++
++  base::expected<PrometheusResolvedExtensionSurface, AgentRouteResult> Resolve(
++      Browser* browser,
++      tabs::TabInterface* anchor_tab,
++      std::optional<AgentExtensionSurfaceSelector> selector,
++      std::optional<uint64_t> expected_policy_generation = std::nullopt) const;
++
++  static PrometheusExtensionSurfaceClassification ClassifyEvidenceForTesting(
++      const PrometheusExtensionSurfaceEvidence& evidence);
++
++ private:
++  raw_ptr<PrometheusExtensionPolicyService> policy_service_;
++};
++
++bool ExtensionSurfaceResolutionContractImplementedForTesting();
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_SURFACE_RESOLVER_H_
+diff --git a/chrome/browser/prometheus/prometheus_extension_surface_resolver_unittest.cc b/chrome/browser/prometheus/prometheus_extension_surface_resolver_unittest.cc
+new file mode 100644
+index 0000000000..4bf090593b
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_surface_resolver_unittest.cc
+@@ -0,0 +1,293 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_extension_surface_resolver.h"
++
++#include <optional>
++
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++namespace {
++
++PrometheusExtensionSurfaceEvidence VisibleTabEvidence() {
++  PrometheusExtensionSurfaceEvidence evidence;
++  evidence.observed_context =
++      PrometheusExtensionObservedContext::kTabContents;
++  return evidence;
++}
++
++PrometheusExtensionSurfaceEvidence VisiblePopupEvidence() {
++  PrometheusExtensionSurfaceEvidence evidence = VisibleTabEvidence();
++  evidence.selector = AgentExtensionSurfaceSelector::kPopup;
++  evidence.observed_context = PrometheusExtensionObservedContext::kPopup;
++  return evidence;
++}
++
++PrometheusExtensionSurfaceEvidence VisibleSidePanelEvidence() {
++  PrometheusExtensionSurfaceEvidence evidence = VisibleTabEvidence();
++  evidence.selector = AgentExtensionSurfaceSelector::kSidePanel;
++  evidence.observed_context = PrometheusExtensionObservedContext::kSidePanel;
++  return evidence;
++}
++
++void RequireGreenContract() {
++  ASSERT_TRUE(ExtensionSurfaceResolutionContractImplementedForTesting())
++      << "retained RED: browser-owned extension surface resolution is not "
++         "implemented";
++}
++
++void ExpectAccepted(const PrometheusExtensionSurfaceEvidence& evidence,
++                    PrometheusExtensionSurfaceKind kind) {
++  RequireGreenContract();
++  const auto classification =
++      PrometheusExtensionSurfaceResolver::ClassifyEvidenceForTesting(evidence);
++  EXPECT_TRUE(classification.accepted());
++  EXPECT_EQ(kind, classification.kind);
++  EXPECT_EQ(PrometheusExtensionSurfaceDenial::kNone,
++            classification.denial);
++  EXPECT_EQ(AgentErrorCode::kNone, classification.error_code);
++}
++
++void ExpectDenied(const PrometheusExtensionSurfaceEvidence& evidence,
++                  PrometheusExtensionSurfaceDenial denial,
++                  AgentErrorCode error_code) {
++  RequireGreenContract();
++  const auto classification =
++      PrometheusExtensionSurfaceResolver::ClassifyEvidenceForTesting(evidence);
++  EXPECT_FALSE(classification.accepted());
++  EXPECT_EQ(denial, classification.denial);
++  EXPECT_EQ(error_code, classification.error_code);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest,
++     AcceptsCommittedVisibleTopLevelExtensionTab) {
++  ExpectAccepted(VisibleTabEvidence(), PrometheusExtensionSurfaceKind::kTab);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest,
++     AcceptsCommittedVisibleOptionsPage) {
++  auto evidence = VisibleTabEvidence();
++  evidence.options_page = true;
++  ExpectAccepted(evidence, PrometheusExtensionSurfaceKind::kOptionsPage);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest,
++     AcceptsExactlyOneShownPopupOwnedByAnchorBrowser) {
++  ExpectAccepted(VisiblePopupEvidence(),
++                 PrometheusExtensionSurfaceKind::kPopup);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest,
++     AcceptsExactlyOneActiveSidePanelOwnedByAnchorTab) {
++  ExpectAccepted(VisibleSidePanelEvidence(),
++                 PrometheusExtensionSurfaceKind::kSidePanel);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest,
++     AcceptsPositivelyOwnedPrimaryOptionsGuest) {
++  auto evidence = VisibleTabEvidence();
++  evidence.observed_context =
++      PrometheusExtensionObservedContext::kOptionsGuest;
++  ExpectAccepted(evidence, PrometheusExtensionSurfaceKind::kOptionsGuest);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsZeroSelectorMatches) {
++  auto evidence = VisiblePopupEvidence();
++  evidence.selector_match_count = 0;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kNoSelectorMatch,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsMultipleSelectorMatches) {
++  auto evidence = VisiblePopupEvidence();
++  evidence.selector_match_count = 2;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kAmbiguousSelectorMatch,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsBackgroundPage) {
++  auto evidence = VisibleTabEvidence();
++  evidence.observed_context =
++      PrometheusExtensionObservedContext::kBackgroundPage;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kUnsupportedContext,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsBackgroundContents) {
++  auto evidence = VisibleTabEvidence();
++  evidence.observed_context =
++      PrometheusExtensionObservedContext::kBackgroundContents;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kUnsupportedContext,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsOffscreenDocument) {
++  auto evidence = VisibleTabEvidence();
++  evidence.observed_context =
++      PrometheusExtensionObservedContext::kOffscreenDocument;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kUnsupportedContext,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsHiddenHost) {
++  auto evidence = VisiblePopupEvidence();
++  evidence.visible = false;
++  ExpectDenied(evidence, PrometheusExtensionSurfaceDenial::kHiddenSurface,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsDeveloperTools) {
++  auto evidence = VisibleTabEvidence();
++  evidence.observed_context =
++      PrometheusExtensionObservedContext::kDeveloperTools;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kUnsupportedContext,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest,
++     RejectsNonPrimaryOptionsGuest) {
++  auto evidence = VisibleTabEvidence();
++  evidence.observed_context =
++      PrometheusExtensionObservedContext::kOptionsGuest;
++  evidence.options_guest_primary_frame = false;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kAmbiguousOptionsGuest,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsAmbiguousOptionsGuest) {
++  auto evidence = VisibleTabEvidence();
++  evidence.observed_context =
++      PrometheusExtensionObservedContext::kOptionsGuest;
++  evidence.options_guest_ambiguous = true;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kAmbiguousOptionsGuest,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsWrongBrowser) {
++  auto evidence = VisiblePopupEvidence();
++  evidence.exact_browser = false;
++  ExpectDenied(evidence, PrometheusExtensionSurfaceDenial::kWrongBrowser,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsWrongProfile) {
++  auto evidence = VisibleTabEvidence();
++  evidence.exact_browser_context = false;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kWrongBrowserContext,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest,
++     RejectsSharedRegistryWrongOffTheRecordContext) {
++  auto evidence = VisibleSidePanelEvidence();
++  evidence.exact_browser_context = false;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kWrongBrowserContext,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsUncommittedPrimaryFrame) {
++  auto evidence = VisibleTabEvidence();
++  evidence.primary_frame_committed = false;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kUncommittedPrimaryFrame,
++               AgentErrorCode::kStaleTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsMismatchedCommittedOrigin) {
++  auto evidence = VisiblePopupEvidence();
++  evidence.origin_matches_browser_identity = false;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kMismatchedExtensionOrigin,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsNonExtensionOrigin) {
++  auto evidence = VisibleTabEvidence();
++  evidence.extension_origin = false;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kMismatchedExtensionOrigin,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsDisabledExtension) {
++  auto evidence = VisibleTabEvidence();
++  evidence.extension_enabled = false;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kExtensionUnavailable,
++               AgentErrorCode::kStaleTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsTerminatedExtension) {
++  auto evidence = VisibleTabEvidence();
++  evidence.extension_terminated = true;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kExtensionUnavailable,
++               AgentErrorCode::kStaleTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsUninstalledExtension) {
++  auto evidence = VisibleTabEvidence();
++  evidence.extension_enabled = false;
++  evidence.lifecycle_alive = false;
++  ExpectDenied(evidence, PrometheusExtensionSurfaceDenial::kLifecycleLost,
++               AgentErrorCode::kStaleTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsStalePolicyGeneration) {
++  auto evidence = VisiblePopupEvidence();
++  evidence.policy_generation = 8;
++  evidence.expected_policy_generation = 7;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kStaleGeneration,
++               AgentErrorCode::kStaleTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsLifecycleTeardown) {
++  auto evidence = VisibleSidePanelEvidence();
++  evidence.lifecycle_alive = false;
++  ExpectDenied(evidence, PrometheusExtensionSurfaceDenial::kLifecycleLost,
++               AgentErrorCode::kStaleTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest,
++     RegistryMembershipAndSystemReadinessDoNotAuthorizeVisibility) {
++  auto evidence = VisiblePopupEvidence();
++  evidence.extension_system_ready = true;
++  evidence.extension_enabled = true;
++  evidence.visible = false;
++  evidence.browser_ui_owned = false;
++  ExpectDenied(evidence, PrometheusExtensionSurfaceDenial::kHiddenSurface,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest, RejectsUnknownFutureViewKind) {
++  auto evidence = VisibleTabEvidence();
++  evidence.observed_context = PrometheusExtensionObservedContext::kUnknown;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kUnsupportedContext,
++               AgentErrorCode::kInvalidTarget);
++}
++
++TEST(PrometheusExtensionSurfaceResolverTest,
++     RejectsPopupSelectedAsSidePanel) {
++  auto evidence = VisiblePopupEvidence();
++  evidence.selector = AgentExtensionSurfaceSelector::kSidePanel;
++  ExpectDenied(evidence,
++               PrometheusExtensionSurfaceDenial::kWrongSelectorKind,
++               AgentErrorCode::kInvalidTarget);
++}
++
++}  // namespace
++}  // namespace prometheus
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index aa1b380089..6a34bb696f 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -87,6 +87,7 @@ source_set("browser_tests") {
+     "../../../prometheus/prometheus_agent_gateway_browsertest.cc",
+     "../../../prometheus/prometheus_agent_profile_service_browsertest.cc",
+     "../../../prometheus/prometheus_agent_service_browsertest.cc",
++    "../../../prometheus/prometheus_extension_surface_browsertest.cc",
+     "../../../prometheus/prometheus_mcp_integration_browsertest.cc",
+     "../../../prometheus/prometheus_page_adapter_browsertest.cc",
+     "../../../prometheus/prometheus_supervision_capture_hub_browsertest.cc",
+@@ -114,6 +115,7 @@ source_set("browser_tests") {
+     "//chrome/browser/prometheus:prometheus_agent_session",
+     "//chrome/browser/prometheus:prometheus_agent_tab_data",
+     "//chrome/browser/prometheus:prometheus_chrome_mode",
++    "//chrome/browser/prometheus:prometheus_extension_surface_resolver",
+     "//chrome/browser/prometheus:prometheus_provider_registry",
+     "//chrome/browser/prometheus:prometheus_provider_transport",
+     "//chrome/browser/prometheus:prometheus_runtime_prefs",
+-- 
+2.50.1 (Apple Git-155)
+

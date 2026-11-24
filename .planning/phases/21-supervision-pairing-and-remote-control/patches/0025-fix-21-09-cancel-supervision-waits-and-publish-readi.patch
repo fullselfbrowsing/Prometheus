@@ -1,0 +1,517 @@
+From 0ac00e13ab7aebdf7394858eb6c3e9bf6a55eba0 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 03:41:15 -0500
+Subject: [PATCH 25/25] fix(21-09): cancel supervision waits and publish
+ readiness
+
+---
+ .../prometheus/prometheus_agent_gateway.cc    |  95 ++++++++++--
+ .../prometheus/prometheus_agent_gateway.h     |   4 +-
+ .../prometheus_agent_gateway_browsertest.cc   | 146 ++++++++++++++++++
+ .../prometheus_agent_gateway_unittest.cc      | 106 +++++++++++++
+ 4 files changed, 340 insertions(+), 11 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.cc b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+index d971ffb236..a7872bb3e0 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+@@ -196,6 +196,38 @@ AgentDiagnosticStatus ToAgentDiagnosticStatus(RuntimeComponentStatus status) {
+   }
+ }
+ 
++AgentDiagnosticStatus ToAgentDiagnosticStatus(
++    SupervisionGatewayReadinessStatus status) {
++  switch (status) {
++    case SupervisionGatewayReadinessStatus::kReady:
++      return AgentDiagnosticStatus::kReady;
++    case SupervisionGatewayReadinessStatus::kDegraded:
++      return AgentDiagnosticStatus::kDegraded;
++    case SupervisionGatewayReadinessStatus::kNotReady:
++      return AgentDiagnosticStatus::kNotReady;
++    case SupervisionGatewayReadinessStatus::kUnavailable:
++      return AgentDiagnosticStatus::kUnavailable;
++  }
++}
++
++bool IsSanitizedSupervisionDiagnostic(std::string_view value) {
++  if (value.empty() || value.size() > 256u || !base::IsStringUTF8(value) ||
++      value.find('\n') != std::string_view::npos ||
++      value.find('\r') != std::string_view::npos) {
++    return false;
++  }
++  const std::string lower = base::ToLowerASCII(value);
++  for (std::string_view forbidden :
++       {"authorization", "bearer", "api_key", "secret", "pairing_code",
++        "dashboard_session", "document_epoch", "profile_path", "selector",
++        "page_content", "typed_value"}) {
++    if (lower.find(forbidden) != std::string::npos) {
++      return false;
++    }
++  }
++  return true;
++}
++
+ RuntimeTransportErrorCode ToTransportError(RuntimeProfileStatus status) {
+   switch (status) {
+     case RuntimeProfileStatus::kOk:
+@@ -608,7 +640,8 @@ RuntimeGatewayHealthState BuildPrometheusRuntimeHealthStateForTesting(
+ 
+ AgentRouteResult BuildPrometheusGatewayHealthForTesting(
+     bool active_regular,
+-    const RuntimeGatewayHealthState& runtime_health) {
++    const RuntimeGatewayHealthState& runtime_health,
++    const std::optional<SupervisionGatewayReadiness>& supervision_readiness) {
+   AgentRouteResult health = AgentRouteResult::Success({});
+   auto add = [&health](std::string key, AgentDiagnosticStatus status,
+                        std::string reason, std::string next_action) {
+@@ -655,9 +688,20 @@ AgentRouteResult BuildPrometheusGatewayHealthForTesting(
+       runtime_health.provider_next_action.empty()
+           ? "Open the local control panel and retry provider diagnostics"
+           : runtime_health.provider_next_action);
+-  add("supervision", AgentDiagnosticStatus::kNotReady,
+-      "Supervision and pairing are owned by Phase 21",
+-      "Retry after supervision diagnostics reports ready");
++  const bool valid_supervision_readiness =
++      supervision_readiness.has_value() &&
++      IsSanitizedSupervisionDiagnostic(supervision_readiness->reason) &&
++      IsSanitizedSupervisionDiagnostic(supervision_readiness->next_action);
++  add("supervision",
++      valid_supervision_readiness
++          ? ToAgentDiagnosticStatus(supervision_readiness->status)
++          : AgentDiagnosticStatus::kNotReady,
++      valid_supervision_readiness
++          ? supervision_readiness->reason
++          : "Supervision diagnostics are not ready",
++      valid_supervision_readiness
++          ? supervision_readiness->next_action
++          : "Open a regular Prometheus browser window and retry");
+   add("extensions", AgentDiagnosticStatus::kNotReady,
+       "Agent extension policy is owned by Phase 22",
+       "Retry after extension diagnostics reports ready");
+@@ -734,6 +778,14 @@ class PrometheusAgentGateway::IOThreadData : public net::HttpServer::Delegate {
+     SendJson(connection_id, status, body);
+   }
+ 
++  void NotifyRequestTerminated(uint64_t request_id) {
++    ui_task_runner_->PostTask(
++        FROM_HERE,
++        base::BindOnce(
++            &PrometheusAgentGateway::OnTransportRequestTerminated, owner_,
++            request_id));
++  }
++
+   void Stop(base::OnceClosure callback) {
+     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+     if (server_) {
+@@ -825,14 +877,17 @@ class PrometheusAgentGateway::IOThreadData : public net::HttpServer::Delegate {
+     if (connection == connection_to_request_.end()) {
+       return;
+     }
+-    pending_.erase(connection->second);
++    const uint64_t request_id = connection->second;
++    pending_.erase(request_id);
+     connection_to_request_.erase(connection);
+     UpdatePendingCount();
+     terminal_count_->fetch_add(1);
++    NotifyRequestTerminated(request_id);
+   }
+ 
+   void OnTimeout(uint64_t request_id) {
+     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    NotifyRequestTerminated(request_id);
+     CompleteRequest(request_id, net::HTTP_GATEWAY_TIMEOUT,
+                     R"({"ok":false,"error_code":"TIMEOUT"})");
+   }
+@@ -877,6 +932,7 @@ PrometheusAgentGateway::PrometheusAgentGateway(Options options)
+ 
+ PrometheusAgentGateway::~PrometheusAgentGateway() {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  ShutdownSupervisionDispatcher(/*complete_unavailable=*/false);
+   weak_ptr_factory_.InvalidateWeakPtrs();
+   if (io_data_ && io_thread_.IsRunning()) {
+     io_thread_.task_runner()->PostTask(
+@@ -976,15 +1032,17 @@ void PrometheusAgentGateway::OnDescriptorWritten(
+ 
+ void PrometheusAgentGateway::Shutdown(base::OnceClosure callback) {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+-  if (!io_data_) {
++  if (shutting_down_) {
+     std::move(callback).Run();
+     return;
+   }
+-  if (shutting_down_) {
++  shutting_down_ = true;
++  ShutdownSupervisionDispatcher(/*complete_unavailable=*/true);
++  if (!io_data_) {
++    shutting_down_ = false;
+     std::move(callback).Run();
+     return;
+   }
+-  shutting_down_ = true;
+ 
+   for (const auto& [session_id, binding] : session_bindings_) {
+     runtime_discovery_tracker_.RemoveSession(session_id);
+@@ -1124,6 +1182,19 @@ void PrometheusAgentGateway::OnSupervisionRequestCompleted(
+       .Run(net::HTTP_OK, SerializeSupervisionResponse(result.transport));
+ }
+ 
++void PrometheusAgentGateway::OnTransportRequestTerminated(uint64_t request_id) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  auto pending = pending_supervision_requests_.find(request_id);
++  if (pending == pending_supervision_requests_.end()) {
++    return;
++  }
++  pending_supervision_requests_.erase(pending);
++  if (supervision_dispatcher_) {
++    supervision_dispatcher_->cancel.Run(
++        SupervisionGatewayCancellationToken{request_id});
++  }
++}
++
+ void PrometheusAgentGateway::CancelOutstandingSupervisionRequests(
+     bool complete_unavailable) {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+@@ -1781,8 +1852,12 @@ void PrometheusAgentGateway::HandleNativeRequest(
+         BuildPrometheusRuntimeHealthStateForTesting(
+             runtime != nullptr, providers.size(), policy_operable_provider,
+             runtime && runtime->IsVaultAvailableForTransport());
+-    AgentRouteResult health =
+-        BuildPrometheusGatewayHealthForTesting(active_regular, runtime_health);
++    std::optional<SupervisionGatewayReadiness> supervision_readiness;
++    if (supervision_dispatcher_) {
++      supervision_readiness = supervision_dispatcher_->readiness.Run();
++    }
++    AgentRouteResult health = BuildPrometheusGatewayHealthForTesting(
++        active_regular, runtime_health, supervision_readiness);
+     auto serialized = SerializeAgentTransportResult(health);
+     std::move(callback).Run(
+         net::HTTP_OK, serialized.has_value()
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.h b/chrome/browser/prometheus/prometheus_agent_gateway.h
+index 0f25f82bb5..84ecfe13e2 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.h
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.h
+@@ -59,7 +59,9 @@ RuntimeGatewayHealthState BuildPrometheusRuntimeHealthStateForTesting(
+ 
+ AgentRouteResult BuildPrometheusGatewayHealthForTesting(
+     bool active_regular,
+-    const RuntimeGatewayHealthState& runtime_health);
++    const RuntimeGatewayHealthState& runtime_health,
++    const std::optional<SupervisionGatewayReadiness>& supervision_readiness =
++        std::nullopt);
+ 
+ class PrometheusGatewayDiscoveryTracker {
+  public:
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+index 2b79c26e28..b6b9e401f1 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+@@ -339,6 +339,10 @@ class PrometheusAgentGatewayBrowserTest : public InProcessBrowserTest {
+       SupervisionGatewayDispatcher::ResultCallback callback) {
+     const SupervisionTransportOperation operation = request.transport.operation;
+     supervision_requests_.push_back(std::move(request));
++    if (hold_supervision_requests_) {
++      held_supervision_callbacks_.push_back(std::move(callback));
++      return;
++    }
+     std::move(callback).Run(SupervisionGatewayResult{
+         .transport = SupervisionTransportResult::Success(operation)});
+   }
+@@ -376,7 +380,10 @@ class PrometheusAgentGatewayBrowserTest : public InProcessBrowserTest {
+   std::unique_ptr<PrometheusAgentGateway> gateway_;
+   std::vector<SupervisionGatewayRequest> supervision_requests_;
+   std::vector<SupervisionGatewayCancellationToken> supervision_cancellations_;
++  std::vector<SupervisionGatewayDispatcher::ResultCallback>
++      held_supervision_callbacks_;
+   SupervisionGatewayReadiness supervision_readiness_;
++  bool hold_supervision_requests_ = false;
+   size_t supervision_shutdowns_ = 0;
+ };
+ 
+@@ -501,6 +508,145 @@ IN_PROC_BROWSER_TEST_F(
+   EXPECT_TRUE(supervision_requests_.empty());
+ }
+ 
++IN_PROC_BROWSER_TEST_F(
++    PrometheusAgentGatewayBrowserTest,
++    SupervisionTimeoutDisconnectAndUnbindCancelPendingDiffExactlyOnce) {
++  hold_supervision_requests_ = true;
++  gateway_->SetRequestTimeoutForTesting(base::Milliseconds(25));
++
++  RawHttpClient timed_out(gateway_->endpoint_for_testing());
++  timed_out.Send(MakeRequest("POST", "/v1/supervision",
++                             gateway_->port_for_testing(),
++                             gateway_->bearer_for_testing(),
++                             kSupervisionRequests[2]));
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return supervision_requests_.size() == 1u; }));
++  EXPECT_EQ(504, timed_out.ReadResponse().status);
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return supervision_cancellations_.size() == 1u; }));
++  EXPECT_EQ(supervision_requests_[0].cancellation_token,
++            supervision_cancellations_[0]);
++  std::move(held_supervision_callbacks_[0])
++      .Run(SupervisionGatewayResult{
++          .transport = SupervisionTransportResult::Success(
++              SupervisionTransportOperation::kDiff)});
++  EXPECT_EQ(1u, supervision_cancellations_.size());
++
++  gateway_->SetRequestTimeoutForTesting(base::Seconds(30));
++  RawHttpClient disconnected(gateway_->endpoint_for_testing());
++  disconnected.Send(MakeRequest("POST", "/v1/supervision",
++                                 gateway_->port_for_testing(),
++                                 gateway_->bearer_for_testing(),
++                                 kSupervisionRequests[2]));
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return supervision_requests_.size() == 2u; }));
++  disconnected.Disconnect();
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return supervision_cancellations_.size() == 2u; }));
++  EXPECT_EQ(supervision_requests_[1].cancellation_token,
++            supervision_cancellations_[1]);
++  std::move(held_supervision_callbacks_[1])
++      .Run(SupervisionGatewayResult{
++          .transport = SupervisionTransportResult::Success(
++              SupervisionTransportOperation::kDiff)});
++  EXPECT_EQ(2u, supervision_cancellations_.size());
++
++  RawHttpClient unbound(gateway_->endpoint_for_testing());
++  unbound.Send(MakeRequest("POST", "/v1/supervision",
++                           gateway_->port_for_testing(),
++                           gateway_->bearer_for_testing(),
++                           kSupervisionRequests[2]));
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return supervision_requests_.size() == 3u; }));
++  gateway_->SetSupervisionGatewayDispatcher({});
++  HttpResult unavailable = unbound.ReadResponse();
++  EXPECT_EQ(200, unavailable.status);
++  EXPECT_NE(std::string::npos, unavailable.body.find("UNAVAILABLE"));
++  ASSERT_EQ(3u, supervision_cancellations_.size());
++  EXPECT_EQ(supervision_requests_[2].cancellation_token,
++            supervision_cancellations_[2]);
++  EXPECT_EQ(1u, supervision_shutdowns_);
++  std::move(held_supervision_callbacks_[2])
++      .Run(SupervisionGatewayResult{
++          .transport = SupervisionTransportResult::Success(
++              SupervisionTransportOperation::kDiff)});
++  EXPECT_EQ(3u, supervision_cancellations_.size());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
++                       SupervisionShutdownCancelsPendingDiffAndStopsIo) {
++  hold_supervision_requests_ = true;
++  RawHttpClient client(gateway_->endpoint_for_testing());
++  client.Send(MakeRequest("POST", "/v1/supervision",
++                          gateway_->port_for_testing(),
++                          gateway_->bearer_for_testing(),
++                          kSupervisionRequests[2]));
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return supervision_requests_.size() == 1u; }));
++
++  base::test::TestFuture<void> stopped;
++  gateway_->Shutdown(stopped.GetCallback());
++  ASSERT_TRUE(stopped.Wait());
++  EXPECT_EQ(503, client.ReadResponse().status);
++  ASSERT_EQ(1u, supervision_cancellations_.size());
++  EXPECT_EQ(supervision_requests_[0].cancellation_token,
++            supervision_cancellations_[0]);
++  EXPECT_EQ(1u, supervision_shutdowns_);
++  EXPECT_EQ(0u, gateway_->pending_supervision_request_count_for_testing());
++
++  std::move(held_supervision_callbacks_[0])
++      .Run(SupervisionGatewayResult{
++          .transport = SupervisionTransportResult::Success(
++              SupervisionTransportOperation::kDiff)});
++  EXPECT_EQ(1u, supervision_cancellations_.size());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
++                       SupervisionHealthUsesOnlySanitizedReadiness) {
++  auto read_status = [](const HttpResult& response, std::string_view key) {
++    std::string status;
++    auto root =
++        base::JSONReader::ReadDict(response.body, base::JSON_PARSE_RFC);
++    EXPECT_TRUE(root.has_value()) << response.body;
++    const base::ListValue* diagnostics =
++        root ? root->FindList("diagnostics") : nullptr;
++    EXPECT_TRUE(diagnostics);
++    if (!diagnostics) {
++      return status;
++    }
++    for (const base::Value& value : *diagnostics) {
++      const base::DictValue* diagnostic = value.GetIfDict();
++      if (diagnostic && diagnostic->FindString("key") &&
++          *diagnostic->FindString("key") == key &&
++          diagnostic->FindString("status")) {
++        return *diagnostic->FindString("status");
++      }
++    }
++    return status;
++  };
++
++  supervision_readiness_ = SupervisionGatewayReadiness{
++      .status = SupervisionGatewayReadinessStatus::kReady,
++      .reason = "Supervision transport is ready",
++      .next_action = "No supervision recovery action is required",
++  };
++  HttpResult ready = Authorized("GET", "/v1/health", "");
++  EXPECT_EQ(200, ready.status);
++  EXPECT_EQ("ready", read_status(ready, "supervision"));
++  EXPECT_EQ("not_ready", read_status(ready, "extensions"));
++
++  supervision_readiness_.reason = "Bearer SECRET-READINESS-SENTINEL";
++  HttpResult rejected = Authorized("GET", "/v1/health", "");
++  EXPECT_EQ("not_ready", read_status(rejected, "supervision"));
++  EXPECT_EQ(std::string::npos,
++            rejected.body.find("SECRET-READINESS-SENTINEL"));
++
++  gateway_->SetSupervisionGatewayDispatcher({});
++  HttpResult absent = Authorized("GET", "/v1/health", "");
++  EXPECT_EQ("not_ready", read_status(absent, "supervision"));
++  EXPECT_EQ("not_ready", read_status(absent, "extensions"));
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+                        RejectsHostOriginMethodPathContentBodyAndMalformedJson) {
+   const int port = gateway_->port_for_testing();
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+index 8002cf3c49..0f4c839b01 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_agent_gateway.h"
+ 
++#include <algorithm>
+ #include <array>
+ #include <map>
+ #include <optional>
+@@ -91,6 +92,10 @@ class FakeSupervisionGatewayDispatcher {
+                 SupervisionGatewayDispatcher::ResultCallback callback) {
+     const SupervisionTransportOperation operation = request.transport.operation;
+     requests.push_back(std::move(request));
++    if (hold_requests) {
++      held_callbacks.push_back(std::move(callback));
++      return;
++    }
+     SupervisionTransportResult result =
+         return_wrong_operation
+             ? SupervisionTransportResult::Success(
+@@ -112,7 +117,9 @@ class FakeSupervisionGatewayDispatcher {
+ 
+   std::vector<SupervisionGatewayRequest> requests;
+   std::vector<SupervisionGatewayCancellationToken> cancellations;
++  std::vector<SupervisionGatewayDispatcher::ResultCallback> held_callbacks;
+   SupervisionGatewayReadiness readiness;
++  bool hold_requests = false;
+   bool return_wrong_operation = false;
+   size_t shutdowns = 0;
+ };
+@@ -446,6 +453,105 @@ TEST(PrometheusAgentGatewayTest,
+   EXPECT_EQ(0u, gateway.pending_supervision_request_count_for_testing());
+ }
+ 
++TEST(PrometheusAgentGatewayTest,
++     SupervisionUnbindCancelsPendingAndIgnoresLateCompletion) {
++  FakeSupervisionGatewayDispatcher fake;
++  fake.hold_requests = true;
++  PrometheusAgentGateway gateway({});
++  gateway.SetSupervisionGatewayDispatcher(fake.Bind());
++  NativeResponse response;
++  gateway.HandleNativeRequestForTesting(
++      "/v1/supervision", kSupervisionRequests[2],
++      base::BindOnce(
++          [](NativeResponse* output, int status, std::string body) {
++            ++output->callbacks;
++            output->status = status;
++            output->body = std::move(body);
++          },
++          &response));
++  ASSERT_EQ(1u, fake.held_callbacks.size());
++  ASSERT_EQ(1u, gateway.pending_supervision_request_count_for_testing());
++
++  gateway.SetSupervisionGatewayDispatcher({});
++  ASSERT_EQ(1u, fake.cancellations.size());
++  EXPECT_EQ(fake.requests[0].cancellation_token, fake.cancellations[0]);
++  EXPECT_EQ(1u, fake.shutdowns);
++  EXPECT_EQ(1u, response.callbacks);
++  EXPECT_EQ(net::HTTP_OK, response.status);
++  EXPECT_NE(std::string::npos, response.body.find("UNAVAILABLE"));
++  EXPECT_EQ(0u, gateway.pending_supervision_request_count_for_testing());
++
++  std::move(fake.held_callbacks[0])
++      .Run(SupervisionGatewayResult{
++          .transport = SupervisionTransportResult::Success(
++              SupervisionTransportOperation::kDiff)});
++  EXPECT_EQ(1u, response.callbacks);
++  EXPECT_EQ(1u, fake.cancellations.size());
++}
++
++TEST(PrometheusAgentGatewayTest,
++     SupervisionShutdownCancelsPendingBeforeDispatcherShutdown) {
++  FakeSupervisionGatewayDispatcher fake;
++  fake.hold_requests = true;
++  PrometheusAgentGateway gateway({});
++  gateway.SetSupervisionGatewayDispatcher(fake.Bind());
++  NativeResponse response;
++  gateway.HandleNativeRequestForTesting(
++      "/v1/supervision", kSupervisionRequests[2],
++      base::BindOnce(
++          [](NativeResponse* output, int status, std::string body) {
++            ++output->callbacks;
++            output->status = status;
++            output->body = std::move(body);
++          },
++          &response));
++  bool stopped = false;
++  gateway.Shutdown(base::BindOnce([](bool* value) { *value = true; }, &stopped));
++  EXPECT_TRUE(stopped);
++  ASSERT_EQ(1u, fake.cancellations.size());
++  EXPECT_EQ(fake.requests[0].cancellation_token, fake.cancellations[0]);
++  EXPECT_EQ(1u, fake.shutdowns);
++  EXPECT_EQ(1u, response.callbacks);
++  EXPECT_EQ(0u, gateway.pending_supervision_request_count_for_testing());
++
++  std::move(fake.held_callbacks[0])
++      .Run(SupervisionGatewayResult{
++          .transport = SupervisionTransportResult::Success(
++              SupervisionTransportOperation::kDiff)});
++  EXPECT_EQ(1u, response.callbacks);
++}
++
++TEST(PrometheusAgentGatewayTest,
++     SupervisionReadinessIsBoundedAndContentFree) {
++  RuntimeGatewayHealthState runtime_health;
++  SupervisionGatewayReadiness ready{
++      .status = SupervisionGatewayReadinessStatus::kReady,
++      .reason = "Supervision transport is ready",
++      .next_action = "No supervision recovery action is required",
++  };
++  AgentRouteResult health = BuildPrometheusGatewayHealthForTesting(
++      /*active_regular=*/true, runtime_health, ready);
++  auto component = std::ranges::find(
++      health.diagnostics, "supervision",
++      [](const AgentDiagnosticComponent& diagnostic) { return diagnostic.key; });
++  ASSERT_NE(health.diagnostics.end(), component);
++  EXPECT_EQ(AgentDiagnosticStatus::kReady, component->status);
++  EXPECT_EQ(ready.reason, component->reason);
++  EXPECT_EQ(ready.next_action, component->next_action);
++
++  ready.reason = "Bearer SECRET-SENTINEL";
++  health = BuildPrometheusGatewayHealthForTesting(
++      /*active_regular=*/true, runtime_health, ready);
++  component = std::ranges::find(
++      health.diagnostics, "supervision",
++      [](const AgentDiagnosticComponent& diagnostic) { return diagnostic.key; });
++  ASSERT_NE(health.diagnostics.end(), component);
++  EXPECT_EQ(AgentDiagnosticStatus::kNotReady, component->status);
++  auto serialized = SerializeAgentTransportResult(health);
++  ASSERT_TRUE(serialized.has_value());
++  EXPECT_EQ(std::string::npos, serialized->find("SECRET-SENTINEL"));
++}
++
+ TEST(PrometheusAgentGatewayTest,
+      RejectsMethodContentTypeBodyAndConcurrencyViolations) {
+   auto wrong_get = ValidRequest("/v1/session/create");
+-- 
+2.50.1 (Apple Git-155)
+

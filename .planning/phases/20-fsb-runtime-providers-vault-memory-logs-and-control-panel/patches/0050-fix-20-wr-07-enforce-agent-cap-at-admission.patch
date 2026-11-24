@@ -1,0 +1,413 @@
+From d36944b935e8e8ba8eed624a9b0287a1667e713b Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 20 Jul 2026 08:53:59 -0500
+Subject: [PATCH] fix(20): WR-07 enforce agent cap at admission
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  1 +
+ .../prometheus_agent_gateway_browsertest.cc   | 88 +++++++++++++++++++
+ .../prometheus_agent_profile_service.cc       | 11 ++-
+ .../prometheus_agent_profile_service.h        |  1 +
+ ...theus_agent_profile_service_browsertest.cc | 12 +--
+ .../prometheus_runtime_profile_service.cc     | 26 +++---
+ .../prometheus_runtime_profile_service.h      |  4 +-
+ ...etheus_runtime_profile_service_unittest.cc | 23 ++---
+ 8 files changed, 123 insertions(+), 43 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 3477879d17..7e7b9d4cee 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -232,6 +232,7 @@ source_set("prometheus_agent_profile_service") {
+   deps = [
+     ":prometheus_agent_service",
+     ":prometheus_agent_session",
++    ":prometheus_runtime_prefs",
+     "//base",
+     "//chrome/browser/profiles",
+     "//chrome/browser/ui/browser_window",
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+index 8d218d958f..101366226a 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+@@ -35,8 +35,11 @@
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/profiles/profile_manager.h"
+ #include "chrome/browser/profiles/profile_test_util.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
++#include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/common/chrome_switches.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+@@ -487,6 +490,91 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+                      .status);
+ }
+ 
++IN_PROC_BROWSER_TEST_F(
++    PrometheusAgentGatewayBrowserTest,
++    RuntimePolicyCapsOnlyNewSessionsAndPreservesExistingRuntimeAccess) {
++  Profile* const profile = browser()->profile();
++  PrometheusRuntimeProfileService* const runtime =
++      PrometheusRuntimeProfileServiceFactory::GetForProfile(profile);
++  PrometheusAgentProfileService* const agent_service =
++      PrometheusAgentProfileServiceFactory::GetForProfile(profile);
++  ASSERT_TRUE(runtime);
++  ASSERT_TRUE(agent_service);
++
++  RuntimePolicy policy = runtime->effective_policy_for_testing();
++  policy.max_active_agents = 3;
++  ASSERT_EQ(RuntimeProfileStatus::kOk,
++            runtime->SetRuntimePolicyForControlUi(
++                RuntimeCallerOrigin::kLocalControlUi, policy));
++
++  std::vector<std::string> session_ids;
++  for (size_t index = 0; index < 3; ++index) {
++    HttpResult created = Authorized(
++        "POST", "/v1/session/create",
++        "{\"display_label\":\"Agent " + std::to_string(index) + "\"}");
++    ASSERT_EQ(200, created.status) << index;
++    std::string session_id = ExtractSessionId(created);
++    ASSERT_FALSE(session_id.empty()) << index;
++    session_ids.push_back(std::move(session_id));
++  }
++  EXPECT_EQ(3u, agent_service->ActiveSessionCount());
++
++  HttpResult at_cap =
++      Authorized("POST", "/v1/session/create", R"({"display_label":"At cap"})");
++  ASSERT_EQ(200, at_cap.status);
++  std::optional<base::DictValue> at_cap_body =
++      base::JSONReader::ReadDict(at_cap.body, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(at_cap_body);
++  EXPECT_FALSE(at_cap_body->FindBool("ok").value_or(true));
++  const std::string* const at_cap_code = at_cap_body->FindString("error_code");
++  ASSERT_TRUE(at_cap_code);
++  EXPECT_EQ("AGENT_CAP_REACHED", *at_cap_code);
++
++  policy.max_active_agents = 2;
++  ASSERT_EQ(RuntimeProfileStatus::kOk,
++            runtime->SetRuntimePolicyForControlUi(
++                RuntimeCallerOrigin::kLocalControlUi, policy));
++  EXPECT_EQ(3u, agent_service->ActiveSessionCount());
++
++  HttpResult existing_runtime = Authorized(
++      "POST", "/v1/agent/command",
++      "{\"route\":\"run_task\",\"session_id\":\"" + session_ids.back() +
++          "\",\"params\":{\"prompt\":\"Existing session remains "
++          "authorized\",\"requested_execution\":\"auto\"}}");
++  ASSERT_EQ(200, existing_runtime.status);
++  std::optional<base::DictValue> existing_runtime_body =
++      base::JSONReader::ReadDict(existing_runtime.body, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(existing_runtime_body);
++  EXPECT_FALSE(existing_runtime_body->FindBool("ok").value_or(true));
++  const std::string* const existing_runtime_code =
++      existing_runtime_body->FindString("error_code");
++  ASSERT_TRUE(existing_runtime_code);
++  EXPECT_EQ("CAPABILITY_NOT_READY", *existing_runtime_code);
++
++  ASSERT_EQ(200, Authorized("POST", "/v1/session/close",
++                            "{\"session_id\":\"" + session_ids[0] + "\"}")
++                     .status);
++  EXPECT_EQ(2u, agent_service->ActiveSessionCount());
++  HttpResult still_capped = Authorized("POST", "/v1/session/create",
++                                       R"({"display_label":"Still capped"})");
++  std::optional<base::DictValue> still_capped_body =
++      base::JSONReader::ReadDict(still_capped.body, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(still_capped_body);
++  const std::string* const still_capped_code =
++      still_capped_body->FindString("error_code");
++  ASSERT_TRUE(still_capped_code);
++  EXPECT_EQ("AGENT_CAP_REACHED", *still_capped_code);
++
++  ASSERT_EQ(200, Authorized("POST", "/v1/session/close",
++                            "{\"session_id\":\"" + session_ids[1] + "\"}")
++                     .status);
++  EXPECT_EQ(1u, agent_service->ActiveSessionCount());
++  HttpResult replacement = Authorized("POST", "/v1/session/create",
++                                      R"({"display_label":"Replacement"})");
++  EXPECT_FALSE(ExtractSessionId(replacement).empty());
++  EXPECT_EQ(2u, agent_service->ActiveSessionCount());
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+                        SessionPinsItsCreationProfileAndRejectsOtrSelection) {
+   Profile* const first_profile = browser()->profile();
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.cc b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+index bb8c98badb..d3c5665af6 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+@@ -9,6 +9,7 @@
+ #include "base/check.h"
+ #include "base/functional/bind.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+ 
+@@ -34,6 +35,9 @@ PrometheusAgentProfileService::PrometheusAgentProfileService(Profile* profile)
+       now_callback_(base::BindRepeating(&base::Time::Now)) {
+   CHECK(profile_);
+   CHECK(!profile_->IsOffTheRecord());
++  SetMaxActiveAgents(static_cast<size_t>(
++      GetEffectivePrometheusRuntimePolicy(*profile_->GetPrefs())
++          .max_active_agents));
+ }
+ 
+ PrometheusAgentProfileService::~PrometheusAgentProfileService() = default;
+@@ -72,6 +76,11 @@ size_t PrometheusAgentProfileService::ActiveSessionCount() {
+   return sessions_.active_session_count();
+ }
+ 
++void PrometheusAgentProfileService::SetMaxActiveAgents(
++    size_t max_active_agents) {
++  sessions_.SetMaxActiveAgents(max_active_agents);
++}
++
+ void PrometheusAgentProfileService::ReleaseSessionOwnership(
+     std::string_view session_id) {
+   agent_service_.ReleaseSessionOwnership(session_id);
+@@ -133,7 +142,7 @@ void PrometheusAgentProfileService::SetNowCallbackForTesting(
+ 
+ void PrometheusAgentProfileService::SetMaxAgentSessionsForTesting(
+     size_t max_active_sessions) {
+-  sessions_.set_max_active_sessions_for_testing(max_active_sessions);
++  SetMaxActiveAgents(max_active_sessions);
+ }
+ 
+ void PrometheusAgentProfileService::SetConfirmedVaultTargetInspectorForTesting(
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.h b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+index 0b399c42bd..ec592be263 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+@@ -37,6 +37,7 @@ class PrometheusAgentProfileService : public KeyedService {
+   AgentRouteResult CloseSession(std::string_view session_id);
+   bool HasSession(std::string_view session_id);
+   size_t ActiveSessionCount();
++  void SetMaxActiveAgents(size_t max_active_agents);
+   void ReleaseSessionOwnership(std::string_view session_id);
+   void ExecuteRoute(const AgentRouteRequest& request,
+                     PrometheusAgentService::RouteCallback callback);
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_profile_service_browsertest.cc
+index c7cc81ecea..3d689961a6 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service_browsertest.cc
+@@ -16,6 +16,7 @@
+ #include "chrome/browser/profiles/profile_test_util.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
++#include "chrome/browser/prometheus/prometheus_runtime_types.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+@@ -116,20 +117,21 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentProfileServiceBrowserTest,
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentProfileServiceBrowserTest,
+-                       NinthProductionSessionReturnsCapReached) {
++                       DefaultRuntimePolicyCapsProductionSessionAdmission) {
+   PrometheusAgentProfileService* const profile_service =
+       service(browser()->profile());
+   ASSERT_TRUE(profile_service);
+ 
+-  for (size_t index = 0; index < kDefaultMaxAgentSessions; ++index) {
++  for (size_t index = 0;
++       index < static_cast<size_t>(kDefaultRuntimeActiveAgents); ++index) {
+     AgentSessionResult result =
+         profile_service->CreateSession("Agent " + std::to_string(index));
+     EXPECT_TRUE(result.route_result.ok) << index;
+   }
+-  AgentSessionResult ninth = profile_service->CreateSession("Ninth");
++  AgentSessionResult capped = profile_service->CreateSession("Capped");
+ 
+-  EXPECT_FALSE(ninth.route_result.ok);
+-  EXPECT_EQ(AgentErrorCode::kAgentCapReached, ninth.route_result.error_code);
++  EXPECT_FALSE(capped.route_result.ok);
++  EXPECT_EQ(AgentErrorCode::kAgentCapReached, capped.route_result.error_code);
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusAgentProfileServiceBrowserTest,
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+index 64a76f431c..30789b6b87 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+@@ -343,9 +343,6 @@ PrometheusRuntimeProfileService::PrometheusRuntimeProfileService(
+   hooks_.has_session =
+       base::BindRepeating(&PrometheusAgentProfileService::HasSession,
+                           base::Unretained(agent_profile_service_.get()));
+-  hooks_.active_session_count =
+-      base::BindRepeating(&PrometheusAgentProfileService::ActiveSessionCount,
+-                          base::Unretained(agent_profile_service_.get()));
+   hooks_.close_session =
+       base::BindRepeating(&PrometheusAgentProfileService::CloseSession,
+                           base::Unretained(agent_profile_service_.get()));
+@@ -567,7 +564,7 @@ RuntimeSubmitResult PrometheusRuntimeProfileService::SubmitTask(
+   }
+   const RuntimePolicy policy = ReadEffectivePolicy();
+   const RuntimeProfileStatus authority_status =
+-      ValidateAuthority(request.authority, policy);
++      ValidateAuthority(request.authority);
+   if (authority_status != RuntimeProfileStatus::kOk) {
+     return {.status = authority_status, .recovery = kAuthorityRecovery};
+   }
+@@ -889,7 +886,7 @@ RuntimeOperationResult PrometheusRuntimeProfileService::DispatchTool(
+     RuntimeToolRequest request) {
+   const RuntimePolicy policy = ReadEffectivePolicy();
+   const RuntimeProfileStatus authority_status =
+-      ValidateAuthority(request.authority, policy);
++      ValidateAuthority(request.authority);
+   if (authority_status != RuntimeProfileStatus::kOk) {
+     return {.status = authority_status, .recovery = kAuthorityRecovery};
+   }
+@@ -987,7 +984,7 @@ void PrometheusRuntimeProfileService::OnAgentRouteComplete(
+ 
+   const RuntimePolicy policy = ReadEffectivePolicy();
+   const RuntimeProfileStatus authority_status =
+-      ValidateAuthority(task->second.authority, policy);
++      ValidateAuthority(task->second.authority);
+   const RuntimePolicyDecision dispatch = EvaluateRuntimeDispatch(
+       policy, internal_surface, background_action, /*target_owned=*/true);
+   if (authority_status != RuntimeProfileStatus::kOk ||
+@@ -1098,7 +1095,7 @@ void PrometheusRuntimeProfileService::OnAgentRouteComplete(
+ 
+         const RuntimePolicy policy = service->ReadEffectivePolicy();
+         const RuntimeProfileStatus authority_status =
+-            service->ValidateAuthority(task->second.authority, policy);
++            service->ValidateAuthority(task->second.authority);
+         const RuntimePolicyDecision dispatch = EvaluateRuntimeDispatch(
+             policy, chain->internal_surface, chain->background_action,
+             /*target_owned=*/true);
+@@ -1267,7 +1264,7 @@ void PrometheusRuntimeProfileService::OnProviderTurnComplete(
+ 
+   const RuntimePolicy policy = ReadEffectivePolicy();
+   const RuntimeProfileStatus authority_status =
+-      ValidateAuthority(task->second.authority, policy);
++      ValidateAuthority(task->second.authority);
+   if (authority_status != RuntimeProfileStatus::kOk) {
+     FinishTaskOnce(task_id, task->second.generation,
+                    RuntimeCompletionSource::kProvider, {}, {},
+@@ -1974,6 +1971,10 @@ PrometheusRuntimeProfileService::SetRuntimePolicyForControlUi(
+     return RuntimeProfileStatus::kNotImplemented;
+   }
+   SetPrometheusRuntimePolicy(*profile_->GetPrefs(), requested_policy);
++  const RuntimePolicy effective_policy =
++      GetEffectivePrometheusRuntimePolicy(*profile_->GetPrefs());
++  agent_profile_service_->SetMaxActiveAgents(
++      static_cast<size_t>(effective_policy.max_active_agents));
+   for (Observer& observer : observers_) {
+     observer.OnRuntimeSidePanelSnapshotChanged();
+   }
+@@ -2376,8 +2377,7 @@ RuntimePolicy PrometheusRuntimeProfileService::ReadEffectivePolicy() const {
+ }
+ 
+ RuntimeProfileStatus PrometheusRuntimeProfileService::ValidateAuthority(
+-    const RuntimeAuthorityContext& authority,
+-    const RuntimePolicy& policy) const {
++    const RuntimeAuthorityContext& authority) const {
+   if (authority.caller_id.empty() || authority.agent_session_id.empty() ||
+       !authority.exact_browser || authority.stable_tab_id <= 0) {
+     return RuntimeProfileStatus::kUnauthorized;
+@@ -2401,12 +2401,6 @@ RuntimeProfileStatus PrometheusRuntimeProfileService::ValidateAuthority(
+   if (profile_ && authority.exact_browser->GetProfile() != profile_) {
+     return RuntimeProfileStatus::kTargetLost;
+   }
+-  const size_t active_sessions =
+-      hooks_.active_session_count ? hooks_.active_session_count.Run() : 0;
+-  if (!IsRuntimePolicyDecisionAllowed(
+-          EvaluateRuntimeAgentAdmission(policy, active_sessions))) {
+-    return RuntimeProfileStatus::kPolicyBlocked;
+-  }
+   return RuntimeProfileStatus::kOk;
+ }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.h b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+index 96bcc72890..235172cc3d 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+@@ -133,7 +133,6 @@ struct RuntimeProfileHooks {
+ 
+   base::RepeatingCallback<AgentSessionResult(std::string)> create_session;
+   base::RepeatingCallback<bool(std::string_view)> has_session;
+-  base::RepeatingCallback<size_t()> active_session_count;
+   base::RepeatingCallback<AgentRouteResult(std::string_view)> close_session;
+   base::RepeatingCallback<void(std::string_view)> release_session_ownership;
+   base::RepeatingCallback<void(BrowserWindowInterface*,
+@@ -443,8 +442,7 @@ class PrometheusRuntimeProfileService
+ 
+   RuntimePolicy ReadEffectivePolicy() const;
+   RuntimeProfileStatus ValidateAuthority(
+-      const RuntimeAuthorityContext& authority,
+-      const RuntimePolicy& policy) const;
++      const RuntimeAuthorityContext& authority) const;
+   RuntimeProfileStatus ValidateLocalPrincipal(
+       const LocalRuntimePrincipal& principal) const;
+   RuntimeProfileStatus PolicyDenial(RuntimePolicyDecision decision,
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+index fae9e9dbdc..3b3340f7a1 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+@@ -68,9 +68,6 @@ class FakeRuntimeProfileBoundaries {
+         &FakeRuntimeProfileBoundaries::CreateSession, base::Unretained(this));
+     hooks.has_session = base::BindRepeating(
+         &FakeRuntimeProfileBoundaries::HasSession, base::Unretained(this));
+-    hooks.active_session_count =
+-        base::BindRepeating(&FakeRuntimeProfileBoundaries::ActiveSessionCount,
+-                            base::Unretained(this));
+     hooks.close_session = base::BindRepeating(
+         &FakeRuntimeProfileBoundaries::CloseSession, base::Unretained(this));
+     hooks.release_session_ownership = base::BindRepeating(
+@@ -126,11 +123,6 @@ class FakeRuntimeProfileBoundaries {
+     return session_is_valid && session_id == "browser-issued-session";
+   }
+ 
+-  size_t ActiveSessionCount() {
+-    ++active_session_count_reads;
+-    return active_sessions;
+-  }
+-
+   AgentRouteResult CloseSession(std::string_view session_id) {
+     ++close_session_count;
+     return AgentRouteResult::Success({"closed"});
+@@ -345,10 +337,8 @@ class FakeRuntimeProfileBoundaries {
+   bool defer_agent_route = false;
+   bool defer_provider_turn = false;
+   bool defer_discovery = false;
+-  size_t active_sessions = 0;
+   int create_session_count = 0;
+   int has_session_count = 0;
+-  int active_session_count_reads = 0;
+   int close_session_count = 0;
+   int release_ownership_count = 0;
+   int execute_route_count = 0;
+@@ -849,7 +839,7 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+ }
+ 
+ TEST_F(PrometheusRuntimeProfileServiceTest,
+-       PolicyAdmissionRechecksTaskAndAgentCaps) {
++       TaskAdmissionDoesNotReapplyTheAgentSessionCap) {
+   boundaries_.policy.limits.max_concurrent_tasks = 1;
+   EXPECT_EQ(RuntimeProfileStatus::kOk, service_->SubmitTask(Request()).status);
+ 
+@@ -859,14 +849,11 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+             service_->SubmitTask(std::move(task_capped)).status);
+ 
+   EXPECT_EQ(RuntimeProfileStatus::kCancelled, service_->CancelTask("task-1"));
+-  boundaries_.active_sessions =
+-      static_cast<size_t>(boundaries_.policy.max_active_agents);
+-  RuntimeSubmitRequest agent_capped = Request();
+-  agent_capped.prompt = "A task after the prior task was cancelled";
+-  EXPECT_EQ(RuntimeProfileStatus::kPolicyBlocked,
+-            service_->SubmitTask(std::move(agent_capped)).status);
++  RuntimeSubmitRequest existing_agent = Request();
++  existing_agent.prompt = "A task after the prior task was cancelled";
++  EXPECT_EQ(RuntimeProfileStatus::kOk,
++            service_->SubmitTask(std::move(existing_agent)).status);
+   EXPECT_GE(boundaries_.policy_read_count, 3);
+-  EXPECT_GE(boundaries_.active_session_count_reads, 3);
+ }
+ 
+ TEST_F(PrometheusRuntimeProfileServiceTest,
+-- 
+2.50.1 (Apple Git-155)
+

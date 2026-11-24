@@ -1,0 +1,38 @@
+From c9dbe94134fca259a203ab34afc0accb9d83f4cd Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sat, 18 Jul 2026 17:41:24 -0500
+Subject: [PATCH] test(20-14): update gateway health regression
+
+---
+ .../prometheus/prometheus_agent_gateway_browsertest.cc    | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+index 1efe3d0f6d..8d218d958f 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+@@ -454,8 +454,8 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+       "supervision",      "extensions"};
+   const std::set<std::string> allowed_statuses = {"ready", "degraded",
+                                                   "not_ready", "unavailable"};
+-  const std::set<std::string> later_phase_keys = {"vault", "provider",
+-                                                  "supervision", "extensions"};
++  const std::set<std::string> not_ready_keys = {"provider", "supervision",
++                                                "extensions"};
+   std::set<std::string> actual_keys;
+   for (const base::Value& value : *diagnostics) {
+     const base::DictValue* component = value.GetIfDict();
+@@ -470,7 +470,9 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+     ASSERT_TRUE(next_action);
+     actual_keys.insert(*key);
+     EXPECT_TRUE(allowed_statuses.contains(*status)) << *status;
+-    if (later_phase_keys.contains(*key)) {
++    if (*key == "vault") {
++      EXPECT_EQ("ready", *status) << *key;
++    } else if (not_ready_keys.contains(*key)) {
+       EXPECT_EQ("not_ready", *status) << *key;
+       EXPECT_FALSE(reason->empty()) << *key;
+       EXPECT_LE(reason->size(), 256u) << *key;
+-- 
+2.50.1 (Apple Git-155)
+

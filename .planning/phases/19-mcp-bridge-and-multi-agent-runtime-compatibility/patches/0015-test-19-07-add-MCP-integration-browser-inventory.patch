@@ -1,0 +1,802 @@
+From f323382835415da93d1bcc0564f95fe140bae6c3 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 05:23:16 -0500
+Subject: [PATCH 15/19] test(19-07): add MCP integration browser inventory
+
+---
+ .../prometheus_mcp_integration_browsertest.cc | 770 ++++++++++++++++++
+ chrome/browser/ui/views/prometheus/BUILD.gn   |   1 +
+ 2 files changed, 771 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+
+diff --git a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+new file mode 100644
+index 0000000000..3b1d42c9c4
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+@@ -0,0 +1,770 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_gateway.h"
++
++#include <algorithm>
++#include <array>
++#include <map>
++#include <memory>
++#include <optional>
++#include <set>
++#include <string>
++#include <string_view>
++#include <utility>
++#include <vector>
++
++#include "base/check.h"
++#include "base/files/scoped_temp_dir.h"
++#include "base/functional/bind.h"
++#include "base/json/json_reader.h"
++#include "base/json/json_writer.h"
++#include "base/message_loop/message_pump_type.h"
++#include "base/numerics/safe_conversions.h"
++#include "base/run_loop.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
++#include "base/test/run_until.h"
++#include "base/test/test_future.h"
++#include "base/threading/thread.h"
++#include "base/threading/thread_restrictions.h"
++#include "base/time/time.h"
++#include "base/values.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
++#include "chrome/browser/tab_list/tab_list_interface.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "components/tabs/public/tab_interface.h"
++#include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/render_process_host.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "net/base/address_list.h"
++#include "net/base/io_buffer.h"
++#include "net/base/ip_endpoint.h"
++#include "net/base/net_errors.h"
++#include "net/base/test_completion_callback.h"
++#include "net/dns/mock_host_resolver.h"
++#include "net/http/http_response_headers.h"
++#include "net/http/http_util.h"
++#include "net/log/net_log_source.h"
++#include "net/socket/tcp_client_socket.h"
++#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++namespace {
++
++struct HttpResult {
++  int status = 0;
++  std::string raw;
++  std::string body;
++};
++
++class RawHttpClient {
++ public:
++  explicit RawHttpClient(const net::IPEndPoint& endpoint)
++      : io_thread_("PrometheusMcpIntegrationClient") {
++    base::Thread::Options options(base::MessagePumpType::IO, 0);
++    {
++      base::ScopedAllowBaseSyncPrimitivesForTesting allow_sync;
++      CHECK(io_thread_.StartWithOptions(std::move(options)));
++    }
++
++    base::test::TestFuture<int> connected;
++    CHECK(io_thread_.task_runner()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&RawHttpClient::ConnectOnIoThread,
++                       base::Unretained(this), endpoint,
++                       connected.GetSequenceBoundCallback())));
++    CHECK_EQ(net::OK, connected.Get());
++  }
++
++  ~RawHttpClient() {
++    base::test::TestFuture<void> destroyed;
++    CHECK(io_thread_.task_runner()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&RawHttpClient::DestroyOnIoThread,
++                       base::Unretained(this),
++                       destroyed.GetSequenceBoundCallback())));
++    CHECK(destroyed.Wait());
++    base::ScopedAllowBaseSyncPrimitivesForTesting allow_sync;
++    io_thread_.Stop();
++  }
++
++  RawHttpClient(const RawHttpClient&) = delete;
++  RawHttpClient& operator=(const RawHttpClient&) = delete;
++
++  void Send(std::string request) {
++    base::test::TestFuture<bool> sent;
++    CHECK(io_thread_.task_runner()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&RawHttpClient::SendOnIoThread, base::Unretained(this),
++                       std::move(request),
++                       sent.GetSequenceBoundCallback())));
++    CHECK(sent.Get());
++  }
++
++  HttpResult ReadResponse() {
++    base::test::TestFuture<HttpResult> response;
++    CHECK(io_thread_.task_runner()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&RawHttpClient::ReadResponseOnIoThread,
++                       base::Unretained(this),
++                       response.GetSequenceBoundCallback())));
++    return response.Take();
++  }
++
++ private:
++  void ConnectOnIoThread(const net::IPEndPoint& endpoint,
++                         base::OnceCallback<void(int)> done) {
++    socket_ = std::make_unique<net::TCPClientSocket>(net::AddressList(endpoint),
++                                                     nullptr, nullptr, nullptr,
++                                                     net::NetLogSource());
++    net::TestCompletionCallback callback;
++    std::move(done).Run(
++        callback.GetResult(socket_->Connect(callback.callback())));
++  }
++
++  void SendOnIoThread(std::string request,
++                      base::OnceCallback<void(bool)> done) {
++    auto string_buffer =
++        base::MakeRefCounted<net::StringIOBuffer>(std::move(request));
++    auto write_buffer = base::MakeRefCounted<net::DrainableIOBuffer>(
++        string_buffer, string_buffer->size());
++    while (write_buffer->BytesRemaining() > 0) {
++      net::TestCompletionCallback callback;
++      const int result = callback.GetResult(
++          socket_->Write(write_buffer.get(), write_buffer->BytesRemaining(),
++                         callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS));
++      if (result <= 0) {
++        std::move(done).Run(false);
++        return;
++      }
++      write_buffer->DidConsume(result);
++    }
++    std::move(done).Run(true);
++  }
++
++  void ReadResponseOnIoThread(base::OnceCallback<void(HttpResult)> done) {
++    std::string response;
++    size_t end_of_headers = std::string::npos;
++    std::optional<base::ByteCount> content_length;
++    while (true) {
++      auto buffer = base::MakeRefCounted<net::IOBufferWithSize>(4096);
++      net::TestCompletionCallback callback;
++      const int result = callback.GetResult(
++          socket_->Read(buffer.get(), buffer->size(), callback.callback()));
++      if (result <= 0) {
++        break;
++      }
++      response.append(buffer->data(), result);
++      if (end_of_headers == std::string::npos) {
++        end_of_headers =
++            net::HttpUtil::LocateEndOfHeaders(base::as_byte_span(response));
++        if (end_of_headers != std::string::npos) {
++          auto headers = base::MakeRefCounted<net::HttpResponseHeaders>(
++              net::HttpUtil::AssembleRawHeaders(
++                  std::string_view(response.data(), end_of_headers)));
++          content_length = headers->GetContentLength();
++        }
++      }
++      if (end_of_headers != std::string::npos && content_length.has_value() &&
++          response.size() - end_of_headers >=
++              base::checked_cast<size_t>(content_length->InBytes())) {
++        break;
++      }
++    }
++
++    HttpResult result;
++    result.raw = response;
++    if (response.starts_with("HTTP/1.1 ")) {
++      base::StringToInt(response.substr(9, 3), &result.status);
++    }
++    if (end_of_headers != std::string::npos) {
++      result.body = response.substr(end_of_headers);
++    }
++    std::move(done).Run(std::move(result));
++  }
++
++  void DestroyOnIoThread(base::OnceClosure done) {
++    socket_.reset();
++    std::move(done).Run();
++  }
++
++  base::Thread io_thread_;
++  std::unique_ptr<net::TCPClientSocket> socket_;
++};
++
++std::string MakeRequest(std::string_view method,
++                        std::string_view path,
++                        int port,
++                        std::string_view bearer,
++                        std::string_view body) {
++  std::string request = std::string(method) + " " + std::string(path) +
++                        " HTTP/1.1\r\nHost: 127.0.0.1:" +
++                        std::to_string(port) + "\r\nAuthorization: Bearer " +
++                        std::string(bearer) + "\r\n";
++  if (method == "POST") {
++    request += "Content-Type: application/json\r\nContent-Length: " +
++               std::to_string(body.size()) + "\r\n";
++  }
++  request += "Connection: close\r\n\r\n";
++  request += body;
++  return request;
++}
++
++std::string Json(base::DictValue value) {
++  std::optional<std::string> json = base::WriteJson(value);
++  CHECK(json.has_value());
++  return std::move(*json);
++}
++
++base::DictValue Target(int32_t tab_id, int32_t window_id) {
++  base::DictValue target;
++  target.Set("tab_id", tab_id);
++  target.Set("window_session_id", window_id);
++  return target;
++}
++
++const base::DictValue* FindTab(const base::DictValue& result, int32_t tab_id) {
++  const base::ListValue* tabs = result.FindList("tabs");
++  if (!tabs) {
++    return nullptr;
++  }
++  for (const base::Value& value : *tabs) {
++    const base::DictValue* tab = value.GetIfDict();
++    if (tab && tab->FindInt("tab_id") == tab_id) {
++      return tab;
++    }
++  }
++  return nullptr;
++}
++
++const base::DictValue* FindSnapshotNode(const base::ListValue& nodes,
++                                        std::string_view marker) {
++  for (const base::Value& value : nodes) {
++    const base::DictValue* node = value.GetIfDict();
++    if (!node) {
++      continue;
++    }
++    const std::string* name = node->FindString("name");
++    const std::string* hint = node->FindString("selector_hint");
++    if ((name && name->find(marker) != std::string::npos) ||
++        (hint && hint->find(marker) != std::string::npos)) {
++      return node;
++    }
++  }
++  return nullptr;
++}
++
++class PrometheusMcpIntegrationBrowserTest : public InProcessBrowserTest {
++ public:
++  PrometheusMcpIntegrationBrowserTest() {
++    PrometheusAgentProfileServiceFactory::GetInstance();
++  }
++
++  void SetUpOnMainThread() override {
++    InProcessBrowserTest::SetUpOnMainThread();
++    host_resolver()->AddRule("*", "127.0.0.1");
++    ASSERT_TRUE(embedded_test_server()->Start());
++    ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
++
++    PrometheusAgentGateway::Options options;
++    options.descriptor_path = temp_dir_.GetPath().AppendASCII("endpoint.json");
++    gateway_ = std::make_unique<PrometheusAgentGateway>(std::move(options));
++    gateway_->SetProfileSelectorForTesting(base::BindRepeating(
++        [](Profile* profile) { return profile; }, browser()->profile()));
++    base::test::TestFuture<bool> started;
++    gateway_->Start(started.GetCallback());
++    ASSERT_TRUE(started.Get());
++  }
++
++  void TearDownOnMainThread() override {
++    if (gateway_) {
++      base::test::TestFuture<void> stopped;
++      gateway_->Shutdown(stopped.GetCallback());
++      ASSERT_TRUE(stopped.Wait());
++      gateway_.reset();
++    }
++    if (PrometheusAgentProfileService* profile_service = service()) {
++      profile_service->SetNowCallbackForTesting(
++          base::BindRepeating(&base::Time::Now));
++    }
++    InProcessBrowserTest::TearDownOnMainThread();
++  }
++
++ protected:
++  PrometheusAgentProfileService* service() {
++    return PrometheusAgentProfileServiceFactory::GetForProfile(
++        browser()->profile());
++  }
++
++  HttpResult Exchange(std::string_view method,
++                      std::string_view path,
++                      std::string body = {}) {
++    RawHttpClient client(gateway_->endpoint_for_testing());
++    client.Send(MakeRequest(method, path, gateway_->port_for_testing(),
++                            gateway_->bearer_for_testing(), body));
++    return client.ReadResponse();
++  }
++
++  base::DictValue Parse(const HttpResult& result) {
++    EXPECT_EQ(200, result.status) << result.raw;
++    std::optional<base::DictValue> parsed =
++        base::JSONReader::ReadDict(result.body, base::JSON_PARSE_RFC);
++    EXPECT_TRUE(parsed.has_value()) << result.body;
++    return parsed.has_value() ? std::move(*parsed) : base::DictValue();
++  }
++
++  base::DictValue CreateSession(std::string label) {
++    base::DictValue request;
++    request.Set("display_label", std::move(label));
++    return Parse(Exchange("POST", "/v1/session/create",
++                          Json(std::move(request))));
++  }
++
++  base::DictValue SessionOperation(std::string_view operation,
++                                   std::string session_id) {
++    base::DictValue request;
++    request.Set("session_id", std::move(session_id));
++    return Parse(Exchange("POST", operation, Json(std::move(request))));
++  }
++
++  base::DictValue Command(
++      std::string session_id,
++      std::string route,
++      std::optional<base::DictValue> target = std::nullopt,
++      std::optional<base::DictValue> params = std::nullopt,
++      std::optional<base::DictValue> visual = std::nullopt) {
++    return Parse(Exchange("POST", "/v1/agent/command",
++                          CommandBody(std::move(session_id), std::move(route),
++                                      std::move(target), std::move(params),
++                                      std::move(visual))));
++  }
++
++  std::string CommandBody(
++      std::string session_id,
++      std::string route,
++      std::optional<base::DictValue> target = std::nullopt,
++      std::optional<base::DictValue> params = std::nullopt,
++      std::optional<base::DictValue> visual = std::nullopt) {
++    base::DictValue request;
++    request.Set("route", std::move(route));
++    request.Set("session_id", std::move(session_id));
++    if (target.has_value()) {
++      request.Set("target", std::move(*target));
++    }
++    if (params.has_value()) {
++      request.Set("params", std::move(*params));
++    }
++    if (visual.has_value()) {
++      request.Set("visual", std::move(*visual));
++    }
++    return Json(std::move(request));
++  }
++
++  std::string SessionId(const base::DictValue& result) {
++    const std::string* session_id = result.FindString("session_id");
++    EXPECT_TRUE(session_id);
++    return session_id ? *session_id : std::string();
++  }
++
++  void ExpectCode(const base::DictValue& result, std::string_view code) {
++    EXPECT_FALSE(result.FindBool("ok").value_or(true));
++    const std::string* actual = result.FindString("error_code");
++    ASSERT_TRUE(actual);
++    EXPECT_EQ(code, *actual);
++    const std::string* recovery = result.FindString("recovery");
++    ASSERT_TRUE(recovery);
++    EXPECT_FALSE(recovery->empty());
++  }
++
++  int32_t Open(std::string_view session_id,
++               const GURL& url,
++               bool foreground = false) {
++    base::DictValue params;
++    params.Set("url", url.spec());
++    if (foreground) {
++      params.Set("foreground", true);
++    }
++    base::DictValue result = Command(std::string(session_id), "open_tab",
++                                     std::nullopt, std::move(params));
++    EXPECT_TRUE(result.FindBool("ok").value_or(false))
++        << *result.FindString("message");
++    const base::DictValue* target = result.FindDict("target");
++    EXPECT_TRUE(target);
++    return target ? target->FindInt("tab_id").value_or(0) : 0;
++  }
++
++  tabs::TabInterface* Tab(int32_t tab_id) {
++    return tabs::TabHandle(tab_id).Get();
++  }
++
++  int32_t ActiveTabId() {
++    tabs::TabInterface* active =
++        TabListInterface::From(browser())->GetActiveTab();
++    return active ? active->GetHandle().raw_value() : 0;
++  }
++
++  GURL Fixture(std::string_view name) {
++    return embedded_test_server()->GetURL("/prometheus/page_adapter/" +
++                                          std::string(name));
++  }
++
++  void UseTestClock(base::Time now) {
++    now_ = now;
++    service()->SetNowCallbackForTesting(base::BindRepeating(
++        [](base::Time* now) { return *now; }, &now_));
++  }
++
++  base::ScopedTempDir temp_dir_;
++  std::unique_ptr<PrometheusAgentGateway> gateway_;
++  base::Time now_ = base::Time::FromSecondsSinceUnixEpoch(1000);
++};
++
++IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
++                       TwoSessionsEnforceCapAndOwnership) {
++  ASSERT_TRUE(service());
++  service()->SetMaxAgentSessionsForTesting(2);
++  const std::string owner = SessionId(CreateSession("Owner"));
++  const std::string peer = SessionId(CreateSession("Peer"));
++  ASSERT_FALSE(owner.empty());
++  ASSERT_FALSE(peer.empty());
++
++  base::DictValue over_cap = CreateSession("Over cap");
++  ExpectCode(over_cap, "AGENT_CAP_REACHED");
++
++  const int32_t owned_tab = Open(owner, GURL("about:blank#owned"));
++  ASSERT_GT(owned_tab, 0);
++  base::DictValue denied =
++      Command(peer, "close_tab",
++              Target(owned_tab, browser()->GetSessionID().id()));
++  ExpectCode(denied, "TAB_NOT_OWNED");
++  EXPECT_TRUE(Tab(owned_tab));
++
++  base::DictValue closed =
++      Command(owner, "close_tab",
++              Target(owned_tab, browser()->GetSessionID().id()));
++  EXPECT_TRUE(closed.FindBool("ok").value_or(false));
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
++                       AbruptExpiryAndGracefulCloseReleaseTabs) {
++  UseTestClock(base::Time::FromSecondsSinceUnixEpoch(1000));
++  const std::string graceful = SessionId(CreateSession("Graceful owner"));
++  const std::string peer = SessionId(CreateSession("Peer"));
++  const int32_t first = Open(graceful, GURL("about:blank#graceful"));
++  ASSERT_GT(first, 0);
++
++  ExpectCode(Command(peer, "activate_tab",
++                     Target(first, browser()->GetSessionID().id())),
++             "TAB_NOT_OWNED");
++  EXPECT_TRUE(SessionOperation("/v1/session/close", graceful)
++                  .FindBool("ok")
++                  .value_or(false));
++  EXPECT_TRUE(Command(peer, "activate_tab",
++                      Target(first, browser()->GetSessionID().id()))
++                  .FindBool("ok")
++                  .value_or(false));
++
++  now_ += base::Seconds(5);
++  EXPECT_TRUE(SessionOperation("/v1/session/touch", peer)
++                  .FindBool("ok")
++                  .value_or(false));
++  const std::string abrupt = SessionId(CreateSession("Abrupt owner"));
++  const int32_t second = Open(abrupt, GURL("about:blank#abrupt"));
++  ASSERT_GT(second, 0);
++
++  now_ += base::Seconds(11);
++  const std::string reclaimer = SessionId(CreateSession("Reclaimer"));
++  ASSERT_FALSE(reclaimer.empty());
++  ExpectCode(SessionOperation("/v1/session/touch", abrupt), "UNAUTHORIZED");
++  EXPECT_TRUE(Command(reclaimer, "activate_tab",
++                      Target(second, browser()->GetSessionID().id()))
++                  .FindBool("ok")
++                  .value_or(false));
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
++                       ResumeRequiresOpaqueIdWithinTenSeconds) {
++  UseTestClock(base::Time::FromSecondsSinceUnixEpoch(2000));
++  const std::string session_id = SessionId(CreateSession("Opaque resume"));
++  ASSERT_EQ(32u, session_id.size());
++  EXPECT_TRUE(std::all_of(session_id.begin(), session_id.end(), [](char value) {
++    return (value >= '0' && value <= '9') ||
++           (value >= 'A' && value <= 'F') ||
++           (value >= 'a' && value <= 'f');
++  }));
++  EXPECT_EQ(std::string::npos, session_id.find("Opaque"));
++  EXPECT_NE(session_id, gateway_->bearer_for_testing());
++
++  now_ += base::Seconds(10);
++  base::DictValue resumed =
++      SessionOperation("/v1/session/resume", session_id);
++  EXPECT_TRUE(resumed.FindBool("ok").value_or(false));
++  EXPECT_EQ(session_id, *resumed.FindString("session_id"));
++  EXPECT_EQ(10000, resumed.FindInt("reconnect_grace_ms"));
++
++  now_ += base::Seconds(10) + base::Milliseconds(1);
++  ExpectCode(SessionOperation("/v1/session/resume", session_id),
++             "UNAUTHORIZED");
++  ExpectCode(SessionOperation("/v1/session/resume",
++                              "00000000000000000000000000000000"),
++             "UNAUTHORIZED");
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
++                       BackgroundTargetNeverActivates) {
++  const std::string session_id = SessionId(CreateSession("Background"));
++  const int32_t foreground = ActiveTabId();
++  ASSERT_GT(foreground, 0);
++  const int32_t background = Open(session_id, Fixture("forms.html"));
++  ASSERT_GT(background, 0);
++  ASSERT_NE(foreground, background);
++  ASSERT_TRUE(Tab(background));
++  ASSERT_TRUE(content::WaitForLoadStop(Tab(background)->GetContents()));
++  EXPECT_EQ(foreground, ActiveTabId());
++
++  base::DictValue navigate_params;
++  navigate_params.Set("url", Fixture("read_page.html").spec());
++  base::DictValue navigated = Command(
++      session_id, "navigate",
++      Target(background, browser()->GetSessionID().id()),
++      std::move(navigate_params));
++  EXPECT_TRUE(navigated.FindBool("ok").value_or(false));
++  ASSERT_TRUE(content::WaitForLoadStop(Tab(background)->GetContents()));
++  EXPECT_EQ(foreground, ActiveTabId());
++
++  base::DictValue read =
++      Command(session_id, "read_page",
++              Target(background, browser()->GetSessionID().id()));
++  EXPECT_TRUE(read.FindBool("ok").value_or(false));
++  EXPECT_EQ(foreground, ActiveTabId());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
++                       StructuredTabsSurviveReorder) {
++  const std::string session_id = SessionId(CreateSession("Structured"));
++  const int32_t first = Open(session_id, GURL("about:blank#first"));
++  const int32_t second = Open(session_id, GURL("about:blank#second"));
++  ASSERT_GT(first, 0);
++  ASSERT_GT(second, 0);
++
++  base::DictValue before = Command(session_id, "list_tabs");
++  const base::DictValue* first_before = FindTab(before, first);
++  const base::DictValue* second_before = FindTab(before, second);
++  ASSERT_TRUE(first_before);
++  ASSERT_TRUE(second_before);
++  const int first_index = first_before->FindInt("index").value_or(-1);
++  const int second_index = second_before->FindInt("index").value_or(-1);
++  EXPECT_TRUE(first_before->FindBool("owned_by_session").value_or(false));
++  EXPECT_TRUE(second_before->FindBool("owned_by_session").value_or(false));
++
++  TabListInterface::From(browser())->MoveTab(tabs::TabHandle(second), 0);
++  base::DictValue after = Command(session_id, "list_tabs");
++  const base::DictValue* first_after = FindTab(after, first);
++  const base::DictValue* second_after = FindTab(after, second);
++  ASSERT_TRUE(first_after);
++  ASSERT_TRUE(second_after);
++  EXPECT_EQ(first, first_after->FindInt("tab_id"));
++  EXPECT_EQ(second, second_after->FindInt("tab_id"));
++  EXPECT_NE(first_index, first_after->FindInt("index").value_or(-1));
++  EXPECT_NE(second_index, second_after->FindInt("index").value_or(-1));
++  EXPECT_EQ(browser()->GetSessionID().id(),
++            first_after->FindInt("window_id"));
++  EXPECT_TRUE(first_after->Find("title"));
++  EXPECT_TRUE(first_after->Find("url"));
++  EXPECT_TRUE(first_after->Find("active"));
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
++                       VisualSubsetsPreservedWithoutAuthority) {
++  const std::string owner = SessionId(CreateSession("Visual owner"));
++  const std::string peer = SessionId(CreateSession("Visual peer"));
++  const int32_t owned_tab = Open(owner, GURL("about:blank#visual-owned"));
++  ASSERT_GT(owned_tab, 0);
++
++  constexpr std::array<unsigned, 7> kNonEmptySubsets = {1, 2, 4, 3, 5, 6, 7};
++  for (unsigned subset : kNonEmptySubsets) {
++    base::DictValue visual;
++    if (subset & 1) {
++      visual.Set("visual_reason", "Review the owner result");
++    }
++    if (subset & 2) {
++      visual.Set("client", "cO_d-eX");
++    }
++    if (subset & 4) {
++      visual.Set("is_final", (subset & 1) != 0);
++    }
++    base::DictValue accepted =
++        Command(peer, "list_tabs", std::nullopt, std::nullopt, visual.Clone());
++    EXPECT_TRUE(accepted.FindBool("ok").value_or(false)) << subset;
++
++    base::DictValue denied = Command(
++        peer, "close_tab",
++        Target(owned_tab, browser()->GetSessionID().id()), std::nullopt,
++        std::move(visual));
++    ExpectCode(denied, "TAB_NOT_OWNED");
++    EXPECT_TRUE(Tab(owned_tab));
++  }
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
++                       ExactFrameReadsAndRestrictedDenials) {
++  const std::string session_id = SessionId(CreateSession("Exact frame"));
++  const int32_t tab_id =
++      Open(session_id, Fixture("same_origin_frame.html"));
++  tabs::TabInterface* tab = Tab(tab_id);
++  ASSERT_TRUE(tab);
++  ASSERT_TRUE(content::WaitForLoadStop(tab->GetContents()));
++
++  base::DictValue snapshot =
++      Command(session_id, "get_dom_snapshot",
++              Target(tab_id, browser()->GetSessionID().id()));
++  ASSERT_TRUE(snapshot.FindBool("ok").value_or(false));
++  const base::DictValue* page = snapshot.FindDict("page");
++  ASSERT_TRUE(page);
++  const std::string* snapshot_json = page->FindString("dom_snapshot_json");
++  ASSERT_TRUE(snapshot_json);
++  std::optional<base::ListValue> nodes =
++      base::JSONReader::ReadList(*snapshot_json, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(nodes.has_value());
++  const base::DictValue* child_input =
++      FindSnapshotNode(*nodes, "child-name");
++  ASSERT_TRUE(child_input);
++  const std::string* ref = child_input->FindString("ref");
++  ASSERT_TRUE(ref);
++  const size_t separator = ref->rfind(':');
++  ASSERT_NE(std::string::npos, separator);
++
++  base::DictValue wrong_params;
++  base::DictValue wrong_element;
++  wrong_element.Set("element_ref", *ref);
++  wrong_params.Set("element", std::move(wrong_element));
++  ExpectCode(Command(session_id, "get_text",
++                     Target(tab_id, browser()->GetSessionID().id()),
++                     std::move(wrong_params)),
++             "STALE_TARGET");
++
++  base::DictValue exact_params;
++  base::DictValue exact_element;
++  exact_element.Set("element_ref", *ref);
++  exact_params.Set("element", std::move(exact_element));
++  base::DictValue exact_frame;
++  exact_frame.Set("document_token", ref->substr(0, separator));
++  exact_params.Set("frame", std::move(exact_frame));
++  base::DictValue exact =
++      Command(session_id, "get_text",
++              Target(tab_id, browser()->GetSessionID().id()),
++              std::move(exact_params));
++  ASSERT_TRUE(exact.FindBool("ok").value_or(false));
++  EXPECT_TRUE(exact.FindDict("element_read"));
++
++  const GURL cross_origin_url = embedded_test_server()->GetURL(
++      "cross-origin.test", "/prometheus/page_adapter/child_frame.html");
++  ASSERT_TRUE(content::NavigateIframeToURL(
++      tab->GetContents(), "prometheus-child-frame", cross_origin_url));
++  content::RenderFrameHost* child = content::ChildFrameAt(
++      tab->GetContents()->GetPrimaryMainFrame(), 0);
++  ASSERT_TRUE(child);
++  base::DictValue restricted_params;
++  base::DictValue restricted_frame;
++  restricted_frame.Set("render_process_id",
++                       child->GetProcess()->GetDeprecatedID());
++  restricted_frame.Set("render_frame_routing_id", child->GetRoutingID());
++  restricted_params.Set("frame", std::move(restricted_frame));
++  ExpectCode(Command(session_id, "read_page",
++                     Target(tab_id, browser()->GetSessionID().id()),
++                     std::move(restricted_params)),
++             "FRAME_RESTRICTED");
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
++                       DiagnosticsExactTenKeysAndNoSecrets) {
++  const std::string session_id = SessionId(CreateSession("Diagnostics"));
++  HttpResult response = Exchange("GET", "/v1/health");
++  base::DictValue health = Parse(response);
++  ASSERT_TRUE(health.FindBool("ok").value_or(false));
++  const base::ListValue* diagnostics = health.FindList("diagnostics");
++  ASSERT_TRUE(diagnostics);
++  ASSERT_EQ(10u, diagnostics->size());
++
++  const std::set<std::string> expected = {
++      "browser",          "bridge",        "active_tab", "content_adapter",
++      "internal_adapter", "webui_adapter", "vault",      "provider",
++      "supervision",      "extensions"};
++  const std::set<std::string> later = {"vault", "provider", "supervision",
++                                       "extensions"};
++  std::set<std::string> actual;
++  for (const base::Value& value : *diagnostics) {
++    const base::DictValue* component = value.GetIfDict();
++    ASSERT_TRUE(component);
++    const std::string* key = component->FindString("key");
++    const std::string* status = component->FindString("status");
++    const std::string* reason = component->FindString("reason");
++    const std::string* next_action = component->FindString("next_action");
++    ASSERT_TRUE(key);
++    ASSERT_TRUE(status);
++    ASSERT_TRUE(reason);
++    ASSERT_TRUE(next_action);
++    actual.insert(*key);
++    EXPECT_FALSE(reason->empty());
++    EXPECT_FALSE(next_action->empty());
++    if (later.contains(*key)) {
++      EXPECT_EQ("not_ready", *status) << *key;
++    }
++  }
++  EXPECT_EQ(expected, actual);
++
++  const std::array<std::string, 5> denylist = {
++      gateway_->bearer_for_testing(), gateway_->instance_nonce_for_testing(),
++      session_id, browser()->profile()->GetPath().AsUTF8Unsafe(),
++      "Diagnostics"};
++  for (const std::string& denied : denylist) {
++    ASSERT_FALSE(denied.empty());
++    EXPECT_EQ(std::string::npos, response.raw.find(denied));
++  }
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
++                       ShutdownDuringPageCommandCompletesOnce) {
++  const std::string session_id = SessionId(CreateSession("Shutdown race"));
++  const int32_t tab_id = Open(session_id, Fixture("execute_js.html"));
++  ASSERT_TRUE(Tab(tab_id));
++  ASSERT_TRUE(content::WaitForLoadStop(Tab(tab_id)->GetContents()));
++
++  base::DictValue params;
++  params.Set("javascript", "new Promise(() => {})");
++  params.Set("javascript_permission_granted", true);
++  const std::string body =
++      CommandBody(session_id, "execute_js",
++                  Target(tab_id, browser()->GetSessionID().id()),
++                  std::move(params));
++  RawHttpClient client(gateway_->endpoint_for_testing());
++  const size_t before = gateway_->terminal_request_count_for_testing();
++  client.Send(MakeRequest("POST", "/v1/agent/command",
++                          gateway_->port_for_testing(),
++                          gateway_->bearer_for_testing(), body));
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return gateway_->pending_request_count_for_testing() == 1u; }));
++
++  base::test::TestFuture<void> stopped;
++  gateway_->Shutdown(stopped.GetCallback());
++  ASSERT_TRUE(stopped.Wait());
++  HttpResult shutdown = client.ReadResponse();
++  EXPECT_EQ(503, shutdown.status) << shutdown.raw;
++  EXPECT_NE(std::string::npos,
++            shutdown.body.find("BROWSER_SHUTTING_DOWN"));
++  EXPECT_EQ(before + 1, gateway_->terminal_request_count_for_testing());
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ(before + 1, gateway_->terminal_request_count_for_testing());
++  gateway_.reset();
++}
++
++}  // namespace
++}  // namespace prometheus
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 01835f7f63..5b9c7c8186 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -56,6 +56,7 @@ source_set("browser_tests") {
+     "../../../prometheus/prometheus_agent_gateway_browsertest.cc",
+     "../../../prometheus/prometheus_agent_profile_service_browsertest.cc",
+     "../../../prometheus/prometheus_agent_service_browsertest.cc",
++    "../../../prometheus/prometheus_mcp_integration_browsertest.cc",
+     "../../../prometheus/prometheus_page_adapter_browsertest.cc",
+     "../../../prometheus/prometheus_tab_commands_browsertest.cc",
+     "../../webui/prometheus/prometheus_web_ui_browsertest.cc",
+-- 
+2.50.1 (Apple Git-155)
+

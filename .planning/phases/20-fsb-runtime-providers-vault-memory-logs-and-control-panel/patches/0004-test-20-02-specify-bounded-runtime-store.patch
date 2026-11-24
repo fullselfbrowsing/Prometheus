@@ -1,0 +1,710 @@
+From a68332f8e2088f72d3895a3d58e1ecd24e377b0c Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 09:23:53 -0500
+Subject: [PATCH] test(20-02): specify bounded runtime store
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  15 +
+ .../prometheus/prometheus_runtime_store.cc    | 108 ++++++
+ .../prometheus/prometheus_runtime_store.h     | 198 +++++++++++
+ .../prometheus_runtime_store_unittest.cc      | 328 ++++++++++++++++++
+ 4 files changed, 649 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_runtime_store.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_runtime_store.h
+ create mode 100644 chrome/browser/prometheus/prometheus_runtime_store_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 708c77404e..6fc477f8f3 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -274,6 +274,19 @@ source_set("prometheus_runtime_prefs") {
+   ]
+ }
+ 
++source_set("prometheus_runtime_store") {
++  sources = [
++    "prometheus_runtime_store.cc",
++    "prometheus_runtime_store.h",
++  ]
++
++  deps = [
++    ":prometheus_runtime_types",
++    "//base",
++    "//components/prefs",
++  ]
++}
++
+ source_set("prometheus_agent_gateway_contract") {
+   sources = [
+     "prometheus_agent_gateway.h",
+@@ -331,6 +344,7 @@ test("prometheus_unittests") {
+     "prometheus_page_snapshot_unittest.cc",
+     "prometheus_page_waiter_unittest.cc",
+     "prometheus_runtime_types_unittest.cc",
++    "prometheus_runtime_store_unittest.cc",
+     "prometheus_tab_state_unittest.cc",
+     "prometheus_webui_unittest.cc",
+   ]
+@@ -355,6 +369,7 @@ test("prometheus_unittests") {
+     ":prometheus_page_adapter",
+     ":prometheus_page_waiter",
+     ":prometheus_runtime_prefs",
++    ":prometheus_runtime_store",
+     ":prometheus_runtime_types",
+     ":prometheus_tab_state",
+     "//base",
+diff --git a/chrome/browser/prometheus/prometheus_runtime_store.cc b/chrome/browser/prometheus/prometheus_runtime_store.cc
+new file mode 100644
+index 0000000000..4a72b21f88
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_runtime_store.cc
+@@ -0,0 +1,108 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_runtime_store.h"
++
++#include <utility>
++
++#include "base/check.h"
++#include "components/prefs/pref_service.h"
++
++namespace prometheus {
++
++std::string_view RuntimeStoreStatusToString(RuntimeStoreStatus status) {
++  return "INVALID_RECORD";
++}
++
++std::string_view RuntimeEventKindToString(RuntimeEventKind kind) {
++  return "unknown";
++}
++
++std::string_view RuntimeActionKindToString(RuntimeActionKind kind) {
++  return "unknown";
++}
++
++std::string_view RuntimeDiagnosticKindToString(RuntimeDiagnosticKind kind) {
++  return "unknown";
++}
++
++PrometheusRuntimeStore::PrometheusRuntimeStore(PrefService* prefs,
++                                               RuntimeStoreBounds bounds)
++    : prefs_(prefs), bounds_(bounds) {
++  CHECK(prefs_);
++  CHECK_GT(bounds_.max_tasks, 0u);
++}
++
++PrometheusRuntimeStore::~PrometheusRuntimeStore() = default;
++
++std::optional<RuntimeTaskHandle> PrometheusRuntimeStore::CreateTask(
++    RuntimeTaskOrigin origin,
++    RequestedExecution requested_execution,
++    int64_t timestamp_ms) {
++  return RuntimeTaskHandle{.task_id = "red-scaffold", .generation = 1};
++}
++
++std::optional<RuntimeStoredTask> PrometheusRuntimeStore::GetTask(
++    std::string_view task_id) {
++  return std::nullopt;
++}
++
++std::vector<RuntimeStoredTask> PrometheusRuntimeStore::ListTasks() const {
++  return {};
++}
++
++RuntimeStoreMutation PrometheusRuntimeStore::TransitionTask(
++    std::string_view task_id,
++    uint64_t generation,
++    RuntimeTaskState next_state,
++    int64_t timestamp_ms) {
++  return {.status = RuntimeStoreStatus::kNotFound};
++}
++
++RuntimeStoreStatus PrometheusRuntimeStore::FinishTaskOnce(
++    std::string_view task_id,
++    uint64_t generation,
++    RuntimeTaskState terminal_state,
++    RuntimeErrorCode error_code,
++    RuntimeSafeResult result,
++    const RuntimeUsage& final_usage,
++    int64_t timestamp_ms) {
++  return RuntimeStoreStatus::kNotFound;
++}
++
++RuntimeStoreStatus PrometheusRuntimeStore::AddUsage(std::string_view task_id,
++                                                    uint64_t generation,
++                                                    const RuntimeUsage& delta,
++                                                    int64_t timestamp_ms) {
++  return RuntimeStoreStatus::kNotFound;
++}
++
++bool PrometheusRuntimeStore::AppendEvent(std::string task_id,
++                                         RuntimeEventKind kind,
++                                         RuntimeErrorCode error_code,
++                                         int64_t value,
++                                         int64_t timestamp_ms) {
++  return false;
++}
++
++bool PrometheusRuntimeStore::AppendAction(std::string task_id,
++                                          RuntimeActionKind kind,
++                                          bool succeeded,
++                                          int64_t timestamp_ms) {
++  return false;
++}
++
++bool PrometheusRuntimeStore::AppendDiagnostic(RuntimeDiagnosticKind kind,
++                                              int64_t count,
++                                              int64_t timestamp_ms) {
++  return false;
++}
++
++RuntimeStoreSnapshot PrometheusRuntimeStore::GetSnapshot() const {
++  return {};
++}
++
++void PrometheusRuntimeStore::Shutdown(int64_t timestamp_ms) {}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_runtime_store.h b/chrome/browser/prometheus/prometheus_runtime_store.h
+new file mode 100644
+index 0000000000..b7170bd1b0
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_runtime_store.h
+@@ -0,0 +1,198 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_RUNTIME_STORE_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_RUNTIME_STORE_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "base/memory/raw_ptr.h"
++#include "chrome/browser/prometheus/prometheus_runtime_types.h"
++
++class PrefService;
++
++namespace prometheus {
++
++inline constexpr size_t kMaxStoredRuntimeTasks = 128;
++inline constexpr size_t kMaxStoredRuntimeEvents = 512;
++inline constexpr size_t kMaxStoredRuntimeActions = 512;
++inline constexpr size_t kMaxStoredRuntimeDiagnostics = 128;
++inline constexpr size_t kMaxRuntimeStoreBytes = 2 * 1024 * 1024;
++
++enum class RuntimeStoreStatus {
++  kOk,
++  kNotFound,
++  kInvalidRecord,
++  kInvalidTransition,
++  kStaleGeneration,
++  kAlreadyFinished,
++  kInvalidUsage,
++  kStoreFull,
++};
++
++enum class RuntimeEventKind {
++  kTaskCreated,
++  kStateChanged,
++  kProviderAttempt,
++  kFallback,
++  kToolDispatched,
++  kConfirmation,
++  kTaskFinished,
++  kCancellation,
++  kTimeout,
++  kShutdown,
++};
++
++enum class RuntimeActionKind {
++  kNavigate,
++  kClick,
++  kTypeText,
++  kPressKey,
++  kScroll,
++  kHover,
++  kSelectOption,
++  kClear,
++  kDrag,
++};
++
++enum class RuntimeDiagnosticKind {
++  kInvalidRecordDropped,
++  kEviction,
++  kStaleCompletion,
++  kDuplicateFinish,
++  kUsageRejected,
++};
++
++struct RuntimeStoreBounds {
++  size_t max_tasks = kMaxStoredRuntimeTasks;
++  size_t max_events = kMaxStoredRuntimeEvents;
++  size_t max_actions = kMaxStoredRuntimeActions;
++  size_t max_diagnostics = kMaxStoredRuntimeDiagnostics;
++  size_t max_total_utf8_bytes = kMaxRuntimeStoreBytes;
++  size_t max_safe_result_bytes = kDefaultRuntimeResultBytes;
++};
++
++struct RuntimeTaskHandle {
++  std::string task_id;
++  uint64_t generation = 0;
++};
++
++struct RuntimeSafeResult {
++  std::string text;
++  bool truncated = false;
++};
++
++struct RuntimeStoredTask {
++  RuntimeTaskSnapshot snapshot;
++  uint64_t generation = 0;
++  uint64_t access_sequence = 0;
++  std::optional<RuntimeSafeResult> result;
++};
++
++struct RuntimeEventRecord {
++  std::string event_id;
++  std::string task_id;
++  RuntimeEventKind kind = RuntimeEventKind::kTaskCreated;
++  RuntimeErrorCode error_code = RuntimeErrorCode::kNone;
++  int64_t timestamp_ms = 0;
++  int64_t value = 0;
++};
++
++struct RuntimeActionRecord {
++  std::string action_id;
++  std::string task_id;
++  RuntimeActionKind kind = RuntimeActionKind::kNavigate;
++  int64_t timestamp_ms = 0;
++  bool succeeded = false;
++};
++
++struct RuntimeDiagnosticRecord {
++  std::string diagnostic_id;
++  RuntimeDiagnosticKind kind = RuntimeDiagnosticKind::kInvalidRecordDropped;
++  int64_t timestamp_ms = 0;
++  int64_t count = 0;
++};
++
++struct RuntimeStoreMutation {
++  RuntimeStoreStatus status = RuntimeStoreStatus::kInvalidRecord;
++  uint64_t generation = 0;
++
++  bool ok() const { return status == RuntimeStoreStatus::kOk; }
++};
++
++struct RuntimeStoreSnapshot {
++  std::vector<RuntimeStoredTask> tasks;
++  std::vector<RuntimeEventRecord> events;
++  std::vector<RuntimeActionRecord> actions;
++  std::vector<RuntimeDiagnosticRecord> diagnostics;
++  RuntimeUsage aggregate_usage;
++};
++
++std::string_view RuntimeStoreStatusToString(RuntimeStoreStatus status);
++std::string_view RuntimeEventKindToString(RuntimeEventKind kind);
++std::string_view RuntimeActionKindToString(RuntimeActionKind kind);
++std::string_view RuntimeDiagnosticKindToString(RuntimeDiagnosticKind kind);
++
++class PrometheusRuntimeStore {
++ public:
++  explicit PrometheusRuntimeStore(
++      PrefService* prefs,
++      RuntimeStoreBounds bounds = RuntimeStoreBounds());
++  ~PrometheusRuntimeStore();
++
++  PrometheusRuntimeStore(const PrometheusRuntimeStore&) = delete;
++  PrometheusRuntimeStore& operator=(const PrometheusRuntimeStore&) = delete;
++
++  std::optional<RuntimeTaskHandle> CreateTask(
++      RuntimeTaskOrigin origin,
++      RequestedExecution requested_execution,
++      int64_t timestamp_ms);
++  std::optional<RuntimeStoredTask> GetTask(std::string_view task_id);
++  std::vector<RuntimeStoredTask> ListTasks() const;
++
++  RuntimeStoreMutation TransitionTask(std::string_view task_id,
++                                      uint64_t generation,
++                                      RuntimeTaskState next_state,
++                                      int64_t timestamp_ms);
++  RuntimeStoreStatus FinishTaskOnce(std::string_view task_id,
++                                    uint64_t generation,
++                                    RuntimeTaskState terminal_state,
++                                    RuntimeErrorCode error_code,
++                                    RuntimeSafeResult result,
++                                    const RuntimeUsage& final_usage,
++                                    int64_t timestamp_ms);
++  RuntimeStoreStatus AddUsage(std::string_view task_id,
++                              uint64_t generation,
++                              const RuntimeUsage& delta,
++                              int64_t timestamp_ms);
++
++  bool AppendEvent(std::string task_id,
++                   RuntimeEventKind kind,
++                   RuntimeErrorCode error_code,
++                   int64_t value,
++                   int64_t timestamp_ms);
++  bool AppendAction(std::string task_id,
++                    RuntimeActionKind kind,
++                    bool succeeded,
++                    int64_t timestamp_ms);
++  bool AppendDiagnostic(RuntimeDiagnosticKind kind,
++                        int64_t count,
++                        int64_t timestamp_ms);
++
++  RuntimeStoreSnapshot GetSnapshot() const;
++  void Shutdown(int64_t timestamp_ms);
++
++ private:
++  const raw_ptr<PrefService> prefs_;
++  const RuntimeStoreBounds bounds_;
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_RUNTIME_STORE_H_
+diff --git a/chrome/browser/prometheus/prometheus_runtime_store_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_store_unittest.cc
+new file mode 100644
+index 0000000000..87e27685d6
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_runtime_store_unittest.cc
+@@ -0,0 +1,328 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_runtime_store.h"
++
++#include <cstdint>
++#include <memory>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "base/json/json_writer.h"
++#include "base/values.h"
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
++#include "components/sync_preferences/testing_pref_service_syncable.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++
++namespace {
++
++constexpr int64_t kNow = 1'000;
++
++class PrometheusRuntimeStoreTest : public testing::Test {
++ protected:
++  void SetUp() override {
++    RegisterPrometheusRuntimeProfilePrefs(prefs_.registry());
++  }
++
++  std::unique_ptr<PrometheusRuntimeStore> MakeStore(
++      RuntimeStoreBounds bounds = RuntimeStoreBounds()) {
++    return std::make_unique<PrometheusRuntimeStore>(&prefs_, bounds);
++  }
++
++  RuntimeTaskHandle RequireTask(PrometheusRuntimeStore& store,
++                                int64_t timestamp_ms = kNow) {
++    std::optional<RuntimeTaskHandle> task = store.CreateTask(
++        RuntimeTaskOrigin::kMcp, RequestedExecution::kAuto, timestamp_ms);
++    EXPECT_TRUE(task.has_value());
++    return task.value_or(RuntimeTaskHandle());
++  }
++
++  std::string SerializedProfileData() const {
++    return base::WriteJson(prefs_.GetDict(kPrometheusRuntimeProfileData))
++        .value_or(std::string());
++  }
++
++  sync_preferences::TestingPrefServiceSyncable prefs_;
++};
++
++TEST_F(PrometheusRuntimeStoreTest,
++       CreatesOpaqueStableTasksAndSanitizedSnapshots) {
++  auto store = MakeStore();
++  RuntimeTaskHandle first = RequireTask(*store);
++  RuntimeTaskHandle second = RequireTask(*store, kNow + 1);
++
++  EXPECT_FALSE(first.task_id.empty());
++  EXPECT_NE(first.task_id, second.task_id);
++  EXPECT_EQ(1u, first.generation);
++
++  std::optional<RuntimeStoredTask> stored = store->GetTask(first.task_id);
++  ASSERT_TRUE(stored.has_value());
++  EXPECT_EQ(RuntimeTaskOrigin::kMcp, stored->snapshot.origin);
++  EXPECT_EQ(RequestedExecution::kAuto, stored->snapshot.requested_execution);
++  EXPECT_EQ(RuntimeTaskState::kQueued, stored->snapshot.state);
++  EXPECT_EQ(2u, store->ListTasks().size());
++
++  const std::string serialized = SerializedProfileData();
++  EXPECT_NE(std::string::npos, serialized.find(first.task_id));
++  EXPECT_EQ(std::string::npos, serialized.find("gateway_session_id"));
++  EXPECT_EQ(std::string::npos, serialized.find("session-a"));
++}
++
++TEST_F(PrometheusRuntimeStoreTest,
++       EnforcesLegalTransitionsAndGenerationFences) {
++  auto store = MakeStore();
++  RuntimeTaskHandle task = RequireTask(*store);
++
++  RuntimeStoreMutation running = store->TransitionTask(
++      task.task_id, task.generation, RuntimeTaskState::kRunning, kNow + 1);
++  EXPECT_TRUE(running.ok());
++  EXPECT_GT(running.generation, task.generation);
++
++  RuntimeStoreMutation stale = store->TransitionTask(
++      task.task_id, task.generation, RuntimeTaskState::kCancelling, kNow + 2);
++  EXPECT_EQ(RuntimeStoreStatus::kStaleGeneration, stale.status);
++
++  RuntimeStoreMutation waiting =
++      store->TransitionTask(task.task_id, running.generation,
++                            RuntimeTaskState::kWaitingConfirmation, kNow + 3);
++  EXPECT_TRUE(waiting.ok());
++  RuntimeStoreMutation resumed = store->TransitionTask(
++      task.task_id, waiting.generation, RuntimeTaskState::kRunning, kNow + 4);
++  EXPECT_TRUE(resumed.ok());
++
++  RuntimeStoreMutation illegal = store->TransitionTask(
++      task.task_id, resumed.generation, RuntimeTaskState::kQueued, kNow + 5);
++  EXPECT_EQ(RuntimeStoreStatus::kInvalidTransition, illegal.status);
++}
++
++TEST_F(PrometheusRuntimeStoreTest,
++       FinishesExactlyOnceAcrossCancelProviderAndTimeoutRaces) {
++  auto store = MakeStore();
++  RuntimeTaskHandle task = RequireTask(*store);
++  RuntimeStoreMutation running = store->TransitionTask(
++      task.task_id, task.generation, RuntimeTaskState::kRunning, kNow + 1);
++  ASSERT_TRUE(running.ok());
++  RuntimeStoreMutation cancelling =
++      store->TransitionTask(task.task_id, running.generation,
++                            RuntimeTaskState::kCancelling, kNow + 2);
++  ASSERT_TRUE(cancelling.ok());
++
++  EXPECT_EQ(RuntimeStoreStatus::kOk,
++            store->FinishTaskOnce(
++                task.task_id, cancelling.generation,
++                RuntimeTaskState::kCancelled, RuntimeErrorCode::kCancelled,
++                RuntimeSafeResult(), RuntimeUsage(), kNow + 3));
++  EXPECT_EQ(RuntimeStoreStatus::kStaleGeneration,
++            store->FinishTaskOnce(task.task_id, running.generation,
++                                  RuntimeTaskState::kSucceeded,
++                                  RuntimeErrorCode::kNone,
++                                  RuntimeSafeResult{.text = "late provider"},
++                                  RuntimeUsage(), kNow + 4));
++  EXPECT_EQ(RuntimeStoreStatus::kAlreadyFinished,
++            store->FinishTaskOnce(
++                task.task_id, cancelling.generation, RuntimeTaskState::kFailed,
++                RuntimeErrorCode::kTimeout, RuntimeSafeResult(), RuntimeUsage(),
++                kNow + 5));
++
++  std::optional<RuntimeStoredTask> stored = store->GetTask(task.task_id);
++  ASSERT_TRUE(stored.has_value());
++  EXPECT_EQ(RuntimeTaskState::kCancelled, stored->snapshot.state);
++  EXPECT_EQ(
++      1u, static_cast<size_t>(std::ranges::count_if(
++              store->GetSnapshot().events, [](const RuntimeEventRecord& event) {
++                return event.kind == RuntimeEventKind::kTaskFinished;
++              })));
++}
++
++TEST_F(PrometheusRuntimeStoreTest, ShutdownWinsAndMakesLateCompletionInert) {
++  auto store = MakeStore();
++  RuntimeTaskHandle task = RequireTask(*store);
++  RuntimeStoreMutation running = store->TransitionTask(
++      task.task_id, task.generation, RuntimeTaskState::kRunning, kNow + 1);
++  ASSERT_TRUE(running.ok());
++
++  store->Shutdown(kNow + 2);
++  EXPECT_EQ(RuntimeStoreStatus::kStaleGeneration,
++            store->FinishTaskOnce(
++                task.task_id, running.generation, RuntimeTaskState::kSucceeded,
++                RuntimeErrorCode::kNone, RuntimeSafeResult{.text = "late"},
++                RuntimeUsage(), kNow + 3));
++  std::optional<RuntimeStoredTask> stored = store->GetTask(task.task_id);
++  ASSERT_TRUE(stored.has_value());
++  EXPECT_EQ(RuntimeTaskState::kFailed, stored->snapshot.state);
++  EXPECT_EQ(RuntimeErrorCode::kInternal, stored->snapshot.error_code);
++}
++
++TEST_F(PrometheusRuntimeStoreTest,
++       PersistsAcrossRestartAndDropsCorruptRecords) {
++  std::string task_id;
++  {
++    auto store = MakeStore();
++    task_id = RequireTask(*store).task_id;
++    ASSERT_TRUE(store->AppendEvent(task_id, RuntimeEventKind::kProviderAttempt,
++                                   RuntimeErrorCode::kNone, 1, kNow + 1));
++  }
++  {
++    auto restarted = MakeStore();
++    EXPECT_TRUE(restarted->GetTask(task_id).has_value());
++    EXPECT_EQ(1u, restarted->GetSnapshot().events.size());
++  }
++
++  base::DictValue root = prefs_.GetDict(kPrometheusRuntimeProfileData).Clone();
++  base::DictValue corrupt_task;
++  corrupt_task.Set("task_id", "corrupt");
++  corrupt_task.Set("state", "impossible");
++  corrupt_task.Set("prompt", "PROMPT_SENTINEL");
++  base::ListValue corrupt_tasks;
++  corrupt_tasks.Append(std::move(corrupt_task));
++  base::DictValue runtime_store;
++  runtime_store.Set("schema_version", 1);
++  runtime_store.Set("tasks", std::move(corrupt_tasks));
++  base::DictValue* data = root.FindDict("data");
++  ASSERT_NE(nullptr, data);
++  data->Set("runtime_store", std::move(runtime_store));
++  prefs_.SetUserPref(kPrometheusRuntimeProfileData, std::move(root));
++
++  auto repaired = MakeStore();
++  EXPECT_TRUE(repaired->ListTasks().empty());
++  EXPECT_EQ(std::string::npos, SerializedProfileData().find("PROMPT_SENTINEL"));
++}
++
++TEST_F(PrometheusRuntimeStoreTest, EvictsTasksByLruAndStructuredRecordsByFifo) {
++  RuntimeStoreBounds bounds;
++  bounds.max_tasks = 2;
++  bounds.max_events = 2;
++  bounds.max_actions = 2;
++  bounds.max_diagnostics = 2;
++  auto store = MakeStore(bounds);
++
++  RuntimeTaskHandle first = RequireTask(*store, kNow);
++  RuntimeTaskHandle second = RequireTask(*store, kNow + 1);
++  ASSERT_TRUE(store->GetTask(first.task_id).has_value());
++  RuntimeTaskHandle third = RequireTask(*store, kNow + 2);
++  EXPECT_TRUE(store->GetTask(first.task_id).has_value());
++  EXPECT_FALSE(store->GetTask(second.task_id).has_value());
++  EXPECT_TRUE(store->GetTask(third.task_id).has_value());
++
++  for (int i = 0; i < 3; ++i) {
++    EXPECT_TRUE(store->AppendEvent(first.task_id,
++                                   RuntimeEventKind::kProviderAttempt,
++                                   RuntimeErrorCode::kNone, i, kNow + 10 + i));
++    EXPECT_TRUE(store->AppendAction(first.task_id, RuntimeActionKind::kClick,
++                                    true, kNow + 20 + i));
++    EXPECT_TRUE(store->AppendDiagnostic(RuntimeDiagnosticKind::kEviction, i + 1,
++                                        kNow + 30 + i));
++  }
++  RuntimeStoreSnapshot snapshot = store->GetSnapshot();
++  ASSERT_EQ(2u, snapshot.events.size());
++  EXPECT_EQ(1, snapshot.events.front().value);
++  ASSERT_EQ(2u, snapshot.actions.size());
++  ASSERT_EQ(2u, snapshot.diagnostics.size());
++  EXPECT_EQ(2, snapshot.diagnostics.front().count);
++}
++
++TEST_F(PrometheusRuntimeStoreTest,
++       TruncatesSafeResultsAtUtf8BoundaryAndTotalByteCap) {
++  RuntimeStoreBounds bounds;
++  bounds.max_safe_result_bytes = 5;
++  bounds.max_total_utf8_bytes = 300;
++  auto store = MakeStore(bounds);
++  RuntimeTaskHandle task = RequireTask(*store);
++  RuntimeStoreMutation running = store->TransitionTask(
++      task.task_id, task.generation, RuntimeTaskState::kRunning, kNow + 1);
++  ASSERT_TRUE(running.ok());
++
++  EXPECT_EQ(RuntimeStoreStatus::kOk,
++            store->FinishTaskOnce(
++                task.task_id, running.generation, RuntimeTaskState::kSucceeded,
++                RuntimeErrorCode::kNone,
++                RuntimeSafeResult{.text = "1234\xE2\x9C\x93-tail"},
++                RuntimeUsage(), kNow + 2));
++  std::optional<RuntimeStoredTask> stored = store->GetTask(task.task_id);
++  ASSERT_TRUE(stored.has_value());
++  ASSERT_TRUE(stored->result.has_value());
++  EXPECT_EQ("1234", stored->result->text);
++  EXPECT_TRUE(stored->result->truncated);
++  EXPECT_LE(SerializedProfileData().size(), bounds.max_total_utf8_bytes);
++}
++
++TEST_F(PrometheusRuntimeStoreTest,
++       AggregatesIntegerUsageAndPreservesUnknownCost) {
++  auto store = MakeStore();
++  RuntimeTaskHandle task = RequireTask(*store);
++  RuntimeUsage first{.input_tokens = 10,
++                     .output_tokens = 5,
++                     .tool_calls = 1,
++                     .duration_ms = 30,
++                     .cost_microunits = 0};
++  EXPECT_EQ(RuntimeStoreStatus::kOk,
++            store->AddUsage(task.task_id, task.generation, first, kNow + 1));
++  RuntimeUsage second{.input_tokens = 2,
++                      .output_tokens = 3,
++                      .tool_calls = 1,
++                      .duration_ms = 4,
++                      .cost_microunits = std::nullopt};
++  EXPECT_EQ(RuntimeStoreStatus::kOk,
++            store->AddUsage(task.task_id, task.generation, second, kNow + 2));
++
++  std::optional<RuntimeStoredTask> stored = store->GetTask(task.task_id);
++  ASSERT_TRUE(stored.has_value());
++  EXPECT_EQ(12, stored->snapshot.usage.input_tokens);
++  EXPECT_EQ(8, stored->snapshot.usage.output_tokens);
++  EXPECT_EQ(2, stored->snapshot.usage.tool_calls);
++  EXPECT_EQ(34, stored->snapshot.usage.duration_ms);
++  EXPECT_EQ(std::nullopt, stored->snapshot.usage.cost_microunits);
++  EXPECT_EQ(std::nullopt, store->GetSnapshot().aggregate_usage.cost_microunits);
++
++  RuntimeUsage invalid;
++  invalid.input_tokens = -1;
++  EXPECT_EQ(RuntimeStoreStatus::kInvalidUsage,
++            store->AddUsage(task.task_id, task.generation, invalid, kNow + 3));
++}
++
++TEST_F(PrometheusRuntimeStoreTest,
++       StructuredRecordsAndPrefsExcludeContentSentinels) {
++  auto store = MakeStore();
++  RuntimeTaskHandle task = RequireTask(*store);
++  EXPECT_TRUE(store->AppendEvent(task.task_id,
++                                 RuntimeEventKind::kToolDispatched,
++                                 RuntimeErrorCode::kNone, 1, kNow + 1));
++  EXPECT_TRUE(store->AppendAction(task.task_id, RuntimeActionKind::kTypeText,
++                                  true, kNow + 2));
++  EXPECT_TRUE(store->AppendDiagnostic(RuntimeDiagnosticKind::kStaleCompletion,
++                                      1, kNow + 3));
++
++  const std::string serialized = SerializedProfileData();
++  EXPECT_NE(std::string::npos, serialized.find("tool_dispatched"));
++  for (std::string_view sentinel :
++       {"PROMPT_SENTINEL", "PAGE_TEXT_SENTINEL", "SELECTOR_SENTINEL",
++        "TYPED_TEXT_SENTINEL", "JAVASCRIPT_SENTINEL", "URL_QUERY_SENTINEL",
++        "LOCAL_PATH_SENTINEL", "BEARER_SENTINEL", "PLAINTEXT_SENTINEL",
++        "CIPHERTEXT_SENTINEL", "PROVIDER_RAW_BODY_SENTINEL"}) {
++    EXPECT_EQ(std::string::npos, serialized.find(sentinel)) << sentinel;
++  }
++
++  base::DictValue snapshot;
++  snapshot.Set("tasks", static_cast<int>(store->GetSnapshot().tasks.size()));
++  const std::string snapshot_json = base::WriteJson(snapshot).value_or("");
++  EXPECT_EQ(std::string::npos, snapshot_json.find("gateway_session_id"));
++}
++
++TEST_F(PrometheusRuntimeStoreTest, UsesClosedStoreVocabulary) {
++  EXPECT_EQ("OK", RuntimeStoreStatusToString(RuntimeStoreStatus::kOk));
++  EXPECT_EQ("task_created",
++            RuntimeEventKindToString(RuntimeEventKind::kTaskCreated));
++  EXPECT_EQ("type_text",
++            RuntimeActionKindToString(RuntimeActionKind::kTypeText));
++  EXPECT_EQ("duplicate_finish", RuntimeDiagnosticKindToString(
++                                    RuntimeDiagnosticKind::kDuplicateFinish));
++}
++
++}  // namespace
++
++}  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

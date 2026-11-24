@@ -1,0 +1,205 @@
+From efa1dde21f7fcc90f8b5f893f988440f4767b261 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 02:46:28 -0500
+Subject: [PATCH 09/19] feat(19-04): add structured background tab routes
+
+---
+ .../prometheus/prometheus_agent_service.cc    | 130 +++++++++++++++---
+ 1 file changed, 109 insertions(+), 21 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.cc b/chrome/browser/prometheus/prometheus_agent_service.cc
+index 3ce0c71901..4d0f325d25 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service.cc
+@@ -12,6 +12,8 @@
+ #include "base/callback_list.h"
+ #include "base/check.h"
+ #include "base/functional/bind.h"
++#include "base/strings/string_util.h"
++#include "base/strings/utf_string_conversions.h"
+ #include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
+ #include "chrome/browser/prometheus/prometheus_page_adapter.h"
+ #include "chrome/browser/prometheus/prometheus_tab_commands.h"
+@@ -109,29 +111,66 @@ bool IsPageRoute(AgentRouteName route_name) {
+   }
+ }
+ 
+-std::vector<std::string> ListTabMetadata(TabListInterface* tab_list) {
+-  std::vector<std::string> changed_state;
+-  for (tabs::TabInterface* tab : tab_list->GetAllTabs()) {
+-    if (tab) {
+-      changed_state.push_back("tab:" +
+-                              std::to_string(tab->GetHandle().raw_value()));
++constexpr size_t kMaxListedTitleBytes = 512;
++constexpr size_t kMaxListedUrlBytes = 4096;
++
++std::vector<AgentTabMetadata> BuildTabMetadata(
++    TabListInterface* tab_list,
++    std::string_view requesting_session_id) {
++  std::vector<AgentTabMetadata> tabs;
++  if (!tab_list) {
++    return tabs;
++  }
++  const std::vector<tabs::TabInterface*> live_tabs = tab_list->GetAllTabs();
++  tabs.reserve(live_tabs.size());
++  tabs::TabInterface* active_tab = tab_list->GetActiveTab();
++  for (size_t index = 0; index < live_tabs.size(); ++index) {
++    tabs::TabInterface* tab = live_tabs[index];
++    if (!tab) {
++      continue;
++    }
++    BrowserWindowInterface* containing_browser =
++        tab->GetBrowserWindowInterface();
++    content::WebContents* contents = tab->GetContents();
++    AgentTabMetadata metadata;
++    metadata.tab_id = tab->GetHandle().raw_value();
++    if (containing_browser) {
++      metadata.window_id = containing_browser->GetSessionID().id();
++    }
++    metadata.index = static_cast<int>(index);
++    metadata.title = std::string(base::TruncateUTF8ToByteSize(
++        base::UTF16ToUTF8(tab->GetTitle()), kMaxListedTitleBytes));
++    if (contents) {
++      std::string url = std::string(base::TruncateUTF8ToByteSize(
++          contents->GetLastCommittedURL().spec(), kMaxListedUrlBytes));
++      metadata.url = GURL(url);
+     }
++    metadata.active = tab == active_tab;
++    PrometheusAgentTabData* tab_data = PrometheusAgentTabData::From(tab);
++    metadata.owned_by_session =
++        tab_data && tab_data->owner_session_id() == requesting_session_id;
++    tabs.push_back(std::move(metadata));
+   }
+-  return changed_state;
++  return tabs;
+ }
+ 
+-std::vector<std::string> ListWindowMetadata(Profile* profile) {
+-  std::vector<std::string> changed_state;
++std::vector<AgentWindowMetadata> BuildWindowMetadata(Profile* profile) {
++  std::vector<AgentWindowMetadata> windows;
+   GlobalBrowserCollection::GetInstance()->ForEach(
+-      [profile, &changed_state](BrowserWindowInterface* browser) {
++      [profile, &windows](BrowserWindowInterface* browser) {
+         if (!browser || browser->GetProfile() != profile) {
+           return true;
+         }
+-        changed_state.push_back("window:" +
+-                                std::to_string(browser->GetSessionID().id()));
++        AgentWindowMetadata metadata;
++        metadata.window_id = browser->GetSessionID().id();
++        metadata.active = browser->IsActive();
++        if (TabListInterface* tab_list = TabListInterface::From(browser)) {
++          metadata.tab_count = tab_list->GetAllTabs().size();
++        }
++        windows.push_back(std::move(metadata));
+         return true;
+       });
+-  return changed_state;
++  return windows;
+ }
+ 
+ }  // namespace
+@@ -223,18 +262,21 @@ AgentRouteResult PrometheusAgentService::ExecuteRouteSynchronously(
+       if (!resolved_result.ok) {
+         return FinishRoute(request, timestamp, started_at, resolved_result);
+       }
+-      return FinishRoute(request, timestamp, started_at,
+-                         SuccessForTarget(ListTabMetadata(resolved.tab_list),
+-                                          resolved.browser, nullptr));
++      AgentRouteResult result =
++          SuccessForTarget({}, resolved.browser, nullptr);
++      result.tabs = BuildTabMetadata(resolved.tab_list, request.session_id);
++      return FinishRoute(request, timestamp, started_at, std::move(result));
+     }
+     case AgentRouteName::kListWindows:
+       if (!browser) {
+         return FinishRoute(request, timestamp, started_at,
+                            InvalidTarget("Missing browser target"));
+       }
+-      return FinishRoute(
+-          request, timestamp, started_at,
+-          AgentRouteResult::Success(ListWindowMetadata(browser->GetProfile())));
++      {
++        AgentRouteResult result = AgentRouteResult::Success({});
++        result.windows = BuildWindowMetadata(browser->GetProfile());
++        return FinishRoute(request, timestamp, started_at, std::move(result));
++      }
+     case AgentRouteName::kOpenTab: {
+       AgentRouteResult resolved_result = ResolveTarget(
+           browser, request.target, /*require_tab=*/false, &resolved);
+@@ -250,7 +292,7 @@ AgentRouteResult PrometheusAgentService::ExecuteRouteSynchronously(
+                               "Prometheus surface route"));
+       }
+       tabs::TabInterface* opened_tab =
+-          resolved.tab_list->OpenTab(url, /*index=*/-1, /*foreground=*/true);
++          resolved.tab_list->OpenTab(url, /*index=*/-1, request.foreground);
+       if (!opened_tab) {
+         return FinishRoute(request, timestamp, started_at,
+                            StaleTarget("Failed to open a new tab"));
+@@ -442,8 +484,42 @@ AgentRouteResult PrometheusAgentService::ExecuteRouteSynchronously(
+               browser, request.target,
+               GURL(chrome::kChromeUIPrometheusControlPanelURL),
+               "prometheus_control_panel_opened", *session_result.session));
+-    case AgentRouteName::kDiagnostics:
+     case AgentRouteName::kOpenInternalSurface:
++      if (!request.internal_surface.has_value() || request.url.has_value()) {
++        return FinishRoute(
++            request, timestamp, started_at,
++            AgentRouteResult::Failure(
++                AgentErrorCode::kInvalidPageInput,
++                "open_internal_surface requires one supported surface value",
++                "Choose new_tab, side_panel, or control_panel"));
++      }
++      switch (*request.internal_surface) {
++        case AgentInternalSurface::kNewTab:
++          return FinishRoute(
++              request, timestamp, started_at,
++              OpenPrometheusInternalUrl(
++                  browser, request.target,
++                  GURL(chrome::kChromeUIPrometheusNewTabURL),
++                  "prometheus_new_tab_opened", *session_result.session));
++        case AgentInternalSurface::kSidePanel:
++          return FinishRoute(
++              request, timestamp, started_at,
++              OpenPrometheusSidePanel(browser, request.target));
++        case AgentInternalSurface::kControlPanel:
++          return FinishRoute(
++              request, timestamp, started_at,
++              OpenPrometheusInternalUrl(
++                  browser, request.target,
++                  GURL(chrome::kChromeUIPrometheusControlPanelURL),
++                  "prometheus_control_panel_opened", *session_result.session));
++      }
++      return FinishRoute(
++          request, timestamp, started_at,
++          AgentRouteResult::Failure(
++              AgentErrorCode::kInvalidPageInput,
++              "Unsupported Prometheus internal surface",
++              "Choose new_tab, side_panel, or control_panel"));
++    case AgentRouteName::kDiagnostics:
+       return FinishRoute(request, timestamp, started_at,
+                          NativeRouteNotReady(request.route_name));
+     case AgentRouteName::kReadPage:
+@@ -585,6 +661,18 @@ AgentRouteResult PrometheusAgentService::ResolveTarget(
+     if (tab_index == -1) {
+       return StaleTarget("Requested tab is not in the target browser");
+     }
++    if (target.tab_index.has_value() && *target.tab_index != tab_index) {
++      return InvalidTarget("Conflicting stable tab handle and tab index");
++    }
++  } else if (target.tab_index.has_value()) {
++    if (*target.tab_index < 0) {
++      return InvalidTarget("Tab index must be zero or greater");
++    }
++    tab = tab_list->GetTab(*target.tab_index);
++    if (!tab) {
++      return InvalidTarget("Tab index is outside the current tab list");
++    }
++    tab_index = *target.tab_index;
+   } else if (require_tab) {
+     tab = tab_list->GetActiveTab();
+     if (!tab) {
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,961 @@
+From e7f9e8f8656b79b5719b152d78b0d37c43b4b3ce Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 14:07:58 -0500
+Subject: [PATCH] test(21-22): freeze Control Panel supervision lifecycle UI
+
+---
+ .../prometheus/prometheus_control_panel.html  | 193 ++++-
+ .../prometheus_web_ui_browsertest.cc          | 716 ++++++++++++++++++
+ 2 files changed, 901 insertions(+), 8 deletions(-)
+
+diff --git a/chrome/browser/resources/prometheus/prometheus_control_panel.html b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+index a2c4dcb338..5016473244 100644
+--- a/chrome/browser/resources/prometheus/prometheus_control_panel.html
++++ b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+@@ -18,6 +18,9 @@
+         <div class="control-status" aria-label="Control panel status">
+           <span class="status" id="control-native-status">loading runtime</span>
+           <span class="status" id="control-provider-status">providers loading</span>
++          <span class="status" id="control-supervision-global-status">
++            Supervision: Off
++          </span>
+         </div>
+       </header>
+       <div class="control-shell">
+@@ -238,8 +241,14 @@
+               </label>
+               <label class="control-check">
+                 <input id="control-supervision-ready" type="checkbox"
+-                    disabled>
+-                Supervision pairing — Not ready
++                    checked disabled>
++                <span>
++                  Supervision pairing — Available locally
++                  <small>
++                    View only by default. Control requires approval in
++                    Prometheus.
++                  </small>
++                </span>
+               </label>
+             </div>
+             <p class="security-note">No remote uploader.</p>
+@@ -446,14 +455,130 @@
+               role="list" aria-label="Content-free runtime records"
+               aria-busy="true"></div>
+         </section>
+-        <section class="section-panel" id="section-supervision"
++        <section class="section-panel control-workflow"
++            id="section-supervision"
+             data-section-panel="supervision" role="tabpanel" tabindex="-1"
+             aria-labelledby="control-supervision-heading" hidden>
+-          <h1 id="control-supervision-heading">Supervision &amp; Pairing</h1>
+-          <h2>Not ready</h2>
+-          <p class="empty-copy">
+-            Supervision and dashboard pairing arrive in Phase 21.
+-          </p>
++          <div class="control-heading-row" data-supervision-order="summary">
++            <div>
++              <h1 id="control-supervision-heading">
++                Supervision &amp; Pairing
++              </h1>
++              <p class="control-state" id="control-supervision-state"
++                  role="status" aria-live="polite">
++                Loading supervision state
++              </p>
++            </div>
++            <div class="control-supervision-summary"
++                id="control-supervision-summary"
++                aria-label="Selected target supervision summary"></div>
++          </div>
++          <div class="control-supervision-layout">
++            <div class="control-supervision-primary">
++              <section class="control-supervision-block"
++                  data-supervision-order="target"
++                  aria-labelledby="control-supervision-target-heading">
++                <h2 id="control-supervision-target-heading">Target &amp; access</h2>
++                <label for="control-supervision-target">
++                  Target tab
++                  <select id="control-supervision-target" disabled>
++                    <option value="">Loading eligible tabs</option>
++                  </select>
++                </label>
++                <p class="control-note" id="control-supervision-target-detail">
++                  Loading supervision state
++                </p>
++                <p class="control-supervision-invariant">
++                  Access: View only · Expires in 5 minutes · Local connection
++                  only
++                </p>
++                <button class="primary" type="button"
++                    id="control-supervision-create" disabled>
++                  Create pairing code
++                </button>
++                <p class="control-operation"
++                    id="control-supervision-operation"
++                    role="alert" aria-live="assertive"></p>
++              </section>
++              <section class="control-supervision-block"
++                  data-supervision-order="code"
++                  id="control-supervision-code-panel"
++                  aria-labelledby="control-supervision-code-heading" hidden>
++                <h2 id="control-supervision-code-heading" tabindex="-1">
++                  Pairing code ready
++                </h2>
++                <p class="control-pairing-code"
++                    id="control-supervision-code"
++                    data-prometheus-sensitive="pairing-code"></p>
++                <p id="control-supervision-code-copy">
++                  Enter this one-time code in the local dashboard. It can be
++                  used once.
++                </p>
++                <p class="control-pairing-timer"
++                    id="control-supervision-code-timer">Expires in 05:00</p>
++                <div class="control-card-actions">
++                  <button class="quiet-button" type="button"
++                      id="control-supervision-copy">Copy code</button>
++                  <button class="quiet-button" type="button"
++                      id="control-supervision-cancel-code">Cancel code</button>
++                </div>
++                <p class="control-state" id="control-supervision-code-status"
++                    role="status" aria-live="polite"></p>
++              </section>
++              <section class="control-supervision-block"
++                  data-supervision-order="stream"
++                  aria-labelledby="control-supervision-stream-heading">
++                <h2 id="control-supervision-stream-heading">Current view</h2>
++                <div id="control-supervision-stream"></div>
++                <div id="control-supervision-action"></div>
++              </section>
++              <section class="control-supervision-block"
++                  data-supervision-order="connected"
++                  aria-labelledby="control-supervision-connected-heading">
++                <div class="control-heading-row">
++                  <h2 id="control-supervision-connected-heading">
++                    Connected dashboards
++                  </h2>
++                  <button class="danger-button" type="button"
++                      id="control-supervision-end-all" hidden>
++                    End all supervision
++                  </button>
++                </div>
++                <div class="control-list"
++                    id="control-supervision-connected-list" role="list"
++                    aria-label="Connected supervision dashboards"
++                    aria-busy="true"></div>
++              </section>
++            </div>
++            <div class="control-supervision-secondary">
++              <section class="control-supervision-block"
++                  data-supervision-order="recent"
++                  aria-labelledby="control-supervision-recent-heading">
++                <h2 id="control-supervision-recent-heading">Recent access</h2>
++                <div class="control-list"
++                    id="control-supervision-recent-list" role="list"
++                    aria-label="Recently ended supervision access"
++                    aria-busy="true"></div>
++              </section>
++              <section class="control-supervision-block"
++                  data-supervision-order="audit"
++                  aria-labelledby="control-supervision-audit-heading">
++                <div class="control-heading-row">
++                  <h2 id="control-supervision-audit-heading">
++                    Recent supervision activity
++                  </h2>
++                  <button class="quiet-button" type="button"
++                      id="control-supervision-open-logs">
++                    Open supervision logs
++                  </button>
++                </div>
++                <div class="control-list"
++                    id="control-supervision-audit-list" role="list"
++                    aria-label="Metadata-only supervision activity"
++                    aria-busy="true"></div>
++              </section>
++            </div>
++          </div>
+         </section>
+         <section class="section-panel" id="section-parity"
+             data-section-panel="parity" role="tabpanel" tabindex="-1"
+@@ -516,6 +641,58 @@
+           </div>
+         </form>
+       </dialog>
++      <dialog id="control-supervision-replace-dialog"
++          aria-labelledby="control-supervision-replace-title"
++          aria-describedby="control-supervision-replace-copy">
++        <form method="dialog">
++          <h2 id="control-supervision-replace-title">
++            Replace current pairing code?
++          </h2>
++          <p id="control-supervision-replace-copy">
++            The current code will stop working immediately.
++          </p>
++          <div class="dialog-actions">
++            <button class="quiet-button" value="cancel"
++                id="control-supervision-replace-dismiss" autofocus>
++              Keep current code
++            </button>
++            <button class="danger-button" value="confirm"
++                id="control-supervision-replace-confirm">Replace code</button>
++          </div>
++        </form>
++      </dialog>
++      <dialog id="control-supervision-revoke-dialog"
++          aria-labelledby="control-supervision-revoke-title"
++          aria-describedby="control-supervision-revoke-copy">
++        <form method="dialog">
++          <h2 id="control-supervision-revoke-title">Revoke access?</h2>
++          <p id="control-supervision-revoke-copy"></p>
++          <div class="dialog-actions">
++            <button class="quiet-button" value="cancel"
++                id="control-supervision-revoke-dismiss" autofocus>
++              Keep paired
++            </button>
++            <button class="danger-button" value="confirm"
++                id="control-supervision-revoke-confirm">Revoke access</button>
++          </div>
++        </form>
++      </dialog>
++      <dialog id="control-supervision-end-dialog"
++          aria-labelledby="control-supervision-end-title"
++          aria-describedby="control-supervision-end-copy">
++        <form method="dialog">
++          <h2 id="control-supervision-end-title">End supervision?</h2>
++          <p id="control-supervision-end-copy"></p>
++          <div class="dialog-actions">
++            <button class="quiet-button" value="cancel"
++                id="control-supervision-end-dismiss" autofocus>
++              Keep access
++            </button>
++            <button class="danger-button" value="confirm"
++                id="control-supervision-end-confirm">End supervision</button>
++          </div>
++        </form>
++      </dialog>
+     </main>
+   </body>
+ </html>
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 3cb8cec128..c8dd554e00 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -5177,3 +5177,719 @@ IN_PROC_BROWSER_TEST_F(
+   )")
+                   .ExtractBool());
+ }
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    ControlSupervisionLifecycleMatrixAndExactCopy) {
++  content::WebContents* const contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(contents);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(contents, R"(
++      window.prometheusControlSnapshotForTesting?.status === 'OK';
++    )")
++        .ExtractBool();
++  }));
++
++  EXPECT_EQ("", content::EvalJs(contents, R"(
++    (() => {
++      document.querySelector(
++          '[data-section-target="supervision"]')?.click();
++      const issues = [];
++      const order = Array.from(
++          document.querySelectorAll('[data-supervision-order]'))
++          .map(node => node.dataset.supervisionOrder).join('|');
++      if (order !==
++          'summary|target|code|stream|connected|recent|audit') {
++        issues.push(`order:${order}`);
++      }
++      if (typeof window.prometheusControlReceivePairingCreateResult !==
++              'function' ||
++          typeof window.prometheusControlClearPairingPresentation !==
++              'function') {
++        return 'callbacks';
++      }
++      const base = structuredClone(
++          window.prometheusControlSnapshotForTesting);
++      const target = {
++        ordinal: 0,
++        safe_title: 'Quarterly report',
++        safe_origin: 'https://example.test',
++        selected: true,
++        agent_active: true,
++      };
++      const supervision = {
++        available: true,
++        pairing_state: 'pending',
++        safe_target_title: 'Quarterly report',
++        safe_origin: 'https://example.test',
++        agent_active: true,
++        viewer_count: 0,
++        targets: [target],
++        connected: [],
++        recent: [],
++        audit: [],
++      };
++      window.prometheusControlReceiveSnapshot({...base, supervision});
++      const targetSelect =
++          document.querySelector('#control-supervision-target');
++      if (targetSelect?.value !== '0' || targetSelect.disabled ||
++          targetSelect.labels?.[0]?.textContent.trim() !== 'Target tab') {
++        issues.push('target');
++      }
++      const create = document.querySelector('#control-supervision-create');
++      create?.click();
++      if (create?.textContent.trim() !== 'Creating pairing code' ||
++          !create.disabled ||
++          !document.querySelector('#control-supervision-code-panel')
++              ?.textContent.includes(
++                  'Prometheus is validating the target and local gateway.')) {
++        issues.push('loading');
++      }
++
++      window.prometheusControlReceivePairingCreateResult({
++        status: 'OK',
++        accepted: true,
++        replacement_required: false,
++        formatted_code: 'ABCD-EFGH',
++        expires_at_ms: Date.now() + 299000,
++      });
++      const activePanel =
++          document.querySelector('#control-supervision-code-panel');
++      if (activePanel?.hidden ||
++          document.activeElement?.id !==
++              'control-supervision-code-heading' ||
++          document.querySelector('#control-supervision-code-heading')
++                  ?.textContent !== 'Pairing code ready' ||
++          document.querySelector('#control-supervision-code')?.textContent !==
++              'ABCD-EFGH' ||
++          !activePanel.textContent.includes(
++              'Enter this one-time code in the local dashboard. It can be ' +
++              'used once.') ||
++          !/^Expires in 0[45]:[0-5][0-9]$/.test(
++              document.querySelector('#control-supervision-code-timer')
++                  ?.textContent || '') ||
++          !activePanel.textContent.includes('Copy code') ||
++          !activePanel.textContent.includes('Cancel code')) {
++        issues.push('active');
++      }
++
++      window.prometheusControlReceivePairingCreateResult({
++        status: 'OK',
++        accepted: true,
++        replacement_required: false,
++        formatted_code: 'JKLM-NPQR',
++        expires_at_ms: Date.now() + 9000,
++      });
++      if (document.querySelector('#control-supervision-code-heading')
++              ?.textContent !== 'Pairing code expires soon' ||
++          !activePanel.textContent.includes(
++              'Use this code now or create a new one after it expires.')) {
++        issues.push('expiring');
++      }
++
++      window.prometheusControlReceiveSnapshot({
++        ...base,
++        supervision: {
++          ...supervision,
++          pairing_state: 'redeemed',
++          viewer_count: 1,
++          connected: [{
++            display_label: 'Review console',
++            access: 'view_only',
++            stream_state: 'live',
++            action_state: 'idle',
++            connected_at_ms: Date.now() - 30000,
++            last_seen_at_ms: Date.now() - 1000,
++            expires_at_ms: Date.now() + 600000,
++          }],
++        },
++      });
++      if (document.querySelector('#control-supervision-code')?.textContent ||
++          document.querySelector('#control-supervision-code-heading')
++                  ?.textContent !== 'Pairing code used' ||
++          !activePanel.textContent.includes(
++              'The dashboard is connected in view-only mode.') ||
++          !activePanel.textContent.includes('Create another code')) {
++        issues.push('redeemed');
++      }
++
++      for (const [state, heading, body] of [
++        ['expired', 'Pairing code expired',
++          'Create a new code to continue.'],
++        ['cancelled', 'Pairing code cancelled',
++          'The code can no longer be used.'],
++        ['target_lost', 'Target unavailable',
++          'Choose another tab and create a new pairing code.'],
++      ]) {
++        window.prometheusControlReceiveSnapshot({
++          ...base,
++          supervision: {...supervision, pairing_state: state},
++        });
++        if (document.querySelector('#control-supervision-code')?.textContent ||
++            document.querySelector('#control-supervision-code-heading')
++                    ?.textContent !== heading ||
++            !activePanel.textContent.includes(body)) {
++          issues.push(state);
++        }
++      }
++
++      window.prometheusControlReceivePairingCreateResult({
++        status: 'INVALID_REQUEST',
++        accepted: false,
++        replacement_required: false,
++        recovery: 'Check supervision diagnostics, then try again.',
++      });
++      if (document.querySelector('#control-supervision-code-heading')
++              ?.textContent !== 'Pairing code could not be created' ||
++          !activePanel.textContent.includes(
++              'Check supervision diagnostics, then try again.') ||
++          document.querySelector('#control-supervision-code')?.textContent) {
++        issues.push('failure');
++      }
++      return issues.join('|');
++    })();
++  )")
++                    .ExtractString());
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    ControlSupervisionActionsFocusAndStatePreservation) {
++  content::WebContents* const contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(contents);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(contents, R"(
++      window.prometheusControlSnapshotForTesting?.status === 'OK';
++    )")
++        .ExtractBool();
++  }));
++
++  EXPECT_EQ("", content::EvalJs(contents, R"(
++    (() => {
++      document.querySelector(
++          '[data-section-target="supervision"]')?.click();
++      if (typeof window.prometheusControlReceivePairingCreateResult !==
++          'function') {
++        return 'callbacks';
++      }
++      const issues = [];
++      const base = structuredClone(
++          window.prometheusControlSnapshotForTesting);
++      const now = Date.now();
++      const target = {
++        ordinal: 0,
++        safe_title: 'Quarterly report',
++        safe_origin: 'https://example.test',
++        selected: true,
++        agent_active: true,
++      };
++      const controller = {
++        display_label: 'Control desk',
++        access: 'controller',
++        stream_state: 'live',
++        action_state: 'executing',
++        action_category: 'click',
++        connected_at_ms: now - 120000,
++        last_seen_at_ms: now - 1000,
++        expires_at_ms: now + 600000,
++      };
++      const viewer = {
++        display_label: 'Review console',
++        access: 'view_only',
++        stream_state: 'resyncing',
++        action_state: 'idle',
++        connected_at_ms: now - 60000,
++        last_seen_at_ms: now - 2000,
++        expires_at_ms: now + 300000,
++      };
++      const supervision = {
++        available: true,
++        pairing_state: 'redeemed',
++        safe_target_title: 'Quarterly report',
++        safe_origin: 'https://example.test',
++        agent_active: true,
++        viewer_count: 2,
++        controller_label: 'Control desk',
++        targets: [target],
++        connected: [controller, viewer],
++        recent: [{
++          display_label: 'Previous desk',
++          state: 'revoked',
++          reason: 'revoked',
++          last_seen_at_ms: now - 180000,
++        }],
++        audit: [{
++          event: 'remote_action_completed',
++          timestamp_ms: now - 1000,
++          client_label: 'Control desk',
++          safe_target_title: 'Quarterly report',
++          safe_origin: 'https://example.test',
++          action_category: 'click',
++          error: 'NONE',
++          duration_ms: 42,
++        }],
++      };
++      window.prometheusControlReceiveSnapshot({...base, supervision});
++      const rows = Array.from(document.querySelectorAll(
++          '#control-supervision-connected-list [role="listitem"]'));
++      if (rows.length !== 2 ||
++          !rows[0].textContent.includes('Control desk') ||
++          !rows[0].textContent.includes('Controller') ||
++          !rows[0].textContent.includes('Remote action: Click') ||
++          !rows[0].textContent.includes('Stop control') ||
++          !rows[1].textContent.includes('Review console') ||
++          !rows[1].textContent.includes('View only') ||
++          !rows[1].textContent.includes('Enable control') ||
++          !rows[1].textContent.includes('Resyncing') ||
++          !rows.every(row => row.textContent.includes('Revoke access'))) {
++        issues.push('rows');
++      }
++      if (document.querySelector('#control-supervision-state')?.textContent !==
++              '2 viewers · Controlled by Control desk' ||
++          document.querySelector('#control-supervision-global-status')
++                  ?.textContent.trim() !== 'Supervision: 2' ||
++          !document.querySelector('#control-supervision-stream')?.textContent
++              .includes('Resyncing') ||
++          !document.querySelector('#control-supervision-action')?.textContent
++              .includes('Remote action: Click') ||
++          !document.querySelector('#control-supervision-recent-list')
++              ?.textContent.includes('Previous desk') ||
++          !document.querySelector('#control-supervision-audit-list')
++              ?.textContent.includes('Remote action completed')) {
++        issues.push('summaries');
++      }
++
++      window.prometheusSupervisionMessagesForTesting = [];
++      rows[0].querySelector('[data-supervision-action="stop"]')?.click();
++      const stop = window.prometheusSupervisionMessagesForTesting.at(-1);
++      if (stop?.message !== 'prometheusControlStopSupervisionControl' ||
++          JSON.stringify(stop.args) !== '[0]') {
++        issues.push(`stop:${JSON.stringify(stop)}`);
++      }
++
++      const revoke =
++          rows[1].querySelector('[data-supervision-action="revoke"]');
++      revoke?.click();
++      const revokeDialog =
++          document.querySelector('#control-supervision-revoke-dialog');
++      if (!revokeDialog?.open ||
++          document.activeElement?.id !==
++              'control-supervision-revoke-dismiss' ||
++          document.querySelector('#control-supervision-revoke-copy')
++                  ?.textContent !==
++              'Revoke access for Review console? Viewing and control for ' +
++              'this pairing will end immediately.') {
++        issues.push('revoke-dialog');
++      }
++      document.querySelector('#control-supervision-revoke-confirm')?.click();
++      const revokeMessage =
++          window.prometheusSupervisionMessagesForTesting.at(-1);
++      if (revokeMessage?.message !==
++              'prometheusControlRevokeSupervisionSession' ||
++          JSON.stringify(revokeMessage.args) !== '[1,true]') {
++        issues.push(`revoke:${JSON.stringify(revokeMessage)}`);
++      }
++
++      const end = document.querySelector('#control-supervision-end-all');
++      end?.click();
++      const endDialog =
++          document.querySelector('#control-supervision-end-dialog');
++      if (!endDialog?.open ||
++          document.activeElement?.id !== 'control-supervision-end-dismiss' ||
++          document.querySelector('#control-supervision-end-copy')
++                  ?.textContent !==
++              'End supervision for Quarterly report? All paired dashboards ' +
++              'will lose viewing and control immediately.') {
++        issues.push('end-dialog');
++      }
++      document.querySelector('#control-supervision-end-confirm')?.click();
++      const endMessage =
++          window.prometheusSupervisionMessagesForTesting.at(-1);
++      if (endMessage?.message !== 'prometheusControlEndTargetSupervision' ||
++          JSON.stringify(endMessage.args) !== '[0,true]') {
++        issues.push(`end:${JSON.stringify(endMessage)}`);
++      }
++
++      window.prometheusControlReceivePairingCreateResult({
++        status: 'OK',
++        accepted: true,
++        replacement_required: false,
++        formatted_code: 'WXYZ-2345',
++        expires_at_ms: Date.now() + 299000,
++      });
++      document.querySelector('#control-supervision-create')?.click();
++      const replaceDialog =
++          document.querySelector('#control-supervision-replace-dialog');
++      if (!replaceDialog?.open ||
++          document.activeElement?.id !==
++              'control-supervision-replace-dismiss' ||
++          replaceDialog.textContent.trim().replace(/\s+/g, ' ') !==
++              'Replace current pairing code? The current code will stop ' +
++              'working immediately. Keep current code Replace code') {
++        issues.push('replace-dialog');
++      }
++      replaceDialog?.close();
++
++      const stopButton = document.querySelector(
++          '[data-supervision-action="stop"]');
++      stopButton?.focus();
++      window.prometheusControlReceiveSnapshot({
++        ...base,
++        supervision: {
++          ...supervision,
++          controller_label: undefined,
++          connected: [{...controller, access: 'view_only',
++                       action_state: 'idle'}, viewer],
++        },
++      });
++      if (document.activeElement?.dataset.supervisionAction !== 'enable' ||
++          document.activeElement?.dataset.supervisionOrdinal !== '0') {
++        issues.push('focus-transition');
++      }
++      window.prometheusControlReceiveSnapshot({
++        ...base,
++        supervision: {
++          ...supervision,
++          viewer_count: 1,
++          controller_label: undefined,
++          connected: [viewer],
++        },
++      });
++      if (document.activeElement?.id !==
++          'control-supervision-connected-heading') {
++        issues.push('focus-removal');
++      }
++      return issues.join('|');
++    })();
++  )")
++                    .ExtractString());
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    ControlSupervisionErrorsPrivatePrivacyAndResourceBoundaries) {
++  content::WebContents* const contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(contents);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(contents, R"(
++      window.prometheusControlSnapshotForTesting?.status === 'OK';
++    )")
++        .ExtractBool();
++  }));
++
++  EXPECT_EQ("", content::EvalJs(contents, R"(
++    (() => {
++      document.querySelector(
++          '[data-section-target="supervision"]')?.click();
++      if (typeof window.prometheusControlReceivePairingCreateResult !==
++              'function' ||
++          typeof window.prometheusControlClearPairingPresentation !==
++              'function') {
++        return 'callbacks';
++      }
++      const issues = [];
++      const code = 'ABCD-EFGH';
++      const base = structuredClone(
++          window.prometheusControlSnapshotForTesting);
++      const supervision = {
++        available: true,
++        pairing_state: 'pending',
++        safe_target_title: 'Safe target',
++        safe_origin: 'https://example.test',
++        agent_active: false,
++        viewer_count: 0,
++        targets: [{
++          ordinal: 0,
++          safe_title: 'Safe target',
++          safe_origin: 'https://example.test',
++          selected: true,
++          agent_active: false,
++        }],
++        connected: [],
++        recent: [],
++        audit: [],
++      };
++      window.prometheusControlReceiveSnapshot({...base, supervision});
++      window.prometheusControlReceivePairingCreateResult({
++        status: 'OK',
++        accepted: true,
++        replacement_required: false,
++        formatted_code: code,
++        expires_at_ms: Date.now() + 299000,
++      });
++      const sensitive = Array.from(document.querySelectorAll(
++          '[data-prometheus-sensitive="pairing-code"]'));
++      const clone = document.documentElement.cloneNode(true);
++      clone.querySelectorAll('[data-prometheus-sensitive]')
++          .forEach(node => node.remove());
++      const publicState = JSON.stringify({
++        snapshot: window.prometheusControlSnapshotForTesting,
++        operation: window.prometheusControlOperationForTesting,
++        messages: window.prometheusSupervisionMessagesForTesting,
++        url: location.href,
++        title: document.title,
++        publicDom: clone.outerHTML,
++        datasets: Array.from(document.querySelectorAll('*'))
++            .map(node => node.dataset),
++      });
++      if (sensitive.length !== 1 || sensitive[0].textContent !== code ||
++          publicState.includes(code) ||
++          history.state === code ||
++          document.querySelectorAll(
++              `[aria-label*="${code}"], [title*="${code}"]`).length) {
++        issues.push('one-shot-boundary');
++      }
++      window.prometheusControlReceiveSnapshot({
++        ...base,
++        supervision: {...supervision, pairing_state: 'redeemed'},
++      });
++      if (document.documentElement.textContent.includes(code)) {
++        issues.push('redeem-erasure');
++      }
++      window.prometheusControlReceivePairingCreateResult({
++        status: 'OK',
++        accepted: true,
++        formatted_code: 'JKLM-NPQR',
++        expires_at_ms: Date.now() + 299000,
++      });
++      window.prometheusControlClearPairingPresentation();
++      if (document.documentElement.textContent.includes('JKLM-NPQR')) {
++        issues.push('authority-erasure');
++      }
++      window.prometheusControlReceivePairingCreateResult({
++        status: 'TARGET_LOST',
++        accepted: false,
++        recovery: 'This tab is no longer available. Choose another tab and ' +
++            'create a new pairing code.',
++      });
++      if (!document.querySelector('#control-supervision-code-panel')
++              ?.textContent.includes('Target unavailable') ||
++          !document.querySelector('#control-supervision-code-panel')
++              ?.textContent.includes(
++                  'Choose another tab and create a new pairing code.')) {
++        issues.push('target-error');
++      }
++      const serialized = JSON.stringify({
++        snapshot: window.prometheusControlSnapshotForTesting?.supervision,
++        dom: document.querySelector('#section-supervision')?.outerHTML,
++      });
++      for (const forbidden of [
++        'session_id', 'lease_id', 'owner_id', 'browser_id', 'tab_id',
++        'profile_path', 'document_epoch', 'sequence', 'bearer', 'selector',
++        'typed_value', 'raw_value', 'authorization',
++      ]) {
++        if (serialized.includes(forbidden)) {
++          issues.push(`forbidden:${forbidden}`);
++        }
++      }
++      return issues.join('|');
++    })();
++  )")
++                    .ExtractString());
++
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    window.prometheusControlReceivePairingCreateResult({
++      status: 'OK',
++      accepted: true,
++      formatted_code: 'RSTU-VWXY',
++      expires_at_ms: Date.now() + 299000,
++    });
++  )"));
++  contents->GetController().Reload(content::ReloadType::NORMAL, false);
++  ASSERT_TRUE(content::WaitForLoadStop(contents));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(contents, R"(
++      window.prometheusControlSnapshotForTesting?.status === 'OK';
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_FALSE(BodyContains(contents, "RSTU-VWXY"));
++
++  Browser* const otr_browser = CreateIncognitoBrowser(browser()->profile());
++  ASSERT_TRUE(otr_browser);
++  content::WebContents* const otr_contents =
++      NavigateTo(otr_browser, chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(otr_contents);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(otr_contents, R"(
++      document.documentElement.dataset.controlState === 'error';
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_EQ("", content::EvalJs(otr_contents, R"(
++    (() => {
++      document.querySelector(
++          '[data-section-target="supervision"]')?.click();
++      const panel = document.querySelector('#section-supervision');
++      const visible = node => node && !node.hidden &&
++          getComputedStyle(node).display !== 'none' &&
++          node.getClientRects().length > 0;
++      const visibleControls = Array.from(
++          panel?.querySelectorAll('button, select, input') || [])
++          .filter(visible);
++      if (!panel?.textContent.includes('Unavailable in Private') ||
++          !panel.textContent.includes(
++              'Pairing and remote control are disabled in Private windows.')) {
++        return 'private-copy';
++      }
++      return visibleControls.length ? 'private-controls' : '';
++    })();
++  )")
++                    .ExtractString());
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIBrowserTest,
++    ControlSupervisionResponsiveAtContractWidthsAndZoom) {
++  content::WebContents* const contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(contents);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(contents, R"(
++      window.prometheusControlSnapshotForTesting?.status === 'OK';
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    document.querySelector(
++        '[data-section-target="supervision"]')?.click();
++    if (typeof window.prometheusControlReceivePairingCreateResult ===
++        'function') {
++      const base = structuredClone(
++          window.prometheusControlSnapshotForTesting);
++      const now = Date.now();
++      window.prometheusControlReceiveSnapshot({
++        ...base,
++        supervision: {
++          available: true,
++          pairing_state: 'pending',
++          safe_target_title: 'Responsive target with a long safe title',
++          safe_origin: 'https://example.test',
++          agent_active: true,
++          viewer_count: 1,
++          targets: [{
++            ordinal: 0,
++            safe_title: 'Responsive target with a long safe title',
++            safe_origin: 'https://example.test',
++            selected: true,
++            agent_active: true,
++          }],
++          connected: [{
++            display_label: 'Responsive review console',
++            access: 'controller',
++            stream_state: 'live',
++            action_state: 'executing',
++            action_category: 'navigate',
++            connected_at_ms: now - 30000,
++            last_seen_at_ms: now - 1000,
++            expires_at_ms: now + 600000,
++          }],
++          recent: [{
++            display_label: 'Previous responsive console',
++            state: 'expired',
++            reason: 'expired',
++            last_seen_at_ms: now - 60000,
++          }],
++          audit: [{
++            event: 'remote_action_completed',
++            timestamp_ms: now - 1000,
++            client_label: 'Responsive review console',
++            safe_target_title: 'Responsive target with a long safe title',
++            safe_origin: 'https://example.test',
++            action_category: 'navigate',
++            error: 'NONE',
++            duration_ms: 42,
++          }],
++        },
++      });
++      window.prometheusControlReceivePairingCreateResult({
++        status: 'OK',
++        accepted: true,
++        formatted_code: 'ABCD-EFGH',
++        expires_at_ms: Date.now() + 299000,
++      });
++    }
++    window.prometheusControlSupervisionResponsiveIssuesForTesting = () => {
++      const issues = [];
++      const panel = document.querySelector('#section-supervision');
++      if (!panel || panel.hidden) {
++        return 'panel';
++      }
++      const viewport = document.documentElement.clientWidth;
++      if (document.documentElement.scrollWidth > viewport ||
++          document.body.scrollWidth > viewport) {
++        issues.push(`page-overflow:${document.documentElement.scrollWidth}`);
++      }
++      for (const node of panel.querySelectorAll(
++          'button, select, [role="listitem"], ' +
++          '#control-supervision-code-panel')) {
++        if (node.hidden || getComputedStyle(node).display === 'none') {
++          continue;
++        }
++        const rect = node.getBoundingClientRect();
++        if (rect.left < -0.5 || rect.right > viewport + 0.5) {
++          issues.push(`clipped:${node.id || node.textContent.trim()}`);
++        }
++        if (node.matches('button, select') && rect.height < 47.5) {
++          issues.push(`short:${node.id || node.textContent.trim()}`);
++        }
++      }
++      const railVisible =
++          getComputedStyle(document.querySelector('.section-rail')).display !==
++          'none';
++      if (railVisible !== (innerWidth >= 720)) {
++        issues.push(`rail:${railVisible}`);
++      }
++      const layout = getComputedStyle(
++          document.querySelector('.control-supervision-layout'));
++      const tracks = layout.gridTemplateColumns.trim().split(/\s+/).length;
++      if (tracks !== (innerWidth >= 1024 ? 2 : 1)) {
++        issues.push(`tracks:${tracks}`);
++      }
++      const code = document.querySelector('#control-supervision-code');
++      if (code?.textContent !== 'ABCD-EFGH' ||
++          getComputedStyle(code).whiteSpace !== 'nowrap' ||
++          code.scrollWidth > code.clientWidth) {
++        issues.push('code');
++      }
++      if (getComputedStyle(panel).fontSize !== '13px' ||
++          getComputedStyle(
++              document.querySelector('#control-supervision-heading'))
++                  .fontSize !== '20px' ||
++          getComputedStyle(code).fontSize !== '20px') {
++        issues.push('type');
++      }
++      return issues.join('|');
++    };
++  )"));
++
++  for (const int width : std::array{320, 480, 720, 1024}) {
++    contents->Resize(gfx::Rect(0, 0, width, 1000));
++    ASSERT_TRUE(base::test::RunUntil([&]() {
++      return content::EvalJs(contents, "window.innerWidth").ExtractInt() ==
++             width;
++    })) << width;
++    const std::string issues = content::EvalJs(
++        contents,
++        "window.prometheusControlSupervisionResponsiveIssuesForTesting()")
++                                   .ExtractString();
++    EXPECT_TRUE(issues.empty()) << "width=" << width << " " << issues;
++  }
++
++  contents->Resize(gfx::Rect(0, 0, 640, 1000));
++  zoom::ZoomController* const zoom_controller =
++      zoom::ZoomController::FromWebContents(contents);
++  ASSERT_TRUE(zoom_controller);
++  zoom_controller->SetZoomLevel(blink::ZoomFactorToZoomLevel(2.0));
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return zoom_controller->GetZoomPercent() == 200; }));
++  const std::string zoom_issues = content::EvalJs(
++      contents,
++      "window.prometheusControlSupervisionResponsiveIssuesForTesting()")
++                                      .ExtractString();
++  EXPECT_TRUE(zoom_issues.empty()) << "zoom=200% " << zoom_issues;
++  zoom_controller->SetZoomLevel(blink::ZoomFactorToZoomLevel(1.0));
++}

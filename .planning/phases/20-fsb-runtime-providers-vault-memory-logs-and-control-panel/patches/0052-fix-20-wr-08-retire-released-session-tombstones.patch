@@ -1,0 +1,186 @@
+From c5453efdc54ea313cb5bc08c84ed09a78a83f8fd Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 20 Jul 2026 11:31:11 -0500
+Subject: [PATCH] fix(20): WR-08 retire released session tombstones
+
+---
+ .../prometheus_runtime_profile_service.cc     |  9 ++-
+ .../prometheus_runtime_profile_service.h      |  8 ++-
+ ...etheus_runtime_profile_service_unittest.cc | 55 ++++++++++++++++++-
+ 3 files changed, 66 insertions(+), 6 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+index 30789b6b87..79b0b5a7ef 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+@@ -466,7 +466,7 @@ PrometheusRuntimeProfileService::CreateSidePanelPrincipal(
+       std::unique_ptr<LocalRuntimePrincipal>(new LocalRuntimePrincipal(
+           this, exact_browser, stable_tab_id, session_result.session->id));
+   principals_.insert(principal.get());
+-  released_sessions_.erase(session_result.session->id);
++  active_sessions_.insert(session_result.session->id);
+   return {.status = RuntimeProfileStatus::kOk,
+           .principal = std::move(principal)};
+ }
+@@ -672,6 +672,8 @@ RuntimeSubmitResult PrometheusRuntimeProfileService::SubmitTask(
+           std::distance(fallback_order.begin(), fallback_position)),
+       .prompt = std::move(request.prompt),
+   };
++  active_sessions_.insert(
++      tasks_.at(handle->task_id).authority.agent_session_id);
+   active_submission_fingerprints_.insert(fingerprint);
+   EmitTelemetryIfEnabled(policy, RuntimeTelemetryEventKind::kTaskState);
+   if (hooks_.auto_start_tasks) {
+@@ -2552,10 +2554,11 @@ void PrometheusRuntimeProfileService::CancelMatchingTasks(
+ 
+ void PrometheusRuntimeProfileService::ReleaseSessionOnce(
+     std::string_view agent_session_id) {
+-  if (agent_session_id.empty() ||
+-      !released_sessions_.insert(std::string(agent_session_id)).second) {
++  const auto active_session = active_sessions_.find(agent_session_id);
++  if (agent_session_id.empty() || active_session == active_sessions_.end()) {
+     return;
+   }
++  active_sessions_.erase(active_session);
+   if (hooks_.close_session) {
+     hooks_.close_session.Run(agent_session_id);
+   }
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.h b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+index 3561352c89..9046318bd2 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+@@ -396,6 +396,9 @@ class PrometheusRuntimeProfileService
+   size_t discovery_record_count_for_testing() const {
+     return discoveries_.size();
+   }
++  size_t active_session_count_for_testing() const {
++    return active_sessions_.size();
++  }
+   void SetAutoStartTasksForTesting(bool auto_start_tasks) {
+     hooks_.auto_start_tasks = auto_start_tasks;
+   }
+@@ -526,7 +529,10 @@ class PrometheusRuntimeProfileService
+   std::map<std::string, RuntimeTaskRecord, std::less<>> tasks_;
+   std::map<uint64_t, RuntimeDiscoveryRecord> discoveries_;
+   std::set<std::string, std::less<>> active_submission_fingerprints_;
+-  std::set<std::string, std::less<>> released_sessions_;
++  // Sessions for which this service still owns close/release responsibility.
++  // Erasing before invoking either boundary makes duplicate lifecycle paths
++  // idempotent without retaining profile-lifetime tombstones.
++  std::set<std::string, std::less<>> active_sessions_;
+   std::set<LocalRuntimePrincipal*> principals_;
+   base::ObserverList<Observer> observers_;
+   uint64_t next_discovery_operation_id_ = 1;
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+index 3b3340f7a1..385b14a188 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
+ 
++#include <algorithm>
+ #include <cstdint>
+ #include <deque>
+ #include <map>
+@@ -112,24 +113,34 @@ class FakeRuntimeProfileBoundaries {
+   AgentSessionResult CreateSession(std::string display_label) {
+     ++create_session_count;
+     AgentSession session;
+-    session.id = "browser-issued-session";
++    session.id =
++        issue_unique_sessions
++            ? "browser-issued-session-" + std::to_string(create_session_count)
++            : "browser-issued-session";
+     session.display_label = std::move(display_label);
+     session.active = true;
++    issued_session_ids.push_back(session.id);
++    live_session_ids.insert(session.id);
+     return AgentSessionResult::Success(std::move(session), {"created"});
+   }
+ 
+   bool HasSession(std::string_view session_id) {
+     ++has_session_count;
+-    return session_is_valid && session_id == "browser-issued-session";
++    return session_is_valid &&
++           (issue_unique_sessions ? live_session_ids.contains(session_id)
++                                  : session_id == "browser-issued-session");
+   }
+ 
+   AgentRouteResult CloseSession(std::string_view session_id) {
+     ++close_session_count;
++    ++close_counts_by_session[std::string(session_id)];
++    live_session_ids.erase(std::string(session_id));
+     return AgentRouteResult::Success({"closed"});
+   }
+ 
+   void ReleaseSessionOwnership(std::string_view session_id) {
+     ++release_ownership_count;
++    ++release_counts_by_session[std::string(session_id)];
+   }
+ 
+   void ExecuteBrowserRoute(BrowserWindowInterface* exact_browser,
+@@ -333,6 +344,7 @@ class FakeRuntimeProfileBoundaries {
+ 
+   RuntimePolicy policy;
+   bool session_is_valid = true;
++  bool issue_unique_sessions = false;
+   bool local_provider_available = false;
+   bool defer_agent_route = false;
+   bool defer_provider_turn = false;
+@@ -358,6 +370,10 @@ class FakeRuntimeProfileBoundaries {
+   raw_ptr<BrowserWindowInterface> last_browser = nullptr;
+   AgentRouteRequest last_route;
+   std::string last_safe_title;
++  std::vector<std::string> issued_session_ids;
++  std::set<std::string, std::less<>> live_session_ids;
++  std::map<std::string, size_t, std::less<>> close_counts_by_session;
++  std::map<std::string, size_t, std::less<>> release_counts_by_session;
+   std::optional<std::vector<PrometheusProviderConfig>> providers_override;
+   std::optional<std::vector<PrometheusProviderConfig>> fallback_order_override;
+   PrometheusProviderError provider_mutation_error =
+@@ -553,6 +569,41 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+   EXPECT_EQ(1, boundaries_.release_ownership_count);
+ }
+ 
++TEST_F(PrometheusRuntimeProfileServiceTest,
++       UniquePrincipalReleaseTrackingRetiresEverySessionExactlyOnce) {
++  boundaries_.issue_unique_sessions = true;
++  constexpr size_t kSessionCycles = kMaxStoredRuntimeTasks + 32u;
++  size_t maximum_tracked_sessions = 0;
++
++  for (size_t index = 0; index < kSessionCycles; ++index) {
++    RuntimePrincipalResult result =
++        service_->CreateSidePanelPrincipal(browser(), 7);
++    ASSERT_EQ(RuntimeProfileStatus::kOk, result.status);
++    ASSERT_TRUE(result.principal);
++    maximum_tracked_sessions = std::max(
++        maximum_tracked_sessions, service_->active_session_count_for_testing());
++    ASSERT_FALSE(boundaries_.issued_session_ids.empty());
++    const std::string session_id = boundaries_.issued_session_ids.back();
++
++    result.principal.reset();
++    EXPECT_EQ(0u, service_->active_session_count_for_testing());
++    service_->HandleAgentSessionLost(session_id);
++  }
++  service_->Shutdown();
++
++  EXPECT_EQ(1u, maximum_tracked_sessions);
++  EXPECT_EQ(0u, service_->active_session_count_for_testing());
++  EXPECT_EQ(kSessionCycles,
++            static_cast<size_t>(boundaries_.close_session_count));
++  EXPECT_EQ(kSessionCycles,
++            static_cast<size_t>(boundaries_.release_ownership_count));
++  ASSERT_EQ(kSessionCycles, boundaries_.issued_session_ids.size());
++  for (const std::string& session_id : boundaries_.issued_session_ids) {
++    EXPECT_EQ(1u, boundaries_.close_counts_by_session[session_id]);
++    EXPECT_EQ(1u, boundaries_.release_counts_by_session[session_id]);
++  }
++}
++
+ TEST_F(PrometheusRuntimeProfileServiceTest,
+        DetachSessionLossAndShutdownCancelOwnedTasks) {
+   EXPECT_EQ(RuntimeProfileStatus::kOk, service_->SubmitTask(Request()).status);
+-- 
+2.50.1 (Apple Git-155)
+

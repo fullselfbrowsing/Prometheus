@@ -1,0 +1,383 @@
+From c44f717fe83181745b9a415b8288c5de1436573b Mon Sep 17 00:00:00 2001
+From: Lakshman Turlapati <lakshmantvnm@gmail.com>
+Date: Sun, 9 Aug 2026 21:04:03 -0500
+Subject: [PATCH] fix(22-05): close built extension lifecycle races
+
+- confirm remove click delivery and retry bounded misses
+- retry transient manager-card absence after reload
+- assert native lifecycle and policy through terminal completion
+---
+ .../prometheus_extension_smoke_browsertest.cc | 108 ++++++++----
+ .../prometheus_extension_smoke_controller.cc  | 164 +++++++++++++++++-
+ .../prometheus_extension_smoke_controller.h   |   2 +
+ 3 files changed, 232 insertions(+), 42 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc b/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
+index d4cc6c519113c7ee3b599c24fbc98edcbfca9bd3..d745ccecc1aa3b0bbf7d828cb41b4e3d9abd9821 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
+@@ -130,8 +130,35 @@ class PrometheusExtensionSmokeControllerBrowserTest
+ // whose native uninstall confirmation dialog is accepted through the dialog's own
+ // public accept action until OnExtensionUninstalled arrives.
+ //
+-// Two defects previously blocked the options/remove stretch. They were
+-// root-caused and resolved differently, and the difference matters:
++// ASSERTION BOUNDARY: kComplete, restored 2026-07-31 after the harness race that
++// previously made it unsafe was closed.
++//
++// History, because the boundary has moved twice and the reasons are not
++// interchangeable. It was raised to kComplete once the two defects below were
++// root-caused, then reverted to kEnabled when a 60-run sweep measured 1/60
++// terminating at stage options_routing_checked with reason
++// "remove_confirmation_dialog_not_found". That failure was caused BY the raise:
++// options_routing_checked is past kEnabled, so the run was green at the lower
++// boundary and red at the higher one. Its cause was a time-of-check versus
++// time-of-use race in this harness -- the click point was hit-tested in the
++// renderer, then travelled to the browser process where the click was dispatched
++// later, so a card re-layout in between landed the click off the button.
++//
++// That race is now closed rather than narrowed: the click's DELIVERY is observed
++// after the fact, by a capture-phase listener that records whether the delivered
++// click's composed path contained the remove button, and a detected miss is
++// re-resolved and re-clicked within the existing bounded window. See
++// RemoveButtonPointScript() for why post-delivery confirmation is the only check
++// that can be authoritative here and why moving the pre-check closer to the
++// dispatch could not have been.
++//
++// Consequence for this test: reaching kComplete no longer depends on winning a
++// race, and "remove_confirmation_dialog_not_found" can no longer be a missed
++// click wearing that reason's name -- it is only reachable after a click that
++// provably landed on the remove button.
++//
++// The two defects that originally blocked the options/remove stretch were
++// resolved differently, and the difference matters:
+ //
+ //   * The remove click was genuinely FIXED. chrome.management.uninstall() with
+ //     showConfirmDialog requires user activation, which ExecuteJavaScript() does
+@@ -154,35 +181,9 @@ class PrometheusExtensionSmokeControllerBrowserTest
+ //     even though it closes nothing upstream. That race is tracked as a product
+ //     finding; this test does not assert on it either way.
+ //
+-// ASSERTION BOUNDARY: deliberately kEnabled, NOT kComplete.
+-//
+-// The boundary was briefly raised to kComplete once both defects above were
+-// resolved. A 60-run stability sweep against the built binary then measured, for
+-// the extension flow itself:
+-//
+-//     pass 57/60, and 1/60 terminating at stage options_routing_checked with
+-//     reason "remove_confirmation_dialog_not_found"
+-//
+-// (The other 2/60 failures are browser-process startup/shutdown crashes that
+-// reproduce at the same rate in an unrelated browsertest in this same binary
+-// which never touches extensions, so they are independent of this flow and of
+-// the boundary choice.)
+-//
+-// That 1/60 is caused BY the raise: stage options_routing_checked is past
+-// kEnabled, so the run is green at this boundary and red at kComplete. The cause
+-// is a harness race, not a product defect -- RemoveButtonPointScript() hit-tests
+-// the click point in the renderer, then the point travels to the browser process
+-// and DispatchRealMouseClick() sends the click later, so a card re-layout in
+-// between lands the click off the button and no confirmation dialog is ever
+-// created. Check and use are in different processes at different times.
+-//
+-// A gate whose red result can mean "harness lost a click" instead of "the product
+-// is broken" is not authoritative, so this test does not assert past kEnabled.
+-// The controller still RUNS the whole flow every time -- policy matrix, options
+-// routing, remove, and the real uninstall consent dialog are all still exercised;
+-// only the assertion stops earlier. Raising the boundary to
+-// kOptionsRoutingChecked (observed 60/60) and restoring the terminal result-record
+-// assertions is the right target once that click race is closed.
++// The result record is asserted as well as the stage, so every individual
++// lifecycle fact the packaged smoke will consume -- not just the terminal stage
++// -- is covered here.
+ IN_PROC_BROWSER_TEST_F(PrometheusExtensionSmokeControllerBrowserTest,
+                        FullLifecycleInstallsInspectsAndReloads) {
+   std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap =
+@@ -196,13 +197,52 @@ IN_PROC_BROWSER_TEST_F(PrometheusExtensionSmokeControllerBrowserTest,
+   ASSERT_TRUE(controller);
+ 
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+-    return controller->stage_for_testing() >=
+-          PrometheusExtensionSmokeStage::kEnabled;
+-  })) << "smoke controller never reached kEnabled";
++    return controller->outcome_for_testing() !=
++          PrometheusExtensionSmokeOutcome::kRunning;
++  })) << "smoke controller never reached a terminal outcome";
+ 
+   EXPECT_FALSE(controller->extension_id_for_testing().empty());
++  EXPECT_EQ(PrometheusExtensionSmokeStage::kComplete,
++           controller->stage_for_testing());
++  EXPECT_EQ(PrometheusExtensionSmokeOutcome::kSucceeded,
++           controller->outcome_for_testing());
+ 
+   controller->Shutdown();
++
++  // The controller writes its terminal record before Shutdown(), so this reads
++  // the real 0600 result file the built app's smoke script will consume.
++  std::string result_json;
++  {
++    base::ScopedAllowBlockingForTesting allow_blocking;
++    ASSERT_TRUE(base::ReadFileToString(result_path_, &result_json));
++  }
++  const std::optional<base::Value> parsed =
++      base::JSONReader::Read(result_json, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(parsed && parsed->is_dict()) << result_json;
++  const base::DictValue& record = parsed->GetDict();
++
++  const std::string* stage = record.FindString("stage");
++  ASSERT_TRUE(stage);
++  EXPECT_EQ("complete", *stage) << result_json;
++  const std::string* outcome = record.FindString("outcome");
++  ASSERT_TRUE(outcome);
++  EXPECT_EQ("succeeded", *outcome) << result_json;
++  const std::string* reason = record.FindString("reason");
++  ASSERT_TRUE(reason);
++  EXPECT_EQ("ok", *reason) << result_json;
++
++  EXPECT_EQ(1, record.FindInt("schema_version").value_or(0));
++  EXPECT_GE(record.FindInt("reload_transitions_seen").value_or(0), 1);
++  EXPECT_TRUE(record.FindBool("inspected").value_or(false));
++  // Meaningful only now that the policy stage waits for the extension to be
++  // registry-ready: PrometheusExtensionPolicyService::GetEffectiveGrant()
++  // clamps to kBlocked for a not-yet-ready extension, so before that wait
++  // existed this field was true for the wrong reason.
++  EXPECT_TRUE(record.FindBool("policy_default_blocked").value_or(false));
++  EXPECT_TRUE(record.FindBool("policy_read_only_applied").value_or(false));
++  EXPECT_TRUE(record.FindBool("policy_interact_applied").value_or(false));
++  EXPECT_TRUE(record.FindBool("options_routing_visible").value_or(false));
++  EXPECT_TRUE(record.FindBool("background_denied").value_or(false));
+ }
+ 
+ // Create() must reject an OTR profile/browser pairing before ever touching
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+index f81d74ca0c5b7dde5575bd293f3e6067972271ff..91b87a1350b52aef9b3ff1a3d9368deebafb2599 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+@@ -385,6 +385,41 @@ std::string EnableToggleClickScript(const std::string& extension_id,
+ // input event rather than being told to assume it. The actual user-consent gate
+ // -- the native uninstall confirmation dialog -- is untouched and must still be
+ // accepted through its own real accept action.
++// Resolves the remove button to a viewport point AND arms a delivery receipt for
++// the click that is about to be sent at that point.
++//
++// The receipt is the load-bearing part, and it exists because the pre-dispatch
++// hit test below cannot be trusted on its own.
++//
++// Time of check versus time of use. `elementFromPoint()` runs in the RENDERER.
++// The resolved point then travels to the browser process, and
++// DispatchRealMouseClick() sends the click from THERE, later. Check and use are
++// in different processes at different times, so any card re-layout in between
++// lands the click somewhere other than the remove button -- and nothing in the
++// old flow could tell. `chrome.management.uninstall()` simply never ran, no
++// ExtensionUninstallDialog was ever created, and the confirmation poll expired
++// with a reason that named the missing dialog rather than the missed click.
++// Observed 1/60 at the kComplete boundary in the 2026-07-31 hardening sweep.
++//
++// Re-resolving the point closer to the dispatch would only make that interval
++// smaller. It cannot make it zero: any renderer-side resolution followed by a
++// cross-process hop reintroduces the same gap, because the browser can never
++// hold a layout-valid point -- only the renderer knows the layout, and by the
++// time the browser has the point the renderer may have moved on.
++//
++// So this does not try to validate the point before using it. It validates the
++// CLICK AFTER DELIVERY, by observing the event Blink actually dispatched: a
++// capture-phase listener on the document records whether the delivered click's
++// composed path contained the remove button. That check is authoritative because
++// the fact checked and the fact depended upon are the same fact -- the delivery
++// itself -- so there is no interval between them for layout to change in. A miss
++// stops being invisible and terminal, and becomes detected and retryable.
++//
++// The listener is installed inside this same script execution, which completes
++// before the browser dispatches anything, so a delivered click can never outrun
++// its own receipt. `composedPath()` rather than `event.target` because the button
++// is a cr-button whose own shadow content is the real target; the button is an
++// ancestor on the composed path whenever the click genuinely landed on it.
+ std::string RemoveButtonPointScript(const std::string& extension_id) {
+   return "(function(){"
+         "var item=" +
+@@ -403,15 +438,49 @@ std::string RemoveButtonPointScript(const std::string& extension_id) {
+         "var y=Math.floor(rect.top+rect.height/2);"
+         "if(x<0||y<0||x>=window.innerWidth||y>=window.innerHeight)"
+         "return {status:'button_off_screen'};"
+-        // Confirm the resolved point really hit-tests to the remove button
+-        // before any real mouse event is sent at it, so a mis-resolved point can
+-        // never silently click some other control.
++        // Cheap pre-filter only. It stops an obviously mis-resolved point from
++        // being dispatched at all; it is NOT what establishes that the click
++        // landed, because it cannot -- see the comment above.
+         "if(item.shadowRoot.elementFromPoint(x,y)!==button)"
+         "return {status:'button_not_hittable'};"
++        // Arm the delivery receipt. Installed once, re-armed per attempt.
++        "var s=window.__prometheusRemoveClickReceipt;"
++        "if(!s){"
++          "s=window.__prometheusRemoveClickReceipt="
++              "{target:null,seen:false,hit:false,trusted:false,actual:''};"
++          "document.addEventListener('click',function(e){"
++            "var st=window.__prometheusRemoveClickReceipt;"
++            "if(!st||!st.target)return;"
++            "var path=e.composedPath?e.composedPath():[];"
++            "st.seen=true;"
++            "st.trusted=!!e.isTrusted;"
++            "st.hit=path.indexOf(st.target)>=0;"
++            "var t=path.length?path[0]:e.target;"
++            "st.actual=t?((t.id||'-')+':'+(t.tagName||'-')):'none';"
++          "},true);"
++        "}"
++        "s.target=button;s.seen=false;s.hit=false;s.trusted=false;s.actual='';"
+         "return {status:'ok',x:x,y:y};"
+         "})()";
+ }
+ 
++// Reads back the receipt armed above. Reports only what was observed:
++//   pending    -- no click has been delivered to the document yet
++//   delivered  -- a trusted click whose composed path contained the button
++//   missed     -- a click was delivered, but not to the remove button
++//   untrusted  -- a click was delivered but carried no real input provenance,
++//                 so it could not have satisfied the uninstall gesture gate
++//   no_receipt -- the manager document was replaced under us
++std::string RemoveClickReceiptScript() {
++  return "(function(){"
++        "var s=window.__prometheusRemoveClickReceipt;"
++        "if(!s)return {status:'no_receipt'};"
++        "if(!s.seen)return {status:'pending'};"
++        "if(!s.trusted)return {status:'untrusted',actual:s.actual};"
++        "return {status:s.hit?'delivered':'missed',actual:s.actual};"
++        "})()";
++}
++
+ std::string ResultValueOrEmpty(const base::Value& value) {
+   return value.is_string() ? value.GetString() : std::string();
+ }
+@@ -1119,7 +1188,8 @@ void PrometheusExtensionSmokeController::OnDisableClickIssued(
+   // pre-transition state until the WebUI's own developerPrivate round trip
+   // lands; retry the click until the bounded deadline instead of treating a
+   // transient toggle state as a hard failure.
+-  if ((status == "disabled_toggle" || status == "hidden_toggle" ||
++  if ((status == "missing_item" || status == "missing_toggle" ||
++       status == "disabled_toggle" || status == "hidden_toggle" ||
+        status == "toggle_state_not_settled") &&
+       base::TimeTicks::Now() < deadline) {
+     base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+@@ -1157,7 +1227,8 @@ void PrometheusExtensionSmokeController::OnEnableClickIssued(
+                                "enable_not_observed_timeout");
+     return;
+   }
+-  if ((status == "disabled_toggle" || status == "hidden_toggle" ||
++  if ((status == "missing_item" || status == "missing_toggle" ||
++       status == "disabled_toggle" || status == "hidden_toggle" ||
+        status == "toggle_state_not_settled") &&
+       base::TimeTicks::Now() < deadline) {
+     base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+@@ -1364,12 +1435,18 @@ void PrometheusExtensionSmokeController::OnRemoveButtonPointResolved(
+     // Arm the observed-transition timeout immediately before the real click,
+     // never in a completion callback: the click is dispatched synchronously from
+     // this process, so the timeout is guaranteed armed before any
+-    // ExtensionRegistry notification it produces can arrive.
++    // ExtensionRegistry notification it produces can arrive. Re-arming on a
++    // retry is deliberate and safe -- OnPendingTransitionTimedOut() drops any
++    // generation that is no longer current, so only the newest attempt's window
++    // is live.
+     ArmPendingTransitionTimeout(kTransitionObservedTimeout,
+                                "remove_not_observed_timeout");
+     DispatchRealMouseClick(gfx::Point(*x, *y));
+-    PollRemoveConfirmationReady(base::TimeTicks::Now() +
+-                               kRemoveConfirmationTimeout);
++    // Do NOT start the confirmation poll yet. Whether that click actually
++    // reached the remove button is not yet known, and starting the dialog poll
++    // here is exactly what turned a missed click into a 10 s expiry reported as
++    // a missing dialog. Confirm delivery first.
++    PollRemoveClickReceipt(deadline);
+     return;
+   }
+   // The card, its remove button, and that button's layout each settle through
+@@ -1391,6 +1468,77 @@ void PrometheusExtensionSmokeController::OnRemoveButtonPointResolved(
+                    (status ? *status : std::string("no_result")));
+ }
+ 
++// Bounded poll on an observable predicate -- "has a click been delivered to the
++// manager document, and did its composed path contain the remove button" -- not
++// a sleep. It observes state that the renderer publishes as a direct
++// consequence of the dispatch, and it stops the instant that state is decisive.
++void PrometheusExtensionSmokeController::PollRemoveClickReceipt(
++    base::TimeTicks deadline) {
++  if (pending_transition_ != PrometheusExtensionSmokePendingTransition::kRemove) {
++    return;
++  }
++  ExecuteInManager(
++      RemoveClickReceiptScript(),
++      base::BindOnce(
++          &PrometheusExtensionSmokeController::OnRemoveClickReceiptRead,
++          weak_ptr_factory_.GetWeakPtr(), deadline));
++}
++
++void PrometheusExtensionSmokeController::OnRemoveClickReceiptRead(
++    base::TimeTicks deadline,
++    base::Value result) {
++  if (pending_transition_ != PrometheusExtensionSmokePendingTransition::kRemove) {
++    return;
++  }
++  const base::DictValue* receipt = result.GetIfDict();
++  const std::string* status = receipt ? receipt->FindString("status") : nullptr;
++  const std::string* actual = receipt ? receipt->FindString("actual") : nullptr;
++  const std::string shape = status ? *status : std::string("no_result");
++
++  if (shape == "delivered") {
++    // The click provably landed on the remove button, so from here a missing
++    // confirmation dialog means the dialog really did not appear -- it can no
++    // longer be a missed click wearing that reason's name.
++    PollRemoveConfirmationReady(base::TimeTicks::Now() +
++                               kRemoveConfirmationTimeout);
++    return;
++  }
++
++  if (shape == "missed" || shape == "untrusted" || shape == "no_receipt") {
++    // Detected miss. Re-resolve against current layout, re-arm, and click
++    // again. This is the whole point of the receipt: the race is not prevented,
++    // it is observed and corrected. Bounded by the same actionable deadline as
++    // every other not-yet-ready shape in this stage.
++    if (base::TimeTicks::Now() < deadline) {
++      base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++          FROM_HERE,
++          base::BindOnce(
++              &PrometheusExtensionSmokeController::ResolveRemoveButtonPoint,
++              weak_ptr_factory_.GetWeakPtr(), deadline),
++          kPollInterval);
++      return;
++    }
++    Fail(stage_, "remove_click_not_delivered:" + shape +
++                     (actual && !actual->empty() ? ":" + *actual
++                                                 : std::string()));
++    return;
++  }
++
++  // "pending" -- the click has not been delivered yet. Keep observing; do NOT
++  // click again, because a second click on a slow-but-successful first one
++  // would drive a second chrome.management.uninstall().
++  if (base::TimeTicks::Now() < deadline) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++        FROM_HERE,
++        base::BindOnce(
++            &PrometheusExtensionSmokeController::PollRemoveClickReceipt,
++            weak_ptr_factory_.GetWeakPtr(), deadline),
++        kPollInterval);
++    return;
++  }
++  Fail(stage_, "remove_click_not_delivered:" + shape);
++}
++
+ void PrometheusExtensionSmokeController::DispatchRealMouseClick(
+     const gfx::Point& point_in_viewport) {
+   content::WebContents* contents = ManagerWebContents();
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_controller.h b/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
+index d0ea72ef3460f93df6e799723c5d6b86161a684a..4c2db39ee440404f684a15c2cf60ba8e96e0917f 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
+@@ -173,6 +173,8 @@ class PrometheusExtensionSmokeController
+   void OnRemoveButtonPointResolved(base::TimeTicks deadline,
+                                    base::Value result);
+   void DispatchRealMouseClick(const gfx::Point& point_in_viewport);
++  void PollRemoveClickReceipt(base::TimeTicks deadline);
++  void OnRemoveClickReceiptRead(base::TimeTicks deadline, base::Value result);
+   void PollRemoveConfirmationReady(base::TimeTicks deadline);
+   void OnExtensionRemovedObserved();
+   void Complete();

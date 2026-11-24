@@ -1,0 +1,126 @@
+From e3765b3085ccb3469b76db1ae1d1b44a592f7283 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 02:08:55 -0500
+Subject: [PATCH 2/9] test(16-01): cover Prometheus WebUI foundation
+
+---
+ chrome/browser/ui/views/prometheus/BUILD.gn   |  3 +
+ .../prometheus_web_ui_browsertest.cc          | 83 +++++++++++++++++++
+ 2 files changed, 86 insertions(+)
+ create mode 100644 chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index dc7ac64331..2643d35749 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -37,6 +37,7 @@ source_set("browser_tests") {
+   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+   sources = [
+     "../../../prometheus/prometheus_tab_commands_browsertest.cc",
++    "../../webui/prometheus/prometheus_web_ui_browsertest.cc",
+     "prometheus_compact_chrome_browsertest.cc",
+     "prometheus_token_gallery_browsertest.cc",
+     "prometheus_toolbar_entrypoint_browsertest.cc",
+@@ -53,8 +54,10 @@ source_set("browser_tests") {
+     "//chrome/browser/ui/views/bubble",
+     "//chrome/browser/ui/views/frame",
+     "//chrome/browser/ui/views/toolbar",
++    "//chrome/browser/ui/webui/prometheus",
+     "//chrome/test:test_support",
+     "//components/prefs",
++    "//content/public/browser",
+     "//content/test:test_support",
+     "//ui/views",
+     "//url",
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+new file mode 100644
+index 0000000000..9d31c19d20
+--- /dev/null
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -0,0 +1,83 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/webui/prometheus/prometheus_web_ui.h"
++
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/common/webui_url_constants.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/browser/web_ui.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "url/gurl.h"
++
++class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
++ protected:
++  content::WebContents* NavigateTo(const char* url) {
++    EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(url)));
++    return browser()->tab_strip_model()->GetActiveWebContents();
++  }
++
++  bool BodyContains(content::WebContents* web_contents,
++                    const std::string& text) {
++    const std::string script =
++        content::JsReplace("document.body.innerText.includes($1)", text);
++    return content::EvalJs(web_contents, script).ExtractBool();
++  }
++
++  bool InputPlaceholderIs(content::WebContents* web_contents,
++                          const std::string& placeholder) {
++    const std::string script = content::JsReplace(
++        "document.querySelector('input')?.placeholder === $1", placeholder);
++    return content::EvalJs(web_contents, script).ExtractBool();
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
++                       NewTabCreatesControllerAndRendersRequiredCopy) {
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusNewTabURL);
++
++  ASSERT_TRUE(web_contents);
++  ASSERT_TRUE(web_contents->GetWebUI());
++  EXPECT_TRUE(
++      web_contents->GetWebUI()->GetController()->GetAs<PrometheusNewTabUI>());
++  EXPECT_TRUE(BodyContains(web_contents, "Prometheus"));
++  EXPECT_TRUE(InputPlaceholderIs(web_contents, "Search or ask FSB"));
++  EXPECT_TRUE(BodyContains(web_contents, "Suggested automations"));
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
++                       SidePanelCreatesControllerAndRendersRequiredCopy) {
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusSidePanelURL);
++
++  ASSERT_TRUE(web_contents);
++  ASSERT_TRUE(web_contents->GetWebUI());
++  EXPECT_TRUE(web_contents->GetWebUI()
++                  ->GetController()
++                  ->GetAs<PrometheusSidePanelUI>());
++  EXPECT_TRUE(BodyContains(web_contents, "FSB Agent"));
++  EXPECT_TRUE(BodyContains(web_contents, "Explorer"));
++  EXPECT_TRUE(BodyContains(web_contents, "Tools"));
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
++                       ControlPanelCreatesControllerAndRendersRequiredCopy) {
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++
++  ASSERT_TRUE(web_contents);
++  ASSERT_TRUE(web_contents->GetWebUI());
++  EXPECT_TRUE(web_contents->GetWebUI()
++                  ->GetController()
++                  ->GetAs<PrometheusControlPanelUI>());
++  EXPECT_TRUE(BodyContains(web_contents, "Providers & Models"));
++  EXPECT_TRUE(BodyContains(web_contents, "Logs & Diagnostics"));
++  EXPECT_TRUE(BodyContains(web_contents, "Parity Matrix"));
++}
+-- 
+2.50.1 (Apple Git-155)
+

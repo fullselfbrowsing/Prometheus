@@ -1,0 +1,2167 @@
+From 45d3d2bc1a672264b11256ed85fa8febc80875b6 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 21:40:35 -0500
+Subject: [PATCH] feat(20-11): wire live side panel runtime
+
+---
+ .../prometheus_browser_main_extra_parts.cc    | 220 +++++++++-
+ .../prometheus_runtime_profile_service.cc     |  90 ++++-
+ .../prometheus_runtime_profile_service.h      |  33 +-
+ .../prometheus/prometheus_side_panel.html     |  74 +++-
+ .../resources/prometheus/prometheus_webui.css | 353 ++++++++++++++--
+ .../resources/prometheus/prometheus_webui.js  | 382 +++++++++++++++++-
+ .../prometheus_side_panel_runtime.h           |  13 +
+ .../ui/webui/prometheus/prometheus_web_ui.cc  | 182 ++++++++-
+ .../ui/webui/prometheus/prometheus_web_ui.h   |  16 +
+ .../prometheus_web_ui_browsertest.cc          | 318 +++++++++++++--
+ 10 files changed, 1597 insertions(+), 84 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index a7417872e4..8231556e61 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -4,6 +4,9 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_browser_main_extra_parts.h"
+ 
++#include <algorithm>
++#include <optional>
++#include <string>
+ #include <utility>
+ 
+ #include "base/command_line.h"
+@@ -17,12 +20,147 @@
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+ #include "chrome/common/chrome_switches.h"
++#include "components/tabs/public/tab_interface.h"
+ 
+ namespace prometheus {
+ namespace {
+ 
++constexpr char kTargetLostRecovery[] =
++    "Return to the originating browser tab and retry";
++
++base::DictValue RuntimeOperationValue(
++    RuntimeProfileStatus status,
++    std::string recovery,
++    const std::optional<RuntimeTaskSnapshot>& task = std::nullopt) {
++  base::DictValue value;
++  value.Set("status", RuntimeProfileStatusToString(status));
++  value.Set("accepted", status == RuntimeProfileStatus::kOk ||
++                            status == RuntimeProfileStatus::kCancelled);
++  if (!recovery.empty()) {
++    value.Set("recovery", std::move(recovery));
++  }
++  if (task) {
++    std::optional<base::DictValue> task_value =
++        RuntimeTaskSnapshotToValue(*task);
++    if (task_value) {
++      value.Set("task", std::move(*task_value));
++    }
++  }
++  return value;
++}
++
++base::DictValue RuntimeUsageValue(const RuntimeUsage& usage) {
++  base::DictValue value;
++  value.Set("input_tokens", static_cast<int>(usage.input_tokens));
++  value.Set("output_tokens", static_cast<int>(usage.output_tokens));
++  value.Set("tool_calls", static_cast<int>(usage.tool_calls));
++  value.Set("duration_ms", static_cast<int>(usage.duration_ms));
++  value.Set("cost_known", usage.cost_microunits.has_value());
++  if (usage.cost_microunits) {
++    value.Set("cost_microunits", static_cast<int>(*usage.cost_microunits));
++  }
++  return value;
++}
++
++std::string RecoveryForTaskError(RuntimeErrorCode error) {
++  switch (error) {
++    case RuntimeErrorCode::kNone:
++    case RuntimeErrorCode::kCancelled:
++      return std::string();
++    case RuntimeErrorCode::kRequestTooLarge:
++      return "Shorten the task prompt and retry";
++    case RuntimeErrorCode::kPolicyBlocked:
++    case RuntimeErrorCode::kToolDenied:
++      return "Review Prometheus permissions and retry";
++    case RuntimeErrorCode::kProviderUnavailable:
++    case RuntimeErrorCode::kProviderAuth:
++    case RuntimeErrorCode::kProviderRateLimited:
++    case RuntimeErrorCode::kProviderInvalidResponse:
++      return "Choose an available provider or check the configured local "
++             "server, then retry";
++    case RuntimeErrorCode::kTargetLost:
++      return kTargetLostRecovery;
++    case RuntimeErrorCode::kConfirmationRequired:
++      return "Confirm the pending browser action to continue";
++    case RuntimeErrorCode::kTimeout:
++      return "Retry the task or choose a different provider";
++    case RuntimeErrorCode::kInvalidRequest:
++    case RuntimeErrorCode::kInvalidTransition:
++    case RuntimeErrorCode::kLocalUiRequired:
++    case RuntimeErrorCode::kInternal:
++      return "Refresh the task snapshot and retry";
++  }
++}
++
++base::DictValue SanitizedRuntimeSnapshotValue(
++    RuntimeSidePanelSnapshotResult result) {
++  base::DictValue value;
++  value.Set("status", RuntimeProfileStatusToString(result.status));
++  if (!result.recovery.empty()) {
++    value.Set("recovery", std::move(result.recovery));
++  }
++
++  base::ListValue tasks;
++  for (const RuntimeStoredTask& stored_task : result.snapshot.tasks) {
++    std::optional<base::DictValue> task =
++        RuntimeTaskSnapshotToValue(stored_task.snapshot);
++    if (!task) {
++      continue;
++    }
++    const auto metadata = std::ranges::find(
++        result.task_metadata, stored_task.snapshot.task_id,
++        &RuntimeSidePanelSnapshotResult::TaskMetadata::task_id);
++    if (metadata != result.task_metadata.end()) {
++      task->Set("provider_label", metadata->provider_label);
++      task->Set("provider_kind",
++                PrometheusProviderKindToString(metadata->provider_kind));
++      task->Set("route_class",
++                PrometheusProviderRouteClassToString(metadata->route_class));
++    }
++    if (stored_task.result) {
++      task->Set("result", stored_task.result->text);
++      task->Set("result_truncated", stored_task.result->truncated);
++    }
++    task->Set("event_count",
++              static_cast<int>(std::ranges::count(
++                  result.snapshot.events, stored_task.snapshot.task_id,
++                  &RuntimeEventRecord::task_id)));
++    task->Set("action_count",
++              static_cast<int>(std::ranges::count(
++                  result.snapshot.actions, stored_task.snapshot.task_id,
++                  &RuntimeActionRecord::task_id)));
++    const std::string recovery =
++        RecoveryForTaskError(stored_task.snapshot.error_code);
++    if (!recovery.empty()) {
++      task->Set("recovery", recovery);
++    }
++    tasks.Append(std::move(*task));
++  }
++  value.Set("tasks", std::move(tasks));
++
++  base::ListValue providers;
++  for (const RuntimeSidePanelSnapshotResult::ProviderMetadata& provider :
++       result.providers) {
++    base::DictValue provider_value;
++    provider_value.Set("provider_id", provider.provider_id);
++    provider_value.Set("label", provider.label);
++    provider_value.Set("model_id", provider.model_id);
++    provider_value.Set("kind", PrometheusProviderKindToString(provider.kind));
++    provider_value.Set("route_class", PrometheusProviderRouteClassToString(
++                                          provider.route_class));
++    provider_value.Set("health",
++                       PrometheusProviderHealthToString(provider.health));
++    providers.Append(std::move(provider_value));
++  }
++  value.Set("providers", std::move(providers));
++  value.Set("aggregate_usage",
++            RuntimeUsageValue(result.snapshot.aggregate_usage));
++  return value;
++}
++
+ class NativePrometheusSidePanelRuntime final
+-    : public PrometheusSidePanelRuntime {
++    : public PrometheusSidePanelRuntime,
++      public PrometheusRuntimeProfileService::Observer {
+  public:
+   NativePrometheusSidePanelRuntime(
+       PrometheusRuntimeProfileService* service,
+@@ -32,12 +170,15 @@ class NativePrometheusSidePanelRuntime final
+       : service_(service->GetWeakPtr()),
+         exact_browser_(exact_browser),
+         stable_tab_id_(stable_tab_id),
+-        principal_(std::move(principal)) {}
++        principal_(std::move(principal)) {
++    service->AddObserver(this);
++    observing_ = true;
++  }
+ 
+-  ~NativePrometheusSidePanelRuntime() override = default;
++  ~NativePrometheusSidePanelRuntime() override { StopObserving(); }
+ 
+   bool IsValid() const override {
+-    return service_ && principal_ && principal_->is_valid();
++    return service_ && principal_ && principal_->is_valid() && HasExactTarget();
+   }
+ 
+   bool SeedPrompt(std::string_view prompt) override {
+@@ -45,21 +186,92 @@ class NativePrometheusSidePanelRuntime final
+                             RuntimeProfileStatus::kOk;
+   }
+ 
++  void SetSnapshotCallback(SnapshotCallback callback) override {
++    snapshot_callback_ = std::move(callback);
++  }
++
++  base::DictValue GetSanitizedSnapshot() override {
++    if (!IsValid()) {
++      return RuntimeOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    return SanitizedRuntimeSnapshotValue(
++        service_->GetSidePanelSnapshot(*principal_));
++  }
++
++  base::DictValue SubmitTask(std::string prompt,
++                             std::string requested_execution,
++                             std::optional<std::string> provider_id) override {
++    if (!IsValid()) {
++      return RuntimeOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    const std::optional<RequestedExecution> requested =
++        RequestedExecutionFromString(requested_execution);
++    if (!requested || (provider_id && provider_id->empty())) {
++      return RuntimeOperationValue(RuntimeProfileStatus::kInvalidRequest,
++                                   "Choose Auto, Provider, or Local");
++    }
++    RuntimeSubmitResult result = service_->SubmitTask(
++        *principal_, std::move(prompt), *requested, std::move(provider_id));
++    return RuntimeOperationValue(result.status, std::move(result.recovery),
++                                 result.task);
++  }
++
++  base::DictValue CancelTask(std::string task_id) override {
++    if (!IsValid()) {
++      return RuntimeOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    if (task_id.empty()) {
++      return RuntimeOperationValue(RuntimeProfileStatus::kInvalidRequest,
++                                   "Refresh the task snapshot and retry");
++    }
++    const RuntimeProfileStatus status =
++        service_->CancelTask(*principal_, task_id);
++    return RuntimeOperationValue(status,
++                                 status == RuntimeProfileStatus::kCancelled
++                                     ? std::string()
++                                     : "Refresh the task snapshot and retry");
++  }
++
+   void HandleTargetLost() override {
+     if (!principal_) {
+       return;
+     }
++    StopObserving();
+     if (service_) {
+       service_->HandleTabDetached(exact_browser_, stable_tab_id_);
+     }
+     principal_.reset();
+   }
+ 
++  void OnRuntimeSidePanelSnapshotChanged() override {
++    if (snapshot_callback_) {
++      snapshot_callback_.Run(GetSanitizedSnapshot());
++    }
++  }
++
+  private:
++  bool HasExactTarget() const {
++    tabs::TabInterface* const active_tab =
++        exact_browser_ ? exact_browser_->GetActiveTabInterface() : nullptr;
++    return active_tab && active_tab->GetHandle().raw_value() == stable_tab_id_;
++  }
++
++  void StopObserving() {
++    if (observing_ && service_) {
++      service_->RemoveObserver(this);
++    }
++    observing_ = false;
++  }
++
+   base::WeakPtr<PrometheusRuntimeProfileService> service_;
+   raw_ptr<BrowserWindowInterface> exact_browser_;
+   const int32_t stable_tab_id_;
+   std::unique_ptr<LocalRuntimePrincipal> principal_;
++  SnapshotCallback snapshot_callback_;
++  bool observing_ = false;
+ };
+ 
+ std::unique_ptr<PrometheusSidePanelRuntime> CreateSidePanelRuntime(
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+index e12cc63178..b00bd3b137 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+@@ -375,6 +375,7 @@ PrometheusRuntimeProfileService::PrometheusRuntimeProfileService(
+ 
+   PrefService* const prefs = profile_->GetPrefs();
+   owned_runtime_store_ = std::make_unique<PrometheusRuntimeStore>(prefs);
++  owned_runtime_store_->AddObserver(this);
+   owned_memory_store_ = std::make_unique<PrometheusMemoryStore>(prefs);
+   owned_provider_registry_ =
+       std::make_unique<PrometheusProviderRegistry>(prefs);
+@@ -533,8 +534,55 @@ PrometheusRuntimeProfileService::GetSidePanelSnapshot(
+   if (authority_status != RuntimeProfileStatus::kOk) {
+     return {.status = authority_status, .recovery = kAuthorityRecovery};
+   }
+-  return {.status = RuntimeProfileStatus::kOk,
+-          .snapshot = GetRuntimeSnapshotForTransport()};
++  RuntimeSidePanelSnapshotResult result{
++      .status = RuntimeProfileStatus::kOk,
++      .snapshot = GetRuntimeSnapshotForTransport(),
++  };
++  for (RuntimeStoredTask& stored_task : result.snapshot.tasks) {
++    const auto runtime_task = tasks_.find(stored_task.snapshot.task_id);
++    if (runtime_task == tasks_.end()) {
++      continue;
++    }
++
++    // The persisted store remains canonical for terminal state and result.
++    // The in-memory record contributes route metadata that the store does not
++    // persist, plus any truthful non-terminal state reached between writes.
++    stored_task.snapshot.effective_execution =
++        runtime_task->second.snapshot.effective_execution;
++    if (!IsTerminalRuntimeTaskState(stored_task.snapshot.state) &&
++        runtime_task->second.snapshot.state != RuntimeTaskState::kQueued) {
++      stored_task.snapshot.state = runtime_task->second.snapshot.state;
++      stored_task.snapshot.error_code =
++          runtime_task->second.snapshot.error_code;
++      stored_task.snapshot.usage = runtime_task->second.snapshot.usage;
++      stored_task.snapshot.updated_at_ms =
++          std::max(stored_task.snapshot.updated_at_ms,
++                   runtime_task->second.snapshot.updated_at_ms);
++    }
++    result.task_metadata.push_back({
++        .task_id = stored_task.snapshot.task_id,
++        .provider_label = runtime_task->second.provider.label,
++        .provider_kind = runtime_task->second.provider.kind,
++        .route_class = runtime_task->second.provider.route_class,
++    });
++  }
++  if (hooks_.list_providers) {
++    for (const PrometheusProviderConfig& provider :
++         hooks_.list_providers.Run()) {
++      if (!provider.enabled) {
++        continue;
++      }
++      result.providers.push_back({
++          .provider_id = provider.provider_id,
++          .label = provider.label,
++          .model_id = provider.model_id,
++          .kind = provider.kind,
++          .route_class = provider.route_class,
++          .health = provider.health,
++      });
++    }
++  }
++  return result;
+ }
+ 
+ RuntimeSubmitResult PrometheusRuntimeProfileService::SubmitTask(
+@@ -1409,6 +1457,24 @@ void PrometheusRuntimeProfileService::HandleAgentSessionLost(
+   ReleaseSessionOnce(agent_session_id);
+ }
+ 
++void PrometheusRuntimeProfileService::AddObserver(Observer* observer) {
++  if (!shutdown_) {
++    observers_.AddObserver(observer);
++  }
++}
++
++void PrometheusRuntimeProfileService::RemoveObserver(Observer* observer) {
++  observers_.RemoveObserver(observer);
++}
++
++void PrometheusRuntimeProfileService::OnRuntimeStoreChanged(
++    const RuntimeStoreSnapshot& snapshot) {
++  static_cast<void>(snapshot);
++  for (Observer& observer : observers_) {
++    observer.OnRuntimeSidePanelSnapshotChanged();
++  }
++}
++
+ base::WeakPtr<PrometheusRuntimeProfileService>
+ PrometheusRuntimeProfileService::GetWeakPtr() {
+   return weak_factory_.GetWeakPtr();
+@@ -1460,9 +1526,11 @@ void PrometheusRuntimeProfileService::Shutdown() {
+     owned_vault_service_->Shutdown();
+   }
+   if (owned_runtime_store_) {
++    owned_runtime_store_->RemoveObserver(this);
+     const int64_t now_ms = hooks_.now_ms ? hooks_.now_ms.Run() : 0;
+     owned_runtime_store_->Shutdown(now_ms);
+   }
++  observers_.Clear();
+   weak_factory_.InvalidateWeakPtrs();
+ }
+ 
+@@ -1583,9 +1651,23 @@ RuntimeProfileStatus PrometheusRuntimeProfileService::FinishTaskOnce(
+ 
+   const int64_t now_ms = hooks_.now_ms ? hooks_.now_ms.Run() : 0;
+   if (owned_runtime_store_) {
++    uint64_t store_generation = generation;
++    if (state == RuntimeTaskState::kCancelled) {
++      const RuntimeStoreMutation cancelling =
++          owned_runtime_store_->TransitionTask(
++              task_id, store_generation, RuntimeTaskState::kCancelling, now_ms);
++      if (cancelling.status == RuntimeStoreStatus::kAlreadyFinished) {
++        return RuntimeProfileStatus::kAlreadyFinished;
++      }
++      if (cancelling.status != RuntimeStoreStatus::kOk) {
++        return RuntimeProfileStatus::kInvalidRequest;
++      }
++      store_generation = cancelling.generation;
++    }
+     const RuntimeStoreStatus store_status =
+-        owned_runtime_store_->FinishTaskOnce(task_id, generation, state, error,
+-                                             result, terminal_usage, now_ms);
++        owned_runtime_store_->FinishTaskOnce(task_id, store_generation, state,
++                                             error, result, terminal_usage,
++                                             now_ms);
+     if (store_status == RuntimeStoreStatus::kAlreadyFinished) {
+       return RuntimeProfileStatus::kAlreadyFinished;
+     }
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.h b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+index be13bc7dec..465d99ed9f 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+@@ -18,6 +18,8 @@
+ #include "base/functional/callback.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
++#include "base/observer_list.h"
++#include "base/observer_list_types.h"
+ #include "chrome/browser/prometheus/prometheus_agent_route.h"
+ #include "chrome/browser/prometheus/prometheus_agent_session.h"
+ #include "chrome/browser/prometheus/prometheus_memory_store.h"
+@@ -220,11 +222,36 @@ struct RuntimePrincipalResult {
+ struct RuntimeSidePanelSnapshotResult {
+   RuntimeProfileStatus status = RuntimeProfileStatus::kNotImplemented;
+   RuntimeStoreSnapshot snapshot;
++  struct ProviderMetadata {
++    std::string provider_id;
++    std::string label;
++    std::string model_id;
++    PrometheusProviderKind kind = PrometheusProviderKind::kOpenAI;
++    PrometheusProviderRouteClass route_class =
++        PrometheusProviderRouteClass::kHosted;
++    PrometheusProviderHealth health = PrometheusProviderHealth::kUnknown;
++  };
++  struct TaskMetadata {
++    std::string task_id;
++    std::string provider_label;
++    PrometheusProviderKind provider_kind = PrometheusProviderKind::kOpenAI;
++    PrometheusProviderRouteClass route_class =
++        PrometheusProviderRouteClass::kHosted;
++  };
++  std::vector<ProviderMetadata> providers;
++  std::vector<TaskMetadata> task_metadata;
+   std::string recovery;
+ };
+ 
+-class PrometheusRuntimeProfileService : public KeyedService {
++class PrometheusRuntimeProfileService
++    : public KeyedService,
++      public PrometheusRuntimeStore::Observer {
+  public:
++  class Observer : public base::CheckedObserver {
++   public:
++    virtual void OnRuntimeSidePanelSnapshotChanged() = 0;
++  };
++
+   PrometheusRuntimeProfileService(
+       Profile* profile,
+       PrometheusAgentProfileService* agent_profile_service);
+@@ -305,6 +332,8 @@ class PrometheusRuntimeProfileService : public KeyedService {
+   void HandleTabDetached(BrowserWindowInterface* exact_browser,
+                          int32_t stable_tab_id);
+   void HandleAgentSessionLost(std::string_view agent_session_id);
++  void AddObserver(Observer* observer);
++  void RemoveObserver(Observer* observer);
+   base::WeakPtr<PrometheusRuntimeProfileService> GetWeakPtr();
+   void Shutdown() override;
+ 
+@@ -373,6 +402,7 @@ class PrometheusRuntimeProfileService : public KeyedService {
+   void ReleasePrincipal(LocalRuntimePrincipal* principal);
+   void RelocatePrincipal(LocalRuntimePrincipal* from,
+                          LocalRuntimePrincipal* to);
++  void OnRuntimeStoreChanged(const RuntimeStoreSnapshot& snapshot) override;
+ 
+   raw_ptr<Profile> profile_ = nullptr;
+   raw_ptr<PrometheusAgentProfileService> agent_profile_service_ = nullptr;
+@@ -388,6 +418,7 @@ class PrometheusRuntimeProfileService : public KeyedService {
+   std::set<std::string, std::less<>> active_submission_fingerprints_;
+   std::set<std::string, std::less<>> released_sessions_;
+   std::set<LocalRuntimePrincipal*> principals_;
++  base::ObserverList<Observer> observers_;
+   uint64_t next_discovery_operation_id_ = 1;
+   PrometheusRuntimeTestBootstrapResult startup_bootstrap_result_ =
+       PrometheusRuntimeTestBootstrapResult::kNotRequested;
+diff --git a/chrome/browser/resources/prometheus/prometheus_side_panel.html b/chrome/browser/resources/prometheus/prometheus_side_panel.html
+index 5e2f52ee75..fc3a3b2490 100644
+--- a/chrome/browser/resources/prometheus/prometheus_side_panel.html
++++ b/chrome/browser/resources/prometheus/prometheus_side_panel.html
+@@ -50,9 +50,64 @@
+             <span class="badge">Ready</span>
+           </div>
+           <p class="mode-copy">Ask FSB to work in this browser.</p>
+-          <section class="panel-row handoff-seed" id="ask-fsb-seed" hidden>
+-            <strong>Pending start-page request</strong>
+-            <p id="ask-fsb-seed-text"></p>
++          <form class="runtime-composer" id="runtime-composer" novalidate>
++            <label class="composer-label" for="runtime-prompt">
++              What should FSB do?
++            </label>
++            <textarea id="runtime-prompt" name="prompt" maxlength="65536"
++                placeholder="Ask FSB to work in this browser" required
++                aria-describedby="composer-recovery"></textarea>
++            <fieldset class="execution-fieldset">
++              <legend>Execution</legend>
++              <div class="execution-segments" role="radiogroup"
++                  aria-label="Execution mode">
++                <label class="execution-segment">
++                  <input type="radio" name="execution-mode" value="auto"
++                      checked>
++                  <span>Auto</span>
++                </label>
++                <label class="execution-segment">
++                  <input type="radio" name="execution-mode" value="provider">
++                  <span>Provider</span>
++                </label>
++                <label class="execution-segment">
++                  <input type="radio" name="execution-mode" value="local">
++                  <span>Local</span>
++                </label>
++              </div>
++            </fieldset>
++            <div class="provider-field" id="provider-field" hidden>
++              <label for="provider-select">Provider</label>
++              <select id="provider-select" name="provider"></select>
++            </div>
++            <div class="provider-field" id="local-provider-field" hidden>
++              <label for="local-provider-select">Local server</label>
++              <select id="local-provider-select"
++                  name="local-provider"></select>
++              <p class="field-helper">
++                Local connects to an already-running loopback model server.
++                Prometheus does not download or launch one.
++              </p>
++            </div>
++            <button class="primary runtime-submit" id="runtime-submit"
++                type="submit">Run Task</button>
++            <p class="composer-recovery" id="composer-recovery" role="status"
++                aria-live="polite"></p>
++          </form>
++          <section class="task-region" aria-labelledby="task-region-heading">
++            <div class="task-region__heading">
++              <h2 id="task-region-heading">Tasks</h2>
++              <button class="quiet-button" id="runtime-refresh"
++                  type="button">Refresh</button>
++            </div>
++            <div class="task-list" id="runtime-task-list" role="list"
++                aria-live="polite" aria-busy="true">
++              <div class="runtime-empty" id="runtime-empty-state">
++                <h3>No tasks yet</h3>
++                <p>Ask Prometheus to work in this browser. Tasks will appear
++                  here with progress, cost, and final result.</p>
++              </div>
++            </div>
+           </section>
+         </section>
+         <section class="mode-panel" id="panel-explorer" role="tabpanel"
+@@ -96,5 +151,18 @@
+         </section>
+       </div>
+     </main>
++    <dialog class="cancel-dialog" id="runtime-cancel-dialog"
++        aria-labelledby="cancel-dialog-heading">
++      <form method="dialog">
++        <h2 id="cancel-dialog-heading">Cancel this task?</h2>
++        <p>Progress stops now; logs remain available.</p>
++        <div class="dialog-actions">
++          <button class="quiet-button" id="cancel-dialog-dismiss"
++              value="dismiss">Keep running</button>
++          <button class="danger-button" id="cancel-dialog-confirm"
++              value="confirm">Cancel task</button>
++        </div>
++      </form>
++    </dialog>
+   </body>
+ </html>
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.css b/chrome/browser/resources/prometheus/prometheus_webui.css
+index 54ab43512a..de10bafce5 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.css
++++ b/chrome/browser/resources/prometheus/prometheus_webui.css
+@@ -38,7 +38,9 @@ body {
+ }
+ 
+ button,
+-input {
++input,
++select,
++textarea {
+   font: inherit;
+ }
+ 
+@@ -70,17 +72,17 @@ input {
+ .brand {
+   align-items: center;
+   display: flex;
+-  gap: 10px;
++  gap: 8px;
+ }
+ 
+ .brand__mark {
+-  height: 28px;
+-  width: 28px;
++  height: 32px;
++  width: 32px;
+ }
+ 
+ .brand__name {
+-  font-size: 18px;
+-  font-weight: 600;
++  font-size: 16px;
++  font-weight: 800;
+ }
+ 
+ .brand__meta,
+@@ -116,9 +118,9 @@ input {
+   border: 0;
+   border-radius: 8px;
+   color: #1f1a17;
+-  font-weight: 600;
+-  min-height: 36px;
+-  padding: 0 14px;
++  font-weight: 800;
++  min-height: 48px;
++  padding: 0 16px;
+ }
+ 
+ .primary:focus-visible,
+@@ -158,7 +160,7 @@ input {
+ .mode-bar {
+   display: grid;
+   gap: 8px;
+-  grid-template-columns: repeat(4, 42px);
++  grid-template-columns: repeat(4, minmax(48px, 1fr));
+ }
+ 
+ .mode {
+@@ -168,11 +170,11 @@ input {
+   border-radius: 8px;
+   color: var(--prometheus-text);
+   display: inline-flex;
+-  height: 42px;
++  height: 48px;
+   justify-content: center;
+-  min-height: 42px;
++  min-height: 48px;
+   padding: 0;
+-  width: 42px;
++  width: 100%;
+ }
+ 
+ .mode[aria-selected="true"] {
+@@ -189,11 +191,11 @@ input {
+ .mode__icon {
+   background: currentColor;
+   display: block;
+-  height: 17px;
++  height: 16px;
+   mask-position: center;
+   mask-repeat: no-repeat;
+   mask-size: contain;
+-  width: 17px;
++  width: 16px;
+   -webkit-mask-position: center;
+   -webkit-mask-repeat: no-repeat;
+   -webkit-mask-size: contain;
+@@ -221,13 +223,13 @@ input {
+ 
+ .mode-stack {
+   display: grid;
+-  gap: 12px;
++  gap: 16px;
+ }
+ 
+ .mode-panel {
+   display: flex;
+   flex-direction: column;
+-  gap: 12px;
++  gap: 16px;
+ }
+ 
+ .mode-panel[hidden] {
+@@ -242,13 +244,15 @@ input {
+ }
+ 
+ .panel-heading h1 {
+-  font-size: 18px;
++  font-size: 20px;
++  font-weight: 800;
+   line-height: 1.2;
+   margin: 0;
+ }
+ 
+ .mode-copy {
+   color: var(--prometheus-text-muted);
++  font-size: 13px;
+   margin: 0;
+ }
+ 
+@@ -256,24 +260,15 @@ input {
+   padding: 12px;
+ }
+ 
+-.handoff-seed {
+-  background: var(--prometheus-color-accent-soft);
+-  border-color: var(--prometheus-color-accent);
+-}
+-
+-.handoff-seed p:last-child {
+-  color: var(--prometheus-color-text);
+-  margin-bottom: 0;
+-}
+-
+ .badge {
+   border: 1px solid rgba(47, 158, 126, 0.35);
+   border-radius: 999px;
+   color: var(--prometheus-ok);
+   font-family: ui-monospace, monospace;
+-  font-size: 11px;
++  font-size: 12px;
++  font-weight: 800;
+   line-height: 1;
+-  padding: 5px 8px;
++  padding: 4px 8px;
+ }
+ 
+ .badge--quiet {
+@@ -295,6 +290,304 @@ input {
+   padding: 10px 12px;
+ }
+ 
++.runtime-composer {
++  background: var(--prometheus-color-surface);
++  border: 1px solid var(--prometheus-color-border);
++  border-radius: 8px;
++  display: grid;
++  gap: 16px;
++  padding: 16px;
++}
++
++.composer-label,
++.execution-fieldset legend,
++.provider-field label {
++  color: var(--prometheus-color-text);
++  font-size: 13px;
++  font-weight: 800;
++}
++
++#runtime-prompt {
++  background: var(--prometheus-color-surface-2);
++  border: 1px solid var(--prometheus-color-border);
++  border-radius: 8px;
++  box-sizing: border-box;
++  color: var(--prometheus-color-text);
++  min-height: 64px;
++  padding: 16px;
++  resize: vertical;
++  width: 100%;
++}
++
++#runtime-prompt::placeholder {
++  color: var(--prometheus-color-text-3);
++}
++
++#runtime-prompt:focus-visible,
++.execution-segment:focus-within,
++.provider-field select:focus-visible,
++.quiet-button:focus-visible,
++.danger-button:focus-visible,
++.runtime-submit:focus-visible {
++  outline: 2px solid var(--prometheus-color-accent);
++  outline-offset: 2px;
++}
++
++.execution-fieldset {
++  border: 0;
++  margin: 0;
++  min-width: 0;
++  padding: 0;
++}
++
++.execution-fieldset legend {
++  margin-bottom: 8px;
++}
++
++.execution-segments {
++  display: grid;
++  gap: 8px;
++  grid-template-columns: repeat(3, minmax(0, 1fr));
++}
++
++.execution-segment {
++  align-items: center;
++  background: var(--prometheus-color-surface-2);
++  border: 1px solid var(--prometheus-color-border);
++  border-radius: 8px;
++  cursor: pointer;
++  display: flex;
++  justify-content: center;
++  min-height: 48px;
++  position: relative;
++}
++
++.execution-segment input {
++  height: 1px;
++  opacity: 0;
++  position: absolute;
++  width: 1px;
++}
++
++.execution-segment:has(input:checked) {
++  background: var(--prometheus-color-accent-soft);
++  border-color: var(--prometheus-color-accent);
++  color: var(--prometheus-color-accent);
++}
++
++.provider-field {
++  display: grid;
++  gap: 8px;
++}
++
++.provider-field[hidden] {
++  display: none;
++}
++
++.provider-field select {
++  background: var(--prometheus-color-surface-2);
++  border: 1px solid var(--prometheus-color-border);
++  border-radius: 8px;
++  box-sizing: border-box;
++  color: var(--prometheus-color-text);
++  min-height: 48px;
++  padding: 0 16px;
++  width: 100%;
++}
++
++.field-helper,
++.composer-recovery {
++  color: var(--prometheus-color-text-3);
++  font-size: 12px;
++  margin: 0;
++}
++
++.composer-recovery {
++  min-height: 16px;
++}
++
++.runtime-submit {
++  width: 100%;
++}
++
++.runtime-submit:disabled {
++  cursor: not-allowed;
++  opacity: 0.6;
++}
++
++.task-region {
++  display: grid;
++  gap: 16px;
++}
++
++.task-region__heading,
++.runtime-task__heading {
++  align-items: center;
++  display: flex;
++  gap: 8px;
++  justify-content: space-between;
++}
++
++.task-region__heading h2,
++.cancel-dialog h2 {
++  font-size: 16px;
++  font-weight: 800;
++  margin: 0;
++}
++
++.quiet-button,
++.danger-button {
++  background: var(--prometheus-color-surface-2);
++  border: 1px solid var(--prometheus-color-border);
++  border-radius: 8px;
++  color: var(--prometheus-color-text);
++  font-size: 13px;
++  font-weight: 800;
++  min-height: 48px;
++  padding: 0 16px;
++}
++
++.danger-button {
++  background: rgba(210, 71, 54, 0.16);
++  border-color: rgba(210, 71, 54, 0.48);
++  color: #ffb4a8;
++}
++
++.task-list {
++  display: grid;
++  gap: 16px;
++}
++
++.runtime-empty,
++.runtime-task {
++  background: var(--prometheus-color-surface);
++  border: 1px solid var(--prometheus-color-border);
++  border-radius: 8px;
++  box-sizing: border-box;
++  padding: 16px;
++}
++
++.runtime-empty h3,
++.runtime-empty p {
++  margin: 0;
++}
++
++.runtime-empty h3 {
++  font-size: 16px;
++  font-weight: 800;
++}
++
++.runtime-empty p {
++  color: var(--prometheus-color-text-2);
++  font-size: 13px;
++  margin-top: 8px;
++}
++
++.runtime-task {
++  display: grid;
++  gap: 8px;
++  min-width: 0;
++}
++
++.runtime-task__title {
++  font-size: 16px;
++  font-weight: 800;
++  margin: 0;
++  min-width: 0;
++  overflow-wrap: anywhere;
++}
++
++.runtime-task__status {
++  color: var(--prometheus-color-accent);
++  flex: none;
++  font-size: 12px;
++  font-weight: 800;
++}
++
++.runtime-progress {
++  background: var(--prometheus-color-surface-3);
++  border-radius: 8px;
++  height: 4px;
++  overflow: hidden;
++}
++
++.runtime-progress span {
++  background: var(--prometheus-color-accent);
++  display: block;
++  height: 100%;
++  width: 48%;
++}
++
++.runtime-task[data-task-state="succeeded"] .runtime-progress span,
++.runtime-task[data-task-state="failed"] .runtime-progress span,
++.runtime-task[data-task-state="cancelled"] .runtime-progress span {
++  width: 100%;
++}
++
++.runtime-task__meta,
++.runtime-task__usage,
++.runtime-task__result,
++.runtime-task__recovery {
++  font-size: 12px;
++  margin: 0;
++  overflow-wrap: anywhere;
++}
++
++.runtime-task__meta,
++.runtime-task__usage {
++  color: var(--prometheus-color-text-3);
++}
++
++.runtime-task__result {
++  color: var(--prometheus-color-text);
++  white-space: pre-wrap;
++}
++
++.runtime-task__recovery {
++  color: #f3d18e;
++}
++
++.runtime-task__cancel {
++  justify-self: start;
++}
++
++.cancel-dialog {
++  background: var(--prometheus-color-surface);
++  border: 1px solid var(--prometheus-color-border);
++  border-radius: 8px;
++  color: var(--prometheus-color-text);
++  max-width: calc(100vw - 32px);
++  padding: 16px;
++  width: 320px;
++}
++
++.cancel-dialog::backdrop {
++  background: rgba(13, 10, 9, 0.8);
++}
++
++.cancel-dialog form {
++  display: grid;
++  gap: 16px;
++}
++
++.cancel-dialog p {
++  color: var(--prometheus-color-text-2);
++  font-size: 13px;
++  margin: 0;
++}
++
++.dialog-actions {
++  display: grid;
++  gap: 8px;
++}
++
++@media (prefers-reduced-motion: reduce) {
++  .runtime-progress span {
++    animation: none;
++    transition: none;
++  }
++}
++
+ .control-shell {
+   display: grid;
+   gap: 16px;
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.js b/chrome/browser/resources/prometheus/prometheus_webui.js
+index 1733e4d009..1ca0b674d0 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.js
++++ b/chrome/browser/resources/prometheus/prometheus_webui.js
+@@ -9,6 +9,26 @@ const surface = document.querySelector('[data-prometheus-surface]')
+ 
+ window.prometheusAskFsbHandoffForTesting = '';
+ window.prometheusAskFsbSeedForTesting = '';
++window.prometheusRuntimeSnapshotForTesting = null;
++window.prometheusRuntimeOperationForTesting = null;
++window.prometheusRuntimeObserverCountForTesting = 0;
++window.prometheusRuntimeSubmitCountForTesting = 0;
++window.prometheusRuntimeCancelCountForTesting = 0;
++
++const runtimeStateLabels = Object.freeze({
++  queued: 'Queued',
++  running: 'Working',
++  waiting_confirmation: 'Confirmation required',
++  cancelling: 'Cancelling',
++  succeeded: 'Complete',
++  failed: 'Failed',
++  cancelled: 'Cancelled',
++});
++const terminalRuntimeStates = new Set(['succeeded', 'failed', 'cancelled']);
++let runtimeSnapshot = {status: 'NOT_IMPLEMENTED', tasks: [], providers: []};
++let runtimeSubmitPending = false;
++let pendingCancelTaskId = '';
++const requestedCancellationTaskIds = new Set();
+ 
+ function setAskFsbStatus(text) {
+   const status = document.querySelector('#ask-fsb-status');
+@@ -53,6 +73,294 @@ function activateControlPanelSection(section) {
+   document.documentElement.dataset.controlPanelSection = section;
+ }
+ 
++function appendTextElement(parent, tagName, className, text) {
++  const element = document.createElement(tagName);
++  if (className) {
++    element.className = className;
++  }
++  element.textContent = text;
++  parent.append(element);
++  return element;
++}
++
++function selectedExecutionMode() {
++  return document.querySelector(
++      'input[name="execution-mode"]:checked')?.value || 'auto';
++}
++
++function providersForMode(mode) {
++  const providers = Array.isArray(runtimeSnapshot.providers) ?
++      runtimeSnapshot.providers : [];
++  return providers.filter((provider) => {
++    if (!provider || provider.health !== 'healthy') {
++      return false;
++    }
++    return mode === 'local' ? provider.route_class === 'local' :
++                              provider.route_class !== 'local';
++  });
++}
++
++function replaceProviderOptions(select, providers, emptyLabel) {
++  if (!select) {
++    return;
++  }
++  const previousValue = select.value;
++  select.replaceChildren();
++  if (!providers.length) {
++    const option = document.createElement('option');
++    option.value = '';
++    option.textContent = emptyLabel;
++    select.append(option);
++    return;
++  }
++  for (const provider of providers) {
++    const option = document.createElement('option');
++    option.value = provider.provider_id;
++    option.textContent = `${provider.label} · ${provider.model_id}`;
++    select.append(option);
++  }
++  if (providers.some((provider) => provider.provider_id === previousValue)) {
++    select.value = previousValue;
++  }
++}
++
++function updateRuntimeComposer() {
++  const mode = selectedExecutionMode();
++  const providerField = document.querySelector('#provider-field');
++  const localField = document.querySelector('#local-provider-field');
++  const providerSelect = document.querySelector('#provider-select');
++  const localSelect = document.querySelector('#local-provider-select');
++  if (providerField) {
++    providerField.hidden = mode !== 'provider';
++  }
++  if (localField) {
++    localField.hidden = mode !== 'local';
++  }
++  replaceProviderOptions(
++      providerSelect, providersForMode('provider'),
++      'No enabled providers');
++  replaceProviderOptions(
++      localSelect, providersForMode('local'),
++      'No enabled local servers');
++  const submit = document.querySelector('#runtime-submit');
++  const requiredSelect = mode === 'provider' ? providerSelect :
++      mode === 'local' ? localSelect : null;
++  if (submit) {
++    submit.disabled = runtimeSubmitPending ||
++        (requiredSelect && !requiredSelect.value);
++  }
++}
++
++function displayExecution(value) {
++  if (value === 'provider') {
++    return 'Provider';
++  }
++  if (value === 'local') {
++    return 'Local';
++  }
++  return 'Auto';
++}
++
++function displayRoute(value) {
++  if (value === 'hosted') {
++    return 'Hosted';
++  }
++  if (value === 'routed' || value === 'custom') {
++    return 'Routed';
++  }
++  if (value === 'local') {
++    return 'Local';
++  }
++  return 'Route pending';
++}
++
++function displayProviderKind(value) {
++  return String(value || 'provider').replaceAll('_', ' ')
++      .replace(/\b\w/g, (letter) => letter.toUpperCase());
++}
++
++function usageText(usage) {
++  if (!usage) {
++    return 'Usage pending';
++  }
++  const input = Number(usage.input_tokens) || 0;
++  const output = Number(usage.output_tokens) || 0;
++  const tools = Number(usage.tool_calls) || 0;
++  const duration = Number(usage.duration_ms) || 0;
++  const cost = usage.cost_known ?
++      `${((Number(usage.cost_microunits) || 0) / 1000000).toFixed(4)} cost` :
++      'Cost unavailable';
++  return `${input + output} tokens · ${tools} tools · ${duration} ms · ${cost}`;
++}
++
++function makeRuntimeEmptyState() {
++  const empty = document.createElement('div');
++  empty.className = 'runtime-empty';
++  empty.id = 'runtime-empty-state';
++  appendTextElement(empty, 'h3', '', 'No tasks yet');
++  appendTextElement(
++      empty, 'p', '',
++      'Ask Prometheus to work in this browser. Tasks will appear here with ' +
++          'progress, cost, and final result.');
++  return empty;
++}
++
++function requestTaskCancellation(taskId, button) {
++  if (!taskId || requestedCancellationTaskIds.has(taskId)) {
++    return;
++  }
++  pendingCancelTaskId = taskId;
++  const dialog = document.querySelector('#runtime-cancel-dialog');
++  if (!dialog) {
++    return;
++  }
++  dialog.showModal();
++  document.querySelector('#cancel-dialog-dismiss')?.focus();
++  button?.setAttribute('aria-expanded', 'true');
++}
++
++function renderRuntimeTask(task) {
++  const article = document.createElement('article');
++  article.className = 'runtime-task';
++  article.setAttribute('role', 'listitem');
++  article.dataset.taskId = task.task_id || '';
++  article.dataset.taskState = task.state || 'failed';
++
++  const heading = document.createElement('div');
++  heading.className = 'runtime-task__heading';
++  appendTextElement(
++      heading, 'h3', 'runtime-task__title',
++      task.safe_title || 'Browser task');
++  appendTextElement(
++      heading, 'span', 'runtime-task__status',
++      runtimeStateLabels[task.state] || 'Failed');
++  article.append(heading);
++
++  const progress = document.createElement('div');
++  progress.className = 'runtime-progress';
++  progress.setAttribute('role', 'progressbar');
++  progress.setAttribute(
++      'aria-label', runtimeStateLabels[task.state] || 'Failed');
++  if (terminalRuntimeStates.has(task.state)) {
++    progress.setAttribute('aria-valuenow', '100');
++    progress.setAttribute('aria-valuemin', '0');
++    progress.setAttribute('aria-valuemax', '100');
++  }
++  progress.append(document.createElement('span'));
++  article.append(progress);
++
++  const provenance = task.origin === 'mcp' ? 'MCP-driven' : 'Side panel';
++  appendTextElement(
++      article, 'p', 'runtime-task__meta',
++      `${provenance} · Requested ${displayExecution(
++          task.requested_execution)} · ${displayRoute(
++          task.effective_execution || task.route_class)}`);
++  if (task.provider_kind || task.provider_label) {
++    appendTextElement(
++        article, 'p', 'runtime-task__meta',
++        `${task.provider_label || 'Provider'} · ${displayProviderKind(
++            task.provider_kind)}`);
++  }
++  appendTextElement(
++      article, 'p', 'runtime-task__usage', usageText(task.usage));
++
++  if (typeof task.result === 'string' && task.result) {
++    appendTextElement(article, 'p', 'runtime-task__result', task.result);
++    if (task.result_truncated) {
++      appendTextElement(
++          article, 'p', 'runtime-task__meta', 'Result was truncated');
++    }
++  }
++  if (typeof task.recovery === 'string' && task.recovery) {
++    appendTextElement(article, 'p', 'runtime-task__recovery', task.recovery);
++  }
++
++  if (!terminalRuntimeStates.has(task.state)) {
++    const cancel = appendTextElement(
++        article, 'button', 'quiet-button runtime-task__cancel', 'Cancel');
++    cancel.type = 'button';
++    cancel.disabled = task.state === 'cancelling' ||
++        requestedCancellationTaskIds.has(task.task_id);
++    cancel.setAttribute('aria-haspopup', 'dialog');
++    cancel.setAttribute('aria-expanded', 'false');
++    cancel.setAttribute('aria-label', `Cancel ${task.safe_title}`);
++    cancel.addEventListener('click', () => {
++      requestTaskCancellation(task.task_id, cancel);
++    });
++  }
++  return article;
++}
++
++function renderRuntimeSnapshot(snapshot) {
++  runtimeSnapshot = snapshot && typeof snapshot === 'object' ? snapshot :
++      {status: 'INVALID_REQUEST', tasks: [], providers: []};
++  window.prometheusRuntimeSnapshotForTesting = runtimeSnapshot;
++  window.prometheusRuntimeObserverCountForTesting++;
++  document.documentElement.dataset.runtimeStatus =
++      runtimeSnapshot.status || 'INVALID_REQUEST';
++
++  const taskList = document.querySelector('#runtime-task-list');
++  const tasks = Array.isArray(runtimeSnapshot.tasks) ?
++      runtimeSnapshot.tasks : [];
++  if (taskList) {
++    taskList.setAttribute('aria-busy', 'false');
++    taskList.replaceChildren();
++    if (!tasks.length) {
++      taskList.append(makeRuntimeEmptyState());
++    } else {
++      for (const task of [...tasks].reverse()) {
++        taskList.append(renderRuntimeTask(task));
++      }
++    }
++  }
++
++  const visibleTaskIds = new Set(tasks.map((task) => task.task_id));
++  for (const taskId of requestedCancellationTaskIds) {
++    const task = tasks.find((candidate) => candidate.task_id === taskId);
++    if (!visibleTaskIds.has(taskId) || terminalRuntimeStates.has(task?.state)) {
++      requestedCancellationTaskIds.delete(taskId);
++    }
++  }
++  const pendingTask = tasks.find(
++      (task) => task.task_id === pendingCancelTaskId);
++  if (pendingCancelTaskId &&
++      (!pendingTask || terminalRuntimeStates.has(pendingTask.state))) {
++    document.querySelector('#runtime-cancel-dialog')?.close();
++    pendingCancelTaskId = '';
++  }
++  const recovery = document.querySelector('#composer-recovery');
++  if (recovery && runtimeSnapshot.status !== 'OK') {
++    recovery.textContent = runtimeSnapshot.recovery ||
++        'Refresh the side panel and retry.';
++  }
++  updateRuntimeComposer();
++}
++
++window.prometheusRuntimeReceiveSnapshot = (snapshot) => {
++  renderRuntimeSnapshot(snapshot);
++};
++
++window.prometheusRuntimeReceiveOperation = (operation) => {
++  const safeOperation = operation && typeof operation === 'object' ? operation :
++      {status: 'INVALID_REQUEST', accepted: false,
++        recovery: 'Refresh the side panel and retry.'};
++  window.prometheusRuntimeOperationForTesting = safeOperation;
++  runtimeSubmitPending = false;
++  const recovery = document.querySelector('#composer-recovery');
++  if (recovery) {
++    recovery.textContent = safeOperation.recovery || '';
++  }
++  if (safeOperation.accepted && safeOperation.task) {
++    const prompt = document.querySelector('#runtime-prompt');
++    if (prompt) {
++      prompt.value = '';
++    }
++    window.prometheusAskFsbSeedForTesting = '';
++    document.documentElement.dataset.askFsbSeed = 'submitted';
++  }
++  updateRuntimeComposer();
++};
++
+ window.prometheusAskFsbHandoffComplete = (prompt) => {
+   window.prometheusAskFsbHandoffForTesting = prompt;
+   document.documentElement.dataset.askFsbHandoff = 'submitted';
+@@ -67,14 +375,14 @@ window.prometheusAskFsbHandoffRejectedForTesting = () => {
+ 
+ window.prometheusReceiveAskFsbSeed = (prompt) => {
+   window.prometheusAskFsbSeedForTesting = prompt;
+-  const seed = document.querySelector('#ask-fsb-seed');
+-  const seedText = document.querySelector('#ask-fsb-seed-text');
+-  if (!seed || !seedText || !prompt) {
++  const promptInput = document.querySelector('#runtime-prompt');
++  if (!promptInput || !prompt) {
+     return;
+   }
+   activateSidePanelMode('fsb-agent');
+-  seed.hidden = false;
+-  seedText.textContent = prompt;
++  promptInput.value = prompt;
++  promptInput.focus({preventScroll: true});
++  document.documentElement.dataset.askFsbSeed = 'drafted';
+ };
+ 
+ if (surface === 'newtab') {
+@@ -98,7 +406,71 @@ if (surface === 'side-panel') {
+       activateSidePanelMode(button.dataset.modeTarget);
+     });
+   });
++  document.querySelectorAll('input[name="execution-mode"]').forEach(
++      (input) => input.addEventListener('change', updateRuntimeComposer));
++  document.querySelector('#runtime-composer')?.addEventListener(
++      'submit', (event) => {
++        event.preventDefault();
++        if (runtimeSubmitPending) {
++          return;
++        }
++        const input = document.querySelector('#runtime-prompt');
++        const prompt = input?.value.trim() || '';
++        const recovery = document.querySelector('#composer-recovery');
++        if (!prompt) {
++          if (recovery) {
++            recovery.textContent = 'Enter a task for FSB to run.';
++          }
++          input?.focus();
++          return;
++        }
++        const mode = selectedExecutionMode();
++        const provider = mode === 'provider' ?
++            document.querySelector('#provider-select')?.value :
++            mode === 'local' ?
++            document.querySelector('#local-provider-select')?.value : '';
++        if (mode !== 'auto' && !provider) {
++          if (recovery) {
++            recovery.textContent = 'Choose an available provider and retry.';
++          }
++          return;
++        }
++        runtimeSubmitPending = true;
++        window.prometheusRuntimeSubmitCountForTesting++;
++        if (recovery) {
++          recovery.textContent = '';
++        }
++        updateRuntimeComposer();
++        const args = provider ? [prompt, mode, provider] : [prompt, mode];
++        chrome.send('prometheusRuntimeSubmit', args);
++      });
++  document.querySelector('#runtime-refresh')?.addEventListener('click', () => {
++    chrome.send('prometheusRuntimeRefresh');
++  });
++  document.querySelector('#cancel-dialog-confirm')?.addEventListener(
++      'click', (event) => {
++        event.preventDefault();
++        const taskId = pendingCancelTaskId;
++        document.querySelector('#runtime-cancel-dialog')?.close('confirm');
++        pendingCancelTaskId = '';
++        if (!taskId || requestedCancellationTaskIds.has(taskId)) {
++          return;
++        }
++        requestedCancellationTaskIds.add(taskId);
++        window.prometheusRuntimeCancelCountForTesting++;
++        chrome.send('prometheusRuntimeCancel', [taskId]);
++      });
++  document.querySelector('#cancel-dialog-dismiss')?.addEventListener(
++      'click', () => {
++        pendingCancelTaskId = '';
++      });
++  document.querySelector('#runtime-cancel-dialog')?.addEventListener(
++      'cancel', () => {
++        pendingCancelTaskId = '';
++      });
+   activateSidePanelMode('fsb-agent');
++  updateRuntimeComposer();
++  chrome.send('prometheusRuntimeInitialize');
+   chrome.send('prometheusRequestAskFsbSeed');
+ }
+ 
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+index 12a3daaa7b..456099f571 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+@@ -7,9 +7,12 @@
+ 
+ #include <cstdint>
+ #include <memory>
++#include <optional>
++#include <string>
+ #include <string_view>
+ 
+ #include "base/functional/callback.h"
++#include "base/values.h"
+ 
+ class BrowserWindowInterface;
+ 
+@@ -20,10 +23,20 @@ namespace prometheus {
+ // interface deliberately has no identity getters or serialization methods.
+ class PrometheusSidePanelRuntime {
+  public:
++  using SnapshotCallback =
++      base::RepeatingCallback<void(base::DictValue snapshot)>;
++
+   virtual ~PrometheusSidePanelRuntime() = default;
+ 
+   virtual bool IsValid() const = 0;
+   virtual bool SeedPrompt(std::string_view prompt) = 0;
++  virtual void SetSnapshotCallback(SnapshotCallback callback) = 0;
++  virtual base::DictValue GetSanitizedSnapshot() = 0;
++  virtual base::DictValue SubmitTask(
++      std::string prompt,
++      std::string requested_execution,
++      std::optional<std::string> provider_id) = 0;
++  virtual base::DictValue CancelTask(std::string task_id) = 0;
+   virtual void HandleTargetLost() = 0;
+ };
+ 
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index ee9860af1a..f1fa3e84f5 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -5,6 +5,7 @@
+ #include "chrome/browser/ui/webui/prometheus/prometheus_web_ui.h"
+ 
+ #include <memory>
++#include <optional>
+ #include <string>
+ #include <utility>
+ 
+@@ -24,10 +25,35 @@
+ 
+ namespace {
+ 
++constexpr size_t kMaxSidePanelPromptBytes = 64 * 1024;
++constexpr size_t kMaxSidePanelProviderIdBytes = 64;
++constexpr size_t kMaxSidePanelTaskIdBytes = 128;
++
++bool IsRequestedExecution(std::string_view value) {
++  return value == "auto" || value == "provider" || value == "local";
++}
++
++base::DictValue RuntimeErrorValue(std::string status, std::string recovery) {
++  base::DictValue value;
++  value.Set("status", std::move(status));
++  value.Set("accepted", false);
++  value.Set("recovery", std::move(recovery));
++  return value;
++}
++
++base::DictValue RuntimeUnavailableSnapshot() {
++  base::DictValue value = RuntimeErrorValue(
++      "TARGET_LOST", "Return to the originating browser tab and retry");
++  value.Set("tasks", base::ListValue());
++  value.Set("providers", base::ListValue());
++  return value;
++}
++
+ class PrometheusSidePanelMessageHandler : public content::WebUIMessageHandler {
+  public:
+-  explicit PrometheusSidePanelMessageHandler(PrometheusSidePanelUI* owner)
+-      : owner_(owner) {}
++  explicit PrometheusSidePanelMessageHandler(
++      base::WeakPtr<PrometheusSidePanelUI> owner)
++      : owner_(std::move(owner)) {}
+   PrometheusSidePanelMessageHandler(const PrometheusSidePanelMessageHandler&) =
+       delete;
+   PrometheusSidePanelMessageHandler& operator=(
+@@ -41,6 +67,26 @@ class PrometheusSidePanelMessageHandler : public content::WebUIMessageHandler {
+         base::BindRepeating(
+             &PrometheusSidePanelMessageHandler::HandleRequestAskFsbSeed,
+             base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusRuntimeInitialize",
++        base::BindRepeating(
++            &PrometheusSidePanelMessageHandler::HandleRuntimeInitialize,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusRuntimeRefresh",
++        base::BindRepeating(
++            &PrometheusSidePanelMessageHandler::HandleRuntimeInitialize,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusRuntimeSubmit",
++        base::BindRepeating(
++            &PrometheusSidePanelMessageHandler::HandleRuntimeSubmit,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusRuntimeCancel",
++        base::BindRepeating(
++            &PrometheusSidePanelMessageHandler::HandleRuntimeCancel,
++            base::Unretained(this)));
+   }
+ 
+   void HandleRequestAskFsbSeed(const base::ListValue& args) {
+@@ -50,10 +96,78 @@ class PrometheusSidePanelMessageHandler : public content::WebUIMessageHandler {
+                                              base::Value(std::string()));
+       return;
+     }
+-    owner_->HandleRequestAskFsbSeedForWebUI();
++    if (owner_) {
++      owner_->HandleRequestAskFsbSeedForWebUI();
++    }
++  }
++
++  void HandleRuntimeInitialize(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (!args.empty()) {
++      owner_->HandleInvalidRuntimeMessageForWebUI(
++          "Refresh the side panel and retry");
++      return;
++    }
++    owner_->HandleRuntimeInitializeForWebUI();
++  }
++
++  void HandleRuntimeSubmit(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if ((args.size() != 2u && args.size() != 3u) || !args[0].is_string() ||
++        !args[1].is_string()) {
++      owner_->HandleInvalidRuntimeMessageForWebUI(
++          "Submit a prompt, execution mode, and optional provider");
++      return;
++    }
++    const std::string& prompt = args[0].GetString();
++    const std::string& requested_execution = args[1].GetString();
++    if (prompt.empty() || prompt.size() > kMaxSidePanelPromptBytes ||
++        !IsRequestedExecution(requested_execution)) {
++      owner_->HandleInvalidRuntimeMessageForWebUI(
++          "Enter a bounded prompt and choose Auto, Provider, or Local");
++      return;
++    }
++    std::optional<std::string> provider_id;
++    if (args.size() == 3u) {
++      if (!args[2].is_string() || args[2].GetString().empty() ||
++          args[2].GetString().size() > kMaxSidePanelProviderIdBytes) {
++        owner_->HandleInvalidRuntimeMessageForWebUI(
++            "Choose an available provider and retry");
++        return;
++      }
++      provider_id = args[2].GetString();
++    }
++    if (requested_execution != "auto" && !provider_id) {
++      owner_->HandleInvalidRuntimeMessageForWebUI(
++          "Choose an available provider and retry");
++      return;
++    }
++    owner_->HandleRuntimeSubmitForWebUI(prompt, requested_execution,
++                                        std::move(provider_id));
+   }
+ 
+-  const raw_ptr<PrometheusSidePanelUI> owner_;
++  void HandleRuntimeCancel(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 1u || !args[0].is_string() ||
++        args[0].GetString().empty() ||
++        args[0].GetString().size() > kMaxSidePanelTaskIdBytes) {
++      owner_->HandleInvalidRuntimeMessageForWebUI(
++          "Refresh the task snapshot and retry");
++      return;
++    }
++    owner_->HandleRuntimeCancelForWebUI(args[0].GetString());
++  }
++
++  base::WeakPtr<PrometheusSidePanelUI> owner_;
+ };
+ 
+ void AddPrometheusCommonResourcePaths(content::WebUIDataSource* source) {
+@@ -87,8 +201,8 @@ PrometheusSidePanelUIConfig::PrometheusSidePanelUIConfig()
+ PrometheusSidePanelUI::PrometheusSidePanelUI(content::WebUI* web_ui)
+     : TopChromeWebUIController(web_ui, /*enable_chrome_send=*/true) {
+   ConfigurePrometheusSidePanelDataSource(web_ui);
+-  web_ui->AddMessageHandler(
+-      std::make_unique<PrometheusSidePanelMessageHandler>(this));
++  web_ui->AddMessageHandler(std::make_unique<PrometheusSidePanelMessageHandler>(
++      weak_factory_.GetWeakPtr()));
+ }
+ 
+ PrometheusSidePanelUI::~PrometheusSidePanelUI() {
+@@ -119,6 +233,11 @@ void PrometheusSidePanelUI::SetBrowserWindowInterface(
+   ++principal_acquisition_count_;
+   runtime_ = prometheus::CreatePrometheusSidePanelRuntime(
+       browser_window_interface_, stable_tab_id_);
++  if (runtime_) {
++    runtime_->SetSnapshotCallback(
++        base::BindRepeating(&PrometheusSidePanelUI::SendRuntimeSnapshot,
++                            weak_factory_.GetWeakPtr()));
++  }
+ }
+ 
+ void PrometheusSidePanelUI::HandleRequestAskFsbSeedForWebUI() {
+@@ -133,6 +252,57 @@ void PrometheusSidePanelUI::HandleRequestAskFsbSeedForWebUI() {
+                                          base::Value(prompt));
+ }
+ 
++void PrometheusSidePanelUI::HandleRuntimeInitializeForWebUI() {
++  SendFreshRuntimeSnapshot();
++}
++
++void PrometheusSidePanelUI::HandleRuntimeSubmitForWebUI(
++    std::string prompt,
++    std::string requested_execution,
++    std::optional<std::string> provider_id) {
++  if (!runtime_) {
++    SendRuntimeOperation(RuntimeUnavailableSnapshot());
++    SendFreshRuntimeSnapshot();
++    return;
++  }
++  SendRuntimeOperation(runtime_->SubmitTask(std::move(prompt),
++                                            std::move(requested_execution),
++                                            std::move(provider_id)));
++  SendFreshRuntimeSnapshot();
++}
++
++void PrometheusSidePanelUI::HandleRuntimeCancelForWebUI(std::string task_id) {
++  if (!runtime_) {
++    SendRuntimeOperation(RuntimeUnavailableSnapshot());
++    SendFreshRuntimeSnapshot();
++    return;
++  }
++  SendRuntimeOperation(runtime_->CancelTask(std::move(task_id)));
++  SendFreshRuntimeSnapshot();
++}
++
++void PrometheusSidePanelUI::HandleInvalidRuntimeMessageForWebUI(
++    std::string recovery) {
++  SendRuntimeOperation(
++      RuntimeErrorValue("INVALID_REQUEST", std::move(recovery)));
++}
++
++void PrometheusSidePanelUI::SendRuntimeSnapshot(base::DictValue snapshot) {
++  ++runtime_observer_delivery_count_;
++  web_ui()->CallJavascriptFunctionUnsafe("prometheusRuntimeReceiveSnapshot",
++                                         base::Value(std::move(snapshot)));
++}
++
++void PrometheusSidePanelUI::SendFreshRuntimeSnapshot() {
++  SendRuntimeSnapshot(runtime_ ? runtime_->GetSanitizedSnapshot()
++                               : RuntimeUnavailableSnapshot());
++}
++
++void PrometheusSidePanelUI::SendRuntimeOperation(base::DictValue operation) {
++  web_ui()->CallJavascriptFunctionUnsafe("prometheusRuntimeReceiveOperation",
++                                         base::Value(std::move(operation)));
++}
++
+ bool PrometheusSidePanelUI::has_local_principal_for_testing() const {
+   return runtime_ && runtime_->IsValid();
+ }
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+index fd5e1c973c..e34d48430d 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+@@ -8,11 +8,14 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <memory>
++#include <optional>
++#include <string>
+ #include <string_view>
+ 
+ #include "base/callback_list.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
++#include "base/values.h"
+ #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
+ #include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_config.h"
+ #include "components/tabs/public/tab_interface.h"
+@@ -72,6 +75,12 @@ class PrometheusSidePanelUI : public TopChromeWebUIController {
+   // Called immediately after WebUIContentsWrapperT constructs this controller.
+   void SetBrowserWindowInterface(BrowserWindowInterface* browser);
+   void HandleRequestAskFsbSeedForWebUI();
++  void HandleRuntimeInitializeForWebUI();
++  void HandleRuntimeSubmitForWebUI(std::string prompt,
++                                   std::string requested_execution,
++                                   std::optional<std::string> provider_id);
++  void HandleRuntimeCancelForWebUI(std::string task_id);
++  void HandleInvalidRuntimeMessageForWebUI(std::string recovery);
+ 
+   BrowserWindowInterface* browser_window_interface_for_testing() const {
+     return browser_window_interface_;
+@@ -82,8 +91,14 @@ class PrometheusSidePanelUI : public TopChromeWebUIController {
+     return principal_acquisition_count_;
+   }
+   bool has_local_principal_for_testing() const;
++  size_t runtime_observer_delivery_count_for_testing() const {
++    return runtime_observer_delivery_count_;
++  }
+ 
+  private:
++  void SendRuntimeSnapshot(base::DictValue snapshot);
++  void SendFreshRuntimeSnapshot();
++  void SendRuntimeOperation(base::DictValue operation);
+   void OnTabWillDetach(tabs::TabInterface* tab,
+                        tabs::TabInterface::DetachReason reason);
+   void RetireLocalPrincipal(bool target_lost);
+@@ -93,6 +108,7 @@ class PrometheusSidePanelUI : public TopChromeWebUIController {
+   raw_ptr<tabs::TabInterface> tab_interface_ = nullptr;
+   int32_t stable_tab_id_ = 0;
+   size_t principal_acquisition_count_ = 0;
++  size_t runtime_observer_delivery_count_ = 0;
+   std::unique_ptr<prometheus::PrometheusSidePanelRuntime> runtime_;
+   base::CallbackListSubscription tab_will_detach_subscription_;
+   base::WeakPtrFactory<PrometheusSidePanelUI> weak_factory_{this};
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 57d8adf1d1..535ee2324d 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -4,10 +4,15 @@
+ 
+ #include "chrome/browser/ui/webui/prometheus/prometheus_web_ui.h"
+ 
++#include <utility>
++
+ #include "base/test/run_until.h"
+ #include "base/test/scoped_feature_list.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
++#include "chrome/browser/prometheus/prometheus_provider_registry.h"
++#include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/browser_window.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+@@ -127,13 +132,41 @@ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
+         ->GetAs<PrometheusSidePanelUI>();
+   }
+ 
++  prometheus::PrometheusRuntimeProfileService* ConfigureLocalRuntimeProvider() {
++    auto* const service =
++        prometheus::PrometheusRuntimeProfileServiceFactory::GetForProfile(
++            browser()->profile());
++    EXPECT_TRUE(service);
++    if (!service) {
++      return nullptr;
++    }
++    prometheus::PrometheusProviderConfig provider;
++    provider.provider_id = "local-ui-test";
++    provider.label = "Local UI Test";
++    provider.kind = prometheus::PrometheusProviderKind::kLMStudio;
++    provider.family =
++        prometheus::ExpectedPrometheusProviderFamily(provider.kind);
++    provider.route_class =
++        prometheus::ExpectedPrometheusProviderRouteClass(provider.kind);
++    provider.canonical_endpoint = "http://127.0.0.1:12345/v1/";
++    provider.model_id = "prometheus-test-model";
++    provider.enabled = true;
++    provider.health = prometheus::PrometheusProviderHealth::kHealthy;
++    provider.discovery_state =
++        prometheus::PrometheusProviderDiscoveryState::kNotSupported;
++    provider.secret_configured = false;
++    provider.fallback_rank = 0;
++    EXPECT_EQ(prometheus::RuntimeProfileStatus::kOk,
++              service->SetProviders(
++                  prometheus::RuntimeProviderMutationCaller::kLocalUi,
++                  {std::move(provider)}));
++    return service;
++  }
++
+  private:
+   base::test::ScopedFeatureList scoped_feature_list_;
+ };
+ 
+-class PrometheusNewTabBrowserTest
+-    : public PrometheusWebUIFoundationBrowserTest {};
+-
+ class PrometheusControlPanelBrowserTest
+     : public PrometheusWebUIFoundationBrowserTest {};
+ 
+@@ -364,7 +397,231 @@ IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
+                   .ExtractBool());
+ }
+ 
+-IN_PROC_BROWSER_TEST_F(PrometheusNewTabBrowserTest,
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIFoundationBrowserTest,
++    RuntimeComposerSubmitsSanitizedSnapshotsObservesAndCancelsOnce) {
++  constexpr char kBenignPrompt[] = "Open the docs and summarize release notes";
++  constexpr char kBenignTitle[] =
++      "Task: Open the docs and summarize release notes";
++  constexpr char kSensitivePrompt[] =
++      "Open https://private.example/?token=ALPHA and type password=hunter2";
++  constexpr char kSensitiveTitle[] = "Task: Open [link] and type [redacted]";
++
++  prometheus::PrometheusRuntimeProfileService* const runtime_service =
++      ConfigureLocalRuntimeProvider();
++  ASSERT_TRUE(runtime_service);
++  PrometheusSidePanelUI* const controller = ShowSidePanel(browser());
++  ASSERT_TRUE(controller);
++  content::WebContents* const web_contents = visible_side_panel_web_contents();
++  ASSERT_TRUE(web_contents);
++
++  const std::string initial_runtime_state = content::EvalJs(web_contents, R"(
++        JSON.stringify({
++          ready: document.documentElement.hasAttribute(
++              'prometheus-webui-ready'),
++          callback: typeof window.prometheusRuntimeReceiveSnapshot,
++          snapshot: window.prometheusRuntimeSnapshotForTesting,
++        });
++      )")
++                                                .ExtractString();
++  ASSERT_EQ("function", content::EvalJs(web_contents, R"(
++    typeof window.prometheusRuntimeReceiveSnapshot;
++  )")
++                            .ExtractString())
++      << initial_runtime_state;
++  ASSERT_EQ("OK", content::EvalJs(web_contents, R"(
++    window.prometheusRuntimeSnapshotForTesting?.status || 'missing';
++  )")
++                      .ExtractString())
++      << initial_runtime_state;
++  ASSERT_EQ(1, content::EvalJs(web_contents, R"(
++    window.prometheusRuntimeSnapshotForTesting?.providers?.length || 0;
++  )")
++                   .ExtractInt())
++      << initial_runtime_state;
++
++  const size_t initial_delivery_count =
++      controller->runtime_observer_delivery_count_for_testing();
++  ASSERT_TRUE(content::ExecJs(web_contents, content::JsReplace(R"(
++    document.querySelector('#runtime-prompt').value = $1;
++    document.querySelector('#runtime-composer').requestSubmit();
++  )",
++                                                               kBenignPrompt)));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return controller->runtime_observer_delivery_count_for_testing() >
++           initial_delivery_count;
++  }));
++  const std::string first_submit_state = content::EvalJs(web_contents, R"(
++        JSON.stringify({
++          snapshot: window.prometheusRuntimeSnapshotForTesting,
++          operation: window.prometheusRuntimeOperationForTesting,
++          submitCount: window.prometheusRuntimeSubmitCountForTesting,
++          recovery: document.querySelector('#composer-recovery')?.textContent,
++        });
++      )")
++                                             .ExtractString();
++  EXPECT_TRUE(content::EvalJs(web_contents, content::JsReplace(R"(
++    const tasks = window.prometheusRuntimeSnapshotForTesting?.tasks || [];
++    tasks.length === 1 && tasks[0].safe_title === $1;
++  )",
++                                                               kBenignTitle))
++                  .ExtractBool())
++      << first_submit_state;
++
++  const size_t first_submit_delivery_count =
++      controller->runtime_observer_delivery_count_for_testing();
++  ASSERT_TRUE(
++      content::ExecJs(web_contents, content::JsReplace(R"(
++    document.querySelector('#runtime-prompt').value = $1;
++    document.querySelector('#runtime-composer').requestSubmit();
++  )",
++                                                       kSensitivePrompt)));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return controller->runtime_observer_delivery_count_for_testing() >
++           first_submit_delivery_count;
++  }));
++  const std::string second_submit_state = content::EvalJs(web_contents, R"(
++        JSON.stringify({
++          snapshot: window.prometheusRuntimeSnapshotForTesting,
++          operation: window.prometheusRuntimeOperationForTesting,
++          submitCount: window.prometheusRuntimeSubmitCountForTesting,
++          recovery: document.querySelector('#composer-recovery')?.textContent,
++        });
++      )")
++                                              .ExtractString();
++  EXPECT_TRUE(content::EvalJs(web_contents, content::JsReplace(R"(
++    const tasks = window.prometheusRuntimeSnapshotForTesting?.tasks || [];
++    tasks.length === 2 && tasks.some(task => task.safe_title === $1);
++  )",
++                                                               kSensitiveTitle))
++                  .ExtractBool())
++      << second_submit_state;
++
++  EXPECT_TRUE(BodyContains(web_contents, kBenignTitle));
++  EXPECT_TRUE(BodyContains(web_contents, kSensitiveTitle));
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    const tasks = window.prometheusRuntimeSnapshotForTesting.tasks;
++    tasks.every(task => task.origin === 'side_panel' &&
++        task.requested_execution === 'auto' &&
++        task.effective_execution === 'local' &&
++        task.route_class === 'local' &&
++        task.provider_kind === 'lm_studio') &&
++        document.querySelector('#runtime-prompt').value === '' &&
++        window.prometheusRuntimeSubmitCountForTesting === 2;
++  )")
++                  .ExtractBool());
++  EXPECT_GT(controller->runtime_observer_delivery_count_for_testing(), 2u);
++
++  const std::string snapshot_json = content::EvalJs(web_contents, R"(
++        JSON.stringify(window.prometheusRuntimeSnapshotForTesting);
++      )")
++                                        .ExtractString();
++  EXPECT_EQ(std::string::npos, snapshot_json.find("\"prompt\""));
++  EXPECT_EQ(std::string::npos, snapshot_json.find(kSensitivePrompt));
++  EXPECT_EQ(std::string::npos, snapshot_json.find("private.example"));
++  EXPECT_EQ(std::string::npos, snapshot_json.find("ALPHA"));
++  EXPECT_EQ(std::string::npos, snapshot_json.find("hunter2"));
++  EXPECT_EQ(std::string::npos, snapshot_json.find("caller_id"));
++  EXPECT_EQ(std::string::npos, snapshot_json.find("agent_session_id"));
++  EXPECT_EQ(std::string::npos, snapshot_json.find("principal_id"));
++  EXPECT_FALSE(BodyContains(web_contents, "private.example"));
++  EXPECT_FALSE(BodyContains(web_contents, "ALPHA"));
++  EXPECT_FALSE(BodyContains(web_contents, "hunter2"));
++
++  const std::string sensitive_task_id =
++      content::EvalJs(web_contents, content::JsReplace(R"(
++        window.prometheusRuntimeSnapshotForTesting.tasks.find(
++            task => task.safe_title === $1).task_id;
++      )",
++                                                       kSensitiveTitle))
++          .ExtractString();
++  ASSERT_FALSE(sensitive_task_id.empty());
++  EXPECT_TRUE(
++      content::EvalJs(web_contents, content::JsReplace(R"(
++    const card = Array.from(document.querySelectorAll('.runtime-task')).find(
++        candidate => candidate.dataset.taskId === $1);
++    card.querySelector('.runtime-task__cancel').click();
++    const dialog = document.querySelector('#runtime-cancel-dialog');
++    dialog.open && dialog.innerText.includes('Cancel this task?') &&
++        dialog.innerText.includes(
++            'Progress stops now; logs remain available.');
++  )",
++                                                       sensitive_task_id))
++          .ExtractBool());
++  const size_t pre_cancel_delivery_count =
++      controller->runtime_observer_delivery_count_for_testing();
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    const confirm = document.querySelector('#cancel-dialog-confirm');
++    confirm.click();
++    confirm.click();
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return controller->runtime_observer_delivery_count_for_testing() >
++           pre_cancel_delivery_count;
++  }));
++  const std::string cancel_state = content::EvalJs(web_contents, R"(
++        JSON.stringify({
++          snapshot: window.prometheusRuntimeSnapshotForTesting,
++          operation: window.prometheusRuntimeOperationForTesting,
++          cancelCount: window.prometheusRuntimeCancelCountForTesting,
++        });
++      )")
++                                       .ExtractString();
++  EXPECT_TRUE(
++      content::EvalJs(web_contents, content::JsReplace(R"(
++    window.prometheusRuntimeSnapshotForTesting?.tasks?.find(
++        candidate => candidate.task_id === $1)?.state === 'cancelled';
++  )",
++                                                       sensitive_task_id))
++          .ExtractBool())
++      << cancel_state;
++  EXPECT_EQ(1, content::EvalJs(web_contents, R"(
++    window.prometheusRuntimeCancelCountForTesting;
++  )")
++                   .ExtractInt());
++  EXPECT_EQ(1u, runtime_service->finish_count_for_testing(sensitive_task_id));
++  EXPECT_TRUE(BodyContains(web_contents, "Cancelled"));
++
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    const snapshot = structuredClone(
++        window.prometheusRuntimeSnapshotForTesting);
++    snapshot.tasks[0].origin = 'mcp';
++    snapshot.tasks[0].effective_execution = 'hosted';
++    snapshot.tasks[0].route_class = 'hosted';
++    snapshot.tasks[0].state = 'running';
++    window.prometheusRuntimeReceiveSnapshot(snapshot);
++    document.body.innerText.includes('MCP-driven') &&
++        document.body.innerText.includes('Hosted') &&
++        document.body.innerText.includes('Working');
++  )")
++                  .ExtractBool());
++  const size_t pre_refresh_delivery_count =
++      controller->runtime_observer_delivery_count_for_testing();
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    document.querySelector('#runtime-refresh').click();
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return controller->runtime_observer_delivery_count_for_testing() >
++           pre_refresh_delivery_count;
++  }));
++  EXPECT_TRUE(
++      content::EvalJs(web_contents,
++                      content::JsReplace(R"(
++    const task = window.prometheusRuntimeSnapshotForTesting?.tasks?.find(
++        candidate => candidate.task_id === $1);
++    task?.safe_title === $2 && task.state === 'cancelled';
++  )",
++                                         sensitive_task_id, kSensitiveTitle))
++          .ExtractBool());
++  EXPECT_FALSE(content::EvalJs(web_contents, R"(
++    !!document.querySelector(
++        'input[type="password"], [data-engine], [data-terminal], '
++        + '[data-pairing], [name*="secret"]');
++  )")
++                   .ExtractBool());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+                        AskFsbHandoffKeepsPromptOutOfUrlAndSeedsSidePanel) {
+   constexpr char kPrompt[] = "book me a flight to Tokyo";
+   content::WebContents* web_contents =
+@@ -387,19 +644,15 @@ IN_PROC_BROWSER_TEST_F(PrometheusNewTabBrowserTest,
+       web_contents->GetController().GetVisibleEntry()->GetURL().spec().find(
+           kPrompt));
+ 
+-  EXPECT_EQ(kPrompt, content::EvalJs(web_contents, content::JsReplace(R"(
+-    new Promise(resolve => {
+-      const check = () => {
+-        if (window.prometheusAskFsbHandoffForTesting === $1) {
+-          resolve(window.prometheusAskFsbHandoffForTesting);
+-          return;
+-        }
+-        setTimeout(check, 0);
+-      };
+-      check();
+-    });
+-  )",
+-                                                                      kPrompt))
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusAskFsbHandoffForTesting || '';
++    )")
++               .ExtractString() == kPrompt;
++  }));
++  EXPECT_EQ(kPrompt, content::EvalJs(web_contents, R"(
++    window.prometheusAskFsbHandoffForTesting;
++  )")
+                          .ExtractString());
+ 
+   ASSERT_TRUE(base::test::RunUntil(
+@@ -410,21 +663,24 @@ IN_PROC_BROWSER_TEST_F(PrometheusNewTabBrowserTest,
+   EXPECT_EQ(chrome::kChromeUIPrometheusSidePanelURL,
+             web_contents->GetLastCommittedURL().spec());
+ 
+-  EXPECT_EQ(kPrompt, content::EvalJs(web_contents, content::JsReplace(R"(
+-    new Promise(resolve => {
+-      const check = () => {
+-        if (window.prometheusAskFsbSeedForTesting === $1) {
+-          resolve(window.prometheusAskFsbSeedForTesting);
+-          return;
+-        }
+-        setTimeout(check, 0);
+-      };
+-      check();
+-    });
+-  )",
+-                                                                      kPrompt))
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, content::JsReplace(R"(
++      window.prometheusAskFsbSeedForTesting === $1 &&
++          Array.isArray(window.prometheusRuntimeSnapshotForTesting?.tasks);
++    )",
++                                                            kPrompt))
++        .ExtractBool();
++  }));
++  EXPECT_EQ(kPrompt, content::EvalJs(web_contents, R"(
++    document.querySelector('#runtime-prompt').value;
++  )")
+                          .ExtractString());
+-  EXPECT_TRUE(BodyContains(web_contents, kPrompt));
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    document.activeElement?.id === 'runtime-prompt' &&
++        window.prometheusRuntimeSubmitCountForTesting === 0 &&
++        window.prometheusRuntimeSnapshotForTesting.tasks.length === 0;
++  )")
++                  .ExtractBool());
+   EXPECT_EQ(std::string::npos,
+             web_contents->GetLastCommittedURL().spec().find(kPrompt));
+   EXPECT_FALSE(BodyContains(web_contents, "api_key"));
+-- 
+2.50.1 (Apple Git-155)
+

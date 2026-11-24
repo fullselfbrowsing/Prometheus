@@ -1,0 +1,115 @@
+From 055631c4ae04b3d719681aaba16208ffc9a1d8fa Mon Sep 17 00:00:00 2001
+From: Lakshman Turlapati <lakshmantvnm@gmail.com>
+Date: Sun, 9 Aug 2026 21:54:52 -0500
+Subject: [PATCH] fix(22-05): stabilize packaged smoke startup
+
+- compare disposable profiles against the canonical macOS temp root
+- defer controller startup until browser collection traversal unwinds
+- detach the one-shot browser observer before invoking its owner
+---
+ .../prometheus_browser_main_extra_parts.cc    | 53 ++++++++++++++-----
+ 1 file changed, 41 insertions(+), 12 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index f24268d2db745f81a8a4acd3cc13a4a8470d96d7..e747b16f171e40ff9accea4c8caebc6761fceb55 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -2121,8 +2121,17 @@ bool IsDisposableSupervisionTestProfile(Profile* profile) {
+   const base::FilePath profile_path =
+       profile->GetPath().StripTrailingSeparators();
+   temporary_directory = temporary_directory.StripTrailingSeparators();
+-  return profile_path == temporary_directory ||
+-         temporary_directory.IsParent(profile_path);
++  const base::FilePath resolved_temporary_directory =
++      base::MakeAbsoluteFilePath(temporary_directory).StripTrailingSeparators();
++  const bool under_reported_temporary_directory =
++      profile_path == temporary_directory ||
++      temporary_directory.IsParent(profile_path);
++  const bool under_canonical_temporary_directory =
++      !resolved_temporary_directory.empty() &&
++      (profile_path == resolved_temporary_directory ||
++       resolved_temporary_directory.IsParent(profile_path));
++  return under_reported_temporary_directory ||
++         under_canonical_temporary_directory;
+ }
+ 
+ Profile* FindSoleDisposableSupervisionTestProfile() {
+@@ -3002,13 +3011,22 @@ class PrometheusBrowserMainExtraParts::ExtensionSmokeBrowserWaiter
+   ~ExtensionSmokeBrowserWaiter() override = default;
+ 
+   // Scans browsers that already exist at construction time. Must be called
+-  // only after the owner has already stored `this` in its final location:
+-  // a match runs `ready_` synchronously, which may destroy `this`.
++  // only after the owner has already stored `this` in its final location.
++  // Resolve the candidate during iteration, then invoke only after ForEach()
++  // unwinds so controller startup cannot re-enter BrowserCollection traversal.
+   void CheckExistingBrowsers() {
++    BrowserWindowInterface* matching_browser = nullptr;
+     GlobalBrowserCollection::GetInstance()->ForEach(
+-        [this](BrowserWindowInterface* browser_window) {
+-          return !MaybeReport(browser_window);
++        [this, &matching_browser](BrowserWindowInterface* browser_window) {
++          if (IsEligible(browser_window)) {
++            matching_browser = browser_window;
++            return false;
++          }
++          return true;
+         });
++    if (matching_browser) {
++      MaybeReport(matching_browser);
++    }
+   }
+ 
+   // BrowserCollectionObserver:
+@@ -3017,18 +3035,27 @@ class PrometheusBrowserMainExtraParts::ExtensionSmokeBrowserWaiter
+   }
+ 
+  private:
+-  bool MaybeReport(BrowserWindowInterface* browser_window) {
++  bool IsEligible(BrowserWindowInterface* browser_window) const {
+     if (!ready_ || !browser_window ||
+         browser_window->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
+       return false;
+     }
+     Profile* const profile = browser_window->GetProfile();
++    return profile && browser_window->GetBrowserForMigrationOnly() &&
++           profile->IsRegularProfile() && !profile->IsOffTheRecord() &&
++           IsDisposableSupervisionTestProfile(profile);
++  }
++
++  bool MaybeReport(BrowserWindowInterface* browser_window) {
++    if (!IsEligible(browser_window)) {
++      return false;
++    }
++    Profile* const profile = browser_window->GetProfile();
+     Browser* const browser = browser_window->GetBrowserForMigrationOnly();
+-    if (!profile || !browser || !profile->IsRegularProfile() ||
+-        profile->IsOffTheRecord() ||
+-        !IsDisposableSupervisionTestProfile(profile)) {
++    if (!profile || !browser) {
+       return false;
+     }
++    collection_observation_.Reset();
+     std::move(ready_).Run(profile, browser);
+     return true;
+   }
+@@ -3084,7 +3111,7 @@ void PrometheusBrowserMainExtraParts::PostBrowserStart() {
+     extension_smoke_browser_waiter_ =
+         std::make_unique<ExtensionSmokeBrowserWaiter>(base::BindOnce(
+             &PrometheusBrowserMainExtraParts::OnExtensionSmokeBrowserReady,
+-            weak_ptr_factory_.GetWeakPtr()));
++            base::Unretained(this)));
+     extension_smoke_browser_waiter_->CheckExistingBrowsers();
+   }
+ 
+@@ -3188,7 +3215,9 @@ void PrometheusBrowserMainExtraParts::OnGatewayStarted(bool started) {
+ void PrometheusBrowserMainExtraParts::OnExtensionSmokeBrowserReady(
+     Profile* profile,
+     Browser* browser) {
+-  extension_smoke_browser_waiter_.reset();
++  // The waiter detached from BrowserCollection before invoking this callback.
++  // Keep the inert owner until normal shutdown so it cannot be destroyed while
++  // its synchronous CheckExistingBrowsers() stack is still active.
+   if (!profile || !browser || extension_smoke_controller_) {
+     return;
+   }

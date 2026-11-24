@@ -1,0 +1,65 @@
+From b2be1c43593eb0d37fa15efcf86d9e30d75df9e5 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 24 Jun 2026 11:50:52 -0500
+Subject: [PATCH 03/15] fix(14-01): wire prometheus_unittests into GN graph and
+ fix build deps
+
+- Add //chrome/browser/prometheus:prometheus_unittests to gn_all group
+  in BUILD.gn so the target is reachable by autoninja
+- Add import(//testing/test.gni) to chrome/browser/prometheus/BUILD.gn
+- Fix skia dep from //third_party/skia to //skia (correct GN label)
+- Add //testing/gtest to deps for include path resolution
+- Include ../ui/color/prometheus_color_mixer.cc directly in test sources
+  so Wave 0 binary links before mixer is registered in :mixers (Plan 14-02)
+- prometheus_unittests compiles and runs: 7 RED + 3 GREEN (correct Wave 0)
+---
+ BUILD.gn                           | 1 +
+ chrome/browser/prometheus/BUILD.gn | 8 +++++++-
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/BUILD.gn b/BUILD.gn
+index 7c4fe924b9..78ef9d9ef0 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -150,6 +150,7 @@ group("gn_all") {
+       if (!is_fuchsia) {
+         deps += [
+           "//chrome",
++          "//chrome/browser/prometheus:prometheus_unittests",
+           "//chrome/browser/ui/actions:dump_actions",
+           "//chrome/browser/ui/color:dump_colors",
+           "//chrome/test:browser_tests",
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 089686bb7d..3721b446cd 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -6,19 +6,25 @@
+ # All tests start RED — populated incrementally by Plans 14-02 through 14-06.
+ # Modeled on chrome/browser/ui/color/BUILD.gn source_set pattern.
+ 
++import("//testing/test.gni")
++
+ test("prometheus_unittests") {
+   sources = [
+     "prometheus_asset_resource_unittest.cc",
+     "prometheus_color_mixer_unittest.cc",
+     "prometheus_css_emission_unittest.cc",
++    # Mixer stub included directly for Wave 0 so the test binary links before
++    # prometheus_color_mixer.cc is registered in :mixers (Plan 14-02).
++    "../ui/color/prometheus_color_mixer.cc",
+   ]
+ 
+   deps = [
+     "//base",
+     "//chrome/browser/ui/color:color_headers",
+     "//chrome/browser/ui/color:mixers",
++    "//skia",
++    "//testing/gtest",
+     "//testing/gtest:gtest_main",
+-    "//third_party/skia",
+     "//ui/color",
+     "//ui/color:color_headers",
+     "//ui/gfx",
+-- 
+2.50.1 (Apple Git-155)
+

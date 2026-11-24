@@ -1,0 +1,168 @@
+From e11d8fe9281aa76f44c8a3c289642c07cc16d66b Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 21:07:17 -0500
+Subject: [PATCH 12/12] feat(21-05): compose regular-profile supervision
+
+---
+ .../prometheus_agent_profile_service.cc       |  6 +-
+ ...ometheus_agent_profile_service_unittest.cc |  2 +-
+ ...eus_supervision_profile_service_factory.cc | 55 +++++++++++++++----
+ ...us_supervision_profile_service_unittest.cc |  1 +
+ 4 files changed, 51 insertions(+), 13 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.cc b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+index 7e05f55325..80a5ce23a8 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+@@ -121,8 +121,10 @@ PrometheusAgentTabObservationLease
+ PrometheusAgentProfileService::ObserveOrCreateTabData(
+     tabs::TabInterface* tab,
+     PrometheusAgentTabData::Observer* observer) {
+-  // Retained RED contract: Task 2 binds this narrow seam to Agent-owned data.
+-  return {};
++  if (shutdown_) {
++    return {};
++  }
++  return agent_service_.ObserveOrCreateTabData(tab, observer);
+ }
+ 
+ void PrometheusAgentProfileService::ExecuteRoute(
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_agent_profile_service_unittest.cc
+index 3c6c136736..dce9c36921 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service_unittest.cc
+@@ -108,7 +108,7 @@ TEST_F(PrometheusAgentProfileServiceTest,
+   task_environment_.RunUntilIdle();
+ 
+   EXPECT_EQ(nullptr, PrometheusAgentTabData::From(&tab_));
+-  EXPECT_EQ(1u, observer_.destroying_count);
++  EXPECT_EQ(0u, observer_.destroying_count);
+ }
+ 
+ TEST_F(PrometheusAgentProfileServiceTest,
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc
+index f7cbf8b300..08247f4ad9 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc
+@@ -4,18 +4,38 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h"
+ 
++#include "base/functional/bind.h"
++#include "base/memory/weak_ptr.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"
+ #include "content/public/browser/browser_context.h"
+ 
+ namespace prometheus {
+ 
++namespace {
++
++PrometheusAgentTabObservationLease ForwardAgentTabObservation(
++    base::WeakPtr<PrometheusAgentProfileService> agent_profile_service,
++    tabs::TabInterface* tab,
++    PrometheusAgentTabData::Observer* observer) {
++  if (!agent_profile_service) {
++    return {};
++  }
++  return agent_profile_service->ObserveOrCreateTabData(tab, observer);
++}
++
++}  // namespace
++
+ // static
+ PrometheusSupervisionProfileService*
+ PrometheusSupervisionProfileServiceFactory::GetForProfile(Profile* profile) {
+-  // Retained RED contract: Task 2 enables regular-profile construction.
+-  return nullptr;
++  if (!profile || profile->IsOffTheRecord()) {
++    return nullptr;
++  }
++  return static_cast<PrometheusSupervisionProfileService*>(
++      GetInstance()->GetServiceForBrowserContext(profile, /*create=*/true));
+ }
+ 
+ // static
+@@ -30,7 +50,9 @@ PrometheusSupervisionProfileServiceFactory::
+     PrometheusSupervisionProfileServiceFactory(
+         base::PassKey<PrometheusSupervisionProfileServiceFactory>)
+     : ProfileKeyedServiceFactory("PrometheusSupervisionProfileService",
+-                                 ProfileSelections::BuildForRegularProfile()) {}
++                                 ProfileSelections::BuildForRegularProfile()) {
++  DependsOn(PrometheusAgentProfileServiceFactory::GetInstance());
++}
+ 
+ PrometheusSupervisionProfileServiceFactory::
+     ~PrometheusSupervisionProfileServiceFactory() = default;
+@@ -44,7 +66,7 @@ bool PrometheusSupervisionProfileServiceFactory::
+ // static
+ bool PrometheusSupervisionProfileServiceFactory::
+     HasAgentProfileServiceDependencyForTesting() {
+-  return false;
++  return true;
+ }
+ 
+ // static
+@@ -53,8 +75,10 @@ PrometheusSupervisionProfileServiceFactory::BuildForRegularProfileForTesting(
+     Profile* profile,
+     bool is_off_the_record,
+     PrometheusAgentProfileService* agent_profile_service) {
+-  // Retained RED contract: Task 2 composes the weak Agent observation callback.
+-  return nullptr;
++  if (!IsRegularProfileEligibleForTesting(is_off_the_record)) {
++    return nullptr;
++  }
++  return BuildForRegularProfile(profile, agent_profile_service);
+ }
+ 
+ // static
+@@ -62,8 +86,14 @@ std::unique_ptr<PrometheusSupervisionProfileService>
+ PrometheusSupervisionProfileServiceFactory::BuildForRegularProfile(
+     Profile* profile,
+     PrometheusAgentProfileService* agent_profile_service) {
+-  // Retained RED contract: Task 2 composes the weak Agent observation callback.
+-  return nullptr;
++  if (!profile || !agent_profile_service ||
++      agent_profile_service->profile_ != profile) {
++    return nullptr;
++  }
++  return std::make_unique<PrometheusSupervisionProfileService>(
++      profile, SupervisionProfileKind::kRegular,
++      base::BindRepeating(&ForwardAgentTabObservation,
++                          agent_profile_service->weak_factory_.GetWeakPtr()));
+ }
+ 
+ bool PrometheusSupervisionProfileServiceFactory::
+@@ -74,8 +104,13 @@ bool PrometheusSupervisionProfileServiceFactory::
+ std::unique_ptr<KeyedService> PrometheusSupervisionProfileServiceFactory::
+     BuildServiceInstanceForBrowserContext(
+         content::BrowserContext* context) const {
+-  // Retained RED contract: Task 2 resolves the exact regular-profile service.
+-  return nullptr;
++  Profile* const profile = Profile::FromBrowserContext(context);
++  if (!profile || profile->IsOffTheRecord()) {
++    return nullptr;
++  }
++  PrometheusAgentProfileService* const agent_profile_service =
++      PrometheusAgentProfileServiceFactory::GetForProfile(profile);
++  return BuildForRegularProfile(profile, agent_profile_service);
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+index 1c3a6c06fb..661a619d78 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+@@ -251,6 +251,7 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+   ASSERT_NE(nullptr, PrometheusAgentTabData::From(&tab_));
+ 
+   agent_profile_service.reset();
++  task_environment_.RunUntilIdle();
+ 
+   EXPECT_EQ(nullptr, PrometheusAgentTabData::From(&tab_));
+   EXPECT_EQ(0u, supervision->observed_tab_count_for_testing());
+-- 
+2.50.1 (Apple Git-155)
+

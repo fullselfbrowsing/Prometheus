@@ -1,0 +1,1249 @@
+From c6a7b7dac6f12a85013fd088deb87d8f9e7a0fd8 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 14:36:39 -0500
+Subject: [PATCH] feat(21-22): render Control Panel supervision lifecycle
+
+---
+ .../prometheus/prometheus_control_panel.html  |  16 +-
+ .../resources/prometheus/prometheus_webui.css | 174 +++-
+ .../resources/prometheus/prometheus_webui.js  | 908 +++++++++++++++++-
+ 3 files changed, 1080 insertions(+), 18 deletions(-)
+
+diff --git a/chrome/browser/resources/prometheus/prometheus_control_panel.html b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+index 5016473244..ad156cf05b 100644
+--- a/chrome/browser/resources/prometheus/prometheus_control_panel.html
++++ b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+@@ -479,12 +479,10 @@
+                   data-supervision-order="target"
+                   aria-labelledby="control-supervision-target-heading">
+                 <h2 id="control-supervision-target-heading">Target &amp; access</h2>
+-                <label for="control-supervision-target">
+-                  Target tab
+-                  <select id="control-supervision-target" disabled>
+-                    <option value="">Loading eligible tabs</option>
+-                  </select>
+-                </label>
++                <label for="control-supervision-target">Target tab</label>
++                <select id="control-supervision-target" disabled>
++                  <option value="">Loading eligible tabs</option>
++                </select>
+                 <p class="control-note" id="control-supervision-target-detail">
+                   Loading supervision state
+                 </p>
+@@ -521,6 +519,10 @@
+                       id="control-supervision-copy">Copy code</button>
+                   <button class="quiet-button" type="button"
+                       id="control-supervision-cancel-code">Cancel code</button>
++                  <button class="quiet-button" type="button"
++                      id="control-supervision-create-another" hidden>
++                    Create another code
++                  </button>
+                 </div>
+                 <p class="control-state" id="control-supervision-code-status"
+                     role="status" aria-live="polite"></p>
+@@ -536,7 +538,7 @@
+                   data-supervision-order="connected"
+                   aria-labelledby="control-supervision-connected-heading">
+                 <div class="control-heading-row">
+-                  <h2 id="control-supervision-connected-heading">
++                  <h2 id="control-supervision-connected-heading" tabindex="-1">
+                     Connected dashboards
+                   </h2>
+                   <button class="danger-button" type="button"
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.css b/chrome/browser/resources/prometheus/prometheus_webui.css
+index 3b9de27459..882ee973be 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.css
++++ b/chrome/browser/resources/prometheus/prometheus_webui.css
+@@ -1074,6 +1074,150 @@ textarea {
+   white-space: nowrap;
+ }
+ 
++#section-supervision {
++  font-size: 13px;
++}
++
++.control-supervision-summary {
++  display: grid;
++  gap: 8px;
++  grid-template-columns: repeat(2, minmax(0, 1fr));
++  min-width: min(100%, 320px);
++}
++
++.control-supervision-summary .control-metric {
++  padding: 8px;
++}
++
++.control-supervision-layout,
++.control-supervision-primary,
++.control-supervision-secondary,
++.control-supervision-block {
++  display: grid;
++  gap: 16px;
++  min-width: 0;
++}
++
++.control-supervision-layout {
++  grid-template-columns: minmax(0, 1fr);
++}
++
++.control-supervision-layout[hidden],
++.control-supervision-summary[hidden] {
++  display: none;
++}
++
++.control-supervision-block {
++  border-top: 1px solid var(--prometheus-surface-3);
++  padding-top: 16px;
++}
++
++.control-supervision-block > h2 {
++  margin-top: 0;
++}
++
++.control-supervision-block > label {
++  color: var(--prometheus-text-muted);
++  display: grid;
++  font-size: 12px;
++  gap: 8px;
++}
++
++#control-supervision-target {
++  background: var(--prometheus-surface-2);
++  border: 1px solid var(--prometheus-surface-3);
++  border-radius: 8px;
++  box-sizing: border-box;
++  color: var(--prometheus-text);
++  min-height: 48px;
++  min-width: 0;
++  padding: 0 16px;
++  width: 100%;
++}
++
++.control-supervision-invariant {
++  color: var(--prometheus-text-muted);
++  font-family: ui-monospace, monospace;
++  font-size: 12px;
++  margin: 0;
++}
++
++#control-supervision-create {
++  justify-self: start;
++}
++
++#control-supervision-code-panel {
++  background: var(--prometheus-surface-2);
++  border: 1px solid var(--prometheus-surface-3);
++  border-radius: 8px;
++  box-sizing: border-box;
++  padding: 16px;
++}
++
++#control-supervision-code-panel[hidden] {
++  display: none;
++}
++
++.control-pairing-code {
++  color: var(--prometheus-color-text);
++  font-family: ui-monospace, monospace;
++  font-size: 20px;
++  font-variant-numeric: tabular-nums;
++  font-weight: 800;
++  line-height: 48px;
++  margin: 0;
++  max-width: 100%;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.control-pairing-timer {
++  color: var(--prometheus-text-muted);
++  font-family: ui-monospace, monospace;
++  font-size: 12px;
++  font-variant-numeric: tabular-nums;
++  margin: 0;
++}
++
++#control-supervision-stream,
++#control-supervision-action {
++  background: var(--prometheus-surface-2);
++  border: 1px solid var(--prometheus-surface-3);
++  border-radius: 8px;
++  box-sizing: border-box;
++  min-height: 48px;
++  padding: 16px;
++}
++
++#control-supervision-stream p {
++  margin: 4px 0 0;
++}
++
++.control-supervision-client,
++.control-supervision-recent,
++.control-supervision-audit {
++  min-height: 48px;
++}
++
++.control-supervision-client h3,
++.control-supervision-recent h3,
++.control-supervision-audit h3 {
++  font-size: 16px;
++  margin: 0;
++}
++
++#control-supervision-closed {
++  background: var(--prometheus-surface-2);
++  border: 1px solid var(--prometheus-surface-3);
++  border-radius: 8px;
++  padding: 16px;
++}
++
++#control-supervision-closed[hidden] {
++  display: none;
++}
++
+ .section-rail button:focus-visible,
+ .section-select:focus-visible,
+ .control-search input:focus-visible,
+@@ -1084,14 +1228,20 @@ textarea {
+ .control-filter-grid select:focus-visible,
+ .control-card-actions button:focus-visible,
+ .control-form-actions button:focus-visible,
+-.control-heading-row button:focus-visible {
++.control-heading-row button:focus-visible,
++#control-supervision-target:focus-visible,
++#control-supervision-code-heading:focus-visible,
++#control-supervision-connected-heading:focus-visible {
+   outline: 2px solid var(--prometheus-color-accent);
+   outline-offset: 2px;
+ }
+ 
+ #control-cancel-task-dialog,
+ #control-clear-logs-dialog,
+-#control-delete-record-dialog {
++#control-delete-record-dialog,
++#control-supervision-replace-dialog,
++#control-supervision-revoke-dialog,
++#control-supervision-end-dialog {
+   background: var(--prometheus-surface);
+   border: 1px solid var(--prometheus-surface-3);
+   border-radius: 8px;
+@@ -1101,7 +1251,10 @@ textarea {
+ 
+ #control-cancel-task-dialog::backdrop,
+ #control-clear-logs-dialog::backdrop,
+-#control-delete-record-dialog::backdrop {
++#control-delete-record-dialog::backdrop,
++#control-supervision-replace-dialog::backdrop,
++#control-supervision-revoke-dialog::backdrop,
++#control-supervision-end-dialog::backdrop {
+   background: rgba(0, 0, 0, 0.72);
+ }
+ 
+@@ -1126,6 +1279,12 @@ textarea {
+   }
+ }
+ 
++@media (min-width: 1024px) {
++  .control-supervision-layout {
++    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
++  }
++}
++
+ @media (max-width: 719px) {
+   .control-shell {
+     grid-template-columns: 1fr;
+@@ -1138,6 +1297,11 @@ textarea {
+   .section-select-label {
+     display: grid;
+   }
++
++  .control-supervision-summary {
++    grid-template-columns: minmax(0, 1fr);
++    width: 100%;
++  }
+ }
+ 
+ @media (max-width: 479px) {
+@@ -1180,6 +1344,10 @@ textarea {
+     flex: 1 1 100%;
+   }
+ 
++  #control-supervision-create {
++    width: 100%;
++  }
++
+   .control-log-row {
+     grid-template-columns: auto minmax(0, 1fr);
+   }
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.js b/chrome/browser/resources/prometheus/prometheus_webui.js
+index de87a2650d..87c04bd5de 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.js
++++ b/chrome/browser/resources/prometheus/prometheus_webui.js
+@@ -30,6 +30,15 @@ let controlMemorySearchResults = null;
+ let controlGuideSearchResults = null;
+ let pendingControlSearch = '';
+ let pendingControlPolicySave = false;
++let controlPairingCode = '';
++let controlPairingExpiresAtMs = 0;
++let controlPairingUiState = 'idle';
++let controlPairingTimer = 0;
++let controlPairingAwaitingTerminal = false;
++let controlPairingAnnouncements = new Set();
++let pendingControlSupervisionDialog = null;
++let controlSupervisionMutationPending = false;
++const controlSupervisionFocusLabels = new WeakMap();
+ 
+ let controlSnapshot = {
+   status: 'NOT_IMPLEMENTED',
+@@ -1569,7 +1578,7 @@ function renderControlPermissions() {
+   appendControlMetric(
+       summary, 'Tab ownership', policy.tab_ownership_required ?
+           'Required' : 'Unavailable');
+-  appendControlMetric(summary, 'Supervision', 'Not ready');
++  appendControlMetric(summary, 'Supervision', 'Available locally');
+ 
+   const setChecked = (selector, checked) => {
+     const input = document.querySelector(selector);
+@@ -1596,7 +1605,7 @@ function renderControlPermissions() {
+   setChecked('#control-vault-native-only', policy.vault_native_only);
+   setChecked(
+       '#control-vault-confirm-each-use', policy.vault_confirm_each_use);
+-  setChecked('#control-supervision-ready', false);
++  setChecked('#control-supervision-ready', true);
+ }
+ 
+ function controlLogRecords() {
+@@ -1702,18 +1711,699 @@ function renderControlLogs() {
+           'Not reported');
+ }
+ 
+-function restoreControlFocus(focusKey) {
++const controlSupervisionStreamCopy = Object.freeze({
++  preparing_baseline: {
++    label: 'Starting view',
++    copy: 'Prometheus is preparing a safe page snapshot.',
++  },
++  live: {
++    label: 'Live',
++    copy: 'Structured page updates are current.',
++  },
++  resyncing: {
++    label: 'Resyncing',
++    copy: 'The page changed. Prometheus is preparing a fresh supervised view.',
++  },
++  paused: {
++    label: 'View paused for resync',
++    copy: 'A fresh page snapshot is required before updates continue.',
++  },
++  ended: {
++    label: 'Ended',
++    copy: 'The target tab closed. Dashboard access ended.',
++  },
++});
++
++const controlSupervisionActionCopy = Object.freeze({
++  idle: 'No remote action active',
++  validating: 'Validating remote action',
++  awaiting_confirmation: 'Confirmation required in Prometheus',
++  verifying: 'Verifying page change',
++  completed: 'Remote action complete',
++  blocked: 'Remote action blocked',
++  failed: 'Remote action failed',
++});
++
++const controlSupervisionAuditLabels = Object.freeze({
++  pairing_code_created: 'Pairing code created',
++  pairing_code_cancelled: 'Pairing code cancelled',
++  pairing_code_expired: 'Pairing code expired',
++  dashboard_paired: 'Dashboard paired',
++  viewing_started: 'Viewing started',
++  control_enabled: 'Control enabled',
++  remote_action_requested: 'Remote action requested',
++  remote_action_completed: 'Remote action completed',
++  remote_action_blocked: 'Remote action blocked',
++  control_stopped: 'Control stopped',
++  access_revoked: 'Access revoked',
++  access_expired: 'Access expired',
++  resync_required: 'Resync required',
++  resync_completed: 'Resync completed',
++  target_closed: 'Target closed',
++  authority_lost: 'Authority lost',
++});
++
++function controlSupervisionRows() {
++  const supervision = controlSnapshot.supervision;
++  return supervision && typeof supervision === 'object' ? supervision : null;
++}
++
++function controlSupervisionRelativeTime(timestampMs) {
++  const timestamp = Number(timestampMs);
++  if (!Number.isFinite(timestamp) || timestamp <= 0) {
++    return 'Time unavailable';
++  }
++  const seconds = Math.max(
++      0, Math.round(Math.abs(Date.now() - timestamp) / 1000));
++  if (seconds < 60) {
++    return seconds <= 1 ? 'just now' : `${seconds} seconds ago`;
++  }
++  const minutes = Math.round(seconds / 60);
++  if (minutes < 60) {
++    return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
++  }
++  const hours = Math.round(minutes / 60);
++  return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
++}
++
++function controlSupervisionRemainingTime(timestampMs, prefix = 'Expires in') {
++  const remaining = Math.max(0, Number(timestampMs) - Date.now());
++  if (!Number.isFinite(remaining)) {
++    return `${prefix} unavailable`;
++  }
++  const totalSeconds = Math.max(0, Math.ceil(remaining / 1000));
++  const minutes = Math.floor(totalSeconds / 60);
++  const seconds = String(totalSeconds % 60).padStart(2, '0');
++  return `${prefix} ${String(minutes).padStart(2, '0')}:${seconds}`;
++}
++
++function controlSupervisionActionText(row) {
++  if (row?.action_state === 'executing') {
++    const category = supervisionActionLabels[row.action_category];
++    return category ? `Remote action: ${category}` : 'Remote action blocked';
++  }
++  return controlSupervisionActionCopy[row?.action_state] ||
++      'No remote action active';
++}
++
++function controlSupervisionStreamState(rows) {
++  if (!rows.length) {
++    return null;
++  }
++  for (const state of [
++    'paused', 'resyncing', 'preparing_baseline', 'ended', 'live',
++  ]) {
++    if (rows.some((row) => row?.stream_state === state)) {
++      return state;
++    }
++  }
++  return 'ended';
++}
++
++function sendControlSupervisionMessage(message, args) {
++  const safeArgs = Array.isArray(args) ? args.map((value) =>
++    typeof value === 'boolean' ? value : controlInteger(value)) : [];
++  const messages =
++      Array.isArray(window.prometheusSupervisionMessagesForTesting) ?
++      window.prometheusSupervisionMessagesForTesting : [];
++  window.prometheusSupervisionMessagesForTesting = messages;
++  messages.push({message, args: [...safeArgs]});
++  chrome.send(message, safeArgs);
++}
++
++function eraseControlPairingCharacters() {
++  controlPairingCode = '';
++  controlPairingExpiresAtMs = 0;
++  controlPairingAnnouncements = new Set();
++  if (controlPairingTimer) {
++    clearInterval(controlPairingTimer);
++    controlPairingTimer = 0;
++  }
++  const code = document.querySelector('#control-supervision-code');
++  if (code) {
++    code.textContent = '';
++  }
++}
++
++function setControlPairingState(state, body = '') {
++  controlPairingUiState = state;
++  renderControlPairingPresentation(body);
++}
++
++function renderControlPairingPresentation(overrideBody = '') {
++  const panel = document.querySelector('#control-supervision-code-panel');
++  const heading = document.querySelector('#control-supervision-code-heading');
++  const code = document.querySelector('#control-supervision-code');
++  const body = document.querySelector('#control-supervision-code-copy');
++  const timer = document.querySelector('#control-supervision-code-timer');
++  const copy = document.querySelector('#control-supervision-copy');
++  const cancel = document.querySelector('#control-supervision-cancel-code');
++  const another =
++      document.querySelector('#control-supervision-create-another');
++  if (!panel || !heading || !code || !body || !timer || !copy || !cancel ||
++      !another) {
++    return;
++  }
++  const states = {
++    loading: [
++      'Creating pairing code',
++      'Prometheus is validating the target and local gateway.',
++    ],
++    active: [
++      'Pairing code ready',
++      'Enter this one-time code in the local dashboard. It can be used once.',
++    ],
++    expiring: [
++      'Pairing code expires soon',
++      'Use this code now or create a new one after it expires.',
++    ],
++    redeemed: [
++      'Pairing code used',
++      'The dashboard is connected in view-only mode.',
++    ],
++    expired: ['Pairing code expired', 'Create a new code to continue.'],
++    cancelled: ['Pairing code cancelled', 'The code can no longer be used.'],
++    target_lost: [
++      'Target unavailable',
++      'Choose another tab and create a new pairing code.',
++    ],
++    failure: [
++      'Pairing code could not be created',
++      'Check supervision diagnostics, then try again.',
++    ],
++  };
++  const copyForState = states[controlPairingUiState];
++  panel.hidden = !copyForState;
++  if (!copyForState) {
++    code.textContent = '';
++    return;
++  }
++  heading.textContent = copyForState[0];
++  body.textContent = overrideBody || copyForState[1];
++  const hasCode = (controlPairingUiState === 'active' ||
++      controlPairingUiState === 'expiring') && controlPairingCode;
++  code.textContent = hasCode ? controlPairingCode : '';
++  code.hidden = !hasCode;
++  timer.hidden = !hasCode;
++  timer.textContent = hasCode ?
++      controlSupervisionRemainingTime(controlPairingExpiresAtMs) : '';
++  copy.hidden = !hasCode;
++  cancel.hidden = !hasCode;
++  another.hidden = controlPairingUiState !== 'redeemed';
++  updateControlSupervisionCreateAction();
++}
++
++function updateControlPairingTimer() {
++  if (!controlPairingCode || controlPairingExpiresAtMs <= 0) {
++    return;
++  }
++  const remainingMs = controlPairingExpiresAtMs - Date.now();
++  if (remainingMs <= 0) {
++    eraseControlPairingCharacters();
++    setControlPairingState('expired');
++    const status =
++        document.querySelector('#control-supervision-code-status');
++    if (status) {
++      status.textContent = 'Pairing code expired';
++    }
++    return;
++  }
++  const remainingSeconds = Math.ceil(remainingMs / 1000);
++  if (remainingSeconds <= 60 && controlPairingUiState === 'active') {
++    controlPairingUiState = 'expiring';
++    renderControlPairingPresentation();
++  } else {
++    const timer = document.querySelector('#control-supervision-code-timer');
++    if (timer) {
++      timer.textContent =
++          controlSupervisionRemainingTime(controlPairingExpiresAtMs);
++    }
++  }
++  const status = document.querySelector('#control-supervision-code-status');
++  for (const [threshold, announcement] of [
++    [60, 'Pairing code expires in one minute'],
++    [10, 'Pairing code expires in ten seconds'],
++  ]) {
++    if (remainingSeconds <= threshold &&
++        !controlPairingAnnouncements.has(threshold)) {
++      controlPairingAnnouncements.add(threshold);
++      if (status) {
++        status.textContent = announcement;
++      }
++    }
++  }
++}
++
++function selectedControlSupervisionTarget() {
++  const supervision = controlSupervisionRows();
++  return controlArray(supervision?.targets)
++      .find((target) => target?.selected === true) || null;
++}
++
++function updateControlSupervisionCreateAction() {
++  const create = document.querySelector('#control-supervision-create');
++  const supervision = controlSupervisionRows();
++  const target = selectedControlSupervisionTarget();
++  if (!create) {
++    return;
++  }
++  const loading = controlPairingUiState === 'loading';
++  const another = !!controlPairingCode ||
++      controlPairingUiState === 'redeemed';
++  create.textContent = loading ? 'Creating pairing code' :
++      another ? 'Create another code' : 'Create pairing code';
++  create.disabled = loading || !supervision?.available || !target;
++}
++
++function reconcileControlPairingState(supervision) {
++  const pairingState = typeof supervision?.pairing_state === 'string' ?
++      supervision.pairing_state : '';
++  if (!['redeemed', 'expired', 'cancelled', 'target_lost']
++      .includes(pairingState)) {
++    return;
++  }
++  const hadPresentation = !!controlPairingCode ||
++      controlPairingUiState !== 'idle' ||
++      controlPairingAwaitingTerminal;
++  if (!hadPresentation) {
++    return;
++  }
++  eraseControlPairingCharacters();
++  controlPairingAwaitingTerminal = false;
++  setControlPairingState(pairingState);
++}
++
++function renderControlSupervisionTarget(supervision) {
++  const select = document.querySelector('#control-supervision-target');
++  const detail =
++      document.querySelector('#control-supervision-target-detail');
++  if (!select || !detail) {
++    return;
++  }
++  const targets = controlArray(supervision?.targets);
++  select.replaceChildren();
++  if (!targets.length) {
++    const option = document.createElement('option');
++    option.value = '';
++    option.textContent = 'No eligible target tab';
++    select.append(option);
++    select.disabled = true;
++    detail.textContent =
++        'Open a supported page in this window, then try again.';
++  } else {
++    for (const target of targets) {
++      const option = document.createElement('option');
++      option.value = String(controlInteger(target?.ordinal));
++      option.textContent =
++          `${target?.safe_title || 'Untitled tab'} · ` +
++          `${target?.safe_origin || 'Unavailable'}`;
++      option.selected = target?.selected === true;
++      select.append(option);
++    }
++    select.disabled = false;
++    const selected = selectedControlSupervisionTarget();
++    detail.textContent = selected ?
++        `${selected.safe_title || 'Untitled tab'} · ` +
++            `${selected.safe_origin || 'Unavailable'}` :
++        'Choose a target tab to continue.';
++  }
++  updateControlSupervisionCreateAction();
++}
++
++function appendControlSupervisionAction(
++    parent, label, action, ordinal, listener, danger = false,
++    focusKey = '', focusLabel = '') {
++  const button = appendTextElement(
++      parent, 'button', danger ? 'danger-button' : 'quiet-button', label);
++  button.type = 'button';
++  button.dataset.supervisionAction = action;
++  button.dataset.supervisionOrdinal = String(ordinal);
++  button.dataset.controlFocusKey =
++      focusKey || `supervision-${action}:${ordinal}`;
++  if (focusLabel) {
++    controlSupervisionFocusLabels.set(button, focusLabel);
++  }
++  button.addEventListener('click', listener);
++  return button;
++}
++
++function requestControlSupervisionRevoke(ordinal, label, trigger) {
++  const dialog =
++      document.querySelector('#control-supervision-revoke-dialog');
++  if (!dialog || dialog.open || controlSupervisionMutationPending) {
++    return;
++  }
++  pendingControlSupervisionDialog = {
++    kind: 'revoke',
++    ordinal,
++    trigger,
++  };
++  const copy = document.querySelector('#control-supervision-revoke-copy');
++  if (copy) {
++    copy.textContent =
++        `Revoke access for ${label || 'Local dashboard'}? Viewing and ` +
++        'control for this pairing will end immediately.';
++  }
++  trigger?.setAttribute('aria-expanded', 'true');
++  dialog.showModal();
++  document.querySelector('#control-supervision-revoke-dismiss')
++      ?.focus({preventScroll: true});
++}
++
++function requestControlSupervisionEnd(trigger) {
++  const dialog = document.querySelector('#control-supervision-end-dialog');
++  const target = selectedControlSupervisionTarget();
++  if (!dialog || !target || dialog.open || controlSupervisionMutationPending) {
++    return;
++  }
++  pendingControlSupervisionDialog = {
++    kind: 'end',
++    ordinal: controlInteger(target.ordinal),
++    trigger,
++  };
++  const copy = document.querySelector('#control-supervision-end-copy');
++  if (copy) {
++    copy.textContent =
++        `End supervision for ${target.safe_title || 'this tab'}? All paired ` +
++        'dashboards will lose viewing and control immediately.';
++  }
++  trigger?.setAttribute('aria-expanded', 'true');
++  dialog.showModal();
++  document.querySelector('#control-supervision-end-dismiss')
++      ?.focus({preventScroll: true});
++}
++
++function renderControlSupervisionConnected(supervision) {
++  const list =
++      document.querySelector('#control-supervision-connected-list');
++  const end = document.querySelector('#control-supervision-end-all');
++  if (!list || !end) {
++    return;
++  }
++  const rows = controlArray(supervision?.connected);
++  list.setAttribute('aria-busy', 'false');
++  list.replaceChildren();
++  end.hidden = rows.length === 0;
++  if (!rows.length) {
++    list.append(makeControlEmpty(
++        'No dashboards connected',
++        'Create a pairing code to begin view-only supervision.'));
++    return;
++  }
++  rows.forEach((row, ordinal) => {
++    const focusLabel = row?.display_label || 'Local dashboard';
++    const card = document.createElement('article');
++    card.className = 'control-card control-supervision-client';
++    card.setAttribute('role', 'listitem');
++    const heading = document.createElement('div');
++    heading.className = 'control-card-heading';
++    appendTextElement(
++        heading, 'h3', 'control-card-title',
++        row?.display_label || 'Local dashboard');
++    appendTextElement(
++        heading, 'span', 'control-badge',
++        row?.access === 'controller' ? 'Controller' : 'View only');
++    card.append(heading);
++    const details = document.createElement('dl');
++    details.className = 'control-details control-supervision-client-details';
++    appendControlDetail(
++        details, 'Connected',
++        controlSupervisionRelativeTime(row?.connected_at_ms));
++    appendControlDetail(
++        details, 'Expires',
++        controlSupervisionRemainingTime(row?.expires_at_ms));
++    appendControlDetail(
++        details, 'Last seen',
++        controlSupervisionRelativeTime(row?.last_seen_at_ms));
++    appendControlDetail(
++        details, 'Stream',
++        controlSupervisionStreamCopy[row?.stream_state]?.label || 'Ended');
++    appendControlDetail(
++        details, 'Current action', controlSupervisionActionText(row));
++    card.append(details);
++    const actions = document.createElement('div');
++    actions.className = 'control-card-actions';
++    const primaryFocusKey = `supervision-primary:${ordinal}`;
++    if (row?.access === 'controller') {
++      appendControlSupervisionAction(
++          actions, 'Stop control', 'stop', ordinal, () => {
++            sendControlSupervisionMessage(
++                'prometheusControlStopSupervisionControl', [ordinal]);
++          }, false, primaryFocusKey, focusLabel);
++    } else {
++      const enable = appendControlSupervisionAction(
++          actions, 'Enable control', 'enable', ordinal, () => {
++            sendControlSupervisionMessage(
++                'prometheusControlEnableSupervisionControl', [ordinal]);
++          }, false, primaryFocusKey, focusLabel);
++      if (supervision?.controller_label) {
++        enable.disabled = true;
++        enable.title =
++            `Control is already enabled for ${supervision.controller_label}. ` +
++            'Stop it before choosing another controller.';
++      }
++    }
++    const revoke = appendControlSupervisionAction(
++        actions, 'Revoke access', 'revoke', ordinal, () => {
++          requestControlSupervisionRevoke(
++              ordinal, row?.display_label || 'Local dashboard', revoke);
++        }, true, '', focusLabel);
++    revoke.setAttribute('aria-haspopup', 'dialog');
++    revoke.setAttribute('aria-expanded', 'false');
++    if (row?.stream_state === 'paused') {
++      appendControlSupervisionAction(
++          actions, 'Retry resync', 'retry', ordinal, () => {
++            sendControlSupervisionMessage(
++                'prometheusControlRetrySupervisionBaseline', [ordinal]);
++          }, false, '', focusLabel);
++    }
++    card.append(actions);
++    list.append(card);
++  });
++}
++
++function renderControlSupervisionRecent(supervision) {
++  const list = document.querySelector('#control-supervision-recent-list');
++  if (!list) {
++    return;
++  }
++  const rows = controlArray(supervision?.recent);
++  list.setAttribute('aria-busy', 'false');
++  list.replaceChildren();
++  if (!rows.length) {
++    list.append(makeControlEmpty(
++        'No recently ended access.',
++        'Expired and revoked dashboard access will appear here.'));
++    return;
++  }
++  rows.forEach((row) => {
++    const card = document.createElement('article');
++    card.className = 'control-card control-supervision-recent';
++    card.setAttribute('role', 'listitem');
++    appendTextElement(
++        card, 'h3', 'control-card-title',
++        row?.display_label || 'Local dashboard');
++    const state = row?.state === 'target_closed' ? 'Target closed' :
++        row?.state === 'authority_lost' ? 'Authority lost' :
++        controlDisplayValue(row?.state, 'Ended');
++    appendTextElement(card, 'p', 'control-note', state);
++    appendTextElement(
++        card, 'p', 'control-note',
++        `Last seen ${controlSupervisionRelativeTime(row?.last_seen_at_ms)}`);
++    list.append(card);
++  });
++}
++
++function renderControlSupervisionAudit(supervision) {
++  const list = document.querySelector('#control-supervision-audit-list');
++  if (!list) {
++    return;
++  }
++  const rows = controlArray(supervision?.audit).slice(0, 20);
++  list.setAttribute('aria-busy', 'false');
++  list.replaceChildren();
++  if (!rows.length) {
++    list.append(makeControlEmpty(
++        'No supervision activity yet',
++        'Pairing, viewing, control, revocation, and resync events will appear ' +
++            'here.'));
++    return;
++  }
++  rows.forEach((row) => {
++    const card = document.createElement('article');
++    card.className = 'control-card control-supervision-audit';
++    card.setAttribute('role', 'listitem');
++    appendTextElement(
++        card, 'h3', 'control-card-title',
++        controlSupervisionAuditLabels[row?.event] || 'Supervision event');
++    const details = document.createElement('dl');
++    details.className = 'control-details';
++    appendControlDetail(details, 'Time', safeTimeText(row?.timestamp_ms));
++    if (row?.client_label) {
++      appendControlDetail(details, 'Client', row.client_label);
++    }
++    appendControlDetail(
++        details, 'Target', row?.safe_target_title || 'Unavailable');
++    appendControlDetail(
++        details, 'Site origin', row?.safe_origin || 'Unavailable');
++    if (row?.action_category) {
++      appendControlDetail(
++          details, 'Action',
++          supervisionActionLabels[row.action_category] || 'Blocked');
++    }
++    appendControlDetail(details, 'Outcome', row?.error || 'NONE');
++    appendControlDetail(
++        details, 'Duration', `${controlInteger(row?.duration_ms)} ms`);
++    card.append(details);
++    list.append(card);
++  });
++}
++
++function renderControlSupervisionSummary(supervision) {
++  const summary = document.querySelector('#control-supervision-summary');
++  const state = document.querySelector('#control-supervision-state');
++  const global =
++      document.querySelector('#control-supervision-global-status');
++  if (!summary || !state || !global) {
++    return;
++  }
++  const rows = controlArray(supervision?.connected);
++  const viewerCount = controlInteger(supervision?.viewer_count);
++  const controller = supervision?.controller_label || '';
++  const streamState = controlSupervisionStreamState(rows);
++  const stream = streamState ?
++      controlSupervisionStreamCopy[streamState]?.label || 'Ended' : 'Not active';
++  const stateText = controller ?
++      `${viewerCount} ${viewerCount === 1 ? 'viewer' : 'viewers'} · ` +
++          `Controlled by ${controller}` :
++      viewerCount ?
++      `${viewerCount} ${viewerCount === 1 ? 'viewer' : 'viewers'} · View only` :
++      'No dashboards connected';
++  state.textContent = stateText;
++  global.textContent = viewerCount ?
++      `Supervision: ${viewerCount}` : 'Supervision: Off';
++  summary.replaceChildren();
++  appendControlMetric(
++      summary, 'Supervision',
++      controller ? 'Controlled' :
++          viewerCount ? `${viewerCount} viewing` : 'Off');
++  appendControlMetric(
++      summary, 'Agent', supervision?.agent_active ? 'Active' : 'None');
++  appendControlMetric(
++      summary, 'Controller', controller || 'None');
++  appendControlMetric(summary, 'Stream', stream);
++}
++
++function renderControlSupervisionStream(supervision) {
++  const stream = document.querySelector('#control-supervision-stream');
++  const action = document.querySelector('#control-supervision-action');
++  if (!stream || !action) {
++    return;
++  }
++  const rows = controlArray(supervision?.connected);
++  const state = controlSupervisionStreamState(rows);
++  const copy = state ? controlSupervisionStreamCopy[state] : {
++    label: 'Not active',
++    copy: 'Create a pairing code to begin supervised viewing.',
++  };
++  stream.replaceChildren();
++  appendTextElement(stream, 'strong', '', copy?.label || 'Ended');
++  appendTextElement(
++      stream, 'p', 'control-note',
++      copy?.copy || 'The supervised view ended.');
++  const active = rows.find((row) => row?.access === 'controller') ||
++      rows.find((row) => row?.action_state !== 'idle');
++  action.replaceChildren();
++  appendTextElement(
++      action, 'strong', '', controlSupervisionActionText(active));
++}
++
++function renderControlSupervision() {
++  const panel = document.querySelector('#section-supervision');
++  const layout = panel?.querySelector('.control-supervision-layout');
++  const summary = document.querySelector('#control-supervision-summary');
++  if (!panel || !layout || !summary) {
++    return;
++  }
++  let closed = document.querySelector('#control-supervision-closed');
++  const privateProfile =
++      !loadTimeData.getBoolean('prometheusControlRuntimeAvailable');
++  if (privateProfile) {
++    if (!closed) {
++      closed = document.createElement('div');
++      closed.id = 'control-supervision-closed';
++      appendTextElement(closed, 'h2', '', 'Unavailable in Private');
++      appendTextElement(
++          closed, 'p', 'empty-copy',
++          'Pairing and remote control are disabled in Private windows.');
++      panel.append(closed);
++    }
++    closed.hidden = false;
++    layout.hidden = true;
++    summary.hidden = true;
++    const state = document.querySelector('#control-supervision-state');
++    if (state) {
++      state.textContent = 'Unavailable in Private';
++    }
++    const global =
++        document.querySelector('#control-supervision-global-status');
++    if (global) {
++      global.textContent = 'Supervision: Off';
++    }
++    eraseControlPairingCharacters();
++    return;
++  }
++  if (closed) {
++    closed.hidden = true;
++  }
++  layout.hidden = false;
++  summary.hidden = false;
++  const supervision = controlSupervisionRows();
++  if (!supervision) {
++    const state = document.querySelector('#control-supervision-state');
++    if (state) {
++      state.textContent = controlUiState() === 'loading' ?
++          'Loading supervision state' :
++          'Prometheus could not load supervision state';
++    }
++    return;
++  }
++  reconcileControlPairingState(supervision);
++  renderControlSupervisionSummary(supervision);
++  renderControlSupervisionTarget(supervision);
++  renderControlSupervisionStream(supervision);
++  renderControlSupervisionConnected(supervision);
++  renderControlSupervisionRecent(supervision);
++  renderControlSupervisionAudit(supervision);
++  renderControlPairingPresentation();
++}
++
++function restoreControlFocus(focusKey, supervisionFocusLabel = '') {
+   if (!focusKey) {
+     return;
+   }
+-  const target = Array.from(
+-      document.querySelectorAll('[data-control-focus-key]'))
+-      .find((candidate) => candidate.dataset.controlFocusKey === focusKey);
+-  target?.focus({preventScroll: true});
++  const candidates = Array.from(
++      document.querySelectorAll('[data-control-focus-key]'));
++  const target = supervisionFocusLabel ?
++      candidates.find((candidate) =>
++        controlSupervisionFocusLabels.get(candidate) ===
++            supervisionFocusLabel &&
++        candidate.dataset.controlFocusKey.split(':')[0] ===
++            focusKey.split(':')[0]) :
++      candidates.find(
++          (candidate) => candidate.dataset.controlFocusKey === focusKey);
++  if (target) {
++    target.focus({preventScroll: true});
++  } else if (focusKey.startsWith('supervision-')) {
++    document.querySelector('#control-supervision-connected-heading')
++        ?.focus({preventScroll: true});
++  }
+ }
+ 
+ function renderControlSnapshot(snapshot) {
+   const focusKey = document.activeElement?.dataset?.controlFocusKey || '';
++  const supervisionFocusLabel =
++      controlSupervisionFocusLabels.get(document.activeElement) || '';
+   controlSnapshot = snapshot && typeof snapshot === 'object' ? snapshot : {
+     status: 'INVALID_REQUEST',
+     tasks: [],
+@@ -1764,17 +2454,68 @@ function renderControlSnapshot(snapshot) {
+   renderControlVault();
+   renderControlPermissions();
+   renderControlLogs();
+-  restoreControlFocus(focusKey);
++  renderControlSupervision();
++  restoreControlFocus(focusKey, supervisionFocusLabel);
+ }
+ 
+ window.prometheusControlReceiveSnapshot = (snapshot) => {
+   renderControlSnapshot(snapshot);
+ };
+ 
++window.prometheusControlReceivePairingCreateResult = (result) => {
++  const accepted = result?.accepted === true;
++  const formattedCode = typeof result?.formatted_code === 'string' &&
++          /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(result.formatted_code) ?
++      result.formatted_code : '';
++  const expiresAtMs = Number(result?.expires_at_ms);
++  if (accepted && formattedCode && Number.isFinite(expiresAtMs) &&
++      expiresAtMs > Date.now()) {
++    eraseControlPairingCharacters();
++    controlPairingCode = formattedCode;
++    controlPairingExpiresAtMs = expiresAtMs;
++    controlPairingAwaitingTerminal = false;
++    controlPairingUiState =
++        expiresAtMs - Date.now() <= 60000 ? 'expiring' : 'active';
++    renderControlPairingPresentation();
++    updateControlPairingTimer();
++    controlPairingTimer = setInterval(updateControlPairingTimer, 1000);
++    document.querySelector('#control-supervision-code-heading')
++        ?.focus({preventScroll: true});
++    return;
++  }
++  eraseControlPairingCharacters();
++  controlPairingAwaitingTerminal = false;
++  if (result?.replacement_required === true) {
++    document.querySelector('#control-supervision-replace-dialog')
++        ?.showModal();
++    document.querySelector('#control-supervision-replace-dismiss')
++        ?.focus({preventScroll: true});
++    controlPairingUiState = 'idle';
++    renderControlPairingPresentation();
++    return;
++  }
++  controlPairingUiState =
++      result?.status === 'TARGET_LOST' ? 'target_lost' : 'failure';
++  const recovery = controlPairingUiState === 'target_lost' ?
++      'Choose another tab and create a new pairing code.' :
++      'Check supervision diagnostics, then try again.';
++  renderControlPairingPresentation(recovery);
++};
++
++window.prometheusControlClearPairingPresentation = () => {
++  const hadPresentation = !!controlPairingCode ||
++      ['loading', 'active', 'expiring'].includes(controlPairingUiState);
++  eraseControlPairingCharacters();
++  controlPairingAwaitingTerminal = hadPresentation;
++  controlPairingUiState = 'idle';
++  renderControlPairingPresentation();
++};
++
+ window.prometheusControlReceiveOperation = (operation) => {
+   const safeOperation = operation && typeof operation === 'object' ? operation :
+       {status: 'INVALID_REQUEST', accepted: false,
+         recovery: 'Refresh the control panel and retry'};
++  controlSupervisionMutationPending = false;
+   window.prometheusControlOperationForTesting = safeOperation;
+   for (const status of document.querySelectorAll('.control-operation')) {
+     status.textContent = safeOperation.accepted ? 'Native change saved' :
+@@ -2020,6 +2761,157 @@ if (surface === 'control-panel') {
+   document.querySelector('#control-refresh')?.addEventListener('click', () => {
+     chrome.send('prometheusControlRefresh');
+   });
++  document.querySelector('#control-supervision-target')?.addEventListener(
++      'change', (event) => {
++        const ordinal = Number(event.target.value);
++        if (!Number.isSafeInteger(ordinal) || ordinal < 0) {
++          return;
++        }
++        eraseControlPairingCharacters();
++        controlPairingUiState = 'idle';
++        renderControlPairingPresentation();
++        sendControlSupervisionMessage(
++            'prometheusControlSelectSupervisionTarget', [ordinal]);
++      });
++  document.querySelector('#control-supervision-create')?.addEventListener(
++      'click', (event) => {
++        const target = selectedControlSupervisionTarget();
++        if (!target || controlPairingUiState === 'loading') {
++          return;
++        }
++        if (controlPairingCode) {
++          const dialog =
++              document.querySelector('#control-supervision-replace-dialog');
++          if (!dialog || dialog.open) {
++            return;
++          }
++          pendingControlSupervisionDialog = {
++            kind: 'replace',
++            ordinal: controlInteger(target.ordinal),
++            trigger: event.currentTarget,
++          };
++          event.currentTarget.setAttribute('aria-expanded', 'true');
++          dialog.showModal();
++          document.querySelector('#control-supervision-replace-dismiss')
++              ?.focus({preventScroll: true});
++          return;
++        }
++        controlPairingUiState = 'loading';
++        renderControlPairingPresentation();
++        sendControlSupervisionMessage(
++            'prometheusControlCreatePairing',
++            [controlInteger(target.ordinal)]);
++      });
++  document.querySelector('#control-supervision-copy')?.addEventListener(
++      'click', async () => {
++        const code = controlPairingCode;
++        const status =
++            document.querySelector('#control-supervision-code-status');
++        if (!code || !status) {
++          return;
++        }
++        try {
++          if (!navigator.clipboard?.writeText) {
++            throw new Error('Clipboard unavailable');
++          }
++          await navigator.clipboard.writeText(code);
++          if (controlPairingCode === code) {
++            status.textContent =
++                `Code copied. It ${
++                  controlSupervisionRemainingTime(
++                      controlPairingExpiresAtMs, 'expires in')
++                      .toLowerCase()}.`;
++          }
++        } catch {
++          status.textContent =
++              'Prometheus could not copy the code. Select it and copy it ' +
++              'manually.';
++        }
++      });
++  document.querySelector('#control-supervision-create-another')
++      ?.addEventListener('click', () => {
++        controlPairingUiState = 'idle';
++        renderControlPairingPresentation();
++        document.querySelector('#control-supervision-create')?.click();
++      });
++  document.querySelector('#control-supervision-cancel-code')
++      ?.addEventListener('click', () => {
++        const target = selectedControlSupervisionTarget();
++        if (!target || !controlPairingCode) {
++          return;
++        }
++        eraseControlPairingCharacters();
++        controlPairingAwaitingTerminal = true;
++        setControlPairingState('cancelled');
++        sendControlSupervisionMessage(
++            'prometheusControlCancelPairingPresentation',
++            [controlInteger(target.ordinal)]);
++      });
++  document.querySelector('#control-supervision-end-all')?.addEventListener(
++      'click', (event) => requestControlSupervisionEnd(event.currentTarget));
++  document.querySelector('#control-supervision-open-logs')?.addEventListener(
++      'click', () => {
++        activateControlPanelSection('logs');
++        const filter = document.querySelector('#control-log-class');
++        if (filter) {
++          filter.value = 'all';
++          renderControlLogs();
++        }
++      });
++  document.querySelector('#control-supervision-replace-confirm')
++      ?.addEventListener('click', () => {
++        if (pendingControlSupervisionDialog?.kind !== 'replace' ||
++            controlSupervisionMutationPending) {
++          return;
++        }
++        controlSupervisionMutationPending = true;
++        const ordinal = pendingControlSupervisionDialog.ordinal;
++        eraseControlPairingCharacters();
++        controlPairingUiState = 'loading';
++        renderControlPairingPresentation();
++        sendControlSupervisionMessage(
++            'prometheusControlReplacePairing', [ordinal]);
++        controlSupervisionMutationPending = false;
++      });
++  document.querySelector('#control-supervision-revoke-confirm')
++      ?.addEventListener('click', () => {
++        if (pendingControlSupervisionDialog?.kind !== 'revoke' ||
++            controlSupervisionMutationPending) {
++          return;
++        }
++        controlSupervisionMutationPending = true;
++        sendControlSupervisionMessage(
++            'prometheusControlRevokeSupervisionSession',
++            [pendingControlSupervisionDialog.ordinal, true]);
++        controlSupervisionMutationPending = false;
++      });
++  document.querySelector('#control-supervision-end-confirm')
++      ?.addEventListener('click', () => {
++        if (pendingControlSupervisionDialog?.kind !== 'end' ||
++            controlSupervisionMutationPending) {
++          return;
++        }
++        controlSupervisionMutationPending = true;
++        sendControlSupervisionMessage(
++            'prometheusControlEndTargetSupervision',
++            [pendingControlSupervisionDialog.ordinal, true]);
++        controlSupervisionMutationPending = false;
++      });
++  for (const selector of [
++    '#control-supervision-replace-dialog',
++    '#control-supervision-revoke-dialog',
++    '#control-supervision-end-dialog',
++  ]) {
++    document.querySelector(selector)?.addEventListener('close', () => {
++      const pending = pendingControlSupervisionDialog;
++      pending?.trigger?.setAttribute('aria-expanded', 'false');
++      if (pending?.trigger?.isConnected) {
++        pending.trigger.focus({preventScroll: true});
++      }
++      pendingControlSupervisionDialog = null;
++      controlSupervisionMutationPending = false;
++    });
++  }
+   document.querySelector('#control-task-search')?.addEventListener(
+       'input', renderControlTasks);
+   document.querySelector('#control-add-provider')?.addEventListener(

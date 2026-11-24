@@ -1,0 +1,1033 @@
+From c8fe8eac0477d4a2a6dd716aad728881a2b0484b Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 20 Jul 2026 07:50:17 -0500
+Subject: [PATCH] fix(20): WR-05 expose model discovery status
+
+---
+ .../prometheus/prometheus_agent_gateway.cc    | 294 +++++++++++++-----
+ .../prometheus/prometheus_agent_gateway.h     |  26 ++
+ .../prometheus_agent_gateway_unittest.cc      | 121 +++++--
+ .../prometheus_runtime_transport_codec.cc     |  70 +++--
+ .../prometheus_runtime_transport_codec.h      |   5 +-
+ ...etheus_runtime_transport_codec_unittest.cc |  51 +++
+ 6 files changed, 426 insertions(+), 141 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.cc b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+index 2b580cf282..7223059b98 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+@@ -19,12 +19,13 @@
+ #include "base/location.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/process/process_handle.h"
++#include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/task/task_traits.h"
+ #include "base/task/thread_pool.h"
+-#include "base/timer/timer.h"
+ #include "base/time/time.h"
++#include "base/timer/timer.h"
+ #include "base/uuid.h"
+ #include "base/values.h"
+ #include "chrome/browser/browser_process.h"
+@@ -187,10 +188,9 @@ RuntimeTransportErrorCode ToTransportError(RuntimeProfileStatus status) {
+   }
+ }
+ 
+-RuntimeTransportResult RuntimeStatusFailure(
+-    RuntimeRouteName route,
+-    RuntimeProfileStatus status,
+-    std::string recovery) {
++RuntimeTransportResult RuntimeStatusFailure(RuntimeRouteName route,
++                                            RuntimeProfileStatus status,
++                                            std::string recovery) {
+   return RuntimeTransportResult::Failure(
+       route, ToTransportError(status),
+       "The native runtime rejected the request",
+@@ -199,8 +199,7 @@ RuntimeTransportResult RuntimeStatusFailure(
+ }
+ 
+ RuntimeTaskView TaskView(const RuntimeStoredTask& task) {
+-  return RuntimeTaskView{.snapshot = task.snapshot,
+-                         .safe_result = task.result};
++  return RuntimeTaskView{.snapshot = task.snapshot, .safe_result = task.result};
+ }
+ 
+ RuntimeTaskView TaskView(RuntimeTaskSnapshot snapshot) {
+@@ -244,8 +243,7 @@ RuntimeActionView ActionView(const RuntimeActionRecord& action) {
+   };
+ }
+ 
+-RuntimeVaultMetadataView VaultView(
+-    const PrometheusVaultMetadata& metadata) {
++RuntimeVaultMetadataView VaultView(const PrometheusVaultMetadata& metadata) {
+   return RuntimeVaultMetadataView{
+       .id = metadata.id,
+       .label = metadata.label,
+@@ -271,6 +269,29 @@ RuntimeTransportResult VaultCapabilityUnavailable(RuntimeRouteName route) {
+       "ready");
+ }
+ 
++RuntimeTransportResult DiscoveryTransportResult(
++    RuntimeDiscoveryResult discovery) {
++  if (discovery.status != RuntimeProfileStatus::kOk) {
++    return RuntimeStatusFailure(RuntimeRouteName::kDiscoverModels,
++                                discovery.status,
++                                std::move(discovery.sanitized_error));
++  }
++  if (discovery.operation_id == 0) {
++    return RuntimeTransportResult::Failure(
++        RuntimeRouteName::kDiscoverModels, RuntimeTransportErrorCode::kInternal,
++        "The model discovery operation was invalid",
++        "Retry model discovery from the same browser-issued session");
++  }
++  ClampList(&discovery.models, kMaxPrometheusDiscoveredModels);
++  return RuntimeTransportResult::Success(
++      RuntimeRouteName::kDiscoverModels,
++      RuntimeModelListResult{
++          .operation_id = base::NumberToString(discovery.operation_id),
++          .models = std::move(discovery.models),
++          .pending = discovery.pending,
++      });
++}
++
+ bool WriteGatewayDescriptor(base::FilePath path,
+                             net::IPEndPoint endpoint,
+                             std::string instance_nonce,
+@@ -285,6 +306,100 @@ bool WriteGatewayDescriptor(base::FilePath path,
+ 
+ }  // namespace
+ 
++PrometheusGatewayDiscoveryTracker::PrometheusGatewayDiscoveryTracker() =
++    default;
++PrometheusGatewayDiscoveryTracker::~PrometheusGatewayDiscoveryTracker() =
++    default;
++
++RuntimeTransportResult PrometheusGatewayDiscoveryTracker::Dispatch(
++    const DiscoverModelsParams& params,
++    std::string_view gateway_session_id,
++    std::string_view caller_id,
++    StartCallback start,
++    StatusCallback status) {
++  if (gateway_session_id.empty() || caller_id.empty()) {
++    return RuntimeTransportResult::Failure(
++        RuntimeRouteName::kDiscoverModels,
++        RuntimeTransportErrorCode::kUnauthorized,
++        "The browser-issued discovery authority is unavailable",
++        "Create a new browser-issued session and retry");
++  }
++  if (params.provider_id.has_value() == params.operation_id.has_value()) {
++    return RuntimeTransportResult::Failure(
++        RuntimeRouteName::kDiscoverModels,
++        RuntimeTransportErrorCode::kInvalidRequest,
++        "The model discovery request was invalid",
++        "Supply exactly one provider_id or operation_id");
++  }
++  if (params.provider_id) {
++    if (!start) {
++      return RuntimeTransportResult::Failure(
++          RuntimeRouteName::kDiscoverModels,
++          RuntimeTransportErrorCode::kCapabilityNotReady,
++          "Model discovery is unavailable",
++          "Retry when provider diagnostics report ready");
++    }
++    RuntimeTransportResult result = start.Run(*params.provider_id);
++    RuntimeModelListResult* payload =
++        result.ok ? std::get_if<RuntimeModelListResult>(&result.payload)
++                  : nullptr;
++    if (result.ok && (!payload || payload->operation_id.empty())) {
++      return RuntimeTransportResult::Failure(
++          RuntimeRouteName::kDiscoverModels,
++          RuntimeTransportErrorCode::kInternal,
++          "The model discovery operation was invalid",
++          "Retry model discovery from the same browser-issued session");
++    }
++    if (payload && payload->pending) {
++      owners_[{std::string(gateway_session_id), payload->operation_id}] =
++          std::string(caller_id);
++    }
++    return result;
++  }
++
++  if (!params.operation_id || !status) {
++    return RuntimeTransportResult::Failure(
++        RuntimeRouteName::kDiscoverModels,
++        RuntimeTransportErrorCode::kInvalidRequest,
++        "The model discovery status request was invalid",
++        "Supply the operation_id returned by discover_models");
++  }
++  OperationKey key{std::string(gateway_session_id), *params.operation_id};
++  auto owner = owners_.find(key);
++  if (owner == owners_.end() || owner->second != caller_id) {
++    return RuntimeTransportResult::Failure(
++        RuntimeRouteName::kDiscoverModels, RuntimeTransportErrorCode::kNotFound,
++        "The caller-owned model discovery was not found",
++        "Start model discovery from this browser-issued session");
++  }
++  RuntimeTransportResult result = status.Run(*params.operation_id);
++  RuntimeModelListResult* payload =
++      result.ok ? std::get_if<RuntimeModelListResult>(&result.payload)
++                : nullptr;
++  if (!payload || payload->operation_id != *params.operation_id ||
++      !payload->pending) {
++    owners_.erase(owner);
++  }
++  if (result.ok && !payload) {
++    return RuntimeTransportResult::Failure(
++        RuntimeRouteName::kDiscoverModels, RuntimeTransportErrorCode::kInternal,
++        "The model discovery status was invalid",
++        "Restart model discovery from the same browser-issued session");
++  }
++  return result;
++}
++
++void PrometheusGatewayDiscoveryTracker::RemoveSession(
++    std::string_view gateway_session_id) {
++  for (auto operation = owners_.begin(); operation != owners_.end();) {
++    if (operation->first.first == gateway_session_id) {
++      operation = owners_.erase(operation);
++    } else {
++      ++operation;
++    }
++  }
++}
++
+ RuntimeTransportResult DispatchAuthenticatedRuntimeRequestForTesting(
+     const RuntimeTransportRequest& request,
+     bool session_valid,
+@@ -348,9 +463,9 @@ RuntimeGatewayHealthState BuildPrometheusRuntimeHealthStateForTesting(
+ 
+   health.vault_status = vault_available ? RuntimeComponentStatus::kReady
+                                         : RuntimeComponentStatus::kNotReady;
+-  health.vault_reason =
+-      vault_available ? "The profile-owned native vault is available"
+-                      : "The profile vault metadata owner is unavailable";
++  health.vault_reason = vault_available
++                            ? "The profile-owned native vault is available"
++                            : "The profile vault metadata owner is unavailable";
+   health.vault_next_action =
+       vault_available
+           ? "Use a fresh native confirmation for every vault operation"
+@@ -739,6 +854,7 @@ void PrometheusAgentGateway::Shutdown(base::OnceClosure callback) {
+   shutting_down_ = true;
+ 
+   for (const auto& [session_id, binding] : session_bindings_) {
++    runtime_discovery_tracker_.RemoveSession(session_id);
+     if (!binding.profile) {
+       continue;
+     }
+@@ -904,6 +1020,7 @@ void PrometheusAgentGateway::PruneSessionBindings() {
+         profile ? PrometheusAgentProfileServiceFactory::GetForProfile(profile)
+                 : nullptr;
+     if (!service || !service->HasSession(it->first)) {
++      runtime_discovery_tracker_.RemoveSession(it->first);
+       it = session_bindings_.erase(it);
+     } else {
+       ++it;
+@@ -952,22 +1069,17 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+     case RuntimeRouteName::kRunTask: {
+       const auto& params = std::get<RunTaskParams>(request.params);
+       BrowserWindowInterface* const browser =
+-          binding->second.browser
+-              ? binding->second.browser.get()
+-              : browser_selector_for_testing_
+-                    ? browser_selector_for_testing_.Run()
+-                    : nullptr;
+-      const int32_t stable_tab_id =
+-          binding->second.stable_tab_id > 0
+-              ? binding->second.stable_tab_id
+-              : stable_tab_selector_for_testing_
+-                    ? stable_tab_selector_for_testing_.Run()
+-                    : 0;
+-      if (!browser || stable_tab_id <= 0 ||
+-          browser->GetProfile() != profile) {
++          binding->second.browser         ? binding->second.browser.get()
++          : browser_selector_for_testing_ ? browser_selector_for_testing_.Run()
++                                          : nullptr;
++      const int32_t stable_tab_id = binding->second.stable_tab_id > 0
++                                        ? binding->second.stable_tab_id
++                                    : stable_tab_selector_for_testing_
++                                        ? stable_tab_selector_for_testing_.Run()
++                                        : 0;
++      if (!browser || stable_tab_id <= 0 || browser->GetProfile() != profile) {
+         return RuntimeTransportResult::Failure(
+-            request.route_name,
+-            RuntimeTransportErrorCode::kCapabilityNotReady,
++            request.route_name, RuntimeTransportErrorCode::kCapabilityNotReady,
+             "The session's pinned browser target is unavailable",
+             "Create a new session from an active regular-profile tab");
+       }
+@@ -1008,9 +1120,9 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+           runtime->GetTask(params.task_id);
+       return RuntimeTransportResult::Success(
+           request.route_name,
+-          RuntimeTaskResult{
+-              .task = task ? std::optional(TaskView(std::move(*task)))
+-                           : std::nullopt});
++          RuntimeTaskResult{.task =
++                                task ? std::optional(TaskView(std::move(*task)))
++                                     : std::nullopt});
+     }
+     case RuntimeRouteName::kGetTaskStatus: {
+       const auto& params = std::get<GetTaskStatusParams>(request.params);
+@@ -1020,12 +1132,10 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+             "The caller-owned task was not found",
+             "Refresh the caller-owned task list and retry");
+       }
+-      RuntimeStoreSnapshot snapshot =
+-          runtime->GetRuntimeSnapshotForTransport();
+-      auto task = std::ranges::find(snapshot.tasks, params.task_id,
+-                                    [](const RuntimeStoredTask& item) {
+-                                      return item.snapshot.task_id;
+-                                    });
++      RuntimeStoreSnapshot snapshot = runtime->GetRuntimeSnapshotForTransport();
++      auto task = std::ranges::find(
++          snapshot.tasks, params.task_id,
++          [](const RuntimeStoredTask& item) { return item.snapshot.task_id; });
+       if (task == snapshot.tasks.end()) {
+         return RuntimeTransportResult::Failure(
+             request.route_name, RuntimeTransportErrorCode::kNotFound,
+@@ -1033,8 +1143,7 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+             "Refresh the caller-owned task list and retry");
+       }
+       return RuntimeTransportResult::Success(
+-          request.route_name,
+-          RuntimeTaskResult{.task = TaskView(*task)});
++          request.route_name, RuntimeTaskResult{.task = TaskView(*task)});
+     }
+     case RuntimeRouteName::kListTasks: {
+       const auto& params = std::get<ListTasksParams>(request.params);
+@@ -1078,21 +1187,42 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+     }
+     case RuntimeRouteName::kDiscoverModels: {
+       const auto& params = std::get<DiscoverModelsParams>(request.params);
+-      RuntimeDiscoveryResult result =
+-          runtime->DiscoverModels(params.provider_id);
+-      if (result.status != RuntimeProfileStatus::kOk) {
+-        return RuntimeStatusFailure(request.route_name, result.status,
+-                                    std::move(result.sanitized_error));
+-      }
+-      ClampList(&result.models, kMaxRuntimeTransportListItems);
+-      return RuntimeTransportResult::Success(
+-          request.route_name,
+-          RuntimeModelListResult{.models = std::move(result.models),
+-                                 .pending = result.pending});
++      return runtime_discovery_tracker_.Dispatch(
++          params, gateway_session_id, derived_caller_id,
++          base::BindRepeating(
++              [](PrometheusRuntimeProfileService* runtime,
++                 std::string_view provider_id) {
++                return DiscoveryTransportResult(
++                    runtime->DiscoverModels(std::string(provider_id)));
++              },
++              base::Unretained(runtime)),
++          base::BindRepeating(
++              [](PrometheusRuntimeProfileService* runtime,
++                 std::string_view operation_id) {
++                uint64_t parsed_operation_id = 0;
++                if (!base::StringToUint64(operation_id, &parsed_operation_id)) {
++                  return RuntimeTransportResult::Failure(
++                      RuntimeRouteName::kDiscoverModels,
++                      RuntimeTransportErrorCode::kInvalidRequest,
++                      "The model discovery operation was invalid",
++                      "Use the operation_id returned by discover_models");
++                }
++                std::optional<RuntimeDiscoveryResult> discovery =
++                    runtime->GetDiscovery(parsed_operation_id);
++                if (!discovery) {
++                  return RuntimeTransportResult::Failure(
++                      RuntimeRouteName::kDiscoverModels,
++                      RuntimeTransportErrorCode::kNotFound,
++                      "The model discovery operation was not found",
++                      "Start a new model discovery operation");
++                }
++                return DiscoveryTransportResult(std::move(*discovery));
++              },
++              base::Unretained(runtime)));
+     }
+     case RuntimeRouteName::kSetProviderConfig: {
+-      RuntimeProfileStatus status = runtime->SetProviders(
+-          RuntimeCallerOrigin::kMcp, {});
++      RuntimeProfileStatus status =
++          runtime->SetProviders(RuntimeCallerOrigin::kMcp, {});
+       return RuntimeStatusFailure(
+           request.route_name, status,
+           "Use the Prometheus local control panel to change provider settings");
+@@ -1142,9 +1272,8 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+           {.key = "provider",
+            .status = providers_present ? RuntimeComponentStatus::kReady
+                                        : RuntimeComponentStatus::kDegraded,
+-           .reason = providers_present
+-                         ? "Provider metadata is available"
+-                         : "No provider metadata is configured",
++           .reason = providers_present ? "Provider metadata is available"
++                                       : "No provider metadata is configured",
+            .next_action = providers_present
+                               ? "No provider recovery action is required"
+                               : "Configure a provider in the local control "
+@@ -1255,12 +1384,10 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+       }
+       const bool credentials =
+           request.route_name == RuntimeRouteName::kListCredentials;
+-      const size_t limit = credentials
+-                               ? std::get<ListCredentialsParams>(request.params)
+-                                     .limit
+-                               : std::get<ListPaymentMethodsParams>(
+-                                     request.params)
+-                                     .limit;
++      const size_t limit =
++          credentials
++              ? std::get<ListCredentialsParams>(request.params).limit
++              : std::get<ListPaymentMethodsParams>(request.params).limit;
+       RuntimeVaultListResult payload;
+       for (const PrometheusVaultMetadata& metadata :
+            runtime->ListVaultMetadataForTransport(
+@@ -1295,12 +1422,12 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+       return RuntimeTransportResult::Success(
+           request.route_name,
+           RuntimeVaultUseResult{
+-              .status = !runtime->IsVaultAvailableForTransport()
+-                            ? PrometheusVaultStatus::
+-                                  kNativeConfirmationUnavailable
+-                            : found ? PrometheusVaultStatus::
+-                                          kNativeConfirmationUnavailable
+-                                    : PrometheusVaultStatus::kNotFound});
++              .status =
++                  !runtime->IsVaultAvailableForTransport()
++                      ? PrometheusVaultStatus::kNativeConfirmationUnavailable
++                  : found
++                      ? PrometheusVaultStatus::kNativeConfirmationUnavailable
++                      : PrometheusVaultStatus::kNotFound});
+     }
+     case RuntimeRouteName::kListSessions: {
+       const auto& params = std::get<ListSessionsParams>(request.params);
+@@ -1323,18 +1450,15 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+             "The caller-owned task run was not found",
+             "Refresh the caller-owned run history and retry");
+       }
+-      RuntimeStoreSnapshot snapshot =
+-          runtime->GetRuntimeSnapshotForTransport();
+-      auto task = std::ranges::find(snapshot.tasks, params.run_id,
+-                                    [](const RuntimeStoredTask& item) {
+-                                      return item.snapshot.task_id;
+-                                    });
++      RuntimeStoreSnapshot snapshot = runtime->GetRuntimeSnapshotForTransport();
++      auto task = std::ranges::find(
++          snapshot.tasks, params.run_id,
++          [](const RuntimeStoredTask& item) { return item.snapshot.task_id; });
+       return RuntimeTransportResult::Success(
+           request.route_name,
+-          RuntimeSessionDetailResult{
+-              .run = task != snapshot.tasks.end()
+-                         ? std::optional(TaskView(*task))
+-                         : std::nullopt});
++          RuntimeSessionDetailResult{.run = task != snapshot.tasks.end()
++                                                ? std::optional(TaskView(*task))
++                                                : std::nullopt});
+     }
+     case RuntimeRouteName::kSearchMemory: {
+       const auto& params = std::get<SearchMemoryParams>(request.params);
+@@ -1358,8 +1482,7 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+     case RuntimeRouteName::kGetSiteGuide: {
+       const auto& params = std::get<GetSiteGuideParams>(request.params);
+       std::optional<SiteGuideRecord> guide =
+-          runtime->GetSiteGuideForTransport(derived_caller_id,
+-                                            params.guide_id);
++          runtime->GetSiteGuideForTransport(derived_caller_id, params.guide_id);
+       if (!guide) {
+         return RuntimeTransportResult::Failure(
+             request.route_name, RuntimeTransportErrorCode::kNotFound,
+@@ -1408,8 +1531,8 @@ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+         BuildPrometheusRuntimeHealthStateForTesting(
+             runtime != nullptr, providers.size(), policy_operable_provider,
+             runtime && runtime->IsVaultAvailableForTransport());
+-    AgentRouteResult health = BuildPrometheusGatewayHealthForTesting(
+-        active_regular, runtime_health);
++    AgentRouteResult health =
++        BuildPrometheusGatewayHealthForTesting(active_regular, runtime_health);
+     auto serialized = SerializeAgentTransportResult(health);
+     std::move(callback).Run(
+         net::HTTP_OK, serialized.has_value()
+@@ -1456,8 +1579,7 @@ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+       auto serialized = SerializeRuntimeTransportResult(result);
+       if (!serialized.has_value()) {
+         RuntimeTransportResult failure = RuntimeTransportResult::Failure(
+-            request->route_name,
+-            RuntimeTransportErrorCode::kRequestTooLarge,
++            request->route_name, RuntimeTransportErrorCode::kRequestTooLarge,
+             "The runtime result exceeded transport bounds",
+             "Reduce requested output bounds and retry");
+         serialized = SerializeRuntimeTransportResult(failure);
+@@ -1496,6 +1618,7 @@ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+         PrometheusAgentProfileServiceFactory::GetForProfile(
+             binding->second.profile.get());
+     if (!service) {
++      runtime_discovery_tracker_.RemoveSession(binding->first);
+       session_bindings_.erase(binding);
+       std::move(callback).Run(
+           net::HTTP_OK, SerializeRouteFailure(
+@@ -1610,9 +1733,8 @@ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+     }
+     SessionBinding binding{
+         .profile = profile->GetWeakPtr(),
+-        .browser = target_browser
+-                       ? target_browser->GetWeakPtr()
+-                       : base::WeakPtr<BrowserWindowInterface>(),
++        .browser = target_browser ? target_browser->GetWeakPtr()
++                                  : base::WeakPtr<BrowserWindowInterface>(),
+         .stable_tab_id = stable_tab_id,
+         .caller_id = base::Uuid::GenerateRandomV4().AsLowercaseString(),
+     };
+@@ -1653,6 +1775,7 @@ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+       PrometheusAgentProfileServiceFactory::GetForProfile(
+           binding->second.profile.get());
+   if (!service) {
++    runtime_discovery_tracker_.RemoveSession(binding->first);
+     session_bindings_.erase(binding);
+     std::move(callback).Run(
+         net::HTTP_OK,
+@@ -1684,6 +1807,7 @@ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+                                 ? service->TouchSession(*session_id)
+                                 : service->CloseSession(*session_id);
+   if (path == "/v1/session/close" && result.ok) {
++    runtime_discovery_tracker_.RemoveSession(*session_id);
+     session_bindings_.erase(*session_id);
+   }
+   auto serialized = SerializeAgentTransportResult(result);
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.h b/chrome/browser/prometheus/prometheus_agent_gateway.h
+index 2d20eb8a13..e06549e96c 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.h
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.h
+@@ -11,6 +11,7 @@
+ #include <memory>
+ #include <string>
+ #include <string_view>
++#include <utility>
+ 
+ #include "base/files/file_path.h"
+ #include "base/functional/callback.h"
+@@ -93,6 +94,30 @@ class PrometheusAgentOneShotCompletion {
+   base::OnceClosure completion_;
+ };
+ 
++class PrometheusGatewayDiscoveryTracker {
++ public:
++  using StartCallback = base::RepeatingCallback<RuntimeTransportResult(
++      std::string_view provider_id)>;
++  using StatusCallback = base::RepeatingCallback<RuntimeTransportResult(
++      std::string_view operation_id)>;
++
++  PrometheusGatewayDiscoveryTracker();
++  ~PrometheusGatewayDiscoveryTracker();
++
++  RuntimeTransportResult Dispatch(const DiscoverModelsParams& params,
++                                  std::string_view gateway_session_id,
++                                  std::string_view caller_id,
++                                  StartCallback start,
++                                  StatusCallback status);
++  void RemoveSession(std::string_view gateway_session_id);
++
++  size_t operation_count_for_testing() const { return owners_.size(); }
++
++ private:
++  using OperationKey = std::pair<std::string, std::string>;
++  std::map<OperationKey, std::string> owners_;
++};
++
+ class PrometheusAgentGateway {
+  public:
+   using ResponseCallback = base::OnceCallback<void(int, std::string)>;
+@@ -188,6 +213,7 @@ class PrometheusAgentGateway {
+   StableTabSelector stable_tab_selector_for_testing_;
+   std::map<std::string, SessionBinding, std::less<>> session_bindings_;
+   std::map<std::string, std::string, std::less<>> runtime_task_owners_;
++  PrometheusGatewayDiscoveryTracker runtime_discovery_tracker_;
+   std::atomic_size_t pending_request_count_{0};
+   std::atomic_size_t terminal_request_count_{0};
+   bool started_ = false;
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+index 34da9aa6e7..957adb1de9 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+@@ -51,17 +51,15 @@ net::HttpServerRequestInfo ValidRequest(std::string_view path) {
+ void ExpectRejected(const net::HttpServerRequestInfo& request,
+                     PrometheusAgentRequestRejection rejection,
+                     size_t in_flight = 0) {
+-  EXPECT_EQ(rejection,
+-            ValidatePrometheusAgentGatewayRequestForTesting(
+-                request, kTestPort, kBearer, in_flight));
++  EXPECT_EQ(rejection, ValidatePrometheusAgentGatewayRequestForTesting(
++                           request, kTestPort, kBearer, in_flight));
+ }
+ 
+ TEST(PrometheusEndpointDescriptorTest,
+      DefaultPathUsesThePerUserTempPrometheusMcpDirectory) {
+   base::FilePath temp_dir;
+   ASSERT_TRUE(base::GetTempDir(&temp_dir));
+-  EXPECT_EQ(temp_dir.AppendASCII("prometheus-mcp")
+-                .AppendASCII("endpoint.json"),
++  EXPECT_EQ(temp_dir.AppendASCII("prometheus-mcp").AppendASCII("endpoint.json"),
+             GetDefaultPrometheusEndpointDescriptorPath());
+ }
+ 
+@@ -76,8 +74,8 @@ TEST(PrometheusEndpointDescriptorTest,
+   base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
+   const base::FilePath override_path =
+       temp_dir.GetPath().AppendASCII("custom-endpoint.json");
+-  command_line.AppendSwitchPath(
+-      switches::kPrometheusAgentEndpointDescriptor, override_path);
++  command_line.AppendSwitchPath(switches::kPrometheusAgentEndpointDescriptor,
++                                override_path);
+   EXPECT_EQ(override_path,
+             ResolvePrometheusEndpointDescriptorPath(command_line));
+ 
+@@ -98,8 +96,7 @@ TEST(PrometheusEndpointDescriptorTest,
+   const base::FilePath private_parent =
+       temp_dir.GetPath().AppendASCII("prometheus-mcp");
+   const base::FilePath path = private_parent.AppendASCII("endpoint.json");
+-  const PrometheusEndpointSecrets secrets =
+-      CreatePrometheusEndpointSecrets();
++  const PrometheusEndpointSecrets secrets = CreatePrometheusEndpointSecrets();
+ 
+   EXPECT_GE(secrets.bearer.size(), 64u);
+   EXPECT_FALSE(secrets.instance_nonce.empty());
+@@ -127,8 +124,7 @@ TEST(PrometheusEndpointDescriptorTest,
+   EXPECT_EQ("prometheus-agent-v1", *json->FindString("protocol"));
+   EXPECT_EQ(descriptor.endpoint, *json->FindString("endpoint"));
+   EXPECT_EQ(descriptor.process_id, json->FindInt("pid"));
+-  EXPECT_EQ(descriptor.instance_nonce,
+-            *json->FindString("instance_nonce"));
++  EXPECT_EQ(descriptor.instance_nonce, *json->FindString("instance_nonce"));
+   EXPECT_EQ(descriptor.bearer, *json->FindString("bearer"));
+ 
+   auto reread = ReadPrometheusEndpointDescriptor(path);
+@@ -158,8 +154,7 @@ TEST(PrometheusEndpointDescriptorTest,
+   EXPECT_EQ(0755, mode & 0777);
+ }
+ 
+-TEST(PrometheusEndpointDescriptorTest,
+-     OldOwnerCannotDeleteANewerDescriptor) {
++TEST(PrometheusEndpointDescriptorTest, OldOwnerCannotDeleteANewerDescriptor) {
+   base::ScopedTempDir temp_dir;
+   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+   const base::FilePath path =
+@@ -178,18 +173,16 @@ TEST(PrometheusEndpointDescriptorTest,
+   new_descriptor.instance_nonce = "new-owner";
+   ASSERT_TRUE(WritePrometheusEndpointDescriptor(path, new_descriptor));
+ 
+-  EXPECT_FALSE(
+-      DeletePrometheusEndpointDescriptorIfOwned(path, "old-owner"));
++  EXPECT_FALSE(DeletePrometheusEndpointDescriptorIfOwned(path, "old-owner"));
+   EXPECT_TRUE(base::PathExists(path));
+-  EXPECT_TRUE(
+-      DeletePrometheusEndpointDescriptorIfOwned(path, "new-owner"));
++  EXPECT_TRUE(DeletePrometheusEndpointDescriptorIfOwned(path, "new-owner"));
+   EXPECT_FALSE(base::PathExists(path));
+ }
+ 
+ TEST(PrometheusAgentGatewayTest, RequiresBearerOnEveryClosedEndpoint) {
+   constexpr std::array<std::string_view, 6> kPaths = {
+       "/v1/session/create", "/v1/session/resume", "/v1/session/touch",
+-      "/v1/session/close",  "/v1/agent/command", "/v1/health"};
++      "/v1/session/close",  "/v1/agent/command",  "/v1/health"};
+   for (std::string_view path : kPaths) {
+     auto missing = ValidRequest(path);
+     missing.headers.erase("authorization");
+@@ -226,16 +219,14 @@ TEST(PrometheusAgentGatewayTest, RejectsPeerHostOriginAndOpenRouting) {
+ 
+   auto websocket = ValidRequest("/v1/health");
+   websocket.headers["upgrade"] = "websocket";
+-  ExpectRejected(websocket,
+-                 PrometheusAgentRequestRejection::kMethodNotAllowed);
++  ExpectRejected(websocket, PrometheusAgentRequestRejection::kMethodNotAllowed);
+ }
+ 
+ TEST(PrometheusAgentGatewayTest,
+      RejectsMethodContentTypeBodyAndConcurrencyViolations) {
+   auto wrong_get = ValidRequest("/v1/session/create");
+   wrong_get.method = "GET";
+-  ExpectRejected(wrong_get,
+-                 PrometheusAgentRequestRejection::kMethodNotAllowed);
++  ExpectRejected(wrong_get, PrometheusAgentRequestRejection::kMethodNotAllowed);
+ 
+   auto wrong_post = ValidRequest("/v1/health");
+   wrong_post.method = "POST";
+@@ -243,8 +234,8 @@ TEST(PrometheusAgentGatewayTest,
+   ExpectRejected(wrong_post,
+                  PrometheusAgentRequestRejection::kMethodNotAllowed);
+ 
+-  for (std::string_view content_type : {"text/plain", "application/jsonp",
+-                                        "application/json; boundary=x"}) {
++  for (std::string_view content_type :
++       {"text/plain", "application/jsonp", "application/json; boundary=x"}) {
+     auto request = ValidRequest("/v1/session/create");
+     request.headers["content-type"] = std::string(content_type);
+     ExpectRejected(request,
+@@ -253,8 +244,7 @@ TEST(PrometheusAgentGatewayTest,
+ 
+   auto oversized = ValidRequest("/v1/session/create");
+   oversized.data.assign(1'048'577, 'x');
+-  ExpectRejected(oversized,
+-                 PrometheusAgentRequestRejection::kRequestTooLarge);
++  ExpectRejected(oversized, PrometheusAgentRequestRejection::kRequestTooLarge);
+ 
+   ExpectRejected(ValidRequest("/v1/health"),
+                  PrometheusAgentRequestRejection::kTooManyRequests,
+@@ -378,6 +368,72 @@ TEST(PrometheusAgentGatewayTest,
+   EXPECT_EQ(4, dispatch_calls);
+ }
+ 
++TEST(PrometheusAgentGatewayTest,
++     CallerScopedAsyncDiscoveryCanBePolledWithoutStartingAgain) {
++  PrometheusGatewayDiscoveryTracker tracker;
++  int start_calls = 0;
++  int status_calls = 0;
++  bool completed = false;
++  auto start = base::BindRepeating(
++      [](int* calls, std::string_view provider_id) {
++        ++*calls;
++        EXPECT_EQ("provider-1", provider_id);
++        return RuntimeTransportResult::Success(
++            RuntimeRouteName::kDiscoverModels,
++            RuntimeModelListResult{
++                .operation_id = "17", .models = {}, .pending = true});
++      },
++      &start_calls);
++  auto status = base::BindRepeating(
++      [](int* calls, bool* completed, std::string_view operation_id) {
++        ++*calls;
++        EXPECT_EQ("17", operation_id);
++        return RuntimeTransportResult::Success(
++            RuntimeRouteName::kDiscoverModels,
++            RuntimeModelListResult{
++                .operation_id = "17",
++                .models = *completed
++                              ? std::vector<std::string>{"model-a", "model-b"}
++                              : std::vector<std::string>(),
++                .pending = !*completed,
++            });
++      },
++      &status_calls, &completed);
++
++  DiscoverModelsParams start_params{.provider_id = "provider-1"};
++  RuntimeTransportResult pending =
++      tracker.Dispatch(start_params, "session-1", "caller-1", start, status);
++  ASSERT_TRUE(pending.ok);
++  EXPECT_TRUE(std::get<RuntimeModelListResult>(pending.payload).pending);
++  EXPECT_EQ("17",
++            std::get<RuntimeModelListResult>(pending.payload).operation_id);
++  EXPECT_EQ(1, start_calls);
++  EXPECT_EQ(1u, tracker.operation_count_for_testing());
++
++  DiscoverModelsParams status_params{.operation_id = "17"};
++  RuntimeTransportResult wrong_caller =
++      tracker.Dispatch(status_params, "session-1", "caller-2", start, status);
++  EXPECT_FALSE(wrong_caller.ok);
++  EXPECT_EQ(RuntimeTransportErrorCode::kNotFound, wrong_caller.error_code);
++  RuntimeTransportResult wrong_session =
++      tracker.Dispatch(status_params, "session-2", "caller-1", start, status);
++  EXPECT_FALSE(wrong_session.ok);
++  EXPECT_EQ(RuntimeTransportErrorCode::kNotFound, wrong_session.error_code);
++  EXPECT_EQ(0, status_calls);
++
++  completed = true;
++  RuntimeTransportResult finished =
++      tracker.Dispatch(status_params, "session-1", "caller-1", start, status);
++  ASSERT_TRUE(finished.ok);
++  const RuntimeModelListResult& models =
++      std::get<RuntimeModelListResult>(finished.payload);
++  EXPECT_FALSE(models.pending);
++  EXPECT_EQ((std::vector<std::string>{"model-a", "model-b"}), models.models);
++  EXPECT_EQ(1, start_calls);
++  EXPECT_EQ(1, status_calls);
++  EXPECT_EQ(0u, tracker.operation_count_for_testing());
++}
++
+ TEST(PrometheusAgentGatewayTest,
+      MissingBrowserIssuedSessionNeverReachesRuntime) {
+   auto request = ParseRuntimeTransportRequest(
+@@ -576,24 +632,23 @@ TEST(PrometheusAgentGatewayTest,
+   for (const base::Value& value : *diagnostics) {
+     ASSERT_TRUE(value.is_dict());
+     const std::string* key = value.GetDict().FindString("key");
+-    const std::string* component_status =
+-        value.GetDict().FindString("status");
++    const std::string* component_status = value.GetDict().FindString("status");
+     ASSERT_TRUE(key);
+     ASSERT_TRUE(component_status);
+     EXPECT_TRUE(statuses.emplace(*key, *component_status).second);
+   }
+   for (std::string_view key :
+        {"browser", "bridge", "active_tab", "content_adapter",
+-        "internal_adapter", "webui_adapter", "vault", "provider",
+-        "supervision", "extensions"}) {
++        "internal_adapter", "webui_adapter", "vault", "provider", "supervision",
++        "extensions"}) {
+     EXPECT_TRUE(statuses.contains(key));
+   }
+   EXPECT_EQ("not_ready", statuses["supervision"]);
+   EXPECT_EQ("not_ready", statuses["extensions"]);
+   for (std::string_view forbidden :
+-       {"prompt-sentinel", "page-content-sentinel", "?api_key=",
+-        "provider-body-sentinel", "ciphertext-sentinel", "browser-session",
+-        "/Users/private/profile"}) {
++       {"prompt-sentinel", "page-content-sentinel",
++        "?api_key=", "provider-body-sentinel", "ciphertext-sentinel",
++        "browser-session", "/Users/private/profile"}) {
+     EXPECT_EQ(std::string::npos, body.find(forbidden));
+   }
+ }
+diff --git a/chrome/browser/prometheus/prometheus_runtime_transport_codec.cc b/chrome/browser/prometheus/prometheus_runtime_transport_codec.cc
+index fed324a92a..98f7c9913e 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_transport_codec.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_transport_codec.cc
+@@ -12,6 +12,7 @@
+ 
+ #include "base/json/json_reader.h"
+ #include "base/json/json_writer.h"
++#include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+ #include "base/values.h"
+ #include "url/gurl.h"
+@@ -154,6 +155,19 @@ bool IsBoundedString(const base::Value* value,
+          base::IsStringUTF8(value->GetString());
+ }
+ 
++bool IsDiscoveryOperationId(const base::Value* value) {
++  if (!IsBoundedString(value, kMaxRuntimeTransportOperationIdBytes)) {
++    return false;
++  }
++  const std::string& operation_id = value->GetString();
++  uint64_t parsed = 0;
++  return operation_id.front() != '0' &&
++         std::ranges::all_of(
++             operation_id,
++             [](char value) { return base::IsAsciiDigit(value); }) &&
++         base::StringToUint64(operation_id, &parsed) && parsed != 0;
++}
++
+ bool ReadOptionalString(const base::DictValue& value,
+                         std::string_view key,
+                         size_t max_bytes,
+@@ -343,8 +357,7 @@ std::string_view ProviderHealthName(PrometheusProviderHealth health) {
+   }
+ }
+ 
+-std::string_view ProviderDiscoveryName(
+-    PrometheusProviderDiscoveryState state) {
++std::string_view ProviderDiscoveryName(PrometheusProviderDiscoveryState state) {
+   switch (state) {
+     case PrometheusProviderDiscoveryState::kNotSupported:
+       return "not_supported";
+@@ -659,7 +672,9 @@ std::optional<base::DictValue> PayloadToValue(
+           }
+           result.Set("providers", std::move(providers));
+         } else if constexpr (std::is_same_v<T, RuntimeModelListResult>) {
+-          if (value.models.size() > kMaxPrometheusDiscoveredModels) {
++          const base::Value operation_id(value.operation_id);
++          if (!IsDiscoveryOperationId(&operation_id) ||
++              value.models.size() > kMaxPrometheusDiscoveredModels) {
+             valid = false;
+             return;
+           }
+@@ -672,6 +687,7 @@ std::optional<base::DictValue> PayloadToValue(
+             }
+             models.Append(model);
+           }
++          result.Set("operation_id", value.operation_id);
+           result.Set("models", std::move(models));
+           result.Set("pending", value.pending);
+         } else if constexpr (std::is_same_v<T, RuntimeLogListResult>) {
+@@ -941,8 +957,7 @@ ParseRuntimeTransportRequest(std::string_view json) {
+ 
+   RuntimeRouteName failure_route = RuntimeRouteName::kRuntimeDiagnostics;
+   if (const std::string* route = root->FindString("route")) {
+-    failure_route =
+-        RuntimeRouteNameFromString(*route).value_or(failure_route);
++    failure_route = RuntimeRouteNameFromString(*route).value_or(failure_route);
+   }
+   for (const auto [key, value] : *root) {
+     if (key == "route" || key == "session_id" || key == "params") {
+@@ -950,10 +965,9 @@ ParseRuntimeTransportRequest(std::string_view json) {
+     }
+     size_t visited = 0;
+     const RecursiveFieldScan scan =
+-        IsSecretField(key) ? RecursiveFieldScan::kSecret
+-                           : IsAuthorityField(key)
+-                                 ? RecursiveFieldScan::kAuthority
+-                                 : ScanReservedFields(value, 0, &visited);
++        IsSecretField(key)      ? RecursiveFieldScan::kSecret
++        : IsAuthorityField(key) ? RecursiveFieldScan::kAuthority
++                                : ScanReservedFields(value, 0, &visited);
+     if (scan == RecursiveFieldScan::kSecret) {
+       return base::unexpected(ParseFailure(
+           failure_route, RuntimeTransportErrorCode::kSecretTransportBlocked,
+@@ -1064,8 +1078,7 @@ ParseRuntimeTransportRequest(std::string_view json) {
+       if (*route_name == RuntimeRouteName::kStopTask) {
+         request.params = StopTaskParams{*params.FindString("task_id")};
+       } else {
+-        request.params =
+-            GetTaskStatusParams{*params.FindString("task_id")};
++        request.params = GetTaskStatusParams{*params.FindString("task_id")};
+       }
+       break;
+     }
+@@ -1107,20 +1120,35 @@ ParseRuntimeTransportRequest(std::string_view json) {
+       }
+       break;
+     }
+-    case RuntimeRouteName::kGetProviderConfig:
+-    case RuntimeRouteName::kDiscoverModels: {
++    case RuntimeRouteName::kGetProviderConfig: {
+       if (!HasOnlyKeys(params, {"provider_id"}) ||
+           !IsBoundedString(params.Find("provider_id"),
+                            kMaxPrometheusProviderIdBytes)) {
+         return invalid();
+       }
+-      if (*route_name == RuntimeRouteName::kGetProviderConfig) {
+-        request.params =
+-            GetProviderConfigParams{*params.FindString("provider_id")};
++      request.params =
++          GetProviderConfigParams{*params.FindString("provider_id")};
++      break;
++    }
++    case RuntimeRouteName::kDiscoverModels: {
++      if (!HasOnlyKeys(params, {"provider_id", "operation_id"})) {
++        return invalid();
++      }
++      const base::Value* provider_id = params.Find("provider_id");
++      const base::Value* operation_id = params.Find("operation_id");
++      if ((provider_id != nullptr) == (operation_id != nullptr) ||
++          (provider_id &&
++           !IsBoundedString(provider_id, kMaxPrometheusProviderIdBytes)) ||
++          (operation_id && !IsDiscoveryOperationId(operation_id))) {
++        return invalid();
++      }
++      DiscoverModelsParams discovery;
++      if (provider_id) {
++        discovery.provider_id = provider_id->GetString();
+       } else {
+-        request.params =
+-            DiscoverModelsParams{*params.FindString("provider_id")};
++        discovery.operation_id = operation_id->GetString();
+       }
++      request.params = std::move(discovery);
+       break;
+     }
+     case RuntimeRouteName::kListProviders: {
+@@ -1335,8 +1363,7 @@ ParseRuntimeTransportRequest(std::string_view json) {
+                            kMaxRuntimeTransportIdBytes)) {
+         return invalid();
+       }
+-      request.params =
+-          GetSessionDetailParams{*params.FindString("run_id")};
++      request.params = GetSessionDetailParams{*params.FindString("run_id")};
+       break;
+     }
+     case RuntimeRouteName::kSearchMemory: {
+@@ -1358,8 +1385,7 @@ ParseRuntimeTransportRequest(std::string_view json) {
+                            kMaxRuntimeTransportIdBytes)) {
+         return invalid();
+       }
+-      request.params =
+-          GetSiteGuideParams{*params.FindString("guide_id")};
++      request.params = GetSiteGuideParams{*params.FindString("guide_id")};
+       break;
+     }
+   }
+diff --git a/chrome/browser/prometheus/prometheus_runtime_transport_codec.h b/chrome/browser/prometheus/prometheus_runtime_transport_codec.h
+index 45551ea80c..81370057dc 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_transport_codec.h
++++ b/chrome/browser/prometheus/prometheus_runtime_transport_codec.h
+@@ -29,6 +29,7 @@ inline constexpr size_t kMaxRuntimeTransportIdBytes = 128;
+ inline constexpr size_t kMaxRuntimeTransportLabelBytes = 256;
+ inline constexpr size_t kMaxRuntimeTransportQueryBytes = 256;
+ inline constexpr size_t kMaxRuntimeTransportListItems = 128;
++inline constexpr size_t kMaxRuntimeTransportOperationIdBytes = 20;
+ 
+ enum class RuntimeRouteName {
+   kRunTask,
+@@ -101,7 +102,8 @@ struct ListProvidersParams {
+   bool include_disabled = true;
+ };
+ struct DiscoverModelsParams {
+-  std::string provider_id;
++  std::optional<std::string> provider_id;
++  std::optional<std::string> operation_id;
+ };
+ struct SetProviderConfigParams {
+   std::string provider_id;
+@@ -294,6 +296,7 @@ struct RuntimeProviderListResult {
+   std::vector<RuntimeProviderView> providers;
+ };
+ struct RuntimeModelListResult {
++  std::string operation_id;
+   std::vector<std::string> models;
+   bool pending = false;
+ };
+diff --git a/chrome/browser/prometheus/prometheus_runtime_transport_codec_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_transport_codec_unittest.cc
+index df33b5394d..cf2b96e261 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_transport_codec_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_transport_codec_unittest.cc
+@@ -135,6 +135,57 @@ TEST(PrometheusRuntimeTransportCodecTest, ParsesBoundedValuesIntoTypedParams) {
+   EXPECT_TRUE(memory_params->shared);
+ }
+ 
++TEST(PrometheusRuntimeTransportCodecTest,
++     DiscoveryUsesMutuallyExclusiveStartAndStatusParameters) {
++  auto start = ParseRuntimeTransportRequest(
++      RequestJson("discover_models", R"({"provider_id":"provider-1"})"));
++  ASSERT_TRUE(start.has_value());
++  const auto* start_params = std::get_if<DiscoverModelsParams>(&start->params);
++  ASSERT_TRUE(start_params);
++  EXPECT_EQ("provider-1", start_params->provider_id);
++  EXPECT_FALSE(start_params->operation_id);
++
++  auto status = ParseRuntimeTransportRequest(
++      RequestJson("discover_models", R"({"operation_id":"17"})"));
++  ASSERT_TRUE(status.has_value());
++  const auto* status_params =
++      std::get_if<DiscoverModelsParams>(&status->params);
++  ASSERT_TRUE(status_params);
++  EXPECT_FALSE(status_params->provider_id);
++  EXPECT_EQ("17", status_params->operation_id);
++
++  for (std::string_view invalid : {
++           R"({})",
++           R"({"provider_id":"provider-1","operation_id":"17"})",
++           R"({"operation_id":"0"})",
++           R"({"operation_id":"017"})",
++           R"({"operation_id":"not-a-number"})",
++           R"({"operation_id":"18446744073709551616"})",
++       }) {
++    EXPECT_EQ(RuntimeTransportErrorCode::kInvalidRequest,
++              ParseError(RequestJson("discover_models", invalid)).error_code);
++  }
++}
++
++TEST(PrometheusRuntimeTransportCodecTest,
++     DiscoveryResultSerializesBoundedOperationIdForPolling) {
++  auto serialized =
++      SerializeRuntimeTransportResult(RuntimeTransportResult::Success(
++          RuntimeRouteName::kDiscoverModels,
++          RuntimeModelListResult{
++              .operation_id = "17", .models = {}, .pending = true}));
++  ASSERT_TRUE(serialized.has_value());
++  std::optional<base::DictValue> root =
++      base::JSONReader::ReadDict(*serialized, base::JSON_PARSE_RFC);
++  ASSERT_TRUE(root);
++  const base::DictValue* result = root->FindDict("result");
++  ASSERT_TRUE(result);
++  ASSERT_TRUE(result->FindString("operation_id"));
++  EXPECT_EQ("17", *result->FindString("operation_id"));
++  EXPECT_EQ(result->FindBool("pending"), true);
++  EXPECT_TRUE(result->FindList("models"));
++}
++
+ TEST(PrometheusRuntimeTransportCodecTest,
+      RejectsUnknownExtraAndRouteSpecificFields) {
+   EXPECT_EQ(RuntimeTransportErrorCode::kInvalidRequest,
+-- 
+2.50.1 (Apple Git-155)
+

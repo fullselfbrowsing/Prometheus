@@ -1,0 +1,952 @@
+From 33bae0de3905a99d637fae20f5fd1ea60c87b74f Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 22:07:05 -0500
+Subject: [PATCH] test(20-11): automate side panel runtime gates
+
+---
+ .../prometheus/prometheus_side_panel.html     |  98 +++--
+ .../resources/prometheus/prometheus_webui.css |  40 +-
+ .../resources/prometheus/prometheus_webui.js  | 133 +++++-
+ .../ui/webui/prometheus/prometheus_web_ui.cc  |   3 +
+ .../prometheus_web_ui_browsertest.cc          | 405 ++++++++++++++++++
+ 5 files changed, 618 insertions(+), 61 deletions(-)
+
+diff --git a/chrome/browser/resources/prometheus/prometheus_side_panel.html b/chrome/browser/resources/prometheus/prometheus_side_panel.html
+index fc3a3b2490..f5d73960c3 100644
+--- a/chrome/browser/resources/prometheus/prometheus_side_panel.html
++++ b/chrome/browser/resources/prometheus/prometheus_side_panel.html
+@@ -8,7 +8,8 @@
+     <script type="module" src="prometheus_webui.js"></script>
+   </head>
+   <body>
+-    <main class="surface surface--narrow" data-prometheus-surface="side-panel">
++    <aside class="surface surface--narrow" data-prometheus-surface="side-panel"
++        aria-label="Prometheus side panel">
+       <header class="brand">
+         <img class="brand__mark" src="images/pm_mark_dark.png" alt="">
+         <div>
+@@ -16,31 +17,37 @@
+           <div class="brand__meta">Powered by FSB</div>
+         </div>
+       </header>
+-      <nav class="mode-bar" aria-label="Prometheus side panel modes">
+-        <button class="mode mode--agent" id="mode-fsb-agent"
+-            data-mode-target="fsb-agent" aria-controls="panel-fsb-agent"
+-            aria-label="FSB Agent" aria-selected="true" title="FSB Agent">
+-          <span class="mode__icon" aria-hidden="true"></span>
+-          <span class="visually-hidden">FSB Agent</span>
+-        </button>
+-        <button class="mode mode--explorer" id="mode-explorer"
+-            data-mode-target="explorer" aria-controls="panel-explorer"
+-            aria-label="Explorer" aria-selected="false" title="Explorer">
+-          <span class="mode__icon" aria-hidden="true"></span>
+-          <span class="visually-hidden">Explorer</span>
+-        </button>
+-        <button class="mode mode--tabs" id="mode-tabs"
+-            data-mode-target="tabs" aria-controls="panel-tabs"
+-            aria-label="Tabs" aria-selected="false" title="Tabs">
+-          <span class="mode__icon" aria-hidden="true"></span>
+-          <span class="visually-hidden">Tabs</span>
+-        </button>
+-        <button class="mode mode--tools" id="mode-tools"
+-            data-mode-target="tools" aria-controls="panel-tools"
+-            aria-label="Tools" aria-selected="false" title="Tools">
+-          <span class="mode__icon" aria-hidden="true"></span>
+-          <span class="visually-hidden">Tools</span>
+-        </button>
++      <nav aria-label="Prometheus side panel modes">
++        <div class="mode-bar" role="tablist" aria-orientation="horizontal">
++          <button class="mode mode--agent" id="mode-fsb-agent" role="tab"
++              data-mode-target="fsb-agent" aria-controls="panel-fsb-agent"
++              aria-label="FSB Agent" aria-selected="true" tabindex="0"
++              title="FSB Agent">
++            <span class="mode__icon" aria-hidden="true"></span>
++            <span class="visually-hidden">FSB Agent</span>
++          </button>
++          <button class="mode mode--explorer" id="mode-explorer" role="tab"
++              data-mode-target="explorer" aria-controls="panel-explorer"
++              aria-label="Explorer" aria-selected="false" tabindex="-1"
++              title="Explorer">
++            <span class="mode__icon" aria-hidden="true"></span>
++            <span class="visually-hidden">Explorer</span>
++          </button>
++          <button class="mode mode--tabs" id="mode-tabs" role="tab"
++              data-mode-target="tabs" aria-controls="panel-tabs"
++              aria-label="Tabs" aria-selected="false" tabindex="-1"
++              title="Tabs">
++            <span class="mode__icon" aria-hidden="true"></span>
++            <span class="visually-hidden">Tabs</span>
++          </button>
++          <button class="mode mode--tools" id="mode-tools" role="tab"
++              data-mode-target="tools" aria-controls="panel-tools"
++              aria-label="Tools" aria-selected="false" tabindex="-1"
++              title="Tools">
++            <span class="mode__icon" aria-hidden="true"></span>
++            <span class="visually-hidden">Tools</span>
++          </button>
++        </div>
+       </nav>
+       <div class="mode-stack">
+         <section class="mode-panel" id="panel-fsb-agent" role="tabpanel"
+@@ -50,6 +57,21 @@
+             <span class="badge">Ready</span>
+           </div>
+           <p class="mode-copy">Ask FSB to work in this browser.</p>
++          <section class="task-region" aria-labelledby="task-region-heading">
++            <div class="task-region__heading">
++              <h2 id="task-region-heading" tabindex="-1">Tasks</h2>
++              <button class="quiet-button" id="runtime-refresh"
++                  type="button">Refresh</button>
++            </div>
++            <div class="task-list" id="runtime-task-list" role="list"
++                aria-live="polite" aria-busy="true" aria-atomic="false">
++              <div class="runtime-empty" id="runtime-empty-state">
++                <h3>No tasks yet</h3>
++                <p>Ask Prometheus to work in this browser. Tasks will appear
++                  here with progress, cost, and final result.</p>
++              </div>
++            </div>
++          </section>
+           <form class="runtime-composer" id="runtime-composer" novalidate>
+             <label class="composer-label" for="runtime-prompt">
+               What should FSB do?
+@@ -94,21 +116,6 @@
+             <p class="composer-recovery" id="composer-recovery" role="status"
+                 aria-live="polite"></p>
+           </form>
+-          <section class="task-region" aria-labelledby="task-region-heading">
+-            <div class="task-region__heading">
+-              <h2 id="task-region-heading">Tasks</h2>
+-              <button class="quiet-button" id="runtime-refresh"
+-                  type="button">Refresh</button>
+-            </div>
+-            <div class="task-list" id="runtime-task-list" role="list"
+-                aria-live="polite" aria-busy="true">
+-              <div class="runtime-empty" id="runtime-empty-state">
+-                <h3>No tasks yet</h3>
+-                <p>Ask Prometheus to work in this browser. Tasks will appear
+-                  here with progress, cost, and final result.</p>
+-              </div>
+-            </div>
+-          </section>
+         </section>
+         <section class="mode-panel" id="panel-explorer" role="tabpanel"
+             aria-labelledby="mode-explorer" data-mode-panel="explorer" hidden>
+@@ -150,12 +157,15 @@
+           </div>
+         </section>
+       </div>
+-    </main>
++    </aside>
+     <dialog class="cancel-dialog" id="runtime-cancel-dialog"
+-        aria-labelledby="cancel-dialog-heading">
++        aria-labelledby="cancel-dialog-heading"
++        aria-describedby="cancel-dialog-description" aria-modal="true">
+       <form method="dialog">
+         <h2 id="cancel-dialog-heading">Cancel this task?</h2>
+-        <p>Progress stops now; logs remain available.</p>
++        <p id="cancel-dialog-description">
++          Progress stops now; logs remain available.
++        </p>
+         <div class="dialog-actions">
+           <button class="quiet-button" id="cancel-dialog-dismiss"
+               value="dismiss">Keep running</button>
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.css b/chrome/browser/resources/prometheus/prometheus_webui.css
+index de10bafce5..9a157eacd4 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.css
++++ b/chrome/browser/resources/prometheus/prometheus_webui.css
+@@ -515,7 +515,14 @@ textarea {
+   background: var(--prometheus-color-accent);
+   display: block;
+   height: 100%;
+-  width: 48%;
++  width: 0;
++}
++
++.runtime-task[data-task-state="running"] .runtime-progress span,
++.runtime-task[data-task-state="cancelling"] .runtime-progress span {
++  animation: runtime-indeterminate 1.4s ease-in-out infinite;
++  transform: translateX(-120%);
++  width: 40%;
+ }
+ 
+ .runtime-task[data-task-state="succeeded"] .runtime-progress span,
+@@ -527,7 +534,8 @@ textarea {
+ .runtime-task__meta,
+ .runtime-task__usage,
+ .runtime-task__result,
+-.runtime-task__recovery {
++.runtime-task__recovery,
++.runtime-task__timeline {
+   font-size: 12px;
+   margin: 0;
+   overflow-wrap: anywhere;
+@@ -547,6 +555,18 @@ textarea {
+   color: #f3d18e;
+ }
+ 
++.runtime-task__timeline {
++  color: var(--prometheus-color-text-2);
++  display: grid;
++  gap: 4px;
++  padding-left: 20px;
++}
++
++.runtime-task__timeline time {
++  color: var(--prometheus-color-text-3);
++  font-variant-numeric: tabular-nums;
++}
++
+ .runtime-task__cancel {
+   justify-self: start;
+ }
+@@ -555,6 +575,7 @@ textarea {
+   background: var(--prometheus-color-surface);
+   border: 1px solid var(--prometheus-color-border);
+   border-radius: 8px;
++  box-sizing: border-box;
+   color: var(--prometheus-color-text);
+   max-width: calc(100vw - 32px);
+   padding: 16px;
+@@ -581,11 +602,26 @@ textarea {
+   gap: 8px;
+ }
+ 
++@keyframes runtime-indeterminate {
++  from {
++    transform: translateX(-120%);
++  }
++
++  to {
++    transform: translateX(250%);
++  }
++}
++
+ @media (prefers-reduced-motion: reduce) {
+   .runtime-progress span {
+     animation: none;
+     transition: none;
+   }
++
++  .runtime-task[data-task-state="running"] .runtime-progress span,
++  .runtime-task[data-task-state="cancelling"] .runtime-progress span {
++    transform: translateX(75%);
++  }
+ }
+ 
+ .control-shell {
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.js b/chrome/browser/resources/prometheus/prometheus_webui.js
+index 1ca0b674d0..e879ad3362 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.js
++++ b/chrome/browser/resources/prometheus/prometheus_webui.js
+@@ -28,6 +28,8 @@ const terminalRuntimeStates = new Set(['succeeded', 'failed', 'cancelled']);
+ let runtimeSnapshot = {status: 'NOT_IMPLEMENTED', tasks: [], providers: []};
+ let runtimeSubmitPending = false;
+ let pendingCancelTaskId = '';
++let pendingCancelTrigger = null;
++let cancellationFocusTaskId = '';
+ const requestedCancellationTaskIds = new Set();
+ 
+ function setAskFsbStatus(text) {
+@@ -44,8 +46,9 @@ function activateSidePanelMode(mode) {
+     return;
+   }
+   for (const button of buttons) {
+-    button.setAttribute(
+-        'aria-selected', String(button.dataset.modeTarget === mode));
++    const selected = button.dataset.modeTarget === mode;
++    button.setAttribute('aria-selected', String(selected));
++    button.tabIndex = selected ? 0 : -1;
+   }
+   for (const panel of panels) {
+     panel.hidden = panel.dataset.modePanel !== mode;
+@@ -95,6 +98,9 @@ function providersForMode(mode) {
+     if (!provider || provider.health !== 'healthy') {
+       return false;
+     }
++    if (mode === 'auto') {
++      return true;
++    }
+     return mode === 'local' ? provider.route_class === 'local' :
+                               provider.route_class !== 'local';
+   });
+@@ -143,11 +149,14 @@ function updateRuntimeComposer() {
+       localSelect, providersForMode('local'),
+       'No enabled local servers');
+   const submit = document.querySelector('#runtime-submit');
++  const prompt = document.querySelector('#runtime-prompt')?.value.trim() || '';
+   const requiredSelect = mode === 'provider' ? providerSelect :
+       mode === 'local' ? localSelect : null;
++  const hasExecutionPath = mode === 'auto' ?
++      providersForMode('auto').length > 0 : !!requiredSelect?.value;
+   if (submit) {
+-    submit.disabled = runtimeSubmitPending ||
+-        (requiredSelect && !requiredSelect.value);
++    submit.disabled = runtimeSubmitPending || !prompt || !hasExecutionPath ||
++        runtimeSnapshot.status !== 'OK';
+   }
+ }
+ 
+@@ -193,6 +202,25 @@ function usageText(usage) {
+   return `${input + output} tokens · ${tools} tools · ${duration} ms · ${cost}`;
+ }
+ 
++function safeTimeText(timestampMs) {
++  const timestamp = Number(timestampMs);
++  if (!Number.isFinite(timestamp) || timestamp <= 0) {
++    return 'Time unavailable';
++  }
++  return new Date(timestamp).toLocaleTimeString(
++      [], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
++}
++
++function appendTimelineItem(timeline, timestampMs, label) {
++  const item = document.createElement('li');
++  const time = document.createElement('time');
++  time.dateTime = Number.isFinite(Number(timestampMs)) ?
++      new Date(Number(timestampMs)).toISOString() : '';
++  time.textContent = safeTimeText(timestampMs);
++  item.append(time, document.createTextNode(` · ${label}`));
++  timeline.append(item);
++}
++
+ function makeRuntimeEmptyState() {
+   const empty = document.createElement('div');
+   empty.className = 'runtime-empty';
+@@ -210,6 +238,7 @@ function requestTaskCancellation(taskId, button) {
+     return;
+   }
+   pendingCancelTaskId = taskId;
++  pendingCancelTrigger = button || null;
+   const dialog = document.querySelector('#runtime-cancel-dialog');
+   if (!dialog) {
+     return;
+@@ -240,7 +269,9 @@ function renderRuntimeTask(task) {
+   progress.className = 'runtime-progress';
+   progress.setAttribute('role', 'progressbar');
+   progress.setAttribute(
+-      'aria-label', runtimeStateLabels[task.state] || 'Failed');
++      'aria-label', terminalRuntimeStates.has(task.state) ?
++          runtimeStateLabels[task.state] || 'Failed' :
++          `${runtimeStateLabels[task.state] || 'Failed'}, progress pending`);
+   if (terminalRuntimeStates.has(task.state)) {
+     progress.setAttribute('aria-valuenow', '100');
+     progress.setAttribute('aria-valuemin', '0');
+@@ -264,6 +295,21 @@ function renderRuntimeTask(task) {
+   appendTextElement(
+       article, 'p', 'runtime-task__usage', usageText(task.usage));
+ 
++  const timeline = document.createElement('ol');
++  timeline.className = 'runtime-task__timeline';
++  timeline.setAttribute('aria-label', 'Task timeline');
++  appendTimelineItem(timeline, task.created_at_ms, 'Task accepted');
++  if (task.state !== 'queued' || task.updated_at_ms !== task.created_at_ms) {
++    appendTimelineItem(
++        timeline, task.updated_at_ms,
++        runtimeStateLabels[task.state] || 'Failed');
++  }
++  if (Number(task.action_count) > 0) {
++    appendTextElement(
++        timeline, 'li', '', `${Number(task.action_count)} browser actions`);
++  }
++  article.append(timeline);
++
+   if (typeof task.result === 'string' && task.result) {
+     appendTextElement(article, 'p', 'runtime-task__result', task.result);
+     if (task.result_truncated) {
+@@ -276,14 +322,18 @@ function renderRuntimeTask(task) {
+   }
+ 
+   if (!terminalRuntimeStates.has(task.state)) {
++    const cancelling = task.state === 'cancelling';
+     const cancel = appendTextElement(
+-        article, 'button', 'quiet-button runtime-task__cancel', 'Cancel');
++        article, 'button', 'quiet-button runtime-task__cancel',
++        cancelling ? 'Cancelling' : 'Cancel Task');
+     cancel.type = 'button';
+-    cancel.disabled = task.state === 'cancelling' ||
++    cancel.disabled = cancelling ||
+         requestedCancellationTaskIds.has(task.task_id);
+     cancel.setAttribute('aria-haspopup', 'dialog');
+     cancel.setAttribute('aria-expanded', 'false');
+-    cancel.setAttribute('aria-label', `Cancel ${task.safe_title}`);
++    cancel.setAttribute(
++        'aria-label', cancelling ? `Cancelling ${task.safe_title}` :
++                                   `Cancel ${task.safe_title}`);
+     cancel.addEventListener('click', () => {
+       requestTaskCancellation(task.task_id, cancel);
+     });
+@@ -328,6 +378,22 @@ function renderRuntimeSnapshot(snapshot) {
+     document.querySelector('#runtime-cancel-dialog')?.close();
+     pendingCancelTaskId = '';
+   }
++  if (cancellationFocusTaskId) {
++    const card = Array.from(document.querySelectorAll('.runtime-task')).find(
++        (candidate) => candidate.dataset.taskId === cancellationFocusTaskId);
++    const task = tasks.find(
++        (candidate) => candidate.task_id === cancellationFocusTaskId);
++    const focusTarget = terminalRuntimeStates.has(task?.state) ?
++        card?.querySelector('.runtime-task__title') :
++        card?.querySelector('.runtime-task__cancel');
++    if (focusTarget) {
++      if (terminalRuntimeStates.has(task?.state)) {
++        focusTarget.tabIndex = -1;
++        cancellationFocusTaskId = '';
++      }
++      focusTarget.focus({preventScroll: true});
++    }
++  }
+   const recovery = document.querySelector('#composer-recovery');
+   if (recovery && runtimeSnapshot.status !== 'OK') {
+     recovery.textContent = runtimeSnapshot.recovery ||
+@@ -383,6 +449,7 @@ window.prometheusReceiveAskFsbSeed = (prompt) => {
+   promptInput.value = prompt;
+   promptInput.focus({preventScroll: true});
+   document.documentElement.dataset.askFsbSeed = 'drafted';
++  updateRuntimeComposer();
+ };
+ 
+ if (surface === 'newtab') {
+@@ -401,10 +468,33 @@ if (surface === 'newtab') {
+ }
+ 
+ if (surface === 'side-panel') {
+-  document.querySelectorAll('[data-mode-target]').forEach((button) => {
++  const modeButtons = Array.from(
++      document.querySelectorAll('[data-mode-target]'));
++  modeButtons.forEach((button) => {
+     button.addEventListener('click', () => {
+       activateSidePanelMode(button.dataset.modeTarget);
+     });
++    button.addEventListener('keydown', (event) => {
++      const currentIndex = modeButtons.indexOf(button);
++      let nextIndex = -1;
++      if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
++        nextIndex = (currentIndex + 1) % modeButtons.length;
++      } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
++        nextIndex =
++            (currentIndex - 1 + modeButtons.length) % modeButtons.length;
++      } else if (event.key === 'Home') {
++        nextIndex = 0;
++      } else if (event.key === 'End') {
++        nextIndex = modeButtons.length - 1;
++      }
++      if (nextIndex < 0) {
++        return;
++      }
++      event.preventDefault();
++      const nextButton = modeButtons[nextIndex];
++      activateSidePanelMode(nextButton.dataset.modeTarget);
++      nextButton.focus();
++    });
+   });
+   document.querySelectorAll('input[name="execution-mode"]').forEach(
+       (input) => input.addEventListener('change', updateRuntimeComposer));
+@@ -429,7 +519,9 @@ if (surface === 'side-panel') {
+             document.querySelector('#provider-select')?.value :
+             mode === 'local' ?
+             document.querySelector('#local-provider-select')?.value : '';
+-        if (mode !== 'auto' && !provider) {
++        const hasExecutionPath = mode === 'auto' ?
++            providersForMode('auto').length > 0 : !!provider;
++        if (!hasExecutionPath) {
+           if (recovery) {
+             recovery.textContent = 'Choose an available provider and retry.';
+           }
+@@ -444,6 +536,15 @@ if (surface === 'side-panel') {
+         const args = provider ? [prompt, mode, provider] : [prompt, mode];
+         chrome.send('prometheusRuntimeSubmit', args);
+       });
++  const runtimePrompt = document.querySelector('#runtime-prompt');
++  runtimePrompt?.addEventListener('input', updateRuntimeComposer);
++  runtimePrompt?.addEventListener('keydown', (event) => {
++    if (event.key !== 'Enter' || (!event.metaKey && !event.ctrlKey)) {
++      return;
++    }
++    event.preventDefault();
++    document.querySelector('#runtime-composer')?.requestSubmit();
++  });
+   document.querySelector('#runtime-refresh')?.addEventListener('click', () => {
+     chrome.send('prometheusRuntimeRefresh');
+   });
+@@ -457,16 +558,18 @@ if (surface === 'side-panel') {
+           return;
+         }
+         requestedCancellationTaskIds.add(taskId);
++        cancellationFocusTaskId = taskId;
+         window.prometheusRuntimeCancelCountForTesting++;
+         chrome.send('prometheusRuntimeCancel', [taskId]);
+       });
+-  document.querySelector('#cancel-dialog-dismiss')?.addEventListener(
+-      'click', () => {
+-        pendingCancelTaskId = '';
+-      });
+   document.querySelector('#runtime-cancel-dialog')?.addEventListener(
+-      'cancel', () => {
++      'close', () => {
++        pendingCancelTrigger?.setAttribute('aria-expanded', 'false');
++        if (pendingCancelTrigger?.isConnected) {
++          pendingCancelTrigger.focus({preventScroll: true});
++        }
+         pendingCancelTaskId = '';
++        pendingCancelTrigger = null;
+       });
+   activateSidePanelMode('fsb-agent');
+   updateRuntimeComposer();
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index f1fa3e84f5..d315157cbd 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -16,6 +16,7 @@
+ #include "chrome/browser/prometheus/prometheus_ask_fsb_handoff.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
++#include "chrome/browser/ui/webui/webui_embedding_context.h"
+ #include "chrome/common/webui_url_constants.h"
+ #include "chrome/grit/prometheus_resources.h"
+ #include "content/public/browser/web_ui.h"
+@@ -203,6 +204,8 @@ PrometheusSidePanelUI::PrometheusSidePanelUI(content::WebUI* web_ui)
+   ConfigurePrometheusSidePanelDataSource(web_ui);
+   web_ui->AddMessageHandler(std::make_unique<PrometheusSidePanelMessageHandler>(
+       weak_factory_.GetWeakPtr()));
++  SetBrowserWindowInterface(
++      webui::GetBrowserWindowInterface(web_ui->GetWebContents()));
+ }
+ 
+ PrometheusSidePanelUI::~PrometheusSidePanelUI() {
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 535ee2324d..62ab2749d8 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/webui/prometheus/prometheus_web_ui.h"
+ 
++#include <array>
++#include <string>
+ #include <utility>
+ 
+ #include "base/test/run_until.h"
+@@ -25,12 +27,14 @@
+ #include "chrome/test/base/ui_test_utils.h"
+ #include "components/tabs/public/tab_interface.h"
+ #include "content/public/browser/navigation_entry.h"
++#include "content/public/browser/reload_type.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/browser/web_ui.h"
+ #include "content/public/common/content_features.h"
+ #include "content/public/test/browser_test.h"
+ #include "content/public/test/browser_test_utils.h"
+ #include "testing/gtest/include/gtest/gtest.h"
++#include "ui/gfx/geometry/rect.h"
+ #include "ui/views/controls/webview/webview.h"
+ #include "ui/views/view_utils.h"
+ #include "url/gurl.h"
+@@ -686,3 +690,404 @@ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+   EXPECT_FALSE(BodyContains(web_contents, "api_key"));
+   EXPECT_FALSE(BodyContains(web_contents, "vault secret"));
+ }
++
++IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
++                       RuntimeResponsiveKeyboardAndAccessibilityGates) {
++  prometheus::PrometheusRuntimeProfileService* const runtime_service =
++      ConfigureLocalRuntimeProvider();
++  ASSERT_TRUE(runtime_service);
++  PrometheusSidePanelUI* const controller = ShowSidePanel(browser());
++  ASSERT_TRUE(controller);
++  content::WebContents* const web_contents = visible_side_panel_web_contents();
++  ASSERT_TRUE(web_contents);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusRuntimeSnapshotForTesting?.status || '';
++    )")
++               .ExtractString() == "OK";
++  }));
++
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    const sidePanel = document.querySelector(
++        'aside[aria-label="Prometheus side panel"]');
++    const tablist = document.querySelector(
++        'nav[aria-label="Prometheus side panel modes"] [role="tablist"]');
++    const selectedTab = tablist?.querySelector('[role="tab"][aria-selected="true"]');
++    sidePanel && tablist && selectedTab?.id === 'mode-fsb-agent' &&
++        selectedTab.tabIndex === 0 &&
++        Array.from(tablist.querySelectorAll('[role="tab"]'))
++            .filter(tab => tab !== selectedTab)
++            .every(tab => tab.tabIndex === -1) &&
++        document.querySelector('#runtime-task-list')
++            ?.getAttribute('aria-live') === 'polite' &&
++        document.querySelector('#composer-recovery')?.role === 'status' &&
++        document.querySelector('#runtime-cancel-dialog')
++            ?.getAttribute('aria-describedby') ===
++            'cancel-dialog-description';
++  )")
++                  .ExtractBool());
++
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    const agent = document.querySelector('#mode-fsb-agent');
++    agent.focus();
++    agent.dispatchEvent(new KeyboardEvent(
++        'keydown', {key: 'ArrowRight', bubbles: true}));
++    const explorerSelected = document.activeElement?.id === 'mode-explorer' &&
++        document.querySelector('#mode-explorer')
++            .getAttribute('aria-selected') === 'true' &&
++        !document.querySelector('#panel-explorer').hidden;
++    document.activeElement.dispatchEvent(new KeyboardEvent(
++        'keydown', {key: 'End', bubbles: true}));
++    const endSelected = document.activeElement?.id === 'mode-tools';
++    document.activeElement.dispatchEvent(new KeyboardEvent(
++        'keydown', {key: 'Home', bubbles: true}));
++    explorerSelected && endSelected &&
++        document.activeElement?.id === 'mode-fsb-agent' &&
++        !document.querySelector('#panel-fsb-agent').hidden;
++  )")
++                  .ExtractBool());
++
++  const size_t delivery_count =
++      controller->runtime_observer_delivery_count_for_testing();
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    const prompt = document.querySelector('#runtime-prompt');
++    prompt.value = 'Verify responsive keyboard submission';
++    prompt.dispatchEvent(new Event('input', {bubbles: true}));
++    if (document.querySelector('#runtime-submit').disabled) {
++      throw new Error('valid runtime shortcut remained disabled');
++    }
++    prompt.dispatchEvent(new KeyboardEvent(
++        'keydown', {key: 'Enter', metaKey: true, bubbles: true}));
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return controller->runtime_observer_delivery_count_for_testing() >
++           delivery_count;
++  }));
++  EXPECT_EQ(1, content::EvalJs(web_contents, R"(
++    window.prometheusRuntimeSubmitCountForTesting;
++  )")
++                   .ExtractInt());
++
++  for (const int width : std::array<int, 2>{300, 320}) {
++    web_contents->Resize(gfx::Rect(0, 0, width, 900));
++    ASSERT_TRUE(base::test::RunUntil([&]() {
++      return content::EvalJs(web_contents, "window.innerWidth;").ExtractInt() ==
++             width;
++    })) << "width="
++        << width;
++    EXPECT_TRUE(content::EvalJs(web_contents, R"(
++      const viewportWidth = document.documentElement.clientWidth;
++      const visible = element => {
++        const style = getComputedStyle(element);
++        return !element.hidden && style.display !== 'none' &&
++            style.visibility !== 'hidden';
++      };
++      const required = [
++        document.querySelector('.surface--narrow'),
++        document.querySelector('.mode-bar'),
++        document.querySelector('#runtime-task-list'),
++        document.querySelector('#runtime-composer'),
++        document.querySelector('#runtime-prompt'),
++        document.querySelector('#runtime-submit'),
++        document.querySelector('#runtime-refresh'),
++      ];
++      const targets = [
++        ...document.querySelectorAll('.mode'),
++        ...document.querySelectorAll('.execution-segment'),
++        document.querySelector('#runtime-prompt'),
++        document.querySelector('#runtime-submit'),
++        document.querySelector('#runtime-refresh'),
++        ...document.querySelectorAll('.runtime-task__cancel'),
++      ].filter(element => element && visible(element));
++      document.documentElement.scrollWidth <= viewportWidth &&
++          document.body.scrollWidth <= viewportWidth &&
++          required.every(element => {
++            const rect = element.getBoundingClientRect();
++            return rect.width > 0 && rect.left >= -1 &&
++                rect.right <= viewportWidth + 1;
++          }) &&
++          targets.every(element => element.getBoundingClientRect().height >= 48);
++    )")
++                    .ExtractBool())
++        << "width=" << width;
++
++    EXPECT_TRUE(content::EvalJs(web_contents, R"(
++      const local = document.querySelector(
++          'input[name="execution-mode"][value="local"]');
++      local.click();
++      const select = document.querySelector('#local-provider-select');
++      const valid = !document.querySelector('#local-provider-field').hidden &&
++          select.getBoundingClientRect().height >= 48 &&
++          select.getBoundingClientRect().right <=
++              document.documentElement.clientWidth + 1;
++      document.querySelector(
++          'input[name="execution-mode"][value="auto"]').click();
++      valid;
++    )")
++                    .ExtractBool())
++        << "width=" << width;
++  }
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    document.querySelector('.runtime-task__cancel').click();
++  )"));
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    const dialog = document.querySelector('#runtime-cancel-dialog');
++    const rect = dialog.getBoundingClientRect();
++    dialog.open && dialog.getAttribute('aria-modal') === 'true' &&
++        document.activeElement?.id === 'cancel-dialog-dismiss' &&
++        rect.left >= -1 &&
++        rect.right <= document.documentElement.clientWidth + 1 &&
++        Array.from(dialog.querySelectorAll('button')).every(
++            button => button.getBoundingClientRect().height >= 48);
++  )")
++                  .ExtractBool());
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    document.querySelector('#cancel-dialog-dismiss').click();
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      !document.querySelector('#runtime-cancel-dialog').open;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    document.activeElement?.classList.contains('runtime-task__cancel') &&
++        document.activeElement?.getAttribute('aria-expanded') === 'false';
++  )")
++                  .ExtractBool());
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIFoundationBrowserTest,
++    RuntimeRejectsMalformedMessagesAndPersistsSanitizedRestart) {
++  constexpr char kSensitivePrompt[] =
++      "Open https://restart.example/?token=BRAVO and type password=orchid";
++  constexpr char kSensitiveTitle[] = "Task: Open [link] and type [redacted]";
++
++  prometheus::PrometheusRuntimeProfileService* const runtime_service =
++      ConfigureLocalRuntimeProvider();
++  ASSERT_TRUE(runtime_service);
++  PrometheusSidePanelUI* controller = ShowSidePanel(browser());
++  ASSERT_TRUE(controller);
++  content::WebContents* const web_contents = visible_side_panel_web_contents();
++  ASSERT_TRUE(web_contents);
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusRuntimeOperationForTesting = null;
++    chrome.send('prometheusRuntimeSubmit', [
++      {prompt: 'renderer object'}, 'auto', 'principal_id', 'owner_id'
++    ]);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusRuntimeOperationForTesting?.status || '';
++    )")
++               .ExtractString() == "INVALID_REQUEST";
++  }));
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    window.prometheusRuntimeOperationForTesting.accepted === false &&
++        window.prometheusRuntimeOperationForTesting.recovery.includes(
++            'prompt');
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    window.prometheusRuntimeOperationForTesting = null;
++    chrome.send('prometheusRuntimeCancel', ['stale-task-id']);
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusRuntimeOperationForTesting?.accepted === false;
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_EQ("INVALID_REQUEST", content::EvalJs(web_contents, R"(
++    window.prometheusRuntimeOperationForTesting.status;
++  )")
++                                   .ExtractString());
++  EXPECT_EQ(1u, controller->principal_acquisition_count_for_testing());
++  EXPECT_TRUE(controller->has_local_principal_for_testing());
++
++  const size_t delivery_count =
++      controller->runtime_observer_delivery_count_for_testing();
++  ASSERT_TRUE(
++      content::ExecJs(web_contents, content::JsReplace(R"(
++    const prompt = document.querySelector('#runtime-prompt');
++    prompt.value = $1;
++    prompt.dispatchEvent(new Event('input', {bubbles: true}));
++    const form = document.querySelector('#runtime-composer');
++    form.requestSubmit();
++    form.requestSubmit();
++  )",
++                                                       kSensitivePrompt)));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return controller->runtime_observer_delivery_count_for_testing() >
++           delivery_count;
++  }));
++  EXPECT_TRUE(content::EvalJs(web_contents, content::JsReplace(R"(
++    const tasks = window.prometheusRuntimeSnapshotForTesting.tasks;
++    window.prometheusRuntimeSubmitCountForTesting === 1 &&
++        tasks.length === 1 && tasks[0].safe_title === $1 &&
++        !Object.hasOwn(tasks[0], 'prompt');
++  )",
++                                                               kSensitiveTitle))
++                  .ExtractBool());
++
++  web_contents->GetController().Reload(content::ReloadType::NORMAL, false);
++  ASSERT_TRUE(content::WaitForLoadStop(web_contents));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, content::JsReplace(R"(
++      typeof window.prometheusRuntimeReceiveSnapshot === 'function' &&
++          window.prometheusRuntimeSnapshotForTesting?.tasks?.some(
++              task => task.safe_title === $1);
++    )",
++                                                            kSensitiveTitle))
++        .ExtractBool();
++  }));
++  controller =
++      web_contents->GetWebUI()->GetController()->GetAs<PrometheusSidePanelUI>();
++  ASSERT_TRUE(controller);
++  EXPECT_EQ(1u, controller->principal_acquisition_count_for_testing());
++  EXPECT_TRUE(content::EvalJs(web_contents,
++                              content::JsReplace(R"(
++    const serialized = JSON.stringify({
++      snapshot: window.prometheusRuntimeSnapshotForTesting,
++      operation: window.prometheusRuntimeOperationForTesting,
++      dom: document.documentElement.outerHTML,
++    });
++    document.querySelector('#runtime-prompt').value === '' &&
++        window.prometheusAskFsbSeedForTesting === '' &&
++        window.prometheusRuntimeSnapshotForTesting.tasks.some(
++            task => task.safe_title === $1 && !Object.hasOwn(task, 'prompt')) &&
++        !$2.some(value => serialized.includes(value));
++  )",
++                                                 kSensitiveTitle,
++                                                 base::ListValue()
++                                                     .Append(kSensitivePrompt)
++                                                     .Append("restart.example")
++                                                     .Append("BRAVO")
++                                                     .Append("orchid")
++                                                     .Append("caller_id")
++                                                     .Append("agent_session_id")
++                                                     .Append("principal_id")
++                                                     .Append("owner_id")))
++                  .ExtractBool());
++  EXPECT_EQ(std::string::npos,
++            web_contents->GetLastCommittedURL().spec().find("BRAVO"));
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
++                       RuntimeRendersAllStatesWithoutEngineControls) {
++  PrometheusSidePanelUI* const controller = ShowSidePanel(browser());
++  ASSERT_TRUE(controller);
++  content::WebContents* const web_contents = visible_side_panel_web_contents();
++  ASSERT_TRUE(web_contents);
++
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    const now = Date.now();
++    const states = [
++      'queued', 'running', 'waiting_confirmation', 'cancelling',
++      'succeeded', 'failed', 'cancelled',
++    ];
++    const tasks = states.map((state, index) => ({
++      task_id: `state-${state}`,
++      safe_title: index === 0 ? 'Task: <img src=x onerror=alert(1)>' :
++          `Task: ${state}`,
++      origin: index === 1 ? 'mcp' : 'side_panel',
++      requested_execution: 'auto',
++      effective_execution: index === 1 ? 'hosted' : 'local',
++      route_class: index === 1 ? 'hosted' : 'local',
++      provider_kind: 'lm_studio',
++      provider_label: 'Safe provider',
++      state,
++      created_at_ms: now - 1000,
++      updated_at_ms: now,
++      action_count: index,
++      usage: {
++        input_tokens: 2,
++        output_tokens: 3,
++        tool_calls: index,
++        duration_ms: 7,
++        cost_known: false,
++      },
++      ...(state === 'succeeded' ? {
++        result: 'Safe bounded result', result_truncated: false,
++      } : {}),
++      ...(state === 'failed' ? {
++        recovery: 'Choose an available provider and retry',
++      } : {}),
++    }));
++    window.prometheusRuntimeReceiveSnapshot({
++      status: 'OK',
++      providers: [{
++        provider_id: 'safe-provider',
++        label: 'Safe provider',
++        model_id: 'safe-model',
++        kind: 'lm_studio',
++        route_class: 'local',
++        health: 'healthy',
++      }],
++      tasks,
++    });
++  )"));
++
++  EXPECT_EQ(
++      "cancelled:Cancelled|cancelling:Cancelling|failed:Failed|queued:Queued|"
++      "running:Working|succeeded:Complete|waiting_confirmation:Confirmation "
++      "required",
++      content::EvalJs(web_contents, R"(
++        Array.from(document.querySelectorAll('.runtime-task'))
++            .map(task => `${task.dataset.taskState}:` +
++                task.querySelector('.runtime-task__status').textContent)
++            .sort()
++            .join('|');
++      )")
++          .ExtractString());
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    const running = document.querySelector(
++        '.runtime-task[data-task-state="running"] .runtime-progress');
++    const waiting = document.querySelector(
++        '.runtime-task[data-task-state="waiting_confirmation"] ' +
++        '.runtime-progress');
++    const terminals = document.querySelectorAll(
++        '.runtime-task[data-task-state="succeeded"] .runtime-progress, ' +
++        '.runtime-task[data-task-state="failed"] .runtime-progress, ' +
++        '.runtime-task[data-task-state="cancelled"] .runtime-progress');
++    const cancelling = document.querySelector(
++        '.runtime-task[data-task-state="cancelling"] ' +
++        '.runtime-task__cancel');
++    !running.hasAttribute('aria-valuenow') &&
++        !waiting.hasAttribute('aria-valuenow') &&
++        Array.from(terminals).every(
++            progress => progress.getAttribute('aria-valuenow') === '100') &&
++        cancelling.disabled && cancelling.textContent === 'Cancelling';
++  )")
++                  .ExtractBool());
++  EXPECT_TRUE(BodyContains(web_contents, "MCP-driven"));
++  EXPECT_TRUE(BodyContains(web_contents, "Hosted"));
++  EXPECT_TRUE(BodyContains(web_contents, "Safe bounded result"));
++  EXPECT_TRUE(
++      BodyContains(web_contents, "Choose an available provider and retry"));
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    const taskList = document.querySelector('#runtime-task-list');
++    const resourceNodes = document.querySelectorAll(
++        'script[src], link[href], img[src], iframe[src]');
++    const text = document.body.innerText.toLowerCase();
++    taskList.innerText.includes('Task: <img src=x onerror=alert(1)>') &&
++        !taskList.querySelector('img, script, iframe') &&
++        document.querySelectorAll('.runtime-task__timeline').length === 7 &&
++        Array.from(document.querySelectorAll('.runtime-task__timeline'))
++            .every(timeline => timeline.querySelector('time')) &&
++        !document.querySelector(
++            'input[type="password"], [data-engine], [data-terminal], ' +
++            '[data-pairing], [name*="secret"], [name*="endpoint"]') &&
++        !['claude.md', 'engine selector', 'client launch',
++          'prompt provisioner'].some(value => text.includes(value)) &&
++        Array.from(resourceNodes).every(node => {
++          const value = node.src || node.href;
++          return new URL(value).protocol === 'chrome:';
++        });
++  )")
++                  .ExtractBool());
++}
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,456 @@
+From a832ab29416b411f463199b86d3ecd3338c88ae0 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 18:32:10 -0500
+Subject: [PATCH] feat(21-03): implement deterministic diff and resync cursors
+
+---
+ .../prometheus/prometheus_supervision_diff.cc | 396 +++++++++++++++++-
+ 1 file changed, 381 insertions(+), 15 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_supervision_diff.cc b/chrome/browser/prometheus/prometheus_supervision_diff.cc
+index 7e0633cb09..e0cce65046 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_diff.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_diff.cc
+@@ -4,51 +4,416 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_supervision_diff.h"
+ 
++#include <algorithm>
++#include <cstddef>
++#include <map>
++#include <optional>
++#include <set>
++#include <string>
++#include <string_view>
+ #include <utility>
++#include <vector>
++
++#include "base/json/json_writer.h"
++#include "base/values.h"
+ 
+ namespace prometheus {
+ 
++namespace {
++
++using NodeMap = std::map<std::string, const SupervisionNormalizedNode*>;
++
++bool BuildValidatedNodeMap(const SupervisionBaseline& baseline,
++                           NodeMap* nodes) {
++  if (!baseline.authoritative() || baseline.nodes.empty() ||
++      baseline.nodes.size() > kHardSupervisionBaselineNodes) {
++    return false;
++  }
++
++  for (const SupervisionNormalizedNode& node : baseline.nodes) {
++    if (node.ref.empty() || !nodes->emplace(node.ref, &node).second) {
++      return false;
++    }
++  }
++
++  std::map<std::string, size_t> incoming_edges;
++  size_t root_count = 0;
++  for (const SupervisionNormalizedNode& node : baseline.nodes) {
++    if (node.parent_ref.empty()) {
++      ++root_count;
++    } else if (!nodes->contains(node.parent_ref)) {
++      return false;
++    }
++
++    std::set<std::string> unique_children;
++    for (const std::string& child_ref : node.child_refs) {
++      auto child = nodes->find(child_ref);
++      if (child == nodes->end() || child->second->parent_ref != node.ref ||
++          !unique_children.insert(child_ref).second) {
++        return false;
++      }
++      ++incoming_edges[child_ref];
++    }
++  }
++  if (root_count == 0) {
++    return false;
++  }
++  for (const SupervisionNormalizedNode& node : baseline.nodes) {
++    const size_t expected_edges = node.parent_ref.empty() ? 0u : 1u;
++    if (incoming_edges[node.ref] != expected_edges) {
++      return false;
++    }
++  }
++  return true;
++}
++
++bool FieldsEqual(const SupervisionNormalizedNode& left,
++                 const SupervisionNormalizedNode& right) {
++  return left.tag == right.tag && left.role == right.role &&
++         left.name == right.name && left.text_snippet == right.text_snippet &&
++         left.disabled == right.disabled && left.focusable == right.focusable &&
++         left.clickable == right.clickable &&
++         left.input_value == right.input_value &&
++         left.input_type == right.input_type && left.checked == right.checked &&
++         left.required == right.required && left.readonly == right.readonly &&
++         left.frame_restricted == right.frame_restricted &&
++         left.frame_restricted_reason == right.frame_restricted_reason;
++}
++
++std::vector<std::string> CommonChildOrder(
++    const std::vector<std::string>& child_refs,
++    const NodeMap& other_nodes) {
++  std::vector<std::string> common;
++  for (const std::string& child_ref : child_refs) {
++    if (other_nodes.contains(child_ref)) {
++      common.push_back(child_ref);
++    }
++  }
++  return common;
++}
++
++void CollectSubtree(const SupervisionNormalizedNode& root,
++                    const NodeMap& nodes,
++                    std::vector<SupervisionNormalizedNode>* subtree) {
++  subtree->push_back(root);
++  for (const std::string& child_ref : root.child_refs) {
++    CollectSubtree(*nodes.at(child_ref), nodes, subtree);
++  }
++}
++
++size_t ChildIndex(const SupervisionNormalizedNode& node,
++                  const NodeMap& nodes,
++                  const SupervisionBaseline& baseline) {
++  if (!node.parent_ref.empty()) {
++    const std::vector<std::string>& siblings =
++        nodes.at(node.parent_ref)->child_refs;
++    return static_cast<size_t>(
++        std::distance(siblings.begin(), std::ranges::find(siblings, node.ref)));
++  }
++
++  size_t root_index = 0;
++  for (const SupervisionNormalizedNode& candidate : baseline.nodes) {
++    if (candidate.ref == node.ref) {
++      return root_index;
++    }
++    if (candidate.parent_ref.empty()) {
++      ++root_index;
++    }
++  }
++  return root_index;
++}
++
++base::DictValue NodeFieldsToValue(const SupervisionNormalizedNode& node) {
++  base::DictValue fields;
++  fields.Set("tag", node.tag);
++  fields.Set("role", node.role);
++  fields.Set("name", node.name);
++  fields.Set("text_snippet", node.text_snippet);
++  fields.Set("disabled", node.disabled);
++  fields.Set("focusable", node.focusable);
++  fields.Set("clickable", node.clickable);
++  if (node.input_value.has_value()) {
++    fields.Set("input_value", *node.input_value);
++  }
++  if (node.input_type.has_value()) {
++    fields.Set("input_type", *node.input_type);
++  }
++  if (node.checked.has_value()) {
++    fields.Set("checked", *node.checked);
++  }
++  fields.Set("required", node.required);
++  fields.Set("readonly", node.readonly);
++  fields.Set("frame_restricted", node.frame_restricted);
++  fields.Set("frame_restricted_reason", node.frame_restricted_reason);
++  return fields;
++}
++
++base::DictValue NodeToValue(const SupervisionNormalizedNode& node) {
++  base::DictValue value;
++  value.Set("ref", node.ref);
++  if (!node.parent_ref.empty()) {
++    value.Set("parent_ref", node.parent_ref);
++  }
++  base::ListValue children;
++  children.reserve(node.child_refs.size());
++  for (const std::string& child_ref : node.child_refs) {
++    children.Append(child_ref);
++  }
++  value.Set("children", std::move(children));
++  value.Set("fields", NodeFieldsToValue(node));
++  return value;
++}
++
++std::string_view OperationName(SupervisionDiffOperationType type) {
++  switch (type) {
++    case SupervisionDiffOperationType::kInsertSubtree:
++      return "insert_subtree";
++    case SupervisionDiffOperationType::kRemove:
++      return "remove";
++    case SupervisionDiffOperationType::kReplaceFields:
++      return "replace_fields";
++    case SupervisionDiffOperationType::kReorderChildren:
++      return "reorder_children";
++  }
++}
++
++base::DictValue OperationToValue(const SupervisionDiffOperation& operation) {
++  base::DictValue value;
++  value.Set("op", OperationName(operation.type));
++  value.Set("ref", operation.ref);
++  switch (operation.type) {
++    case SupervisionDiffOperationType::kInsertSubtree: {
++      if (!operation.parent_ref.empty()) {
++        value.Set("parent_ref", operation.parent_ref);
++      }
++      value.Set("index", static_cast<int>(operation.index));
++      base::ListValue subtree;
++      subtree.reserve(operation.subtree.size());
++      for (const SupervisionNormalizedNode& node : operation.subtree) {
++        subtree.Append(NodeToValue(node));
++      }
++      value.Set("subtree", std::move(subtree));
++      break;
++    }
++    case SupervisionDiffOperationType::kRemove:
++      break;
++    case SupervisionDiffOperationType::kReplaceFields:
++      if (operation.replacement.has_value()) {
++        value.Set("fields", NodeFieldsToValue(*operation.replacement));
++      }
++      break;
++    case SupervisionDiffOperationType::kReorderChildren: {
++      base::ListValue children;
++      children.reserve(operation.child_order.size());
++      for (const std::string& child_ref : operation.child_order) {
++        children.Append(child_ref);
++      }
++      value.Set("children", std::move(children));
++      break;
++    }
++  }
++  return value;
++}
++
++bool HasSameAuthority(const SupervisionStreamStamp& left,
++                      const SupervisionStreamStamp& right) {
++  return left.session == right.session &&
++         left.stable_tab_id == right.stable_tab_id &&
++         left.document_epoch == right.document_epoch;
++}
++
++}  // namespace
++
+ SupervisionDiff ComputeSupervisionDiff(const SupervisionBaseline& previous,
+                                        const SupervisionBaseline& current,
+                                        const SupervisionLimits& limits) {
+-  static_cast<void>(previous);
+-  static_cast<void>(current);
+-  static_cast<void>(limits);
+-  return {};
++  NodeMap previous_nodes;
++  NodeMap current_nodes;
++  if (!BuildValidatedNodeMap(previous, &previous_nodes) ||
++      !BuildValidatedNodeMap(current, &current_nodes)) {
++    return {};
++  }
++
++  // Reparenting a stable ref is intentionally ambiguous in this closed
++  // vocabulary. A fresh baseline is safer than a remove/insert pair that could
++  // make a partial consumer state look authoritative.
++  for (const auto& [ref, previous_node] : previous_nodes) {
++    auto current_node = current_nodes.find(ref);
++    if (current_node != current_nodes.end() &&
++        previous_node->parent_ref != current_node->second->parent_ref) {
++      return {};
++    }
++  }
++
++  std::vector<SupervisionDiffOperation> operations;
++
++  // Canonical order is removals, insertions, field replacements, then child
++  // reorders. Within each class stable refs are lexicographically ordered.
++  for (const auto& [ref, node] : previous_nodes) {
++    if (current_nodes.contains(ref)) {
++      continue;
++    }
++    if (!node->parent_ref.empty() &&
++        !current_nodes.contains(node->parent_ref)) {
++      continue;
++    }
++    SupervisionDiffOperation operation;
++    operation.type = SupervisionDiffOperationType::kRemove;
++    operation.ref = ref;
++    operations.push_back(std::move(operation));
++  }
++
++  for (const auto& [ref, node] : current_nodes) {
++    if (previous_nodes.contains(ref)) {
++      continue;
++    }
++    if (!node->parent_ref.empty() &&
++        !previous_nodes.contains(node->parent_ref)) {
++      continue;
++    }
++    SupervisionDiffOperation operation;
++    operation.type = SupervisionDiffOperationType::kInsertSubtree;
++    operation.ref = ref;
++    operation.parent_ref = node->parent_ref;
++    operation.index = ChildIndex(*node, current_nodes, current);
++    CollectSubtree(*node, current_nodes, &operation.subtree);
++    operations.push_back(std::move(operation));
++  }
++
++  for (const auto& [ref, previous_node] : previous_nodes) {
++    auto current_node = current_nodes.find(ref);
++    if (current_node == current_nodes.end() ||
++        FieldsEqual(*previous_node, *current_node->second)) {
++      continue;
++    }
++    SupervisionDiffOperation operation;
++    operation.type = SupervisionDiffOperationType::kReplaceFields;
++    operation.ref = ref;
++    operation.replacement = *current_node->second;
++    operations.push_back(std::move(operation));
++  }
++
++  for (const auto& [ref, previous_node] : previous_nodes) {
++    auto current_node = current_nodes.find(ref);
++    if (current_node == current_nodes.end()) {
++      continue;
++    }
++    const std::vector<std::string> previous_common =
++        CommonChildOrder(previous_node->child_refs, current_nodes);
++    const std::vector<std::string> current_common =
++        CommonChildOrder(current_node->second->child_refs, previous_nodes);
++    if (previous_common == current_common) {
++      continue;
++    }
++    SupervisionDiffOperation operation;
++    operation.type = SupervisionDiffOperationType::kReorderChildren;
++    operation.ref = ref;
++    operation.child_order = current_node->second->child_refs;
++    operations.push_back(std::move(operation));
++  }
++
++  const SupervisionLimits clamped = ClampSupervisionLimits(limits);
++  if (operations.size() > clamped.diff_operations) {
++    return {};
++  }
++  base::ListValue serialized_operations;
++  serialized_operations.reserve(operations.size());
++  for (const SupervisionDiffOperation& operation : operations) {
++    serialized_operations.Append(OperationToValue(operation));
++  }
++  std::optional<std::string> serialized =
++      base::WriteJson(serialized_operations);
++  if (!serialized.has_value() || serialized->size() > clamped.diff_bytes) {
++    return {};
++  }
++
++  SupervisionDiff diff;
++  diff.needs_baseline = false;
++  diff.operations = std::move(operations);
++  diff.serialized_json = std::move(*serialized);
++  return diff;
+ }
+ 
+ SupervisionViewerDiffCursor::SupervisionViewerDiffCursor(
+     const SupervisionLimits& limits)
+-    : limits_(limits) {}
++    : limits_(ClampSupervisionLimits(limits)) {}
+ 
+ SupervisionViewerDiffCursor::~SupervisionViewerDiffCursor() = default;
+ 
+ void SupervisionViewerDiffCursor::BeginBaseline(
+     const SupervisionStreamStamp& baseline_stamp) {
+-  baseline_stamp_ = baseline_stamp;
+   EnterNeedsBaseline();
++  if (IsValidSupervisionStreamStamp(baseline_stamp)) {
++    baseline_stamp_ = baseline_stamp;
++  }
+ }
+ 
+ bool SupervisionViewerDiffCursor::AcknowledgeBaseline(
+     const SupervisionStreamStamp& baseline_stamp) {
+-  static_cast<void>(baseline_stamp);
+-  return false;
++  if (!needs_baseline_ || !baseline_stamp_.has_value() ||
++      baseline_stamp != *baseline_stamp_ ||
++      !CheckedNextSupervisionSequence(baseline_stamp.sequence).has_value()) {
++    EnterNeedsBaseline();
++    return false;
++  }
++  acknowledged_sequence_ = baseline_stamp.sequence;
++  needs_baseline_ = false;
++  return true;
+ }
+ 
+ bool SupervisionViewerDiffCursor::QueueBatch(SupervisionDiffBatch batch) {
+-  static_cast<void>(batch);
+-  EnterNeedsBaseline();
+-  return false;
++  if (needs_baseline_ || !baseline_stamp_.has_value()) {
++    return false;
++  }
++  if (!IsValidSupervisionStreamStamp(batch.stamp) ||
++      !HasSameAuthority(*baseline_stamp_, batch.stamp) ||
++      !batch.diff.authoritative() || batch.diff.serialized_json.empty() ||
++      batch.diff.operations.size() > limits_.diff_operations ||
++      batch.diff.serialized_json.size() > limits_.diff_bytes) {
++    EnterNeedsBaseline();
++    return false;
++  }
++
++  const uint64_t last_sequence = batches_.empty()
++                                     ? acknowledged_sequence_
++                                     : batches_.back().stamp.sequence;
++  const std::optional<uint64_t> expected_sequence =
++      CheckedNextSupervisionSequence(last_sequence);
++  if (!expected_sequence.has_value() ||
++      batch.stamp.sequence != *expected_sequence) {
++    EnterNeedsBaseline();
++    return false;
++  }
++
++  const size_t batch_bytes = batch.diff.serialized_json.size();
++  if (batches_.size() >= limits_.retained_batches ||
++      batch_bytes > limits_.retained_bytes_per_viewer ||
++      retained_bytes_ > limits_.retained_bytes_per_viewer - batch_bytes) {
++    EnterNeedsBaseline();
++    return false;
++  }
++  retained_bytes_ += batch_bytes;
++  batches_.push_back(std::move(batch));
++  return true;
+ }
+ 
+ const SupervisionDiffBatch* SupervisionViewerDiffCursor::ReadNext() const {
+-  return nullptr;
++  return needs_baseline_ || batches_.empty() ? nullptr : &batches_.front();
+ }
+ 
+ bool SupervisionViewerDiffCursor::Acknowledge(uint64_t sequence) {
+-  static_cast<void>(sequence);
+-  EnterNeedsBaseline();
+-  return false;
++  if (needs_baseline_ || batches_.empty() ||
++      batches_.front().stamp.sequence != sequence) {
++    EnterNeedsBaseline();
++    return false;
++  }
++  retained_bytes_ -= batches_.front().diff.serialized_json.size();
++  batches_.pop_front();
++  acknowledged_sequence_ = sequence;
++  if (!CheckedNextSupervisionSequence(sequence).has_value()) {
++    EnterNeedsBaseline();
++  }
++  return true;
+ }
+ 
+ void SupervisionViewerDiffCursor::RequireBaseline() {
+@@ -59,6 +424,7 @@ void SupervisionViewerDiffCursor::EnterNeedsBaseline() {
+   batches_.clear();
+   retained_bytes_ = 0;
+   acknowledged_sequence_ = 0;
++  baseline_stamp_.reset();
+   needs_baseline_ = true;
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+

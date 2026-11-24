@@ -1,0 +1,1011 @@
+From 405d955e204db6866d356f09eff1f7ab82049e1a Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 20 Jul 2026 08:34:48 -0500
+Subject: [PATCH] fix(20): WR-06 bound runtime bookkeeping
+
+---
+ .../prometheus/prometheus_agent_gateway.cc    | 130 +++++++++++++++++-
+ .../prometheus/prometheus_agent_gateway.h     |  35 ++++-
+ .../prometheus_agent_gateway_unittest.cc      |  93 +++++++++++++
+ .../prometheus/prometheus_agent_service.cc    |  43 +++++-
+ .../prometheus/prometheus_agent_service.h     |  18 ++-
+ .../prometheus_agent_service_unittest.cc      |  96 +++++++++----
+ .../prometheus_runtime_profile_service.cc     |  93 +++++++++++--
+ .../prometheus_runtime_profile_service.h      |  13 +-
+ ...etheus_runtime_profile_service_unittest.cc |  94 +++++++++++++
+ 9 files changed, 563 insertions(+), 52 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.cc b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+index 7223059b98..35f4703d18 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+@@ -9,6 +9,7 @@
+ #include <initializer_list>
+ #include <optional>
+ #include <ranges>
++#include <set>
+ #include <utility>
+ #include <vector>
+ 
+@@ -339,6 +340,13 @@ RuntimeTransportResult PrometheusGatewayDiscoveryTracker::Dispatch(
+           "Model discovery is unavailable",
+           "Retry when provider diagnostics report ready");
+     }
++    if (owners_.size() >= kMaxGatewayDiscoveryOperations) {
++      return RuntimeTransportResult::Failure(
++          RuntimeRouteName::kDiscoverModels,
++          RuntimeTransportErrorCode::kCapabilityNotReady,
++          "Model discovery capacity is temporarily exhausted",
++          "Poll or close an existing browser-issued discovery operation");
++    }
+     RuntimeTransportResult result = start.Run(*params.provider_id);
+     RuntimeModelListResult* payload =
+         result.ok ? std::get_if<RuntimeModelListResult>(&result.payload)
+@@ -400,6 +408,97 @@ void PrometheusGatewayDiscoveryTracker::RemoveSession(
+   }
+ }
+ 
++PrometheusGatewayRuntimeTaskTracker::PrometheusGatewayRuntimeTaskTracker() =
++    default;
++PrometheusGatewayRuntimeTaskTracker::~PrometheusGatewayRuntimeTaskTracker() =
++    default;
++
++bool PrometheusGatewayRuntimeTaskTracker::Record(const void* runtime_scope,
++                                                 std::string task_id,
++                                                 std::string gateway_session_id,
++                                                 std::string caller_id) {
++  if (!runtime_scope || task_id.empty() || gateway_session_id.empty() ||
++      caller_id.empty()) {
++    return false;
++  }
++  auto scope = owners_.find(runtime_scope);
++  if (scope != owners_.end() && scope->second.contains(task_id)) {
++    scope->second[std::move(task_id)] = {
++        .gateway_session_id = std::move(gateway_session_id),
++        .caller_id = std::move(caller_id),
++    };
++    return true;
++  }
++  if (task_count_ >= kMaxGatewayRuntimeTaskOwners) {
++    return false;
++  }
++  auto& scoped_owners = owners_[runtime_scope];
++  scoped_owners.emplace(
++      std::move(task_id),
++      Owner{.gateway_session_id = std::move(gateway_session_id),
++            .caller_id = std::move(caller_id)});
++  ++task_count_;
++  return true;
++}
++
++bool PrometheusGatewayRuntimeTaskTracker::Owns(
++    const void* runtime_scope,
++    std::string_view task_id,
++    std::string_view gateway_session_id,
++    std::string_view caller_id) const {
++  const auto scope = owners_.find(runtime_scope);
++  if (scope == owners_.end()) {
++    return false;
++  }
++  const auto owner = scope->second.find(task_id);
++  return owner != scope->second.end() &&
++         owner->second.gateway_session_id == gateway_session_id &&
++         owner->second.caller_id == caller_id;
++}
++
++void PrometheusGatewayRuntimeTaskTracker::Reconcile(
++    const void* runtime_scope,
++    const RuntimeStoreSnapshot& snapshot) {
++  auto scope = owners_.find(runtime_scope);
++  if (scope == owners_.end()) {
++    return;
++  }
++  std::set<std::string, std::less<>> retained_task_ids;
++  for (const RuntimeStoredTask& task : snapshot.tasks) {
++    retained_task_ids.insert(task.snapshot.task_id);
++  }
++  for (auto owner = scope->second.begin(); owner != scope->second.end();) {
++    if (!retained_task_ids.contains(owner->first)) {
++      owner = scope->second.erase(owner);
++      --task_count_;
++    } else {
++      ++owner;
++    }
++  }
++  if (scope->second.empty()) {
++    owners_.erase(scope);
++  }
++}
++
++void PrometheusGatewayRuntimeTaskTracker::RemoveSession(
++    std::string_view gateway_session_id) {
++  for (auto scope = owners_.begin(); scope != owners_.end();) {
++    for (auto owner = scope->second.begin(); owner != scope->second.end();) {
++      if (owner->second.gateway_session_id == gateway_session_id) {
++        owner = scope->second.erase(owner);
++        --task_count_;
++      } else {
++        ++owner;
++      }
++    }
++    if (scope->second.empty()) {
++      scope = owners_.erase(scope);
++    } else {
++      ++scope;
++    }
++  }
++}
++
+ RuntimeTransportResult DispatchAuthenticatedRuntimeRequestForTesting(
+     const RuntimeTransportRequest& request,
+     bool session_valid,
+@@ -855,6 +954,7 @@ void PrometheusAgentGateway::Shutdown(base::OnceClosure callback) {
+ 
+   for (const auto& [session_id, binding] : session_bindings_) {
+     runtime_discovery_tracker_.RemoveSession(session_id);
++    runtime_task_tracker_.RemoveSession(session_id);
+     if (!binding.profile) {
+       continue;
+     }
+@@ -865,7 +965,6 @@ void PrometheusAgentGateway::Shutdown(base::OnceClosure callback) {
+     }
+   }
+   session_bindings_.clear();
+-  runtime_task_owners_.clear();
+   weak_ptr_factory_.InvalidateWeakPtrs();
+   io_thread_.task_runner()->PostTask(
+       FROM_HERE,
+@@ -1021,6 +1120,7 @@ void PrometheusAgentGateway::PruneSessionBindings() {
+                 : nullptr;
+     if (!service || !service->HasSession(it->first)) {
+       runtime_discovery_tracker_.RemoveSession(it->first);
++      runtime_task_tracker_.RemoveSession(it->first);
+       it = session_bindings_.erase(it);
+     } else {
+       ++it;
+@@ -1054,10 +1154,14 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+         "Open a regular Prometheus browser window and retry");
+   }
+ 
+-  const auto owns_task = [this, derived_caller_id](std::string_view task_id) {
+-    auto owner = runtime_task_owners_.find(task_id);
+-    return owner != runtime_task_owners_.end() &&
+-           owner->second == derived_caller_id;
++  RuntimeStoreSnapshot retained_runtime =
++      runtime->GetRuntimeSnapshotForTransport();
++  runtime_task_tracker_.Reconcile(runtime, retained_runtime);
++
++  const auto owns_task = [this, runtime, &gateway_session_id,
++                          derived_caller_id](std::string_view task_id) {
++    return runtime_task_tracker_.Owns(runtime, task_id, gateway_session_id,
++                                      derived_caller_id);
+   };
+   const auto memory_failure = [&request](std::string message) {
+     return RuntimeTransportResult::Failure(
+@@ -1097,8 +1201,17 @@ RuntimeTransportResult PrometheusAgentGateway::DispatchRuntimeRequest(
+         return RuntimeStatusFailure(request.route_name, result.status,
+                                     std::move(result.recovery));
+       }
+-      runtime_task_owners_[result.task->task_id] =
+-          std::string(derived_caller_id);
++      runtime_task_tracker_.Reconcile(
++          runtime, runtime->GetRuntimeSnapshotForTransport());
++      if (!runtime_task_tracker_.Record(runtime, result.task->task_id,
++                                        gateway_session_id,
++                                        std::string(derived_caller_id))) {
++        runtime->CancelTask(result.task->task_id);
++        return RuntimeTransportResult::Failure(
++            request.route_name, RuntimeTransportErrorCode::kCapabilityNotReady,
++            "Runtime task ownership capacity is temporarily exhausted",
++            "Close an existing browser-issued session and retry");
++      }
+       return RuntimeTransportResult::Success(
+           request.route_name,
+           RuntimeTaskResult{.task = TaskView(std::move(*result.task))});
+@@ -1619,6 +1732,7 @@ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+             binding->second.profile.get());
+     if (!service) {
+       runtime_discovery_tracker_.RemoveSession(binding->first);
++      runtime_task_tracker_.RemoveSession(binding->first);
+       session_bindings_.erase(binding);
+       std::move(callback).Run(
+           net::HTTP_OK, SerializeRouteFailure(
+@@ -1776,6 +1890,7 @@ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+           binding->second.profile.get());
+   if (!service) {
+     runtime_discovery_tracker_.RemoveSession(binding->first);
++    runtime_task_tracker_.RemoveSession(binding->first);
+     session_bindings_.erase(binding);
+     std::move(callback).Run(
+         net::HTTP_OK,
+@@ -1808,6 +1923,7 @@ void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
+                                 : service->CloseSession(*session_id);
+   if (path == "/v1/session/close" && result.ok) {
+     runtime_discovery_tracker_.RemoveSession(*session_id);
++    runtime_task_tracker_.RemoveSession(*session_id);
+     session_bindings_.erase(*session_id);
+   }
+   auto serialized = SerializeAgentTransportResult(result);
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.h b/chrome/browser/prometheus/prometheus_agent_gateway.h
+index e06549e96c..5746562aaf 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway.h
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.h
+@@ -32,6 +32,9 @@ class HttpServerRequestInfo;
+ 
+ namespace prometheus {
+ 
++inline constexpr size_t kMaxGatewayRuntimeTaskOwners = 1024;
++inline constexpr size_t kMaxGatewayDiscoveryOperations = 512;
++
+ enum class PrometheusAgentRequestRejection {
+   kNone,
+   kUnauthorized,
+@@ -118,6 +121,36 @@ class PrometheusGatewayDiscoveryTracker {
+   std::map<OperationKey, std::string> owners_;
+ };
+ 
++class PrometheusGatewayRuntimeTaskTracker {
++ public:
++  PrometheusGatewayRuntimeTaskTracker();
++  ~PrometheusGatewayRuntimeTaskTracker();
++
++  bool Record(const void* runtime_scope,
++              std::string task_id,
++              std::string gateway_session_id,
++              std::string caller_id);
++  bool Owns(const void* runtime_scope,
++            std::string_view task_id,
++            std::string_view gateway_session_id,
++            std::string_view caller_id) const;
++  void Reconcile(const void* runtime_scope,
++                 const RuntimeStoreSnapshot& snapshot);
++  void RemoveSession(std::string_view gateway_session_id);
++
++  size_t task_count_for_testing() const { return task_count_; }
++
++ private:
++  struct Owner {
++    std::string gateway_session_id;
++    std::string caller_id;
++  };
++
++  using ScopedOwners = std::map<std::string, Owner, std::less<>>;
++  std::map<const void*, ScopedOwners, std::less<const void*>> owners_;
++  size_t task_count_ = 0;
++};
++
+ class PrometheusAgentGateway {
+  public:
+   using ResponseCallback = base::OnceCallback<void(int, std::string)>;
+@@ -212,7 +245,7 @@ class PrometheusAgentGateway {
+   BrowserSelector browser_selector_for_testing_;
+   StableTabSelector stable_tab_selector_for_testing_;
+   std::map<std::string, SessionBinding, std::less<>> session_bindings_;
+-  std::map<std::string, std::string, std::less<>> runtime_task_owners_;
++  PrometheusGatewayRuntimeTaskTracker runtime_task_tracker_;
+   PrometheusGatewayDiscoveryTracker runtime_discovery_tracker_;
+   std::atomic_size_t pending_request_count_{0};
+   std::atomic_size_t terminal_request_count_{0};
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+index 957adb1de9..1e0b856a52 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_unittest.cc
+@@ -434,6 +434,99 @@ TEST(PrometheusAgentGatewayTest,
+   EXPECT_EQ(0u, tracker.operation_count_for_testing());
+ }
+ 
++TEST(PrometheusAgentGatewayTest,
++     DiscoveryTrackerFailsClosedAtBoundAndReleasesSessionEntries) {
++  PrometheusGatewayDiscoveryTracker tracker;
++  int start_calls = 0;
++  auto start = base::BindRepeating(
++      [](int* calls, std::string_view provider_id) {
++        ++*calls;
++        return RuntimeTransportResult::Success(
++            RuntimeRouteName::kDiscoverModels,
++            RuntimeModelListResult{.operation_id = std::to_string(*calls),
++                                   .models = {},
++                                   .pending = true});
++      },
++      &start_calls);
++  DiscoverModelsParams params{.provider_id = "provider-1"};
++
++  for (size_t index = 0; index < kMaxGatewayDiscoveryOperations; ++index) {
++    const std::string session_id = "session-" + std::to_string(index % 8);
++    const std::string caller_id = "caller-" + std::to_string(index % 8);
++    RuntimeTransportResult result =
++        tracker.Dispatch(params, session_id, caller_id, start,
++                         PrometheusGatewayDiscoveryTracker::StatusCallback());
++    ASSERT_TRUE(result.ok) << index;
++  }
++  EXPECT_EQ(kMaxGatewayDiscoveryOperations,
++            tracker.operation_count_for_testing());
++
++  RuntimeTransportResult saturated =
++      tracker.Dispatch(params, "session-overflow", "caller-overflow", start,
++                       PrometheusGatewayDiscoveryTracker::StatusCallback());
++  EXPECT_FALSE(saturated.ok);
++  EXPECT_EQ(RuntimeTransportErrorCode::kCapabilityNotReady,
++            saturated.error_code);
++  EXPECT_EQ(static_cast<int>(kMaxGatewayDiscoveryOperations), start_calls);
++
++  tracker.RemoveSession("session-0");
++  EXPECT_EQ(kMaxGatewayDiscoveryOperations - 64,
++            tracker.operation_count_for_testing());
++  EXPECT_TRUE(tracker
++                  .Dispatch(params, "session-replacement", "caller-replacement",
++                            start,
++                            PrometheusGatewayDiscoveryTracker::StatusCallback())
++                  .ok);
++}
++
++TEST(PrometheusAgentGatewayTest,
++     RuntimeTaskTrackerReconcilesEvictionAndReleasesSessionEntries) {
++  PrometheusGatewayRuntimeTaskTracker tracker;
++  constexpr size_t kScopeCount = 8;
++  constexpr size_t kTasksPerScope = kMaxStoredRuntimeTasks;
++  std::array<int, kScopeCount> runtime_scope_tokens{};
++
++  for (size_t scope_index = 0; scope_index < kScopeCount; ++scope_index) {
++    const void* runtime_scope = &runtime_scope_tokens[scope_index];
++    for (size_t task_index = 0; task_index < kTasksPerScope; ++task_index) {
++      ASSERT_TRUE(tracker.Record(runtime_scope,
++                                 "task-" + std::to_string(scope_index) + "-" +
++                                     std::to_string(task_index),
++                                 "session-" + std::to_string(scope_index),
++                                 "caller-" + std::to_string(scope_index)));
++    }
++  }
++  EXPECT_EQ(kMaxGatewayRuntimeTaskOwners, tracker.task_count_for_testing());
++  int overflow_scope = 0;
++  EXPECT_FALSE(tracker.Record(&overflow_scope, "overflow", "overflow-session",
++                              "overflow-caller"));
++
++  const void* first_scope = &runtime_scope_tokens.front();
++  RuntimeStoreSnapshot retained;
++  for (size_t task_index = 1; task_index < kTasksPerScope; ++task_index) {
++    RuntimeStoredTask task;
++    task.snapshot.task_id = "task-0-" + std::to_string(task_index);
++    retained.tasks.push_back(std::move(task));
++  }
++  RuntimeStoredTask replacement;
++  replacement.snapshot.task_id = "task-0-replacement";
++  retained.tasks.push_back(std::move(replacement));
++  tracker.Reconcile(first_scope, retained);
++  EXPECT_EQ(kMaxGatewayRuntimeTaskOwners - 1, tracker.task_count_for_testing());
++  EXPECT_FALSE(tracker.Owns(first_scope, "task-0-0", "session-0", "caller-0"));
++  EXPECT_TRUE(tracker.Record(first_scope, "task-0-replacement", "session-0",
++                             "caller-0"));
++  EXPECT_TRUE(
++      tracker.Owns(first_scope, "task-0-replacement", "session-0", "caller-0"));
++  EXPECT_EQ(kMaxGatewayRuntimeTaskOwners, tracker.task_count_for_testing());
++
++  tracker.RemoveSession("session-0");
++  EXPECT_EQ(kMaxGatewayRuntimeTaskOwners - kTasksPerScope,
++            tracker.task_count_for_testing());
++  EXPECT_FALSE(
++      tracker.Owns(first_scope, "task-0-replacement", "session-0", "caller-0"));
++}
++
+ TEST(PrometheusAgentGatewayTest,
+      MissingBrowserIssuedSessionNeverReachesRuntime) {
+   auto request = ParseRuntimeTransportRequest(
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.cc b/chrome/browser/prometheus/prometheus_agent_service.cc
+index 70988235ff..c13c4963d1 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_agent_service.h"
+ 
++#include <algorithm>
+ #include <optional>
+ #include <set>
+ #include <string>
+@@ -188,6 +189,7 @@ bool IsNullTabHandle(tabs::TabHandle handle) {
+ constexpr size_t kMaxConfirmedVaultFields = 8;
+ constexpr size_t kMaxConfirmedVaultSessionIdBytes = 256;
+ constexpr size_t kMaxConfirmedVaultTargetRefBytes = 4096;
++constexpr base::TimeDelta kConfirmedVaultReplayRetention = base::Minutes(10);
+ 
+ std::vector<std::string> ConfirmedVaultFieldRefs(
+     const ConfirmedVaultInsertionRequest& request) {
+@@ -453,6 +455,7 @@ AgentRouteResult PrometheusAgentService::CloseSession(
+ 
+ void PrometheusAgentService::ReleaseSessionOwnership(
+     std::string_view session_id) {
++  RemoveConfirmedVaultReplayForSession(session_id);
+   std::vector<uint64_t> cancelled_operations;
+   for (const auto& [operation_id, operation] : confirmed_vault_operations_) {
+     if (operation->request.session_id == session_id) {
+@@ -483,6 +486,7 @@ void PrometheusAgentService::ExecuteConfirmedVaultInsertion(
+     ConfirmedVaultInsertionRequest request,
+     ConfirmedVaultCallback callback) {
+   const base::Time timestamp = Now();
++  PruneConfirmedVaultReplay(timestamp);
+   const size_t field_count = request.fields.size();
+   const uint64_t generation = request.generation;
+   auto fail = [&](ConfirmedVaultInsertionStatus status) {
+@@ -507,12 +511,20 @@ void PrometheusAgentService::ExecuteConfirmedVaultInsertion(
+     fail(ConfirmedVaultInsertionStatus::kUnauthorized);
+     return;
+   }
+-  const std::pair<std::string, uint64_t> replay_key(request.session_id,
+-                                                    request.generation);
+-  if (consumed_confirmed_vault_requests_.contains(replay_key)) {
++  const bool replayed = std::ranges::any_of(
++      confirmed_vault_replay_entries_, [&request](const auto& entry) {
++        return entry.session_id == request.session_id &&
++               entry.generation == request.generation;
++      });
++  if (replayed) {
+     fail(ConfirmedVaultInsertionStatus::kReplay);
+     return;
+   }
++  if (confirmed_vault_replay_entries_.size() >=
++      kMaxConfirmedVaultReplayEntries) {
++    fail(ConfirmedVaultInsertionStatus::kUnavailable);
++    return;
++  }
+ 
+   const ConfirmedVaultTargetInspector& inspector =
+       confirmed_vault_target_inspector_
+@@ -534,7 +546,12 @@ void PrometheusAgentService::ExecuteConfirmedVaultInsertion(
+     return;
+   }
+ 
+-  consumed_confirmed_vault_requests_.insert(replay_key);
++  confirmed_vault_replay_entries_.push_back({
++      .session_id = request.session_id,
++      .generation = request.generation,
++      .retained_until = std::max(request.expires_at,
++                                 timestamp + kConfirmedVaultReplayRetention),
++  });
+   const uint64_t operation_id = ++next_confirmed_vault_operation_id_;
+   confirmed_vault_operations_.emplace(
+       operation_id,
+@@ -702,9 +719,27 @@ void PrometheusAgentService::RecordConfirmedVaultAudit(
+   record.field_count = field_count;
+   record.generation = generation;
+   record.timestamp = timestamp;
++  if (confirmed_vault_audit_.size() >= kMaxConfirmedVaultAuditRecords) {
++    confirmed_vault_audit_.erase(confirmed_vault_audit_.begin());
++  }
+   confirmed_vault_audit_.push_back(std::move(record));
+ }
+ 
++void PrometheusAgentService::PruneConfirmedVaultReplay(base::Time timestamp) {
++  std::erase_if(confirmed_vault_replay_entries_,
++                [timestamp](const ConfirmedVaultReplayEntry& entry) {
++                  return entry.retained_until < timestamp;
++                });
++}
++
++void PrometheusAgentService::RemoveConfirmedVaultReplayForSession(
++    std::string_view session_id) {
++  std::erase_if(confirmed_vault_replay_entries_,
++                [session_id](const ConfirmedVaultReplayEntry& entry) {
++                  return entry.session_id == session_id;
++                });
++}
++
+ AgentRouteResult PrometheusAgentService::ExecuteRouteSynchronously(
+     BrowserWindowInterface* browser,
+     const AgentRouteRequest& request) {
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.h b/chrome/browser/prometheus/prometheus_agent_service.h
+index 193f152252..ac182f1476 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_service.h
+@@ -6,10 +6,10 @@
+ #define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_SERVICE_H_
+ 
+ #include <cstdint>
++#include <deque>
+ #include <map>
+ #include <memory>
+ #include <optional>
+-#include <set>
+ #include <string>
+ #include <string_view>
+ #include <utility>
+@@ -36,6 +36,9 @@ namespace prometheus {
+ class PrometheusAgentTabData;
+ class PrometheusPageAdapter;
+ 
++inline constexpr size_t kMaxConfirmedVaultReplayEntries = 256;
++inline constexpr size_t kMaxConfirmedVaultAuditRecords = 256;
++
+ // A browser-process-only value whose backing bytes are overwritten before the
+ // allocation is released. It is intentionally move-only so vault plaintext
+ // cannot be copied into a transport DTO by accident.
+@@ -192,6 +195,9 @@ class PrometheusAgentService {
+   confirmed_vault_audit_for_testing() const {
+     return confirmed_vault_audit_;
+   }
++  size_t confirmed_vault_replay_count_for_testing() const {
++    return confirmed_vault_replay_entries_.size();
++  }
+   void SetConfirmedVaultTargetInspectorForTesting(
+       ConfirmedVaultTargetInspector inspector);
+   void SetConfirmedVaultFieldInserterForTesting(
+@@ -201,6 +207,12 @@ class PrometheusAgentService {
+   struct OwnedTabData;
+   struct ConfirmedVaultOperation;
+ 
++  struct ConfirmedVaultReplayEntry {
++    std::string session_id;
++    uint64_t generation = 0;
++    base::Time retained_until;
++  };
++
+   struct ResolvedTarget {
+     raw_ptr<BrowserWindowInterface> browser = nullptr;
+     raw_ptr<TabListInterface> tab_list = nullptr;
+@@ -257,6 +269,8 @@ class PrometheusAgentService {
+                                  size_t field_count,
+                                  uint64_t generation,
+                                  base::Time timestamp);
++  void PruneConfirmedVaultReplay(base::Time timestamp);
++  void RemoveConfirmedVaultReplayForSession(std::string_view session_id);
+ 
+   raw_ptr<AgentSessionRegistry> session_registry_;
+   NowCallback now_callback_;
+@@ -269,7 +283,7 @@ class PrometheusAgentService {
+   uint64_t next_confirmed_vault_operation_id_ = 0;
+   std::map<uint64_t, std::unique_ptr<ConfirmedVaultOperation>>
+       confirmed_vault_operations_;
+-  std::set<std::pair<std::string, uint64_t>> consumed_confirmed_vault_requests_;
++  std::deque<ConfirmedVaultReplayEntry> confirmed_vault_replay_entries_;
+   base::WeakPtrFactory<PrometheusAgentService> weak_factory_{this};
+ };
+ 
+diff --git a/chrome/browser/prometheus/prometheus_agent_service_unittest.cc b/chrome/browser/prometheus/prometheus_agent_service_unittest.cc
+index ec3297dafc..b81dbd2607 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service_unittest.cc
+@@ -26,7 +26,7 @@ class PrometheusAgentServiceTest : public testing::Test {
+  public:
+   PrometheusAgentServiceTest()
+       : now_(base::Time::FromMillisecondsSinceUnixEpoch(50000)),
+-        registry_(kDefaultMaxAgentSessions, kAgentReconnectGrace),
++        registry_(kDefaultMaxAgentSessions, base::Hours(1)),
+         service_(&registry_,
+                  base::BindRepeating(&PrometheusAgentServiceTest::Now,
+                                      base::Unretained(this))),
+@@ -108,31 +108,28 @@ class PrometheusAgentServiceTest : public testing::Test {
+     request.fields.emplace_back(
+         "document-1:10",
+         ScopedSensitiveVaultValue(
+-            kSecretOne,
+-            base::BindOnce(&PrometheusAgentServiceTest::OnWipe,
+-                           base::Unretained(this))));
++            kSecretOne, base::BindOnce(&PrometheusAgentServiceTest::OnWipe,
++                                       base::Unretained(this))));
+     request.fields.emplace_back(
+         "document-1:11",
+         ScopedSensitiveVaultValue(
+-            kSecretTwo,
+-            base::BindOnce(&PrometheusAgentServiceTest::OnWipe,
+-                           base::Unretained(this))));
++            kSecretTwo, base::BindOnce(&PrometheusAgentServiceTest::OnWipe,
++                                       base::Unretained(this))));
+     request.fields.emplace_back(
+-        "document-1:12",
+-        ScopedSensitiveVaultValue(
+-            "CONFIRMED-VAULT-SECRET-THREE",
+-            base::BindOnce(&PrometheusAgentServiceTest::OnWipe,
+-                           base::Unretained(this))));
++        "document-1:12", ScopedSensitiveVaultValue(
++                             "CONFIRMED-VAULT-SECRET-THREE",
++                             base::BindOnce(&PrometheusAgentServiceTest::OnWipe,
++                                            base::Unretained(this))));
+     return request;
+   }
+ 
+-  ConfirmedVaultInsertionResult Execute(ConfirmedVaultInsertionRequest request,
+-                                        BrowserWindowInterface* browser =
+-                                            nullptr) {
++  ConfirmedVaultInsertionResult Execute(
++      ConfirmedVaultInsertionRequest request,
++      BrowserWindowInterface* browser = nullptr) {
+     base::test::TestFuture<ConfirmedVaultInsertionResult> future;
+-    service_.ExecuteConfirmedVaultInsertion(
+-        browser ? browser : browser_.get(), std::move(request),
+-        future.GetCallback());
++    service_.ExecuteConfirmedVaultInsertion(browser ? browser : browser_.get(),
++                                            std::move(request),
++                                            future.GetCallback());
+     return future.Get();
+   }
+ 
+@@ -167,10 +164,8 @@ class PrometheusAgentServiceTest : public testing::Test {
+ 
+ TEST_F(PrometheusAgentServiceTest,
+        ConfirmedVaultMoveOnlySequentialSuccessAndPostCompletionWiping) {
+-  static_assert(
+-      !std::is_copy_constructible_v<ConfirmedVaultInsertionRequest>);
+-  static_assert(
+-      !std::is_copy_assignable_v<ConfirmedVaultInsertionRequest>);
++  static_assert(!std::is_copy_constructible_v<ConfirmedVaultInsertionRequest>);
++  static_assert(!std::is_copy_assignable_v<ConfirmedVaultInsertionRequest>);
+   static_assert(std::is_move_constructible_v<ConfirmedVaultInsertionRequest>);
+   static_assert(!std::is_copy_constructible_v<ScopedSensitiveVaultValue>);
+ 
+@@ -254,8 +249,7 @@ TEST_F(PrometheusAgentServiceTest,
+ 
+   EXPECT_TRUE(Execute(Request(7)).ok());
+   const int attempts = insertion_attempts_;
+-  EXPECT_EQ(Execute(Request(7)).status,
+-            ConfirmedVaultInsertionStatus::kReplay);
++  EXPECT_EQ(Execute(Request(7)).status, ConfirmedVaultInsertionStatus::kReplay);
+   EXPECT_EQ(insertion_attempts_, attempts);
+ }
+ 
+@@ -275,8 +269,7 @@ TEST_F(PrometheusAgentServiceTest,
+           },
+           &callback_count, &final_result));
+   EXPECT_EQ(callback_count, 1);
+-  EXPECT_EQ(final_result.status,
+-            ConfirmedVaultInsertionStatus::kFieldFailed);
++  EXPECT_EQ(final_result.status, ConfirmedVaultInsertionStatus::kFieldFailed);
+   EXPECT_EQ(final_result.fields_completed, 1u);
+   EXPECT_EQ(insertion_attempts_, 2);
+   EXPECT_EQ(wipe_count_, 3);
+@@ -292,8 +285,7 @@ TEST_F(PrometheusAgentServiceTest,
+   EXPECT_EQ(audit.field_count, 3u);
+   EXPECT_EQ(audit.generation, 11u);
+ 
+-  EXPECT_FALSE(
+-      AgentRouteNameFromString("execute_confirmed_vault_insertion"));
++  EXPECT_FALSE(AgentRouteNameFromString("execute_confirmed_vault_insertion"));
+   EXPECT_FALSE(AgentRouteNameFromString("confirmed_vault_insertion"));
+   EXPECT_FALSE(AgentRouteNameFromString("vault_fill_secret"));
+   for (AgentRouteName route :
+@@ -308,5 +300,53 @@ TEST_F(PrometheusAgentServiceTest,
+   }
+ }
+ 
++TEST_F(PrometheusAgentServiceTest,
++       ConfirmedVaultReplayLedgerFailsClosedUntilRetentionExpires) {
++  for (size_t generation = 1; generation <= kMaxConfirmedVaultReplayEntries;
++       ++generation) {
++    ASSERT_TRUE(Execute(Request(generation)).ok()) << generation;
++  }
++  EXPECT_EQ(kMaxConfirmedVaultReplayEntries,
++            service_.confirmed_vault_replay_count_for_testing());
++
++  EXPECT_EQ(ConfirmedVaultInsertionStatus::kUnavailable,
++            Execute(Request(kMaxConfirmedVaultReplayEntries + 1)).status);
++  EXPECT_EQ(kMaxConfirmedVaultReplayEntries,
++            service_.confirmed_vault_replay_count_for_testing());
++
++  now_ += base::Minutes(11);
++  EXPECT_TRUE(Execute(Request(kMaxConfirmedVaultReplayEntries + 1)).ok());
++  EXPECT_EQ(1u, service_.confirmed_vault_replay_count_for_testing());
++}
++
++TEST_F(PrometheusAgentServiceTest,
++       ConfirmedVaultReplayLedgerIsReleasedWithSessionOwnership) {
++  ASSERT_TRUE(Execute(Request(23)).ok());
++  ASSERT_EQ(1u, service_.confirmed_vault_replay_count_for_testing());
++
++  service_.ReleaseSessionOwnership(session_id_);
++  EXPECT_EQ(0u, service_.confirmed_vault_replay_count_for_testing());
++}
++
++TEST_F(PrometheusAgentServiceTest,
++       ConfirmedVaultAuditRollsOverAtBoundAndKeepsNewestRecords) {
++  constexpr size_t kExtraAuditRecords = 7;
++  for (size_t generation = 1;
++       generation <= kMaxConfirmedVaultAuditRecords + kExtraAuditRecords;
++       ++generation) {
++    ConfirmedVaultInsertionRequest request = Request(generation);
++    request.expires_at = now_ - base::Milliseconds(1);
++    EXPECT_EQ(ConfirmedVaultInsertionStatus::kExpired,
++              Execute(std::move(request)).status)
++        << generation;
++  }
++
++  const auto& audit = service_.confirmed_vault_audit_for_testing();
++  ASSERT_EQ(kMaxConfirmedVaultAuditRecords, audit.size());
++  EXPECT_EQ(kExtraAuditRecords + 1, audit.front().generation);
++  EXPECT_EQ(kMaxConfirmedVaultAuditRecords + kExtraAuditRecords,
++            audit.back().generation);
++}
++
+ }  // namespace
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+index d0bba237f3..64a76f431c 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+@@ -585,6 +585,12 @@ RuntimeSubmitResult PrometheusRuntimeProfileService::SubmitTask(
+             .recovery = "Shorten the task prompt and retry"};
+   }
+ 
++  PruneFinishedTaskRecordsForAdmission();
++  if (!owned_runtime_store_ && tasks_.size() >= kMaxStoredRuntimeTasks) {
++    return {.status = RuntimeProfileStatus::kPolicyBlocked,
++            .recovery = "Wait for retained runtime tasks to expire"};
++  }
++
+   const size_t active_task_count = std::ranges::count_if(
+       tasks_, [](const auto& item) { return !item.second.finished; });
+   const RuntimePolicyDecision admission =
+@@ -1390,6 +1396,11 @@ RuntimeDiscoveryResult PrometheusRuntimeProfileService::DiscoverModels(
+     return {.status = RuntimeProfileStatus::kProviderUnavailable,
+             .sanitized_error = "MODEL_DISCOVERY_UNAVAILABLE"};
+   }
++  PruneCompletedDiscoveriesForAdmission();
++  if (discoveries_.size() >= kMaxRuntimeDiscoveryRecords) {
++    return {.status = RuntimeProfileStatus::kProviderUnavailable,
++            .sanitized_error = "MODEL_DISCOVERY_CAPACITY"};
++  }
+   const uint64_t operation_id = next_discovery_operation_id_++;
+   RuntimeDiscoveryResult pending{
+       .status = RuntimeProfileStatus::kOk,
+@@ -1417,8 +1428,13 @@ RuntimeDiscoveryResult PrometheusRuntimeProfileService::DiscoverModels(
+       discovery->second.provider_operation_id = provider_operation_id;
+     }
+   }
+-  return immediate_result->has_value() ? std::move(immediate_result->value())
+-                                       : discoveries_.at(operation_id).result;
++  RuntimeDiscoveryResult result = immediate_result->has_value()
++                                      ? std::move(immediate_result->value())
++                                      : discoveries_.at(operation_id).result;
++  if (!result.pending) {
++    discoveries_.erase(operation_id);
++  }
++  return result;
+ }
+ 
+ void PrometheusRuntimeProfileService::OnDiscoveryComplete(
+@@ -1469,11 +1485,16 @@ RuntimeProfileStatus PrometheusRuntimeProfileService::CancelDiscovery(
+ }
+ 
+ std::optional<RuntimeDiscoveryResult>
+-PrometheusRuntimeProfileService::GetDiscovery(uint64_t operation_id) const {
+-  const auto discovery = discoveries_.find(operation_id);
+-  return discovery == discoveries_.end()
+-             ? std::nullopt
+-             : std::optional(discovery->second.result);
++PrometheusRuntimeProfileService::GetDiscovery(uint64_t operation_id) {
++  auto discovery = discoveries_.find(operation_id);
++  if (discovery == discoveries_.end()) {
++    return std::nullopt;
++  }
++  RuntimeDiscoveryResult result = discovery->second.result;
++  if (discovery->second.finished) {
++    discoveries_.erase(discovery);
++  }
++  return result;
+ }
+ 
+ std::vector<MemoryRecord> PrometheusRuntimeProfileService::ListMemory(
+@@ -2226,9 +2247,65 @@ void PrometheusRuntimeProfileService::RemoveObserver(Observer* observer) {
+   observers_.RemoveObserver(observer);
+ }
+ 
++void PrometheusRuntimeProfileService::PruneFinishedTaskRecordsForAdmission() {
++  if (owned_runtime_store_) {
++    return;
++  }
++  while (tasks_.size() >= kMaxStoredRuntimeTasks) {
++    auto oldest = tasks_.end();
++    for (auto task = tasks_.begin(); task != tasks_.end(); ++task) {
++      if (!task->second.finished) {
++        continue;
++      }
++      if (oldest == tasks_.end() ||
++          task->second.snapshot.updated_at_ms <
++              oldest->second.snapshot.updated_at_ms ||
++          (task->second.snapshot.updated_at_ms ==
++               oldest->second.snapshot.updated_at_ms &&
++           (task->second.snapshot.created_at_ms <
++                oldest->second.snapshot.created_at_ms ||
++            (task->second.snapshot.created_at_ms ==
++                 oldest->second.snapshot.created_at_ms &&
++             task->first < oldest->first)))) {
++        oldest = task;
++      }
++    }
++    if (oldest == tasks_.end()) {
++      return;
++    }
++    tasks_.erase(oldest);
++  }
++}
++
++void PrometheusRuntimeProfileService::PruneFinishedTaskRecordsAgainstSnapshot(
++    const RuntimeStoreSnapshot& snapshot) {
++  std::set<std::string, std::less<>> retained_task_ids;
++  for (const RuntimeStoredTask& task : snapshot.tasks) {
++    retained_task_ids.insert(task.snapshot.task_id);
++  }
++  for (auto task = tasks_.begin(); task != tasks_.end();) {
++    if (task->second.finished && !retained_task_ids.contains(task->first)) {
++      task = tasks_.erase(task);
++    } else {
++      ++task;
++    }
++  }
++}
++
++void PrometheusRuntimeProfileService::PruneCompletedDiscoveriesForAdmission() {
++  while (discoveries_.size() >= kMaxRuntimeDiscoveryRecords) {
++    const auto completed = std::ranges::find_if(
++        discoveries_, [](const auto& item) { return item.second.finished; });
++    if (completed == discoveries_.end()) {
++      return;
++    }
++    discoveries_.erase(completed);
++  }
++}
++
+ void PrometheusRuntimeProfileService::OnRuntimeStoreChanged(
+     const RuntimeStoreSnapshot& snapshot) {
+-  static_cast<void>(snapshot);
++  PruneFinishedTaskRecordsAgainstSnapshot(snapshot);
+   for (Observer& observer : observers_) {
+     observer.OnRuntimeSidePanelSnapshotChanged();
+   }
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.h b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+index 94ec0b392b..96bcc72890 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+@@ -45,6 +45,8 @@ class PrometheusProviderTransport;
+ class PrometheusRuntimeStore;
+ class PrometheusSecretStore;
+ 
++inline constexpr size_t kMaxRuntimeDiscoveryRecords = 64;
++
+ enum class RuntimeProfileStatus {
+   kOk,
+   kNotImplemented,
+@@ -271,8 +273,7 @@ class PrometheusRuntimeProfileService
+   RuntimeOperationResult DispatchTool(RuntimeToolRequest request);
+   RuntimeDiscoveryResult DiscoverModels(std::string provider_id);
+   RuntimeProfileStatus CancelDiscovery(uint64_t operation_id);
+-  std::optional<RuntimeDiscoveryResult> GetDiscovery(
+-      uint64_t operation_id) const;
++  std::optional<RuntimeDiscoveryResult> GetDiscovery(uint64_t operation_id);
+   std::vector<MemoryRecord> ListMemory(std::string_view caller_id);
+   std::vector<SiteGuideRecord> ListSiteGuides(std::string_view caller_id);
+   RuntimeStoreSnapshot GetRuntimeSnapshotForTransport() const;
+@@ -392,6 +393,10 @@ class PrometheusRuntimeProfileService
+                                               RuntimeSafeResult result,
+                                               RuntimeUsage usage);
+   size_t finish_count_for_testing(std::string_view task_id) const;
++  size_t task_record_count_for_testing() const { return tasks_.size(); }
++  size_t discovery_record_count_for_testing() const {
++    return discoveries_.size();
++  }
+   std::optional<RuntimeTaskSnapshot> GetTask(std::string_view task_id) const;
+   PrometheusRuntimeTestBootstrapResult startup_bootstrap_result_for_testing()
+       const;
+@@ -502,6 +507,10 @@ class PrometheusRuntimeProfileService
+   void ReleasePrincipal(LocalRuntimePrincipal* principal);
+   void RelocatePrincipal(LocalRuntimePrincipal* from,
+                          LocalRuntimePrincipal* to);
++  void PruneFinishedTaskRecordsForAdmission();
++  void PruneFinishedTaskRecordsAgainstSnapshot(
++      const RuntimeStoreSnapshot& snapshot);
++  void PruneCompletedDiscoveriesForAdmission();
+   void OnRuntimeStoreChanged(const RuntimeStoreSnapshot& snapshot) override;
+ 
+   raw_ptr<Profile> profile_ = nullptr;
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+index a0cb95275d..fae9e9dbdc 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service_unittest.cc
+@@ -750,6 +750,54 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+             3);
+ }
+ 
++TEST_F(PrometheusRuntimeProfileServiceTest,
++       RuntimeTaskRecordsFollowBoundedPersistedHistoryEviction) {
++  service_.reset();
++  sync_preferences::TestingPrefServiceSyncable prefs;
++  RegisterPrometheusRuntimeProfilePrefs(prefs.registry());
++  RuntimeProfileHooks hooks = boundaries_.MakeHooks();
++  hooks.expected_caller_id = "caller-1";
++  hooks.expected_browser = browser();
++  hooks.expected_stable_tab_id = 7;
++  PrometheusRuntimeProfileService service(std::move(hooks), &prefs);
++
++  std::string first_task_id;
++  std::string newest_task_id;
++  for (size_t index = 0; index < kMaxStoredRuntimeTasks + 17; ++index) {
++    RuntimeSubmitRequest request = Request();
++    request.prompt = "Bounded history task " + std::to_string(index);
++    RuntimeSubmitResult submitted = service.SubmitTask(std::move(request));
++    ASSERT_EQ(RuntimeProfileStatus::kOk, submitted.status) << index;
++    ASSERT_TRUE(submitted.task) << index;
++    if (index == 0) {
++      first_task_id = submitted.task->task_id;
++    }
++    newest_task_id = submitted.task->task_id;
++    ASSERT_EQ(RuntimeProfileStatus::kCancelled,
++              service.CancelTask(newest_task_id))
++        << index;
++    EXPECT_LE(service.task_record_count_for_testing(), kMaxStoredRuntimeTasks)
++        << index;
++  }
++
++  const RuntimeStoreSnapshot snapshot =
++      service.GetRuntimeSnapshotForTransport();
++  EXPECT_EQ(kMaxStoredRuntimeTasks, snapshot.tasks.size());
++  EXPECT_EQ(kMaxStoredRuntimeTasks, service.task_record_count_for_testing());
++  EXPECT_FALSE(service.GetTask(first_task_id));
++  EXPECT_TRUE(service.GetTask(newest_task_id));
++  EXPECT_EQ(snapshot.tasks.end(),
++            std::ranges::find(snapshot.tasks, first_task_id,
++                              [](const RuntimeStoredTask& task) {
++                                return task.snapshot.task_id;
++                              }));
++  EXPECT_NE(snapshot.tasks.end(),
++            std::ranges::find(snapshot.tasks, newest_task_id,
++                              [](const RuntimeStoredTask& task) {
++                                return task.snapshot.task_id;
++                              }));
++}
++
+ TEST_F(PrometheusRuntimeProfileServiceTest,
+        AutoStartStopsAtBoundedProviderTurnCap) {
+   service_.reset();
+@@ -1152,6 +1200,52 @@ TEST_F(PrometheusRuntimeProfileServiceTest,
+   EXPECT_EQ("MODEL_DISCOVERY_CANCELLED", result->sanitized_error);
+ }
+ 
++TEST_F(PrometheusRuntimeProfileServiceTest,
++       DiscoveryRecordsRejectPendingSaturationAndEvictCompletedHistory) {
++  boundaries_.defer_discovery = true;
++  std::vector<uint64_t> operation_ids;
++  for (size_t index = 0; index < kMaxRuntimeDiscoveryRecords; ++index) {
++    const RuntimeDiscoveryResult pending =
++        service_->DiscoverModels("provider-1");
++    ASSERT_EQ(RuntimeProfileStatus::kOk, pending.status) << index;
++    ASSERT_TRUE(pending.pending) << index;
++    operation_ids.push_back(pending.operation_id);
++  }
++  EXPECT_EQ(kMaxRuntimeDiscoveryRecords,
++            service_->discovery_record_count_for_testing());
++
++  const RuntimeDiscoveryResult saturated =
++      service_->DiscoverModels("provider-1");
++  EXPECT_EQ(RuntimeProfileStatus::kProviderUnavailable, saturated.status);
++  EXPECT_EQ("MODEL_DISCOVERY_CAPACITY", saturated.sanitized_error);
++  EXPECT_EQ(kMaxRuntimeDiscoveryRecords,
++            static_cast<size_t>(boundaries_.discovery_count));
++
++  for (uint64_t operation_id : operation_ids) {
++    ASSERT_TRUE(boundaries_.CompleteDiscovery(
++        operation_id,
++        {.state = ProviderModelListState::kReady,
++         .models = {"model-" + std::to_string(operation_id)}},
++        false));
++  }
++  const RuntimeDiscoveryResult replacement =
++      service_->DiscoverModels("provider-1");
++  EXPECT_EQ(RuntimeProfileStatus::kOk, replacement.status);
++  EXPECT_TRUE(replacement.pending);
++  EXPECT_EQ(kMaxRuntimeDiscoveryRecords,
++            service_->discovery_record_count_for_testing());
++  EXPECT_FALSE(service_->GetDiscovery(operation_ids.front()));
++
++  const std::optional<RuntimeDiscoveryResult> consumed =
++      service_->GetDiscovery(operation_ids[1]);
++  ASSERT_TRUE(consumed);
++  EXPECT_FALSE(consumed->pending);
++  EXPECT_EQ(RuntimeProfileStatus::kOk, consumed->status);
++  EXPECT_FALSE(service_->GetDiscovery(operation_ids[1]));
++  EXPECT_EQ(kMaxRuntimeDiscoveryRecords - 1,
++            service_->discovery_record_count_for_testing());
++}
++
+ TEST_F(PrometheusRuntimeProfileServiceTest,
+        ProviderResumeRevalidatesAuthorityAndRetiresPrincipal) {
+   boundaries_.defer_provider_turn = true;
+-- 
+2.50.1 (Apple Git-155)
+

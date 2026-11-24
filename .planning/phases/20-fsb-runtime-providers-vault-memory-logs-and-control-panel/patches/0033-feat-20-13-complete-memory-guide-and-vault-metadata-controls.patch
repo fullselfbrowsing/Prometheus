@@ -1,0 +1,2748 @@
+From 56915e6ab067d4e60456644e71a1327153be60f4 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sat, 18 Jul 2026 10:36:44 -0500
+Subject: [PATCH] feat(20-13): complete memory guide and vault metadata
+ controls
+
+---
+ .../prometheus_browser_main_extra_parts.cc    | 613 ++++++++++++++----
+ .../prometheus_runtime_profile_service.cc     | 248 +++++++
+ .../prometheus_runtime_profile_service.h      |  57 ++
+ .../prometheus/prometheus_control_panel.html  | 188 +++++-
+ .../resources/prometheus/prometheus_webui.css |  52 +-
+ .../resources/prometheus/prometheus_webui.js  | 551 +++++++++++++++-
+ .../prometheus_side_panel_runtime.h           |  37 ++
+ .../ui/webui/prometheus/prometheus_web_ui.cc  | 387 ++++++++++-
+ .../ui/webui/prometheus/prometheus_web_ui.h   |  18 +-
+ .../prometheus_web_ui_browsertest.cc          |  14 +-
+ 10 files changed, 2007 insertions(+), 158 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index 29b7c1ff39..b65823c7da 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -25,10 +25,14 @@
+ #include "chrome/browser/prometheus/prometheus_runtime_transport_codec.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
++#include "chrome/browser/ui/webui/webui_embedding_context.h"
+ #include "chrome/common/chrome_switches.h"
++#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
+ #include "components/tabs/public/tab_interface.h"
++#include "content/public/browser/render_frame_host.h"
+ #include "content/public/browser/web_contents.h"
+ #include "url/gurl.h"
++#include "url/origin.h"
+ 
+ namespace prometheus {
+ namespace {
+@@ -304,6 +308,7 @@ std::unique_ptr<PrometheusSidePanelRuntime> CreateSidePanelRuntime(
+ }
+ 
+ constexpr size_t kMaxControlSnapshotRecords = 128;
++constexpr char kControlUiMemoryCallerId[] = "prometheus-control-ui";
+ 
+ base::DictValue ControlOperationValue(RuntimeProfileStatus status,
+                                       std::string recovery = std::string()) {
+@@ -317,6 +322,172 @@ base::DictValue ControlOperationValue(RuntimeProfileStatus status,
+   return value;
+ }
+ 
++std::string_view MemoryVisibilityValue(MemoryVisibility visibility) {
++  return visibility == MemoryVisibility::kProfileShared ? "profile_shared"
++                                                        : "caller_owned";
++}
++
++std::optional<MemoryVisibility> MemoryVisibilityFromControl(
++    std::string_view visibility) {
++  if (visibility == "caller_owned") {
++    return MemoryVisibility::kCallerOwned;
++  }
++  if (visibility == "profile_shared") {
++    return MemoryVisibility::kProfileShared;
++  }
++  return std::nullopt;
++}
++
++std::string_view MemoryStoreStatusValue(MemoryStoreStatus status) {
++  switch (status) {
++    case MemoryStoreStatus::kOk:
++      return "OK";
++    case MemoryStoreStatus::kNotFound:
++      return "NOT_FOUND";
++    case MemoryStoreStatus::kDenied:
++      return "DENIED";
++    case MemoryStoreStatus::kInvalidInput:
++      return "INVALID_REQUEST";
++    case MemoryStoreStatus::kOriginMismatch:
++      return "GUIDE_ORIGIN_MISMATCH";
++    case MemoryStoreStatus::kDocumentChanged:
++      return "GUIDE_DOCUMENT_CHANGED";
++    case MemoryStoreStatus::kNotCurrentDocument:
++      return "GUIDE_NOT_CURRENT_DOCUMENT";
++    case MemoryStoreStatus::kStoreFull:
++      return "STORE_FULL";
++  }
++}
++
++base::DictValue MemoryOperationValue(MemoryStoreStatus status,
++                                     std::string record_id = std::string()) {
++  base::DictValue value;
++  value.Set("status", MemoryStoreStatusValue(status));
++  value.Set("accepted", status == MemoryStoreStatus::kOk);
++  if (!record_id.empty()) {
++    value.Set("record_id", std::move(record_id));
++  }
++  if (status != MemoryStoreStatus::kOk) {
++    value.Set("recovery", "Review the bounded record metadata and retry");
++  }
++  return value;
++}
++
++std::string_view GuideOutcomeStatus(SiteGuideApplyOutcome outcome) {
++  switch (outcome) {
++    case SiteGuideApplyOutcome::kApplied:
++      return "GUIDE_APPLIED";
++    case SiteGuideApplyOutcome::kNotFound:
++      return "NOT_FOUND";
++    case SiteGuideApplyOutcome::kDenied:
++      return "DENIED";
++    case SiteGuideApplyOutcome::kOriginMismatch:
++      return "GUIDE_ORIGIN_MISMATCH";
++    case SiteGuideApplyOutcome::kDocumentChanged:
++      return "GUIDE_DOCUMENT_CHANGED";
++    case SiteGuideApplyOutcome::kNotCurrentDocument:
++      return "GUIDE_NOT_CURRENT_DOCUMENT";
++  }
++}
++
++base::DictValue GuideOperationValue(
++    const SiteGuideApplicationRecord& application) {
++  base::DictValue value;
++  value.Set("status", GuideOutcomeStatus(application.outcome));
++  value.Set("accepted", application.applied());
++  if (!application.applied()) {
++    value.Set("recovery", "Refresh the current page and retry the exact guide");
++  }
++  return value;
++}
++
++base::DictValue VaultOperationValue(PrometheusVaultStatus status) {
++  base::DictValue value;
++  value.Set("status", PrometheusVaultStatusToString(status));
++  value.Set("accepted", status == PrometheusVaultStatus::kSuccess);
++  if (status != PrometheusVaultStatus::kSuccess) {
++    value.Set("recovery", "Review the vault metadata and retry");
++  }
++  return value;
++}
++
++base::ListValue TagsValue(const std::vector<std::string>& tags) {
++  base::ListValue value;
++  for (const std::string& tag : tags) {
++    value.Append(tag);
++  }
++  return value;
++}
++
++base::DictValue MemoryRecordValue(const MemoryRecord& record) {
++  base::DictValue value;
++  value.Set("memory_id", record.memory_id);
++  value.Set("title", record.title);
++  value.Set("text", record.text);
++  value.Set("tags", TagsValue(record.tags));
++  value.Set("visibility", MemoryVisibilityValue(record.visibility));
++  value.Set("created_at_ms", static_cast<double>(record.created_at_ms));
++  value.Set("updated_at_ms", static_cast<double>(record.updated_at_ms));
++  value.Set("byte_count", static_cast<int>(record.byte_count));
++  value.Set("editable", record.owned_by_caller);
++  return value;
++}
++
++base::DictValue SiteGuideRecordValue(const SiteGuideRecord& record) {
++  base::DictValue value;
++  value.Set("guide_id", record.guide_id);
++  value.Set("title", record.title);
++  value.Set("instructions", record.instructions);
++  value.Set("tags", TagsValue(record.tags));
++  value.Set("canonical_origin", record.canonical_origin);
++  value.Set("visibility", MemoryVisibilityValue(record.visibility));
++  value.Set("created_at_ms", static_cast<double>(record.created_at_ms));
++  value.Set("updated_at_ms", static_cast<double>(record.updated_at_ms));
++  value.Set("byte_count", static_cast<int>(record.byte_count));
++  value.Set("editable", record.owned_by_caller);
++  return value;
++}
++
++base::DictValue GuideApplicationValue(
++    const SiteGuideApplicationRecord& application) {
++  base::DictValue value;
++  value.Set("guide_id", application.guide_id);
++  value.Set("canonical_origin", application.canonical_origin);
++  switch (application.outcome) {
++    case SiteGuideApplyOutcome::kApplied:
++      value.Set("status", "applied");
++      break;
++    case SiteGuideApplyOutcome::kNotFound:
++      value.Set("status", "not_found");
++      break;
++    case SiteGuideApplyOutcome::kDenied:
++      value.Set("status", "denied");
++      break;
++    case SiteGuideApplyOutcome::kOriginMismatch:
++      value.Set("status", "origin_mismatch");
++      break;
++    case SiteGuideApplyOutcome::kDocumentChanged:
++      value.Set("status", "document_changed");
++      break;
++    case SiteGuideApplyOutcome::kNotCurrentDocument:
++      value.Set("status", "not_current_document");
++      break;
++  }
++  value.Set("timestamp_ms", static_cast<double>(application.timestamp_ms));
++  return value;
++}
++
++base::DictValue VaultMetadataValue(const PrometheusVaultMetadata& metadata) {
++  base::DictValue value;
++  value.Set("id", metadata.id);
++  value.Set("label", metadata.label);
++  value.Set("kind", PrometheusVaultKindToString(metadata.kind));
++  value.Set("canonical_origin", metadata.canonical_site_origin);
++  value.Set("updated_time_ms", static_cast<double>(metadata.updated_time_ms));
++  value.Set("secret_configured", metadata.secret_configured);
++  return value;
++}
++
+ std::string SanitizedResultPreview(std::string_view result) {
+   std::string safe = DeriveRuntimeSafeTitle(result);
+   constexpr std::string_view kPrefix = "Task: ";
+@@ -328,10 +499,9 @@ std::string SanitizedResultPreview(std::string_view result) {
+ 
+ template <typename Records, typename Append>
+ void AppendBoundedNewest(const Records& records, Append append) {
+-  const size_t begin =
+-      records.size() > kMaxControlSnapshotRecords
+-          ? records.size() - kMaxControlSnapshotRecords
+-          : 0u;
++  const size_t begin = records.size() > kMaxControlSnapshotRecords
++                           ? records.size() - kMaxControlSnapshotRecords
++                           : 0u;
+   for (size_t index = begin; index < records.size(); ++index) {
+     append(records[index]);
+   }
+@@ -341,7 +511,12 @@ base::DictValue SanitizedControlSnapshotValue(
+     RuntimeSidePanelSnapshotResult result,
+     const std::vector<PrometheusProviderConfig>& provider_configs,
+     const RuntimePolicy& policy,
+-    size_t active_agent_count) {
++    size_t active_agent_count,
++    const std::vector<MemoryRecord>& memories,
++    const std::vector<SiteGuideRecord>& site_guides,
++    const std::vector<SiteGuideApplicationRecord>& guide_applications,
++    const std::vector<PrometheusVaultMetadata>& vault_entries,
++    std::string current_guide_origin) {
+   base::DictValue value;
+   value.Set("status", RuntimeProfileStatusToString(result.status));
+   if (!result.recovery.empty()) {
+@@ -349,45 +524,45 @@ base::DictValue SanitizedControlSnapshotValue(
+   }
+ 
+   base::ListValue tasks;
+-  AppendBoundedNewest(result.snapshot.tasks,
+-                      [&](const RuntimeStoredTask& stored_task) {
+-    std::optional<base::DictValue> task =
+-        RuntimeTaskSnapshotToValue(stored_task.snapshot);
+-    if (!task) {
+-      return;
+-    }
+-    const auto metadata = std::ranges::find(
+-        result.task_metadata, stored_task.snapshot.task_id,
+-        &RuntimeSidePanelSnapshotResult::TaskMetadata::task_id);
+-    if (metadata != result.task_metadata.end()) {
+-      task->Set("provider_id", metadata->provider_id);
+-      task->Set("provider_label", metadata->provider_label);
+-      task->Set("model_id", metadata->model_id);
+-      task->Set("provider_kind",
+-                PrometheusProviderKindToString(metadata->provider_kind));
+-      task->Set("route_class",
+-                PrometheusProviderRouteClassToString(metadata->route_class));
+-    }
+-    task->Set("event_count", static_cast<int>(std::ranges::count(
+-                                 result.snapshot.events,
+-                                 stored_task.snapshot.task_id,
+-                                 &RuntimeEventRecord::task_id)));
+-    task->Set("action_count", static_cast<int>(std::ranges::count(
+-                                  result.snapshot.actions,
+-                                  stored_task.snapshot.task_id,
+-                                  &RuntimeActionRecord::task_id)));
+-    if (stored_task.result) {
+-      task->Set("result_preview",
+-                SanitizedResultPreview(stored_task.result->text));
+-      task->Set("result_truncated", stored_task.result->truncated);
+-    }
+-    const std::string recovery =
+-        RecoveryForTaskError(stored_task.snapshot.error_code);
+-    if (!recovery.empty()) {
+-      task->Set("recovery", recovery);
+-    }
+-    tasks.Append(std::move(*task));
+-  });
++  AppendBoundedNewest(
++      result.snapshot.tasks, [&](const RuntimeStoredTask& stored_task) {
++        std::optional<base::DictValue> task =
++            RuntimeTaskSnapshotToValue(stored_task.snapshot);
++        if (!task) {
++          return;
++        }
++        const auto metadata = std::ranges::find(
++            result.task_metadata, stored_task.snapshot.task_id,
++            &RuntimeSidePanelSnapshotResult::TaskMetadata::task_id);
++        if (metadata != result.task_metadata.end()) {
++          task->Set("provider_id", metadata->provider_id);
++          task->Set("provider_label", metadata->provider_label);
++          task->Set("model_id", metadata->model_id);
++          task->Set("provider_kind",
++                    PrometheusProviderKindToString(metadata->provider_kind));
++          task->Set("route_class", PrometheusProviderRouteClassToString(
++                                       metadata->route_class));
++        }
++        task->Set("event_count",
++                  static_cast<int>(std::ranges::count(
++                      result.snapshot.events, stored_task.snapshot.task_id,
++                      &RuntimeEventRecord::task_id)));
++        task->Set("action_count",
++                  static_cast<int>(std::ranges::count(
++                      result.snapshot.actions, stored_task.snapshot.task_id,
++                      &RuntimeActionRecord::task_id)));
++        if (stored_task.result) {
++          task->Set("result_preview",
++                    SanitizedResultPreview(stored_task.result->text));
++          task->Set("result_truncated", stored_task.result->truncated);
++        }
++        const std::string recovery =
++            RecoveryForTaskError(stored_task.snapshot.error_code);
++        if (!recovery.empty()) {
++          task->Set("recovery", recovery);
++        }
++        tasks.Append(std::move(*task));
++      });
+   value.Set("tasks", std::move(tasks));
+ 
+   base::ListValue providers;
+@@ -396,20 +571,18 @@ base::DictValue SanitizedControlSnapshotValue(
+     provider_value.Set("provider_id", provider.provider_id);
+     provider_value.Set("label", provider.label);
+     provider_value.Set("kind", PrometheusProviderKindToString(provider.kind));
+-    provider_value.Set("route_class",
+-                       PrometheusProviderRouteClassToString(
+-                           provider.route_class));
+-    provider_value.Set("canonical_origin",
+-                       GURL(provider.canonical_endpoint)
+-                           .DeprecatedGetOriginAsURL()
+-                           .spec());
++    provider_value.Set("route_class", PrometheusProviderRouteClassToString(
++                                          provider.route_class));
++    provider_value.Set(
++        "canonical_origin",
++        GURL(provider.canonical_endpoint).DeprecatedGetOriginAsURL().spec());
+     provider_value.Set("model_id", provider.model_id);
+     provider_value.Set("enabled", provider.enabled);
+     provider_value.Set("health",
+                        PrometheusProviderHealthToString(provider.health));
+-    provider_value.Set("discovery_state",
+-                       PrometheusProviderDiscoveryStateToString(
+-                           provider.discovery_state));
++    provider_value.Set(
++        "discovery_state",
++        PrometheusProviderDiscoveryStateToString(provider.discovery_state));
+     provider_value.Set("secret_configured", provider.secret_configured);
+     provider_value.Set("fallback_rank", provider.fallback_rank);
+     provider_value.Set("input_rate_microunits",
+@@ -426,40 +599,76 @@ base::DictValue SanitizedControlSnapshotValue(
+   }
+   value.Set("providers", std::move(providers));
+ 
++  base::ListValue memory_values;
++  for (const MemoryRecord& memory : memories) {
++    memory_values.Append(MemoryRecordValue(memory));
++  }
++  value.Set("memories", std::move(memory_values));
++
++  base::ListValue guide_values;
++  for (const SiteGuideRecord& guide : site_guides) {
++    guide_values.Append(SiteGuideRecordValue(guide));
++  }
++  value.Set("site_guides", std::move(guide_values));
++
++  base::ListValue application_values;
++  AppendBoundedNewest(
++      guide_applications, [&](const SiteGuideApplicationRecord& application) {
++        application_values.Append(GuideApplicationValue(application));
++      });
++  value.Set("guide_applications", std::move(application_values));
++
++  base::ListValue vault_values;
++  for (const PrometheusVaultMetadata& metadata : vault_entries) {
++    vault_values.Append(VaultMetadataValue(metadata));
++  }
++  value.Set("vault_entries", std::move(vault_values));
++  value.Set("current_guide_origin", std::move(current_guide_origin));
++
++  base::DictValue memory_bounds;
++  memory_bounds.Set("max_memories", static_cast<int>(kMaxStoredMemories));
++  memory_bounds.Set("max_site_guides", static_cast<int>(kMaxStoredSiteGuides));
++  memory_bounds.Set("max_total_bytes", static_cast<int>(kMaxMemoryStoreBytes));
++  memory_bounds.Set("max_tags", static_cast<int>(kMaxMemoryTags));
++  memory_bounds.Set("max_search_results",
++                    static_cast<int>(kMaxMemorySearchResults));
++  value.Set("memory_bounds", std::move(memory_bounds));
++
+   base::ListValue events;
+-  AppendBoundedNewest(result.snapshot.events,
+-                      [&](const RuntimeEventRecord& event) {
+-    base::DictValue item;
+-    item.Set("task_id", event.task_id);
+-    item.Set("kind", RuntimeEventKindToString(event.kind));
+-    item.Set("error_code", RuntimeErrorCodeToString(event.error_code));
+-    item.Set("timestamp_ms", static_cast<double>(event.timestamp_ms));
+-    item.Set("value", static_cast<double>(event.value));
+-    events.Append(std::move(item));
+-  });
++  AppendBoundedNewest(
++      result.snapshot.events, [&](const RuntimeEventRecord& event) {
++        base::DictValue item;
++        item.Set("task_id", event.task_id);
++        item.Set("kind", RuntimeEventKindToString(event.kind));
++        item.Set("error_code", RuntimeErrorCodeToString(event.error_code));
++        item.Set("timestamp_ms", static_cast<double>(event.timestamp_ms));
++        item.Set("value", static_cast<double>(event.value));
++        events.Append(std::move(item));
++      });
+   value.Set("events", std::move(events));
+ 
+   base::ListValue actions;
+-  AppendBoundedNewest(result.snapshot.actions,
+-                      [&](const RuntimeActionRecord& action) {
+-    base::DictValue item;
+-    item.Set("task_id", action.task_id);
+-    item.Set("kind", RuntimeActionKindToString(action.kind));
+-    item.Set("timestamp_ms", static_cast<double>(action.timestamp_ms));
+-    item.Set("succeeded", action.succeeded);
+-    actions.Append(std::move(item));
+-  });
++  AppendBoundedNewest(
++      result.snapshot.actions, [&](const RuntimeActionRecord& action) {
++        base::DictValue item;
++        item.Set("task_id", action.task_id);
++        item.Set("kind", RuntimeActionKindToString(action.kind));
++        item.Set("timestamp_ms", static_cast<double>(action.timestamp_ms));
++        item.Set("succeeded", action.succeeded);
++        actions.Append(std::move(item));
++      });
+   value.Set("actions", std::move(actions));
+ 
+   base::ListValue diagnostics;
+-  AppendBoundedNewest(result.snapshot.diagnostics,
+-                      [&](const RuntimeDiagnosticRecord& diagnostic) {
+-    base::DictValue item;
+-    item.Set("kind", RuntimeDiagnosticKindToString(diagnostic.kind));
+-    item.Set("timestamp_ms", static_cast<double>(diagnostic.timestamp_ms));
+-    item.Set("count", static_cast<double>(diagnostic.count));
+-    diagnostics.Append(std::move(item));
+-  });
++  AppendBoundedNewest(
++      result.snapshot.diagnostics,
++      [&](const RuntimeDiagnosticRecord& diagnostic) {
++        base::DictValue item;
++        item.Set("kind", RuntimeDiagnosticKindToString(diagnostic.kind));
++        item.Set("timestamp_ms", static_cast<double>(diagnostic.timestamp_ms));
++        item.Set("count", static_cast<double>(diagnostic.count));
++        diagnostics.Append(std::move(item));
++      });
+   value.Set("diagnostics", std::move(diagnostics));
+   value.Set("aggregate_usage",
+             RuntimeUsageValue(result.snapshot.aggregate_usage));
+@@ -475,10 +684,8 @@ base::DictValue SanitizedControlSnapshotValue(
+   permissions.Set("active_agents", static_cast<int>(active_agent_count));
+   permissions.Set("max_active_agents",
+                   static_cast<int>(policy.max_active_agents));
+-  permissions.Set("allow_internal_surfaces",
+-                  policy.allow_internal_surfaces);
+-  permissions.Set("allow_background_actions",
+-                  policy.allow_background_actions);
++  permissions.Set("allow_internal_surfaces", policy.allow_internal_surfaces);
++  permissions.Set("allow_background_actions", policy.allow_background_actions);
+   permissions.Set("telemetry_enabled", policy.telemetry_enabled);
+   permissions.Set("tab_ownership_required", policy.tab_ownership_required);
+   permissions.Set("vault_native_only", policy.vault_native_only);
+@@ -496,6 +703,11 @@ base::DictValue SanitizedControlSnapshotValue(
+ class NativePrometheusControlPanelRuntime final
+     : public PrometheusControlPanelRuntime,
+       public PrometheusRuntimeProfileService::Observer {
++  struct CurrentDocument {
++    std::string document_id;
++    GURL url;
++  };
++
+  public:
+   NativePrometheusControlPanelRuntime(
+       PrometheusRuntimeProfileService* service,
+@@ -505,7 +717,8 @@ class NativePrometheusControlPanelRuntime final
+       : service_(service->GetWeakPtr()),
+         agent_service_(agent_service),
+         exact_profile_(exact_profile),
+-        exact_web_contents_(exact_web_contents) {
++        exact_web_contents_(exact_web_contents),
++        exact_browser_(webui::GetBrowserWindowInterface(exact_web_contents)) {
+     service->AddObserver(this);
+     observing_ = true;
+   }
+@@ -532,11 +745,29 @@ class NativePrometheusControlPanelRuntime final
+       return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
+                                    kTargetLostRecovery);
+     }
++    std::string current_guide_origin;
++    std::optional<CurrentDocument> current_document = GetCurrentDocument();
++    if (current_document) {
++      selected_document_id_ = current_document->document_id;
++      current_guide_origin =
++          url::Origin::Create(current_document->url).Serialize();
++    } else {
++      selected_document_id_.clear();
++    }
+     return SanitizedControlSnapshotValue(
+         service_->GetControlPanelSnapshot(),
+         service_->ListProvidersForTransport(),
+         service_->effective_policy_for_testing(),
+-        agent_service_ ? agent_service_->ActiveSessionCount() : 0u);
++        agent_service_ ? agent_service_->ActiveSessionCount() : 0u,
++        service_->ListMemoryForControlUi(RuntimeCallerOrigin::kLocalControlUi,
++                                         kControlUiMemoryCallerId),
++        service_->ListSiteGuidesForControlUi(
++            RuntimeCallerOrigin::kLocalControlUi, kControlUiMemoryCallerId),
++        service_->ListSiteGuideApplicationsForControlUi(
++            RuntimeCallerOrigin::kLocalControlUi),
++        service_->ListVaultMetadataForControlUi(
++            RuntimeCallerOrigin::kLocalControlUi),
++        std::move(current_guide_origin));
+   }
+ 
+   base::DictValue CancelTask(std::string task_id) override {
+@@ -574,12 +805,10 @@ class NativePrometheusControlPanelRuntime final
+ 
+     std::vector<PrometheusProviderConfig> providers =
+         service_->ListProvidersForTransport();
+-    std::ranges::sort(providers, {},
+-                      &PrometheusProviderConfig::fallback_rank);
++    std::ranges::sort(providers, {}, &PrometheusProviderConfig::fallback_rank);
+     PrometheusProviderConfig provider;
+-    auto existing = std::ranges::find(
+-        providers, mutation.provider_id,
+-        &PrometheusProviderConfig::provider_id);
++    auto existing = std::ranges::find(providers, mutation.provider_id,
++                                      &PrometheusProviderConfig::provider_id);
+     if (existing != providers.end()) {
+       provider = *existing;
+       providers.erase(existing);
+@@ -610,8 +839,8 @@ class NativePrometheusControlPanelRuntime final
+           PrometheusProviderDiscoveryState::kNotSupported;
+       provider.discovered_models.clear();
+     }
+-    const size_t insertion_index = std::min(
+-        static_cast<size_t>(mutation.fallback_rank), providers.size());
++    const size_t insertion_index =
++        std::min(static_cast<size_t>(mutation.fallback_rank), providers.size());
+     providers.insert(providers.begin() + insertion_index, std::move(provider));
+     NormalizeFallbackRanks(&providers);
+     return SetProviders(std::move(providers));
+@@ -641,8 +870,8 @@ class NativePrometheusControlPanelRuntime final
+     std::vector<PrometheusProviderConfig> providers =
+         service_ ? service_->ListProvidersForTransport()
+                  : std::vector<PrometheusProviderConfig>();
+-    auto provider = std::ranges::find(
+-        providers, provider_id, &PrometheusProviderConfig::provider_id);
++    auto provider = std::ranges::find(providers, provider_id,
++                                      &PrometheusProviderConfig::provider_id);
+     if (!IsBoundTo(exact_profile_, exact_web_contents_) ||
+         provider == providers.end()) {
+       return InvalidProviderOperation();
+@@ -651,16 +880,14 @@ class NativePrometheusControlPanelRuntime final
+     return SetProviders(std::move(providers));
+   }
+ 
+-  base::DictValue MoveProvider(std::string provider_id,
+-                               bool move_up) override {
++  base::DictValue MoveProvider(std::string provider_id, bool move_up) override {
+     if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
+       return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
+                                    kTargetLostRecovery);
+     }
+     std::vector<PrometheusProviderConfig> providers =
+         service_->ListProvidersForTransport();
+-    std::ranges::sort(providers, {},
+-                      &PrometheusProviderConfig::fallback_rank);
++    std::ranges::sort(providers, {}, &PrometheusProviderConfig::fallback_rank);
+     const auto provider = std::ranges::find(
+         providers, provider_id, &PrometheusProviderConfig::provider_id);
+     if (provider == providers.end()) {
+@@ -685,14 +912,13 @@ class NativePrometheusControlPanelRuntime final
+     }
+     std::vector<PrometheusProviderConfig> providers =
+         service_->ListProvidersForTransport();
+-    auto provider = std::ranges::find(
+-        providers, provider_id, &PrometheusProviderConfig::provider_id);
++    auto provider = std::ranges::find(providers, provider_id,
++                                      &PrometheusProviderConfig::provider_id);
+     if (provider == providers.end() ||
+         !provider->capabilities.model_discovery) {
+       return InvalidProviderOperation();
+     }
+-    provider->discovery_state =
+-        PrometheusProviderDiscoveryState::kDiscovering;
++    provider->discovery_state = PrometheusProviderDiscoveryState::kDiscovering;
+     provider->discovered_models.clear();
+     if (service_->SetProviders(RuntimeCallerOrigin::kLocalControlUi,
+                                std::move(providers)) !=
+@@ -700,8 +926,7 @@ class NativePrometheusControlPanelRuntime final
+       return InvalidProviderOperation();
+     }
+ 
+-    RuntimeDiscoveryResult discovery =
+-        service_->DiscoverModels(provider_id);
++    RuntimeDiscoveryResult discovery = service_->DiscoverModels(provider_id);
+     if (discovery.pending) {
+       pending_discoveries_.emplace(discovery.operation_id,
+                                    std::move(provider_id));
+@@ -715,8 +940,7 @@ class NativePrometheusControlPanelRuntime final
+             ? std::string()
+             : "Model discovery is unavailable for this provider");
+     operation.Set("pending", discovery.pending);
+-    operation.Set("operation_id",
+-                  static_cast<double>(discovery.operation_id));
++    operation.Set("operation_id", static_cast<double>(discovery.operation_id));
+     return operation;
+   }
+ 
+@@ -725,8 +949,150 @@ class NativePrometheusControlPanelRuntime final
+       return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
+                                    kTargetLostRecovery);
+     }
+-    return ControlOperationValue(service_->ClearRuntimeLogs(
+-        RuntimeCallerOrigin::kLocalControlUi));
++    return ControlOperationValue(
++        service_->ClearRuntimeLogs(RuntimeCallerOrigin::kLocalControlUi));
++  }
++
++  base::DictValue SaveMemory(
++      PrometheusControlMemoryMutation mutation) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    std::optional<MemoryVisibility> visibility =
++        MemoryVisibilityFromControl(mutation.visibility);
++    if (!visibility) {
++      return MemoryOperationValue(MemoryStoreStatus::kInvalidInput);
++    }
++    MemoryStoreMutation result = service_->SaveMemoryForControlUi(
++        RuntimeCallerOrigin::kLocalControlUi, kControlUiMemoryCallerId,
++        std::move(mutation.memory_id), *visibility, std::move(mutation.title),
++        std::move(mutation.text), std::move(mutation.tags));
++    return MemoryOperationValue(result.status, std::move(result.record_id));
++  }
++
++  base::DictValue SearchMemory(std::string query, size_t limit) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    base::DictValue operation = MemoryOperationValue(MemoryStoreStatus::kOk);
++    base::ListValue results;
++    for (const MemoryRecord& record : service_->SearchMemoryForControlUi(
++             RuntimeCallerOrigin::kLocalControlUi, kControlUiMemoryCallerId,
++             query, limit)) {
++      results.Append(MemoryRecordValue(record));
++    }
++    operation.Set("results", std::move(results));
++    return operation;
++  }
++
++  base::DictValue DeleteMemory(std::string memory_id) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    return MemoryOperationValue(service_->DeleteMemoryForControlUi(
++        RuntimeCallerOrigin::kLocalControlUi, kControlUiMemoryCallerId,
++        memory_id));
++  }
++
++  base::DictValue SaveSiteGuide(
++      PrometheusControlGuideMutation mutation) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    std::optional<MemoryVisibility> visibility =
++        MemoryVisibilityFromControl(mutation.visibility);
++    if (!visibility) {
++      return MemoryOperationValue(MemoryStoreStatus::kInvalidInput);
++    }
++    const GURL requested_url(mutation.origin);
++    const GURL canonical_origin =
++        requested_url.is_valid() ? url::Origin::Create(requested_url).GetURL()
++                                 : GURL();
++    MemoryStoreMutation result = service_->SaveSiteGuideForControlUi(
++        RuntimeCallerOrigin::kLocalControlUi, kControlUiMemoryCallerId,
++        std::move(mutation.guide_id), *visibility, std::move(mutation.title),
++        std::move(mutation.instructions), std::move(mutation.tags),
++        canonical_origin);
++    return MemoryOperationValue(result.status, std::move(result.record_id));
++  }
++
++  base::DictValue SearchSiteGuides(std::string query, size_t limit) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    base::DictValue operation = MemoryOperationValue(MemoryStoreStatus::kOk);
++    base::ListValue results;
++    for (const SiteGuideRecord& record : service_->SearchSiteGuidesForControlUi(
++             RuntimeCallerOrigin::kLocalControlUi, kControlUiMemoryCallerId,
++             query, limit)) {
++      results.Append(SiteGuideRecordValue(record));
++    }
++    operation.Set("results", std::move(results));
++    return operation;
++  }
++
++  base::DictValue ApplySiteGuide(std::string guide_id) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    std::optional<CurrentDocument> current_document = GetCurrentDocument();
++    const SiteGuideApplicationRecord application =
++        service_->ApplySiteGuideForControlUi(
++            RuntimeCallerOrigin::kLocalControlUi, kControlUiMemoryCallerId,
++            guide_id, selected_document_id_,
++            current_document ? current_document->document_id : std::string(),
++            current_document ? current_document->url : GURL(),
++            current_document.has_value());
++    return GuideOperationValue(application);
++  }
++
++  base::DictValue DeleteSiteGuide(std::string guide_id) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    return MemoryOperationValue(service_->DeleteSiteGuideForControlUi(
++        RuntimeCallerOrigin::kLocalControlUi, kControlUiMemoryCallerId,
++        guide_id));
++  }
++
++  base::DictValue SaveVaultMetadata(
++      PrometheusControlVaultMetadataMutation mutation) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    std::optional<PrometheusVaultKind> kind;
++    if (mutation.kind == "credential") {
++      kind = PrometheusVaultKind::kCredential;
++    } else if (mutation.kind == "payment") {
++      kind = PrometheusVaultKind::kPayment;
++    }
++    if (!kind) {
++      return VaultOperationValue(PrometheusVaultStatus::kInvalidArgument);
++    }
++    return VaultOperationValue(service_
++                                   ->SaveVaultMetadataForControlUi(
++                                       RuntimeCallerOrigin::kLocalControlUi,
++                                       std::move(mutation.entry_id),
++                                       std::move(mutation.label), *kind,
++                                       std::move(mutation.origin))
++                                   .status);
++  }
++
++  base::DictValue DeleteVaultMetadata(std::string entry_id) override {
++    if (!IsBoundTo(exact_profile_, exact_web_contents_)) {
++      return ControlOperationValue(RuntimeProfileStatus::kTargetLost,
++                                   kTargetLostRecovery);
++    }
++    return VaultOperationValue(service_->DeleteVaultMetadataForControlUi(
++        RuntimeCallerOrigin::kLocalControlUi, std::move(entry_id)));
+   }
+ 
+   void OnRuntimeSidePanelSnapshotChanged() override {
+@@ -736,6 +1102,27 @@ class NativePrometheusControlPanelRuntime final
+   }
+ 
+  private:
++  std::optional<CurrentDocument> GetCurrentDocument() const {
++    tabs::TabInterface* const active_tab =
++        exact_browser_ ? exact_browser_->GetActiveTabInterface() : nullptr;
++    content::WebContents* const contents =
++        active_tab ? active_tab->GetContents() : nullptr;
++    content::RenderFrameHost* const frame =
++        contents ? contents->GetPrimaryMainFrame() : nullptr;
++    if (!frame || !frame->IsActive() || !frame->IsRenderFrameLive() ||
++        !contents->GetLastCommittedURL().SchemeIsHTTPOrHTTPS()) {
++      return std::nullopt;
++    }
++    std::optional<std::string> document_id =
++        optimization_guide::DocumentIdentifierUserData::GetDocumentIdentifier(
++            frame->GetGlobalFrameToken());
++    if (!document_id || document_id->empty()) {
++      return std::nullopt;
++    }
++    return CurrentDocument{.document_id = std::move(*document_id),
++                           .url = contents->GetLastCommittedURL()};
++  }
++
+   static void NormalizeFallbackRanks(
+       std::vector<PrometheusProviderConfig>* providers) {
+     for (size_t index = 0; index < providers->size(); ++index) {
+@@ -800,8 +1187,8 @@ class NativePrometheusControlPanelRuntime final
+     }
+     std::vector<PrometheusProviderConfig> providers =
+         service_->ListProvidersForTransport();
+-    auto provider = std::ranges::find(
+-        providers, provider_id, &PrometheusProviderConfig::provider_id);
++    auto provider = std::ranges::find(providers, provider_id,
++                                      &PrometheusProviderConfig::provider_id);
+     if (provider == providers.end()) {
+       return;
+     }
+@@ -831,9 +1218,11 @@ class NativePrometheusControlPanelRuntime final
+   raw_ptr<PrometheusAgentProfileService> agent_service_;
+   raw_ptr<Profile> exact_profile_;
+   raw_ptr<content::WebContents> exact_web_contents_;
++  raw_ptr<BrowserWindowInterface> exact_browser_;
+   SnapshotCallback snapshot_callback_;
+   std::map<uint64_t, std::string> pending_discoveries_;
+   base::RepeatingTimer discovery_poll_timer_;
++  std::string selected_document_id_;
+   bool observing_ = false;
+ };
+ 
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+index f6be3ffa44..9d3c74eac6 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+@@ -12,6 +12,7 @@
+ #include "base/command_line.h"
+ #include "base/files/file_util.h"
+ #include "base/functional/bind.h"
++#include "base/functional/callback_helpers.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+ #include "base/time/time.h"
+@@ -1350,6 +1351,253 @@ PrometheusRuntimeProfileService::ListVaultMetadataForTransport(
+              : std::vector<PrometheusVaultMetadata>();
+ }
+ 
++std::vector<MemoryRecord>
++PrometheusRuntimeProfileService::ListMemoryForControlUi(
++    RuntimeCallerOrigin caller,
++    std::string_view caller_id) const {
++  return caller == RuntimeCallerOrigin::kLocalControlUi &&
++                 owned_memory_store_ && !shutdown_
++             ? owned_memory_store_->ListMemoryForCaller(caller_id)
++             : std::vector<MemoryRecord>();
++}
++
++MemoryStoreMutation PrometheusRuntimeProfileService::SaveMemoryForControlUi(
++    RuntimeCallerOrigin caller,
++    std::string caller_id,
++    std::string memory_id,
++    MemoryVisibility visibility,
++    std::string title,
++    std::string text,
++    std::vector<std::string> tags) {
++  if (caller != RuntimeCallerOrigin::kLocalControlUi || !owned_memory_store_ ||
++      shutdown_) {
++    return {.status = MemoryStoreStatus::kDenied};
++  }
++  MemoryStoreMutation mutation;
++  if (memory_id.empty()) {
++    mutation = owned_memory_store_->CreateMemory(
++        std::move(caller_id), visibility, std::move(title), std::move(text),
++        std::move(tags), base::Time::Now().InMillisecondsSinceUnixEpoch());
++  } else {
++    mutation.status = owned_memory_store_->UpdateMemory(
++        caller_id, memory_id, visibility, std::move(title), std::move(text),
++        std::move(tags), base::Time::Now().InMillisecondsSinceUnixEpoch());
++    mutation.record_id = std::move(memory_id);
++  }
++  if (mutation.ok()) {
++    for (Observer& observer : observers_) {
++      observer.OnRuntimeSidePanelSnapshotChanged();
++    }
++  }
++  return mutation;
++}
++
++std::vector<MemoryRecord>
++PrometheusRuntimeProfileService::SearchMemoryForControlUi(
++    RuntimeCallerOrigin caller,
++    std::string_view caller_id,
++    std::string_view query,
++    size_t limit) {
++  return caller == RuntimeCallerOrigin::kLocalControlUi &&
++                 owned_memory_store_ && !shutdown_
++             ? owned_memory_store_->SearchMemoryForCaller(caller_id, query,
++                                                          limit)
++             : std::vector<MemoryRecord>();
++}
++
++MemoryStoreStatus PrometheusRuntimeProfileService::DeleteMemoryForControlUi(
++    RuntimeCallerOrigin caller,
++    std::string_view caller_id,
++    std::string_view memory_id) {
++  if (caller != RuntimeCallerOrigin::kLocalControlUi || !owned_memory_store_ ||
++      shutdown_) {
++    return MemoryStoreStatus::kDenied;
++  }
++  const MemoryStoreStatus status =
++      owned_memory_store_->DeleteMemory(caller_id, memory_id);
++  if (status == MemoryStoreStatus::kOk) {
++    for (Observer& observer : observers_) {
++      observer.OnRuntimeSidePanelSnapshotChanged();
++    }
++  }
++  return status;
++}
++
++std::vector<SiteGuideRecord>
++PrometheusRuntimeProfileService::ListSiteGuidesForControlUi(
++    RuntimeCallerOrigin caller,
++    std::string_view caller_id) const {
++  return caller == RuntimeCallerOrigin::kLocalControlUi &&
++                 owned_memory_store_ && !shutdown_
++             ? owned_memory_store_->ListSiteGuidesForCaller(caller_id)
++             : std::vector<SiteGuideRecord>();
++}
++
++MemoryStoreMutation PrometheusRuntimeProfileService::SaveSiteGuideForControlUi(
++    RuntimeCallerOrigin caller,
++    std::string caller_id,
++    std::string guide_id,
++    MemoryVisibility visibility,
++    std::string title,
++    std::string instructions,
++    std::vector<std::string> tags,
++    const GURL& canonical_origin) {
++  if (caller != RuntimeCallerOrigin::kLocalControlUi || !owned_memory_store_ ||
++      shutdown_) {
++    return {.status = MemoryStoreStatus::kDenied};
++  }
++  MemoryStoreMutation mutation;
++  if (guide_id.empty()) {
++    mutation = owned_memory_store_->CreateSiteGuide(
++        std::move(caller_id), visibility, std::move(title),
++        std::move(instructions), std::move(tags), canonical_origin,
++        base::Time::Now().InMillisecondsSinceUnixEpoch());
++  } else {
++    mutation.status = owned_memory_store_->UpdateSiteGuide(
++        caller_id, guide_id, visibility, std::move(title),
++        std::move(instructions), std::move(tags), canonical_origin,
++        base::Time::Now().InMillisecondsSinceUnixEpoch());
++    mutation.record_id = std::move(guide_id);
++  }
++  if (mutation.ok()) {
++    for (Observer& observer : observers_) {
++      observer.OnRuntimeSidePanelSnapshotChanged();
++    }
++  }
++  return mutation;
++}
++
++std::vector<SiteGuideRecord>
++PrometheusRuntimeProfileService::SearchSiteGuidesForControlUi(
++    RuntimeCallerOrigin caller,
++    std::string_view caller_id,
++    std::string_view query,
++    size_t limit) {
++  return caller == RuntimeCallerOrigin::kLocalControlUi &&
++                 owned_memory_store_ && !shutdown_
++             ? owned_memory_store_->SearchSiteGuidesForCaller(caller_id, query,
++                                                              limit)
++             : std::vector<SiteGuideRecord>();
++}
++
++MemoryStoreStatus PrometheusRuntimeProfileService::DeleteSiteGuideForControlUi(
++    RuntimeCallerOrigin caller,
++    std::string_view caller_id,
++    std::string_view guide_id) {
++  if (caller != RuntimeCallerOrigin::kLocalControlUi || !owned_memory_store_ ||
++      shutdown_) {
++    return MemoryStoreStatus::kDenied;
++  }
++  const MemoryStoreStatus status =
++      owned_memory_store_->DeleteSiteGuide(caller_id, guide_id);
++  if (status == MemoryStoreStatus::kOk) {
++    for (Observer& observer : observers_) {
++      observer.OnRuntimeSidePanelSnapshotChanged();
++    }
++  }
++  return status;
++}
++
++SiteGuideApplicationRecord
++PrometheusRuntimeProfileService::ApplySiteGuideForControlUi(
++    RuntimeCallerOrigin caller,
++    std::string_view caller_id,
++    std::string_view guide_id,
++    std::string_view selected_document_id,
++    std::string_view current_document_id,
++    const GURL& current_committed_url,
++    bool is_current_committed_document) {
++  if (caller != RuntimeCallerOrigin::kLocalControlUi || !owned_memory_store_ ||
++      shutdown_) {
++    return {.guide_id = std::string(guide_id),
++            .outcome = SiteGuideApplyOutcome::kDenied,
++            .timestamp_ms = base::Time::Now().InMillisecondsSinceUnixEpoch()};
++  }
++  SiteGuideApplicationRecord application = owned_memory_store_->ApplySiteGuide(
++      caller_id, guide_id, selected_document_id, current_document_id,
++      current_committed_url, is_current_committed_document,
++      base::Time::Now().InMillisecondsSinceUnixEpoch());
++  for (Observer& observer : observers_) {
++    observer.OnRuntimeSidePanelSnapshotChanged();
++  }
++  return application;
++}
++
++std::vector<SiteGuideApplicationRecord>
++PrometheusRuntimeProfileService::ListSiteGuideApplicationsForControlUi(
++    RuntimeCallerOrigin caller) const {
++  return caller == RuntimeCallerOrigin::kLocalControlUi &&
++                 owned_memory_store_ && !shutdown_
++             ? owned_memory_store_->ListSiteGuideApplicationsForBrowserUi()
++             : std::vector<SiteGuideApplicationRecord>();
++}
++
++std::vector<PrometheusVaultMetadata>
++PrometheusRuntimeProfileService::ListVaultMetadataForControlUi(
++    RuntimeCallerOrigin caller) const {
++  return caller == RuntimeCallerOrigin::kLocalControlUi &&
++                 IsVaultAvailableForTransport()
++             ? owned_vault_service_->ListMetadata()
++             : std::vector<PrometheusVaultMetadata>();
++}
++
++PrometheusVaultMetadataResult
++PrometheusRuntimeProfileService::SaveVaultMetadataForControlUi(
++    RuntimeCallerOrigin caller,
++    std::string entry_id,
++    std::string label,
++    PrometheusVaultKind kind,
++    std::string canonical_site_origin) {
++  if (caller != RuntimeCallerOrigin::kLocalControlUi ||
++      !IsVaultAvailableForTransport()) {
++    return {.status = PrometheusVaultStatus::kDenied};
++  }
++  PrometheusVaultMetadataResult result;
++  if (entry_id.empty()) {
++    result = owned_vault_service_->CreateMetadata(
++        std::move(label), kind, std::move(canonical_site_origin));
++  } else {
++    PrometheusVaultMetadataResult existing =
++        owned_vault_service_->GetMetadata(entry_id);
++    if (!existing.ok() || !existing.metadata ||
++        existing.metadata->kind != kind) {
++      return existing.ok()
++                 ? PrometheusVaultMetadataResult{.status =
++                                                     PrometheusVaultStatus::
++                                                         kInvalidArgument}
++                 : existing;
++    }
++    result = owned_vault_service_->UpdateMetadata(
++        entry_id, std::move(label), std::move(canonical_site_origin));
++  }
++  if (result.ok()) {
++    for (Observer& observer : observers_) {
++      observer.OnRuntimeSidePanelSnapshotChanged();
++    }
++  }
++  return result;
++}
++
++PrometheusVaultStatus
++PrometheusRuntimeProfileService::DeleteVaultMetadataForControlUi(
++    RuntimeCallerOrigin caller,
++    std::string entry_id) {
++  if (caller != RuntimeCallerOrigin::kLocalControlUi ||
++      !IsVaultAvailableForTransport()) {
++    return PrometheusVaultStatus::kDenied;
++  }
++  PrometheusVaultMetadataResult existing =
++      owned_vault_service_->GetMetadata(entry_id);
++  if (!existing.ok()) {
++    return existing.status;
++  }
++  owned_vault_service_->DeleteMetadata(std::move(entry_id), base::DoNothing());
++  for (Observer& observer : observers_) {
++    observer.OnRuntimeSidePanelSnapshotChanged();
++  }
++  return PrometheusVaultStatus::kSuccess;
++}
++
+ RuntimeProfileStatus PrometheusRuntimeProfileService::SetProviders(
+     RuntimeCallerOrigin caller,
+     std::vector<PrometheusProviderConfig> providers) {
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.h b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+index 8b2cb96131..3d8269ff11 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+@@ -312,6 +312,63 @@ class PrometheusRuntimeProfileService
+       std::string canonical_site_origin);
+   std::vector<PrometheusVaultMetadata> ListVaultMetadataForTransport(
+       std::optional<PrometheusVaultKind> kind) const;
++  std::vector<MemoryRecord> ListMemoryForControlUi(
++      RuntimeCallerOrigin caller,
++      std::string_view caller_id) const;
++  MemoryStoreMutation SaveMemoryForControlUi(RuntimeCallerOrigin caller,
++                                             std::string caller_id,
++                                             std::string memory_id,
++                                             MemoryVisibility visibility,
++                                             std::string title,
++                                             std::string text,
++                                             std::vector<std::string> tags);
++  std::vector<MemoryRecord> SearchMemoryForControlUi(RuntimeCallerOrigin caller,
++                                                     std::string_view caller_id,
++                                                     std::string_view query,
++                                                     size_t limit);
++  MemoryStoreStatus DeleteMemoryForControlUi(RuntimeCallerOrigin caller,
++                                             std::string_view caller_id,
++                                             std::string_view memory_id);
++  std::vector<SiteGuideRecord> ListSiteGuidesForControlUi(
++      RuntimeCallerOrigin caller,
++      std::string_view caller_id) const;
++  MemoryStoreMutation SaveSiteGuideForControlUi(RuntimeCallerOrigin caller,
++                                                std::string caller_id,
++                                                std::string guide_id,
++                                                MemoryVisibility visibility,
++                                                std::string title,
++                                                std::string instructions,
++                                                std::vector<std::string> tags,
++                                                const GURL& canonical_origin);
++  std::vector<SiteGuideRecord> SearchSiteGuidesForControlUi(
++      RuntimeCallerOrigin caller,
++      std::string_view caller_id,
++      std::string_view query,
++      size_t limit);
++  MemoryStoreStatus DeleteSiteGuideForControlUi(RuntimeCallerOrigin caller,
++                                                std::string_view caller_id,
++                                                std::string_view guide_id);
++  SiteGuideApplicationRecord ApplySiteGuideForControlUi(
++      RuntimeCallerOrigin caller,
++      std::string_view caller_id,
++      std::string_view guide_id,
++      std::string_view selected_document_id,
++      std::string_view current_document_id,
++      const GURL& current_committed_url,
++      bool is_current_committed_document);
++  std::vector<SiteGuideApplicationRecord> ListSiteGuideApplicationsForControlUi(
++      RuntimeCallerOrigin caller) const;
++  std::vector<PrometheusVaultMetadata> ListVaultMetadataForControlUi(
++      RuntimeCallerOrigin caller) const;
++  PrometheusVaultMetadataResult SaveVaultMetadataForControlUi(
++      RuntimeCallerOrigin caller,
++      std::string entry_id,
++      std::string label,
++      PrometheusVaultKind kind,
++      std::string canonical_site_origin);
++  PrometheusVaultStatus DeleteVaultMetadataForControlUi(
++      RuntimeCallerOrigin caller,
++      std::string entry_id);
+   RuntimeProfileStatus SetProviders(
+       RuntimeCallerOrigin caller,
+       std::vector<PrometheusProviderConfig> providers);
+diff --git a/chrome/browser/resources/prometheus/prometheus_control_panel.html b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+index ab7829bde2..c0293e79f5 100644
+--- a/chrome/browser/resources/prometheus/prometheus_control_panel.html
++++ b/chrome/browser/resources/prometheus/prometheus_control_panel.html
+@@ -190,27 +190,170 @@
+           <div class="control-metric-grid" id="control-permissions-summary"
+               aria-live="polite"></div>
+         </section>
+-        <section class="section-panel" id="section-vault"
++        <section class="section-panel control-workflow" id="section-vault"
+             data-section-panel="vault" role="tabpanel" tabindex="-1"
+             aria-labelledby="control-vault-heading" hidden>
+-          <h1 id="control-vault-heading">Vault</h1>
+-          <h2>No vault entries</h2>
+-          <p class="empty-copy">
+-            Save metadata here. Secrets stay in native secure storage.
+-          </p>
++          <div class="control-heading-row">
++            <div>
++              <h1 id="control-vault-heading">Vault</h1>
++              <p class="control-state" id="control-vault-state" role="status"
++                  aria-live="polite">Loading safe vault metadata</p>
++            </div>
++            <button class="primary" type="button"
++                id="control-add-vault-metadata">Add metadata</button>
++          </div>
++          <div class="control-list" id="control-vault-list" role="list"
++              aria-label="Vault metadata" aria-busy="true"></div>
++          <form class="control-record-form" id="control-vault-form"
++              aria-labelledby="control-vault-form-title" hidden>
++            <h2 id="control-vault-form-title">Add vault metadata</h2>
++            <input name="entry_id" type="hidden">
++            <div class="control-form-grid">
++              <label>Label
++                <input name="label" maxlength="160" required
++                    autocomplete="off">
++              </label>
++              <label>Kind
++                <select name="kind" required>
++                  <option value="credential">Credential</option>
++                  <option value="payment">Payment</option>
++                </select>
++              </label>
++              <label class="control-field-wide">Exact site origin
++                <input name="origin" type="url" maxlength="2048" required
++                    autocomplete="off" placeholder="https://example.com">
++              </label>
++            </div>
++            <div class="control-form-actions">
++              <button class="primary" type="submit">Save metadata</button>
++              <button class="quiet-button" type="button"
++                  id="control-vault-form-cancel">Cancel</button>
++            </div>
++          </form>
+           <p class="security-note">
+-            Vault secret blocked. Secrets cannot cross MCP or remote transports.
++            Native only. This page shows ID, label, kind, exact origin, updated
++            time, and whether a secret is configured. Values and approvals never
++            enter this page, MCP, logs, or remote transports.
+           </p>
++          <p class="control-operation" id="control-vault-operation"
++              role="alert" aria-live="assertive"></p>
+         </section>
+-        <section class="section-panel" id="section-memory"
++        <section class="section-panel control-workflow" id="section-memory"
+             data-section-panel="memory" role="tabpanel" tabindex="-1"
+             aria-labelledby="control-memory-heading" hidden>
+-          <h1 id="control-memory-heading">Memory &amp; Site Guides</h1>
+-          <h2>No memory guides</h2>
+-          <p class="empty-copy">
+-            Site guidance and reusable browser notes will appear here after the
+-            native runtime is connected.
+-          </p>
++          <div class="control-heading-row">
++            <div>
++              <h1 id="control-memory-heading">Memory &amp; Site Guides</h1>
++              <p class="control-state" id="control-memory-state" role="status"
++                  aria-live="polite">Loading bounded memory</p>
++            </div>
++          </div>
++          <div class="control-metric-grid" id="control-memory-bounds"
++              aria-label="Memory limits"></div>
++          <section class="control-subsection"
++              aria-labelledby="control-memory-records-heading">
++            <div class="control-heading-row">
++              <div>
++                <h2 id="control-memory-records-heading">Memory</h2>
++                <p class="empty-copy">Reusable notes saved explicitly by you.</p>
++              </div>
++              <button class="primary" type="button"
++                  id="control-add-memory">Add memory</button>
++            </div>
++            <label class="control-search" for="control-memory-search">
++              Search memory
++              <input id="control-memory-search" type="search" maxlength="256"
++                  autocomplete="off" placeholder="Title, text, or tag">
++            </label>
++            <div class="control-list" id="control-memory-list" role="list"
++                aria-label="Saved memory" aria-busy="true"></div>
++            <form class="control-record-form" id="control-memory-form"
++                aria-labelledby="control-memory-form-title" hidden>
++              <h3 id="control-memory-form-title">Add memory</h3>
++              <input name="memory_id" type="hidden">
++              <div class="control-form-grid">
++                <label>Title
++                  <input name="title" maxlength="256" required
++                      autocomplete="off">
++                </label>
++                <label>Visibility
++                  <select name="visibility" required>
++                    <option value="caller_owned">Only this control profile</option>
++                    <option value="profile_shared">Share with profile agents</option>
++                  </select>
++                </label>
++                <label class="control-field-wide">Memory text
++                  <textarea name="text" maxlength="16384" rows="5"
++                      required></textarea>
++                </label>
++                <label class="control-field-wide">Tags
++                  <input name="tags" maxlength="519" autocomplete="off"
++                      placeholder="Up to 8 comma-separated tags">
++                </label>
++              </div>
++              <div class="control-form-actions">
++                <button class="primary" type="submit">Save memory</button>
++                <button class="quiet-button" type="button"
++                    id="control-memory-form-cancel">Cancel</button>
++              </div>
++            </form>
++          </section>
++          <section class="control-subsection"
++              aria-labelledby="control-guides-heading">
++            <div class="control-heading-row">
++              <div>
++                <h2 id="control-guides-heading">Site Guides</h2>
++                <p class="empty-copy" id="control-current-guide-origin">
++                  Open an HTTP(S) page to select its exact origin.
++                </p>
++              </div>
++              <button class="primary" type="button"
++                  id="control-add-guide">Add guide</button>
++            </div>
++            <label class="control-search" for="control-guide-search">
++              Search site guides
++              <input id="control-guide-search" type="search" maxlength="256"
++                  autocomplete="off" placeholder="Title, instructions, tag, or origin">
++            </label>
++            <div class="control-list" id="control-guide-list" role="list"
++                aria-label="Site guides" aria-busy="true"></div>
++            <form class="control-record-form" id="control-guide-form"
++                aria-labelledby="control-guide-form-title" hidden>
++              <h3 id="control-guide-form-title">Add site guide</h3>
++              <input name="guide_id" type="hidden">
++              <div class="control-form-grid">
++                <label>Title
++                  <input name="title" maxlength="256" required
++                      autocomplete="off">
++                </label>
++                <label>Visibility
++                  <select name="visibility" required>
++                    <option value="caller_owned">Only this control profile</option>
++                    <option value="profile_shared">Share with profile agents</option>
++                  </select>
++                </label>
++                <label class="control-field-wide">Exact HTTP(S) origin
++                  <input name="origin" type="url" maxlength="2048" required
++                      autocomplete="off" placeholder="https://example.com">
++                </label>
++                <label class="control-field-wide">Instructions
++                  <textarea name="instructions" maxlength="16384" rows="5"
++                      required></textarea>
++                </label>
++                <label class="control-field-wide">Tags
++                  <input name="tags" maxlength="519" autocomplete="off"
++                      placeholder="Up to 8 comma-separated tags">
++                </label>
++              </div>
++              <div class="control-form-actions">
++                <button class="primary" type="submit">Save guide</button>
++                <button class="quiet-button" type="button"
++                    id="control-guide-form-cancel">Cancel</button>
++              </div>
++            </form>
++          </section>
++          <p class="control-operation" id="control-memory-operation"
++              role="alert" aria-live="assertive"></p>
+         </section>
+         <section class="section-panel control-workflow" id="section-logs"
+             data-section-panel="logs" role="tabpanel" tabindex="-1"
+@@ -295,6 +438,23 @@
+           </div>
+         </form>
+       </dialog>
++      <dialog id="control-delete-record-dialog"
++          aria-labelledby="control-delete-record-title"
++          aria-describedby="control-delete-record-copy">
++        <form method="dialog">
++          <h2 id="control-delete-record-title">Delete this record?</h2>
++          <p id="control-delete-record-copy">
++            This permanently removes the selected metadata from this profile.
++          </p>
++          <div class="dialog-actions">
++            <button class="quiet-button" value="cancel" autofocus>
++              Keep record
++            </button>
++            <button class="danger-button" value="confirm"
++                id="control-delete-record-confirm">Delete permanently</button>
++          </div>
++        </form>
++      </dialog>
+     </main>
+   </body>
+ </html>
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.css b/chrome/browser/resources/prometheus/prometheus_webui.css
+index eb3188de9f..57d54bbf4a 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.css
++++ b/chrome/browser/resources/prometheus/prometheus_webui.css
+@@ -778,6 +778,7 @@ textarea {
+ .control-search input,
+ .control-form-grid input,
+ .control-form-grid select,
++.control-form-grid textarea,
+ .control-filter-grid input,
+ .control-filter-grid select {
+   background: var(--prometheus-surface-2);
+@@ -791,6 +792,12 @@ textarea {
+   width: 100%;
+ }
+ 
++.control-form-grid textarea {
++  min-height: 112px;
++  padding: 12px;
++  resize: vertical;
++}
++
+ .control-list {
+   display: grid;
+   gap: 12px;
+@@ -801,6 +808,7 @@ textarea {
+ .control-card,
+ .control-log-row,
+ .control-provider-form,
++.control-record-form,
+ .control-metric {
+   background: var(--prometheus-surface-2);
+   border: 1px solid var(--prometheus-surface-3);
+@@ -813,7 +821,9 @@ textarea {
+ .control-empty h2,
+ .control-card h2,
+ .control-log-row h2,
+-.control-provider-form h2 {
++.control-provider-form h2,
++.control-record-form h2,
++.control-record-form h3 {
+   font-size: 16px;
+   margin: 0;
+ }
+@@ -827,7 +837,9 @@ textarea {
+ 
+ .control-card-title,
+ .control-detail dd,
+-.control-log-row code {
++.control-log-row code,
++.control-record-body,
++.control-record-origin {
+   overflow-wrap: anywhere;
+   word-break: break-word;
+ }
+@@ -903,6 +915,35 @@ textarea {
+   scroll-margin-top: 16px;
+ }
+ 
++.control-record-form {
++  scroll-margin-top: 16px;
++}
++
++.control-subsection {
++  border-top: 1px solid var(--prometheus-surface-3);
++  display: grid;
++  gap: 14px;
++  min-width: 0;
++  padding-top: 16px;
++}
++
++.control-subsection h2,
++.control-subsection .empty-copy {
++  margin: 0;
++}
++
++.control-record-body,
++.control-record-origin {
++  margin: 12px 0 0;
++  white-space: pre-wrap;
++}
++
++.control-record-origin {
++  color: var(--prometheus-text-muted);
++  font-family: ui-monospace, monospace;
++  font-size: 12px;
++}
++
+ .control-form-grid,
+ .control-filter-grid {
+   display: grid;
+@@ -968,6 +1009,7 @@ textarea {
+ .control-search input:focus-visible,
+ .control-form-grid input:focus-visible,
+ .control-form-grid select:focus-visible,
++.control-form-grid textarea:focus-visible,
+ .control-filter-grid input:focus-visible,
+ .control-filter-grid select:focus-visible,
+ .control-card-actions button:focus-visible,
+@@ -978,7 +1020,8 @@ textarea {
+ }
+ 
+ #control-cancel-task-dialog,
+-#control-clear-logs-dialog {
++#control-clear-logs-dialog,
++#control-delete-record-dialog {
+   background: var(--prometheus-surface);
+   border: 1px solid var(--prometheus-surface-3);
+   border-radius: 8px;
+@@ -987,7 +1030,8 @@ textarea {
+ }
+ 
+ #control-cancel-task-dialog::backdrop,
+-#control-clear-logs-dialog::backdrop {
++#control-clear-logs-dialog::backdrop,
++#control-delete-record-dialog::backdrop {
+   background: rgba(0, 0, 0, 0.72);
+ }
+ 
+diff --git a/chrome/browser/resources/prometheus/prometheus_webui.js b/chrome/browser/resources/prometheus/prometheus_webui.js
+index e1f0d3515d..d92ce3192f 100644
+--- a/chrome/browser/resources/prometheus/prometheus_webui.js
++++ b/chrome/browser/resources/prometheus/prometheus_webui.js
+@@ -24,11 +24,19 @@ window.prometheusControlTaskMatchCountForTesting = 0;
+ 
+ let pendingControlCancelTaskId = '';
+ let pendingControlCancelTrigger = null;
++let pendingControlDelete = null;
++let controlMemorySearchResults = null;
++let controlGuideSearchResults = null;
++let pendingControlSearch = '';
+ 
+ let controlSnapshot = {
+   status: 'NOT_IMPLEMENTED',
+   tasks: [],
+   providers: [],
++  memories: [],
++  site_guides: [],
++  guide_applications: [],
++  vault_entries: [],
+   events: [],
+   actions: [],
+   diagnostics: [],
+@@ -491,6 +499,9 @@ function controlUiState() {
+   const hasLoadedData = [
+     controlSnapshot.tasks,
+     controlSnapshot.providers,
++    controlSnapshot.memories,
++    controlSnapshot.site_guides,
++    controlSnapshot.vault_entries,
+     controlSnapshot.events,
+     controlSnapshot.actions,
+     controlSnapshot.diagnostics,
+@@ -860,6 +871,353 @@ function renderControlProviders() {
+       `${providers.length} configured · ${degraded} degraded`;
+ }
+ 
++function recordFormField(formId, name) {
++  return document.querySelector(formId)?.elements.namedItem(name) || null;
++}
++
++function controlTags(value) {
++  return String(value || '').split(',')
++      .map((tag) => tag.trim())
++      .filter((tag, index, tags) => tag && tags.indexOf(tag) === index);
++}
++
++function closeControlRecordForm(formId, addButtonId) {
++  const form = document.querySelector(formId);
++  if (!form) {
++    return;
++  }
++  form.reset();
++  form.hidden = true;
++  form.dataset.pendingSave = 'false';
++  document.querySelector(addButtonId)?.focus({preventScroll: true});
++}
++
++function openControlMemoryForm(memory = null) {
++  const form = document.querySelector('#control-memory-form');
++  if (!form) {
++    return;
++  }
++  form.reset();
++  form.hidden = false;
++  const assign = (name, value) => {
++    const field = recordFormField('#control-memory-form', name);
++    if (field) {
++      field.value = String(value ?? '');
++    }
++  };
++  assign('memory_id', memory?.memory_id || '');
++  assign('title', memory?.title || '');
++  assign('text', memory?.text || '');
++  assign('tags', controlArray(memory?.tags).join(', '));
++  assign('visibility', memory?.visibility || 'caller_owned');
++  const title = document.querySelector('#control-memory-form-title');
++  if (title) {
++    title.textContent = memory ? 'Edit memory' : 'Add memory';
++  }
++  recordFormField('#control-memory-form', 'title')
++      ?.focus({preventScroll: true});
++}
++
++function openControlGuideForm(guide = null) {
++  const form = document.querySelector('#control-guide-form');
++  if (!form) {
++    return;
++  }
++  form.reset();
++  form.hidden = false;
++  const assign = (name, value) => {
++    const field = recordFormField('#control-guide-form', name);
++    if (field) {
++      field.value = String(value ?? '');
++    }
++  };
++  assign('guide_id', guide?.guide_id || '');
++  assign('title', guide?.title || '');
++  assign('instructions', guide?.instructions || '');
++  assign('tags', controlArray(guide?.tags).join(', '));
++  assign('visibility', guide?.visibility || 'caller_owned');
++  assign(
++      'origin', guide?.canonical_origin ||
++          controlSnapshot.current_guide_origin || '');
++  const title = document.querySelector('#control-guide-form-title');
++  if (title) {
++    title.textContent = guide ? 'Edit site guide' : 'Add site guide';
++  }
++  recordFormField('#control-guide-form', 'title')
++      ?.focus({preventScroll: true});
++}
++
++function openControlVaultForm(entry = null) {
++  const form = document.querySelector('#control-vault-form');
++  if (!form) {
++    return;
++  }
++  form.reset();
++  form.hidden = false;
++  const assign = (name, value) => {
++    const field = recordFormField('#control-vault-form', name);
++    if (field) {
++      field.value = String(value ?? '');
++    }
++  };
++  assign('entry_id', entry?.id || '');
++  assign('label', entry?.label || '');
++  assign('kind', entry?.kind || 'credential');
++  assign('origin', entry?.canonical_origin || '');
++  const kind = recordFormField('#control-vault-form', 'kind');
++  if (kind) {
++    kind.disabled = !!entry;
++  }
++  const title = document.querySelector('#control-vault-form-title');
++  if (title) {
++    title.textContent = entry ? 'Edit vault metadata' : 'Add vault metadata';
++  }
++  recordFormField('#control-vault-form', 'label')
++      ?.focus({preventScroll: true});
++}
++
++function requestControlRecordDeletion(kind, recordId, label, trigger) {
++  const dialog = document.querySelector('#control-delete-record-dialog');
++  if (!dialog || !recordId || dialog.open) {
++    return;
++  }
++  pendingControlDelete = {kind, recordId, trigger: trigger || null};
++  const title = document.querySelector('#control-delete-record-title');
++  const copy = document.querySelector('#control-delete-record-copy');
++  if (title) {
++    title.textContent = `Delete ${label}?`;
++  }
++  if (copy) {
++    copy.textContent =
++        'This permanently removes the selected metadata from this profile.';
++  }
++  trigger?.setAttribute('aria-expanded', 'true');
++  dialog.showModal();
++}
++
++function appendRecordAction(actions, label, focusKey, listener, danger = false) {
++  const button = appendTextElement(
++      actions, 'button', danger ? 'danger-button' : 'quiet-button', label);
++  button.type = 'button';
++  button.dataset.controlFocusKey = focusKey;
++  button.addEventListener('click', listener);
++  return button;
++}
++
++function renderControlMemoryRecord(memory) {
++  const card = document.createElement('article');
++  card.className = 'control-card control-memory-card';
++  card.setAttribute('role', 'listitem');
++  const heading = document.createElement('div');
++  heading.className = 'control-card-heading';
++  appendTextElement(
++      heading, 'h3', 'control-card-title', memory.title || 'Untitled memory');
++  appendTextElement(
++      heading, 'span', 'control-badge',
++      memory.visibility === 'profile_shared' ? 'Profile shared' : 'Caller owned');
++  card.append(heading);
++  appendTextElement(card, 'p', 'control-record-body', memory.text || '');
++  const details = document.createElement('dl');
++  details.className = 'control-details';
++  appendControlDetail(details, 'Memory ID', memory.memory_id || 'Unavailable');
++  appendControlDetail(
++      details, 'Tags', controlArray(memory.tags).join(', ') || 'None');
++  appendControlDetail(details, 'Bytes', controlInteger(memory.byte_count));
++  appendControlDetail(details, 'Updated', safeTimeText(memory.updated_at_ms));
++  card.append(details);
++  if (memory.editable) {
++    const actions = document.createElement('div');
++    actions.className = 'control-card-actions';
++    appendRecordAction(
++        actions, 'Edit', `memory-edit:${memory.memory_id || ''}`,
++        () => openControlMemoryForm(memory));
++    const remove = appendRecordAction(
++        actions, 'Delete', `memory-delete:${memory.memory_id || ''}`, () => {
++          requestControlRecordDeletion(
++              'memory', memory.memory_id || '', 'this memory', remove);
++        }, true);
++    remove.setAttribute('aria-haspopup', 'dialog');
++    remove.setAttribute('aria-expanded', 'false');
++    card.append(actions);
++  }
++  return card;
++}
++
++function renderControlGuideRecord(guide) {
++  const card = document.createElement('article');
++  card.className = 'control-card control-guide-card';
++  card.setAttribute('role', 'listitem');
++  const heading = document.createElement('div');
++  heading.className = 'control-card-heading';
++  appendTextElement(
++      heading, 'h3', 'control-card-title', guide.title || 'Untitled guide');
++  appendTextElement(
++      heading, 'span', 'control-badge',
++      guide.visibility === 'profile_shared' ? 'Profile shared' : 'Caller owned');
++  card.append(heading);
++  appendTextElement(
++      card, 'p', 'control-record-origin', guide.canonical_origin || 'No origin');
++  appendTextElement(
++      card, 'p', 'control-record-body', guide.instructions || '');
++  const details = document.createElement('dl');
++  details.className = 'control-details';
++  appendControlDetail(details, 'Guide ID', guide.guide_id || 'Unavailable');
++  appendControlDetail(
++      details, 'Tags', controlArray(guide.tags).join(', ') || 'None');
++  appendControlDetail(details, 'Bytes', controlInteger(guide.byte_count));
++  appendControlDetail(details, 'Updated', safeTimeText(guide.updated_at_ms));
++  card.append(details);
++  const actions = document.createElement('div');
++  actions.className = 'control-card-actions';
++  appendRecordAction(
++      actions, 'Apply to current page',
++      `guide-apply:${guide.guide_id || ''}`, () => {
++        chrome.send('prometheusControlApplyGuide', [guide.guide_id]);
++      });
++  if (guide.editable) {
++    appendRecordAction(
++        actions, 'Edit', `guide-edit:${guide.guide_id || ''}`,
++        () => openControlGuideForm(guide));
++    const remove = appendRecordAction(
++        actions, 'Delete', `guide-delete:${guide.guide_id || ''}`, () => {
++          requestControlRecordDeletion(
++              'guide', guide.guide_id || '', 'this site guide', remove);
++        }, true);
++    remove.setAttribute('aria-haspopup', 'dialog');
++    remove.setAttribute('aria-expanded', 'false');
++  }
++  card.append(actions);
++  return card;
++}
++
++function renderControlVaultEntry(entry) {
++  const card = document.createElement('article');
++  card.className = 'control-card control-vault-card';
++  card.setAttribute('role', 'listitem');
++  const heading = document.createElement('div');
++  heading.className = 'control-card-heading';
++  appendTextElement(
++      heading, 'h2', 'control-card-title', entry.label || 'Vault metadata');
++  appendTextElement(heading, 'span', 'control-badge', 'Native-only');
++  card.append(heading);
++  const details = document.createElement('dl');
++  details.className = 'control-details';
++  appendControlDetail(details, 'Entry ID', entry.id || 'Unavailable');
++  appendControlDetail(
++      details, 'Kind', controlDisplayValue(entry.kind, 'Unknown'));
++  appendControlDetail(
++      details, 'Exact origin', entry.canonical_origin || 'Unavailable');
++  appendControlDetail(
++      details, 'Secret configured',
++      entry.secret_configured ? 'Secret saved natively' : 'No secret saved');
++  appendControlDetail(details, 'Updated', safeTimeText(entry.updated_time_ms));
++  appendControlDetail(details, 'Confirmation', 'Confirmation required');
++  card.append(details);
++  const actions = document.createElement('div');
++  actions.className = 'control-card-actions';
++  appendRecordAction(
++      actions, 'Edit metadata', `vault-edit:${entry.id || ''}`,
++      () => openControlVaultForm(entry));
++  const remove = appendRecordAction(
++      actions, 'Delete metadata', `vault-delete:${entry.id || ''}`, () => {
++        requestControlRecordDeletion(
++            'vault', entry.id || '', 'this vault metadata', remove);
++      }, true);
++  remove.setAttribute('aria-haspopup', 'dialog');
++  remove.setAttribute('aria-expanded', 'false');
++  card.append(actions);
++  return card;
++}
++
++function renderControlMemoryAndGuides() {
++  const memoryList = document.querySelector('#control-memory-list');
++  const guideList = document.querySelector('#control-guide-list');
++  const state = document.querySelector('#control-memory-state');
++  const bounds = document.querySelector('#control-memory-bounds');
++  const currentOrigin =
++      document.querySelector('#control-current-guide-origin');
++  if (!memoryList || !guideList || !state || !bounds || !currentOrigin) {
++    return;
++  }
++  const uiState = controlUiState();
++  const allMemories = controlArray(controlSnapshot.memories);
++  const allGuides = controlArray(controlSnapshot.site_guides);
++  const memories = controlMemorySearchResults || allMemories;
++  const guides = controlGuideSearchResults || allGuides;
++  memoryList.setAttribute('aria-busy', String(uiState === 'loading'));
++  guideList.setAttribute('aria-busy', String(uiState === 'loading'));
++  memoryList.replaceChildren();
++  guideList.replaceChildren();
++  if (uiState === 'error') {
++    memoryList.append(makeControlEmpty(
++        'Memory unavailable', controlRecovery('Refresh and retry.')));
++    guideList.append(makeControlEmpty(
++        'Site guides unavailable', controlRecovery('Refresh and retry.')));
++  } else {
++    if (!memories.length) {
++      memoryList.append(makeControlEmpty(
++          allMemories.length ? 'No memory matches' : 'No memory yet',
++          allMemories.length ? 'Try a different bounded search.' :
++                               'Add a note explicitly; pages are never captured.'));
++    } else {
++      memories.forEach((memory) => memoryList.append(
++          renderControlMemoryRecord(memory)));
++    }
++    if (!guides.length) {
++      guideList.append(makeControlEmpty(
++          allGuides.length ? 'No guide matches' : 'No site guides yet',
++          allGuides.length ? 'Try a different bounded search.' :
++                             'Add instructions for one exact HTTP(S) origin.'));
++    } else {
++      guides.forEach((guide) => guideList.append(
++          renderControlGuideRecord(guide)));
++    }
++  }
++  state.textContent = uiState === 'error' ?
++      controlRecovery('Bounded memory unavailable') :
++      `${allMemories.length} memories · ${allGuides.length} site guides`;
++  currentOrigin.textContent = controlSnapshot.current_guide_origin ?
++      `Current exact origin: ${controlSnapshot.current_guide_origin}` :
++      'Open an HTTP(S) page in this window, then refresh to select its origin.';
++  bounds.replaceChildren();
++  const limits = controlSnapshot.memory_bounds || {};
++  appendControlMetric(
++      bounds, 'Memory items',
++      `${allMemories.length} / ${controlInteger(limits.max_memories)}`);
++  appendControlMetric(
++      bounds, 'Site guides',
++      `${allGuides.length} / ${controlInteger(limits.max_site_guides)}`);
++  appendControlMetric(
++      bounds, 'Store quota', `${controlInteger(limits.max_total_bytes)} bytes`);
++  appendControlMetric(
++      bounds, 'Tags per item', controlInteger(limits.max_tags));
++}
++
++function renderControlVault() {
++  const list = document.querySelector('#control-vault-list');
++  const state = document.querySelector('#control-vault-state');
++  if (!list || !state) {
++    return;
++  }
++  const entries = controlArray(controlSnapshot.vault_entries);
++  const uiState = controlUiState();
++  list.setAttribute('aria-busy', String(uiState === 'loading'));
++  list.replaceChildren();
++  if (uiState === 'error') {
++    list.append(makeControlEmpty(
++        'Vault metadata unavailable', controlRecovery('Refresh and retry.')));
++  } else if (!entries.length) {
++    list.append(makeControlEmpty(
++        'No vault entries',
++        'Save safe metadata here. Secret entry remains browser-native.'));
++  } else {
++    entries.forEach((entry) => list.append(renderControlVaultEntry(entry)));
++  }
++  state.textContent = uiState === 'error' ?
++      controlRecovery('Vault metadata unavailable') :
++      `${entries.length} metadata records · Native only`;
++}
++
+ function appendControlMetric(parent, label, value) {
+   const metric = document.createElement('div');
+   metric.className = 'control-metric';
+@@ -1014,6 +1372,10 @@ function renderControlSnapshot(snapshot) {
+     status: 'INVALID_REQUEST',
+     tasks: [],
+     providers: [],
++    memories: [],
++    site_guides: [],
++    guide_applications: [],
++    vault_entries: [],
+     events: [],
+     actions: [],
+     diagnostics: [],
+@@ -1052,6 +1414,8 @@ function renderControlSnapshot(snapshot) {
+ 
+   renderControlTasks();
+   renderControlProviders();
++  renderControlMemoryAndGuides();
++  renderControlVault();
+   renderControlPermissions();
+   renderControlLogs();
+   restoreControlFocus(focusKey);
+@@ -1066,8 +1430,7 @@ window.prometheusControlReceiveOperation = (operation) => {
+       {status: 'INVALID_REQUEST', accepted: false,
+         recovery: 'Refresh the control panel and retry'};
+   window.prometheusControlOperationForTesting = safeOperation;
+-  const status = document.querySelector('#control-provider-operation');
+-  if (status) {
++  for (const status of document.querySelectorAll('.control-operation')) {
+     status.textContent = safeOperation.accepted ? 'Native change saved' :
+         safeOperation.recovery || 'Native change rejected';
+   }
+@@ -1080,6 +1443,30 @@ window.prometheusControlReceiveOperation = (operation) => {
+       closeControlProviderForm();
+     }
+   }
++  for (const [formId, addButtonId] of [
++    ['#control-memory-form', '#control-add-memory'],
++    ['#control-guide-form', '#control-add-guide'],
++    ['#control-vault-form', '#control-add-vault-metadata'],
++  ]) {
++    const recordForm = document.querySelector(formId);
++    if (recordForm?.dataset.pendingSave === 'true') {
++      recordForm.dataset.pendingSave = 'false';
++      if (safeOperation.accepted) {
++        closeControlRecordForm(formId, addButtonId);
++      }
++    }
++  }
++  if (pendingControlSearch === 'memory') {
++    controlMemorySearchResults = safeOperation.accepted ?
++        controlArray(safeOperation.results) : [];
++    pendingControlSearch = '';
++    renderControlMemoryAndGuides();
++  } else if (pendingControlSearch === 'guide') {
++    controlGuideSearchResults = safeOperation.accepted ?
++        controlArray(safeOperation.results) : [];
++    pendingControlSearch = '';
++    renderControlMemoryAndGuides();
++  }
+ };
+ 
+ if (surface === 'newtab') {
+@@ -1302,6 +1689,166 @@ if (surface === 'control-panel') {
+           trusted: providerFormField('trusted')?.checked === true,
+         }]);
+       });
++  document.querySelector('#control-add-memory')?.addEventListener(
++      'click', () => openControlMemoryForm());
++  document.querySelector('#control-memory-form-cancel')?.addEventListener(
++      'click', () => closeControlRecordForm(
++          '#control-memory-form', '#control-add-memory'));
++  document.querySelector('#control-memory-form')?.addEventListener(
++      'submit', (event) => {
++        event.preventDefault();
++        const form = event.currentTarget;
++        if (!form.reportValidity()) {
++          return;
++        }
++        const tags = controlTags(
++            recordFormField('#control-memory-form', 'tags')?.value);
++        if (tags.length > 8 || tags.some((tag) => tag.length > 64)) {
++          document.querySelector('#control-memory-operation').textContent =
++              'Use no more than 8 tags of 64 characters each';
++          return;
++        }
++        form.dataset.pendingSave = 'true';
++        chrome.send('prometheusControlSaveMemory', [{
++          memory_id:
++              recordFormField('#control-memory-form', 'memory_id')?.value || '',
++          title:
++              recordFormField('#control-memory-form', 'title')?.value.trim() ||
++              '',
++          text:
++              recordFormField('#control-memory-form', 'text')?.value.trim() ||
++              '',
++          tags,
++          visibility:
++              recordFormField('#control-memory-form', 'visibility')?.value ||
++              'caller_owned',
++        }]);
++      });
++  document.querySelector('#control-add-guide')?.addEventListener(
++      'click', () => openControlGuideForm());
++  document.querySelector('#control-guide-form-cancel')?.addEventListener(
++      'click', () => closeControlRecordForm(
++          '#control-guide-form', '#control-add-guide'));
++  document.querySelector('#control-guide-form')?.addEventListener(
++      'submit', (event) => {
++        event.preventDefault();
++        const form = event.currentTarget;
++        if (!form.reportValidity()) {
++          return;
++        }
++        const tags = controlTags(
++            recordFormField('#control-guide-form', 'tags')?.value);
++        if (tags.length > 8 || tags.some((tag) => tag.length > 64)) {
++          document.querySelector('#control-memory-operation').textContent =
++              'Use no more than 8 tags of 64 characters each';
++          return;
++        }
++        form.dataset.pendingSave = 'true';
++        chrome.send('prometheusControlSaveGuide', [{
++          guide_id:
++              recordFormField('#control-guide-form', 'guide_id')?.value || '',
++          title:
++              recordFormField('#control-guide-form', 'title')?.value.trim() ||
++              '',
++          instructions:
++              recordFormField('#control-guide-form', 'instructions')?.value
++                  .trim() || '',
++          tags,
++          visibility:
++              recordFormField('#control-guide-form', 'visibility')?.value ||
++              'caller_owned',
++          origin:
++              recordFormField('#control-guide-form', 'origin')?.value.trim() ||
++              '',
++        }]);
++      });
++  document.querySelector('#control-add-vault-metadata')?.addEventListener(
++      'click', () => openControlVaultForm());
++  document.querySelector('#control-vault-form-cancel')?.addEventListener(
++      'click', () => {
++        const kind = recordFormField('#control-vault-form', 'kind');
++        if (kind) {
++          kind.disabled = false;
++        }
++        closeControlRecordForm(
++            '#control-vault-form', '#control-add-vault-metadata');
++      });
++  document.querySelector('#control-vault-form')?.addEventListener(
++      'submit', (event) => {
++        event.preventDefault();
++        const form = event.currentTarget;
++        if (!form.reportValidity()) {
++          return;
++        }
++        form.dataset.pendingSave = 'true';
++        chrome.send('prometheusControlSaveVaultMetadata', [{
++          entry_id:
++              recordFormField('#control-vault-form', 'entry_id')?.value || '',
++          label:
++              recordFormField('#control-vault-form', 'label')?.value.trim() ||
++              '',
++          kind:
++              recordFormField('#control-vault-form', 'kind')?.value ||
++              'credential',
++          origin:
++              recordFormField('#control-vault-form', 'origin')?.value.trim() ||
++              '',
++        }]);
++      });
++  const requestBoundedSearch = (kind) => {
++    const input = document.querySelector(
++        kind === 'memory' ? '#control-memory-search' :
++                            '#control-guide-search');
++    const query = input?.value.trim() || '';
++    if (!query) {
++      if (kind === 'memory') {
++        controlMemorySearchResults = null;
++      } else {
++        controlGuideSearchResults = null;
++      }
++      renderControlMemoryAndGuides();
++      return;
++    }
++    pendingControlSearch = kind;
++    chrome.send(
++        kind === 'memory' ? 'prometheusControlSearchMemory' :
++                            'prometheusControlSearchGuides',
++        [query, 50]);
++  };
++  for (const [selector, kind] of [
++    ['#control-memory-search', 'memory'],
++    ['#control-guide-search', 'guide'],
++  ]) {
++    const input = document.querySelector(selector);
++    input?.addEventListener('search', () => requestBoundedSearch(kind));
++    input?.addEventListener('change', () => requestBoundedSearch(kind));
++    input?.addEventListener('keydown', (event) => {
++      if (event.key === 'Enter') {
++        event.preventDefault();
++        requestBoundedSearch(kind);
++      }
++    });
++  }
++  const deleteRecordDialog =
++      document.querySelector('#control-delete-record-dialog');
++  document.querySelector('#control-delete-record-confirm')?.addEventListener(
++      'click', () => {
++        if (!pendingControlDelete) {
++          return;
++        }
++        const {kind, recordId} = pendingControlDelete;
++        const message = kind === 'memory' ? 'prometheusControlDeleteMemory' :
++            kind === 'guide' ? 'prometheusControlDeleteGuide' :
++                               'prometheusControlDeleteVaultMetadata';
++        chrome.send(message, [recordId, true]);
++      });
++  deleteRecordDialog?.addEventListener('close', () => {
++    pendingControlDelete?.trigger?.setAttribute('aria-expanded', 'false');
++    if (pendingControlDelete?.trigger?.isConnected) {
++      pendingControlDelete.trigger.focus({preventScroll: true});
++    }
++    pendingControlDelete = null;
++  });
+   document.querySelector('#control-log-class')?.addEventListener(
+       'change', renderControlLogs);
+   document.querySelector('#control-log-task')?.addEventListener(
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+index 167f1e92d1..7471161bfa 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+@@ -10,6 +10,7 @@
+ #include <optional>
+ #include <string>
+ #include <string_view>
++#include <vector>
+ 
+ #include "base/functional/callback.h"
+ #include "base/values.h"
+@@ -73,6 +74,30 @@ struct PrometheusControlProviderMutation {
+   bool trusted = false;
+ };
+ 
++struct PrometheusControlMemoryMutation {
++  std::string memory_id;
++  std::string title;
++  std::string text;
++  std::vector<std::string> tags;
++  std::string visibility;
++};
++
++struct PrometheusControlGuideMutation {
++  std::string guide_id;
++  std::string title;
++  std::string instructions;
++  std::vector<std::string> tags;
++  std::string visibility;
++  std::string origin;
++};
++
++struct PrometheusControlVaultMetadataMutation {
++  std::string entry_id;
++  std::string label;
++  std::string kind;
++  std::string origin;
++};
++
+ // Browser-process-only authority for one regular-profile control WebUI. It
+ // exposes sanitized DTOs rather than profile, caller, session, or secret data.
+ class PrometheusControlPanelRuntime {
+@@ -97,6 +122,18 @@ class PrometheusControlPanelRuntime {
+                                        bool move_up) = 0;
+   virtual base::DictValue DiscoverModels(std::string provider_id) = 0;
+   virtual base::DictValue ClearLogs() = 0;
++  virtual base::DictValue SaveMemory(
++      PrometheusControlMemoryMutation mutation) = 0;
++  virtual base::DictValue SearchMemory(std::string query, size_t limit) = 0;
++  virtual base::DictValue DeleteMemory(std::string memory_id) = 0;
++  virtual base::DictValue SaveSiteGuide(
++      PrometheusControlGuideMutation mutation) = 0;
++  virtual base::DictValue SearchSiteGuides(std::string query, size_t limit) = 0;
++  virtual base::DictValue ApplySiteGuide(std::string guide_id) = 0;
++  virtual base::DictValue DeleteSiteGuide(std::string guide_id) = 0;
++  virtual base::DictValue SaveVaultMetadata(
++      PrometheusControlVaultMetadataMutation mutation) = 0;
++  virtual base::DictValue DeleteVaultMetadata(std::string entry_id) = 0;
+ };
+ 
+ using PrometheusControlPanelRuntimeFactory =
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index 32d1300516..8af853729d 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -9,6 +9,7 @@
+ #include <string>
+ #include <string_view>
+ #include <utility>
++#include <vector>
+ 
+ #include "base/check.h"
+ #include "base/functional/bind.h"
+@@ -17,15 +18,17 @@
+ #include "base/values.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/prometheus/prometheus_ask_fsb_handoff.h"
++#include "chrome/browser/prometheus/prometheus_memory_store.h"
++#include "chrome/browser/prometheus/prometheus_vault_service.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+ #include "chrome/browser/ui/webui/webui_embedding_context.h"
+ #include "chrome/common/webui_url_constants.h"
+ #include "chrome/grit/prometheus_resources.h"
++#include "content/public/browser/web_contents.h"
+ #include "content/public/browser/web_ui.h"
+ #include "content/public/browser/web_ui_data_source.h"
+ #include "content/public/browser/web_ui_message_handler.h"
+-#include "content/public/browser/web_contents.h"
+ #include "content/public/common/url_constants.h"
+ 
+ namespace {
+@@ -39,6 +42,8 @@ constexpr size_t kMaxControlModelIdBytes = 256;
+ constexpr size_t kMaxControlEndpointBytes = 2048;
+ constexpr int kMaxControlProviders = 32;
+ constexpr int kMaxControlRateMicrounits = 1'000'000'000;
++constexpr size_t kMaxControlRecordIdBytes = 128;
++constexpr size_t kMaxControlOriginBytes = 2048;
+ 
+ size_t g_live_control_handler_count = 0;
+ size_t g_total_control_snapshot_delivery_count = 0;
+@@ -66,6 +71,28 @@ bool IsBoundedControlString(std::string_view value,
+          base::IsStringUTF8(value);
+ }
+ 
++std::optional<std::vector<std::string>> ParseControlTags(
++    const base::ListValue* values) {
++  if (!values || values->size() > prometheus::kMaxMemoryTags) {
++    return std::nullopt;
++  }
++  std::vector<std::string> tags;
++  tags.reserve(values->size());
++  for (const base::Value& value : *values) {
++    if (!value.is_string() ||
++        !IsBoundedControlString(value.GetString(),
++                                prometheus::kMaxMemoryTagBytes)) {
++      return std::nullopt;
++    }
++    tags.push_back(value.GetString());
++  }
++  return tags;
++}
++
++bool IsControlVisibility(std::string_view value) {
++  return value == "caller_owned" || value == "profile_shared";
++}
++
+ base::DictValue RuntimeErrorValue(std::string status, std::string recovery) {
+   base::DictValue value;
+   value.Set("status", std::move(status));
+@@ -111,14 +138,12 @@ class PrometheusControlMessageHandler : public content::WebUIMessageHandler {
+   void RegisterMessages() override {
+     web_ui()->RegisterMessageCallback(
+         "prometheusControlInitialize",
+-        base::BindRepeating(
+-            &PrometheusControlMessageHandler::HandleInitialize,
+-            base::Unretained(this)));
++        base::BindRepeating(&PrometheusControlMessageHandler::HandleInitialize,
++                            base::Unretained(this)));
+     web_ui()->RegisterMessageCallback(
+         "prometheusControlRefresh",
+-        base::BindRepeating(
+-            &PrometheusControlMessageHandler::HandleInitialize,
+-            base::Unretained(this)));
++        base::BindRepeating(&PrometheusControlMessageHandler::HandleInitialize,
++                            base::Unretained(this)));
+     web_ui()->RegisterMessageCallback(
+         "prometheusControlCancelTask",
+         base::BindRepeating(&PrometheusControlMessageHandler::HandleCancelTask,
+@@ -152,6 +177,47 @@ class PrometheusControlMessageHandler : public content::WebUIMessageHandler {
+         "prometheusControlClearLogs",
+         base::BindRepeating(&PrometheusControlMessageHandler::HandleClearLogs,
+                             base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlSaveMemory",
++        base::BindRepeating(&PrometheusControlMessageHandler::HandleSaveMemory,
++                            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlSearchMemory",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleSearchMemory,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlDeleteMemory",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleDeleteMemory,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlSaveGuide",
++        base::BindRepeating(&PrometheusControlMessageHandler::HandleSaveGuide,
++                            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlSearchGuides",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleSearchGuides,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlApplyGuide",
++        base::BindRepeating(&PrometheusControlMessageHandler::HandleApplyGuide,
++                            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlDeleteGuide",
++        base::BindRepeating(&PrometheusControlMessageHandler::HandleDeleteGuide,
++                            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlSaveVaultMetadata",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleSaveVaultMetadata,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlDeleteVaultMetadata",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleDeleteVaultMetadata,
++            base::Unretained(this)));
+   }
+ 
+   void Reject(std::string recovery) {
+@@ -210,12 +276,11 @@ class PrometheusControlMessageHandler : public content::WebUIMessageHandler {
+         value.FindInt("output_rate_microunits");
+     const std::optional<bool> trusted = value.FindBool("trusted");
+     if (value.size() != 11u || !provider_id || !label || !kind ||
+-        !route_class || !endpoint || !model_id || !enabled ||
+-        !fallback_rank || !input_rate || !output_rate || !trusted ||
++        !route_class || !endpoint || !model_id || !enabled || !fallback_rank ||
++        !input_rate || !output_rate || !trusted ||
+         !IsBoundedControlString(*provider_id, kMaxControlProviderIdBytes) ||
+         !IsBoundedControlString(*label, kMaxControlProviderLabelBytes) ||
+-        !IsBoundedControlString(*kind, 32u) ||
+-        !IsControlProviderKind(*kind) ||
++        !IsBoundedControlString(*kind, 32u) || !IsControlProviderKind(*kind) ||
+         !IsBoundedControlString(*route_class, 16u) ||
+         !IsControlRouteClass(*route_class) ||
+         !IsBoundedControlString(*endpoint, kMaxControlEndpointBytes) ||
+@@ -312,6 +377,196 @@ class PrometheusControlMessageHandler : public content::WebUIMessageHandler {
+     owner_->HandleControlClearLogsForWebUI();
+   }
+ 
++  void HandleSaveMemory(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 1u || !args[0].is_dict()) {
++      Reject("Review the memory fields and retry");
++      return;
++    }
++    const base::DictValue& value = args[0].GetDict();
++    const std::string* memory_id = value.FindString("memory_id");
++    const std::string* title = value.FindString("title");
++    const std::string* text = value.FindString("text");
++    const std::string* visibility = value.FindString("visibility");
++    std::optional<std::vector<std::string>> tags =
++        ParseControlTags(value.FindList("tags"));
++    if (value.size() != 5u || !memory_id || !title || !text || !visibility ||
++        !tags ||
++        !IsBoundedControlString(*memory_id, kMaxControlRecordIdBytes, false) ||
++        !IsBoundedControlString(*title, prometheus::kMaxMemoryTitleBytes) ||
++        !IsBoundedControlString(*text, prometheus::kMaxMemoryTextBytes) ||
++        !IsControlVisibility(*visibility)) {
++      Reject("Review the bounded memory fields and retry");
++      return;
++    }
++    owner_->HandleControlSaveMemoryForWebUI({.memory_id = *memory_id,
++                                             .title = *title,
++                                             .text = *text,
++                                             .tags = std::move(*tags),
++                                             .visibility = *visibility});
++  }
++
++  void HandleSearchMemory(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    const std::optional<int> limit =
++        args.size() == 2u ? args[1].GetIfInt() : std::nullopt;
++    if (args.size() != 2u || !args[0].is_string() || !limit || *limit <= 0 ||
++        *limit > static_cast<int>(prometheus::kMaxMemorySearchResults) ||
++        !IsBoundedControlString(args[0].GetString(),
++                                prometheus::kMaxMemoryQueryBytes)) {
++      Reject("Shorten the memory search and retry");
++      return;
++    }
++    owner_->HandleControlSearchMemoryForWebUI(args[0].GetString(), *limit);
++  }
++
++  void HandleDeleteMemory(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 2u || !args[0].is_string() || !args[1].is_bool() ||
++        !args[1].GetBool() ||
++        !IsBoundedControlString(args[0].GetString(),
++                                kMaxControlRecordIdBytes)) {
++      Reject("Confirm permanent memory deletion and retry");
++      return;
++    }
++    owner_->HandleControlDeleteMemoryForWebUI(args[0].GetString());
++  }
++
++  void HandleSaveGuide(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 1u || !args[0].is_dict()) {
++      Reject("Review the site guide fields and retry");
++      return;
++    }
++    const base::DictValue& value = args[0].GetDict();
++    const std::string* guide_id = value.FindString("guide_id");
++    const std::string* title = value.FindString("title");
++    const std::string* instructions = value.FindString("instructions");
++    const std::string* visibility = value.FindString("visibility");
++    const std::string* origin = value.FindString("origin");
++    std::optional<std::vector<std::string>> tags =
++        ParseControlTags(value.FindList("tags"));
++    if (value.size() != 6u || !guide_id || !title || !instructions ||
++        !visibility || !origin || !tags ||
++        !IsBoundedControlString(*guide_id, kMaxControlRecordIdBytes, false) ||
++        !IsBoundedControlString(*title, prometheus::kMaxMemoryTitleBytes) ||
++        !IsBoundedControlString(*instructions,
++                                prometheus::kMaxMemoryTextBytes) ||
++        !IsBoundedControlString(*origin, kMaxControlOriginBytes) ||
++        !IsControlVisibility(*visibility)) {
++      Reject("Review the bounded site guide fields and exact origin");
++      return;
++    }
++    owner_->HandleControlSaveGuideForWebUI({.guide_id = *guide_id,
++                                            .title = *title,
++                                            .instructions = *instructions,
++                                            .tags = std::move(*tags),
++                                            .visibility = *visibility,
++                                            .origin = *origin});
++  }
++
++  void HandleSearchGuides(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    const std::optional<int> limit =
++        args.size() == 2u ? args[1].GetIfInt() : std::nullopt;
++    if (args.size() != 2u || !args[0].is_string() || !limit || *limit <= 0 ||
++        *limit > static_cast<int>(prometheus::kMaxMemorySearchResults) ||
++        !IsBoundedControlString(args[0].GetString(),
++                                prometheus::kMaxMemoryQueryBytes)) {
++      Reject("Shorten the site guide search and retry");
++      return;
++    }
++    owner_->HandleControlSearchGuidesForWebUI(args[0].GetString(), *limit);
++  }
++
++  void HandleApplyGuide(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 1u || !args[0].is_string() ||
++        !IsBoundedControlString(args[0].GetString(),
++                                kMaxControlRecordIdBytes)) {
++      Reject("Refresh the site guide and current page before retrying");
++      return;
++    }
++    owner_->HandleControlApplyGuideForWebUI(args[0].GetString());
++  }
++
++  void HandleDeleteGuide(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 2u || !args[0].is_string() || !args[1].is_bool() ||
++        !args[1].GetBool() ||
++        !IsBoundedControlString(args[0].GetString(),
++                                kMaxControlRecordIdBytes)) {
++      Reject("Confirm permanent site guide deletion and retry");
++      return;
++    }
++    owner_->HandleControlDeleteGuideForWebUI(args[0].GetString());
++  }
++
++  void HandleSaveVaultMetadata(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 1u || !args[0].is_dict()) {
++      Reject("Review the vault metadata and retry");
++      return;
++    }
++    const base::DictValue& value = args[0].GetDict();
++    const std::string* entry_id = value.FindString("entry_id");
++    const std::string* label = value.FindString("label");
++    const std::string* kind = value.FindString("kind");
++    const std::string* origin = value.FindString("origin");
++    if (value.size() != 4u || !entry_id || !label || !kind || !origin ||
++        !IsBoundedControlString(*entry_id, kMaxControlRecordIdBytes, false) ||
++        !IsBoundedControlString(*label,
++                                prometheus::kMaxPrometheusVaultLabelBytes) ||
++        (*kind != "credential" && *kind != "payment") ||
++        !IsBoundedControlString(*origin, kMaxControlOriginBytes)) {
++      Reject("Review the bounded vault metadata and exact origin");
++      return;
++    }
++    owner_->HandleControlSaveVaultMetadataForWebUI({.entry_id = *entry_id,
++                                                    .label = *label,
++                                                    .kind = *kind,
++                                                    .origin = *origin});
++  }
++
++  void HandleDeleteVaultMetadata(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    if (args.size() != 2u || !args[0].is_string() || !args[1].is_bool() ||
++        !args[1].GetBool() ||
++        !IsBoundedControlString(args[0].GetString(),
++                                kMaxControlRecordIdBytes)) {
++      Reject("Confirm permanent vault metadata deletion and retry");
++      return;
++    }
++    owner_->HandleControlDeleteVaultMetadataForWebUI(args[0].GetString());
++  }
++
+   base::WeakPtr<PrometheusControlPanelUI> owner_;
+ };
+ 
+@@ -451,12 +706,11 @@ void AddPrometheusCommonResourcePaths(content::WebUIDataSource* source) {
+   source->AddResourcePath("svg/fa_wrench.svg", IDR_PROMETHEUS_ICON_FA_WRENCH);
+ }
+ 
+-content::WebUIDataSource* ConfigurePrometheusDataSource(
+-    content::WebUI* web_ui,
+-    const char* host,
+-    int default_resource) {
+-  auto* source = content::WebUIDataSource::CreateAndAdd(
+-      Profile::FromWebUI(web_ui), host);
++content::WebUIDataSource* ConfigurePrometheusDataSource(content::WebUI* web_ui,
++                                                        const char* host,
++                                                        int default_resource) {
++  auto* source =
++      content::WebUIDataSource::CreateAndAdd(Profile::FromWebUI(web_ui), host);
+   source->SetDefaultResource(default_resource);
+   AddPrometheusCommonResourcePaths(source);
+   source->UseStringsJs();
+@@ -471,7 +725,8 @@ PrometheusSidePanelUIConfig::PrometheusSidePanelUIConfig()
+ 
+ PrometheusSidePanelUI::PrometheusSidePanelUI(content::WebUI* web_ui)
+     : TopChromeWebUIController(web_ui, /*enable_chrome_send=*/true) {
+-  ConfigurePrometheusDataSource(web_ui, chrome::kChromeUIPrometheusSidePanelHost,
++  ConfigurePrometheusDataSource(web_ui,
++                                chrome::kChromeUIPrometheusSidePanelHost,
+                                 IDR_PROMETHEUS_SIDE_PANEL_HTML);
+   web_ui->AddMessageHandler(std::make_unique<PrometheusSidePanelMessageHandler>(
+       weak_factory_.GetWeakPtr()));
+@@ -605,8 +860,7 @@ PrometheusControlPanelUI::PrometheusControlPanelUI(content::WebUI* web_ui)
+       IDR_PROMETHEUS_CONTROL_PANEL_HTML);
+ 
+   Profile* const candidate_profile = Profile::FromWebUI(web_ui);
+-  content::WebContents* const candidate_web_contents =
+-      web_ui->GetWebContents();
++  content::WebContents* const candidate_web_contents = web_ui->GetWebContents();
+   std::unique_ptr<prometheus::PrometheusControlPanelRuntime> runtime;
+   if (candidate_profile && candidate_profile->IsRegularProfile() &&
+       candidate_web_contents &&
+@@ -718,6 +972,96 @@ void PrometheusControlPanelUI::HandleControlClearLogsForWebUI() {
+   SendFreshControlSnapshot();
+ }
+ 
++void PrometheusControlPanelUI::HandleControlSaveMemoryForWebUI(
++    prometheus::PrometheusControlMemoryMutation mutation) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->SaveMemory(std::move(mutation))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlSearchMemoryForWebUI(
++    std::string query,
++    size_t limit) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->SearchMemory(std::move(query), limit)
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++}
++
++void PrometheusControlPanelUI::HandleControlDeleteMemoryForWebUI(
++    std::string memory_id) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->DeleteMemory(std::move(memory_id))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlSaveGuideForWebUI(
++    prometheus::PrometheusControlGuideMutation mutation) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->SaveSiteGuide(std::move(mutation))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlSearchGuidesForWebUI(
++    std::string query,
++    size_t limit) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->SearchSiteGuides(std::move(query), limit)
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++}
++
++void PrometheusControlPanelUI::HandleControlApplyGuideForWebUI(
++    std::string guide_id) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->ApplySiteGuide(std::move(guide_id))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlDeleteGuideForWebUI(
++    std::string guide_id) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->DeleteSiteGuide(std::move(guide_id))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlSaveVaultMetadataForWebUI(
++    prometheus::PrometheusControlVaultMetadataMutation mutation) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->SaveVaultMetadata(std::move(mutation))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlDeleteVaultMetadataForWebUI(
++    std::string entry_id) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? control_runtime_->DeleteVaultMetadata(std::move(entry_id))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
+ void PrometheusControlPanelUI::HandleInvalidControlMessageForWebUI(
+     std::string recovery) {
+   SendControlOperation(ControlErrorValue(std::move(recovery)));
+@@ -759,8 +1103,7 @@ void PrometheusControlPanelUI::SendFreshControlSnapshot() {
+                               "TARGET_LOST"));
+ }
+ 
+-void PrometheusControlPanelUI::SendControlOperation(
+-    base::DictValue operation) {
++void PrometheusControlPanelUI::SendControlOperation(base::DictValue operation) {
+   web_ui()->CallJavascriptFunctionUnsafe("prometheusControlReceiveOperation",
+                                          base::Value(std::move(operation)));
+ }
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+index be2a4dc6d8..584bc78ff9 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+@@ -35,6 +35,9 @@ class PrometheusControlPanelUI;
+ 
+ namespace prometheus {
+ struct PrometheusControlProviderMutation;
++struct PrometheusControlMemoryMutation;
++struct PrometheusControlGuideMutation;
++struct PrometheusControlVaultMetadataMutation;
+ class PrometheusControlPanelRuntime;
+ class PrometheusSidePanelRuntime;
+ }  // namespace prometheus
+@@ -131,10 +134,21 @@ class PrometheusControlPanelUI : public content::WebUIController {
+   void HandleControlDeleteProviderForWebUI(std::string provider_id);
+   void HandleControlSetProviderEnabledForWebUI(std::string provider_id,
+                                                bool enabled);
+-  void HandleControlMoveProviderForWebUI(std::string provider_id,
+-                                         bool move_up);
++  void HandleControlMoveProviderForWebUI(std::string provider_id, bool move_up);
+   void HandleControlDiscoverModelsForWebUI(std::string provider_id);
+   void HandleControlClearLogsForWebUI();
++  void HandleControlSaveMemoryForWebUI(
++      prometheus::PrometheusControlMemoryMutation mutation);
++  void HandleControlSearchMemoryForWebUI(std::string query, size_t limit);
++  void HandleControlDeleteMemoryForWebUI(std::string memory_id);
++  void HandleControlSaveGuideForWebUI(
++      prometheus::PrometheusControlGuideMutation mutation);
++  void HandleControlSearchGuidesForWebUI(std::string query, size_t limit);
++  void HandleControlApplyGuideForWebUI(std::string guide_id);
++  void HandleControlDeleteGuideForWebUI(std::string guide_id);
++  void HandleControlSaveVaultMetadataForWebUI(
++      prometheus::PrometheusControlVaultMetadataMutation mutation);
++  void HandleControlDeleteVaultMetadataForWebUI(std::string entry_id);
+   void HandleInvalidControlMessageForWebUI(std::string recovery);
+ 
+   Profile* profile_for_testing() const { return profile_; }
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 3380cd530a..fca0cea28a 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -43,6 +43,8 @@
+ #include "content/public/common/content_features.h"
+ #include "content/public/test/browser_test.h"
+ #include "content/public/test/browser_test_utils.h"
++#include "net/dns/mock_host_resolver.h"
++#include "net/test/embedded_test_server/embedded_test_server.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ #include "ui/gfx/geometry/rect.h"
+ #include "ui/gfx/switches.h"
+@@ -78,6 +80,12 @@ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
+   }
+ 
+  protected:
++  void SetUpOnMainThread() override {
++    InProcessBrowserTest::SetUpOnMainThread();
++    host_resolver()->AddRule("*", "127.0.0.1");
++    embedded_test_server()->ServeFilesFromSourceDirectory("chrome/test/data");
++  }
++
+   content::WebContents* NavigateTo(const char* url) {
+     return NavigateTo(browser(), url);
+   }
+@@ -1629,8 +1637,10 @@ IN_PROC_BROWSER_TEST_F(
+     PrometheusControlPanelBrowserTest,
+     GuideCrudSearchAndApplyRequireExactFreshCurrentDocument) {
+   ASSERT_TRUE(embedded_test_server()->Start());
+-  const GURL matching_url = embedded_test_server()->GetURL("a.test", "/one");
+-  const GURL changed_url = embedded_test_server()->GetURL("b.test", "/two");
++  const GURL matching_url =
++      embedded_test_server()->GetURL("a.test", "/title1.html");
++  const GURL changed_url =
++      embedded_test_server()->GetURL("b.test", "/title2.html");
+   content::WebContents* const control_contents =
+       NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
+   ASSERT_TRUE(control_contents);
+-- 
+2.50.1 (Apple Git-155)
+

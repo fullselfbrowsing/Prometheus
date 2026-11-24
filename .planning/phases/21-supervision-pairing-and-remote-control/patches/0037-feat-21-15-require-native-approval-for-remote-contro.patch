@@ -1,0 +1,801 @@
+From 8c91e4a5f7e6a9d109295a526c101950e166e951 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 10:35:30 -0500
+Subject: [PATCH] feat(21-15): require native approval for remote control
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   1 +
+ ...us_supervision_confirmation_browsertest.cc |  10 +
+ .../prometheus_supervision_profile_service.cc | 189 +++++++++++++++++-
+ .../prometheus_supervision_profile_service.h  |  16 +-
+ ...us_supervision_profile_service_unittest.cc | 145 ++++++++++++++
+ .../prometheus/prometheus_runtime_dialogs.cc  | 153 +++++++++++++-
+ 6 files changed, 497 insertions(+), 17 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index e830d0ad2a..9a6616f3eb 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -372,6 +372,7 @@ source_set("prometheus_supervision_profile_service") {
+     ":prometheus_supervision_action_controller",
+     ":prometheus_supervision_types",
+     "//base",
++    "//base:i18n",
+     "//chrome/browser/profiles",
+     "//chrome/browser/tab_list",
+     "//chrome/browser/ui/browser_window",
+diff --git a/chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc b/chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc
+index 056ec5302c..c185021b7e 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc
+@@ -6,11 +6,13 @@
+ #include <vector>
+ 
+ #include "base/run_loop.h"
++#include "base/test/scoped_feature_list.h"
+ #include "base/test/run_until.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/browser_window.h"
+ #include "chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h"
+ #include "chrome/test/base/in_process_browser_test.h"
++#include "content/public/common/content_features.h"
+ #include "content/public/test/browser_test.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ #include "ui/base/accelerators/accelerator.h"
+@@ -58,6 +60,11 @@ std::u16string JoinLabelText(views::View* root) {
+ 
+ class PrometheusSupervisionConfirmationBrowserTest
+     : public InProcessBrowserTest {
++ public:
++  PrometheusSupervisionConfirmationBrowserTest() {
++    feature_list_.InitAndDisableFeature(features::kInitialWebUI);
++  }
++
+  protected:
+   PrometheusSupervisionDialogModel EnableModel() const {
+     PrometheusSupervisionDialogModel model;
+@@ -92,6 +99,9 @@ class PrometheusSupervisionConfirmationBrowserTest
+              dialog->GetCancelButton();
+     }));
+   }
++
++ private:
++  base::test::ScopedFeatureList feature_list_;
+ };
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusSupervisionConfirmationBrowserTest,
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+index 838f4b184b..a5c19c9e08 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+@@ -12,6 +12,7 @@
+ #include "base/check.h"
+ #include "base/containers/span.h"
+ #include "base/functional/bind.h"
++#include "base/i18n/time_formatting.h"
+ #include "base/rand_util.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+@@ -295,6 +296,11 @@ struct PrometheusSupervisionProfileService::ViewerSession {
+   SupervisionTerminalReason terminal_reason = SupervisionTerminalReason::kNone;
+   uint64_t authority_generation = 1;
+   std::optional<base::UnguessableToken> controller_lease;
++  bool awaiting_enable_confirmation = false;
++  uint64_t enable_confirmation_generation = 0;
++  raw_ptr<content::WebContents> enable_target_contents = nullptr;
++  GURL enable_target_url;
++  std::optional<base::UnguessableToken> enable_document_epoch;
+   std::optional<SupervisionStreamStamp> last_acknowledged_stamp;
+   SupervisionRemoteActionState action_state =
+       SupervisionRemoteActionState::kIdle;
+@@ -340,7 +346,8 @@ PrometheusSupervisionProfileService::PrometheusSupervisionProfileService(
+     Profile* profile,
+     SupervisionProfileKind profile_kind,
+     ObserveTabDataCallback observe_tab_data,
+-    ActionRouteDispatcher action_dispatcher)
++    ActionRouteDispatcher action_dispatcher,
++    PrometheusSupervisionDialogLauncher dialog_launcher)
+     : PrometheusSupervisionProfileService(profile,
+                                           profile_kind,
+                                           std::move(observe_tab_data),
+@@ -349,7 +356,8 @@ PrometheusSupervisionProfileService::PrometheusSupervisionProfileService(
+                                           SupervisionLimits(),
+                                           CaptureHubFactory(),
+                                           LocalUiOpener(),
+-                                          std::move(action_dispatcher)) {}
++                                          std::move(action_dispatcher),
++                                          std::move(dialog_launcher)) {}
+ 
+ PrometheusSupervisionProfileService::PrometheusSupervisionProfileService(
+     Profile* profile,
+@@ -360,7 +368,8 @@ PrometheusSupervisionProfileService::PrometheusSupervisionProfileService(
+     SupervisionLimits limits,
+     CaptureHubFactory capture_hub_factory,
+     LocalUiOpener local_ui_opener,
+-    ActionRouteDispatcher action_dispatcher)
++    ActionRouteDispatcher action_dispatcher,
++    PrometheusSupervisionDialogLauncher dialog_launcher)
+     : profile_(profile),
+       profile_kind_(profile_kind),
+       observe_tab_data_(std::move(observe_tab_data)),
+@@ -369,7 +378,8 @@ PrometheusSupervisionProfileService::PrometheusSupervisionProfileService(
+       limits_(ClampSupervisionLimits(limits)),
+       capture_hub_factory_(std::move(capture_hub_factory)),
+       local_ui_opener_(std::move(local_ui_opener)),
+-      action_dispatcher_(std::move(action_dispatcher)) {
++      action_dispatcher_(std::move(action_dispatcher)),
++      dialog_launcher_(std::move(dialog_launcher)) {
+   CHECK(profile_);
+   CHECK(now_callback_);
+   if (!capture_hub_factory_) {
+@@ -378,6 +388,9 @@ PrometheusSupervisionProfileService::PrometheusSupervisionProfileService(
+   if (!local_ui_opener_) {
+     local_ui_opener_ = base::BindRepeating(&OpenProductionLocalUi);
+   }
++  if (!dialog_launcher_) {
++    dialog_launcher_ = base::BindRepeating(&ShowPrometheusSupervisionDialog);
++  }
+ }
+ 
+ PrometheusSupervisionProfileService::~PrometheusSupervisionProfileService() {
+@@ -966,9 +979,20 @@ SupervisionServiceResult PrometheusSupervisionProfileService::EnableControl(
+     return UnknownSessionResult();
+   }
+   if (viewer->second->immutable_owner_session_id.empty()) {
+-    return ServiceFailure(SupervisionErrorCode::kViewOnly,
+-                          "Control requires an agent-owned tab",
+-                          "Pair again after an agent claims the tab");
++    TerminateViewer(dashboard_session,
++                    SupervisionViewerState::kAuthorityLost,
++                    SupervisionTerminalReason::kOwnerLost,
++                    SupervisionAuditEvent::kAuthorityLost,
++                    SupervisionErrorCode::kViewOnly);
++    return ServiceFailure(
++        SupervisionErrorCode::kViewOnly,
++        "Control requires the nonempty Agent owner captured at redemption",
++        "Create and redeem a new pairing after an Agent claims the tab");
++  }
++  if (viewer->second->awaiting_enable_confirmation) {
++    return ServiceFailure(SupervisionErrorCode::kControllerConflict,
++                          "Control confirmation is already pending",
++                          "Finish or close the current confirmation");
+   }
+   auto controller = controllers_.find(stable_tab_id);
+   if (controller != controllers_.end() &&
+@@ -981,6 +1005,138 @@ SupervisionServiceResult PrometheusSupervisionProfileService::EnableControl(
+     return SupervisionServiceResult::Success();
+   }
+ 
++  tabs::TabInterface* const exact_tab = ResolveExactTarget(*viewer->second);
++  if (!exact_tab || !viewer->second->exact_browser) {
++    HandleTargetLost(stable_tab_id);
++    return ServiceFailure(SupervisionErrorCode::kStaleTarget,
++                          "The exact supervision target is unavailable",
++                          "Create and redeem a new pairing");
++  }
++
++  std::optional<base::UnguessableToken> document_epoch;
++  if (CaptureHubEntry* const capture_hub = FindCaptureHub(*viewer->second);
++      capture_hub && viewer->second->capture_consumer_token.has_value()) {
++    std::optional<SupervisionCaptureBaselineDelivery> current =
++        capture_hub->hub->ReadCurrentBaseline(
++            *viewer->second->capture_consumer_token);
++    if (current.has_value()) {
++      document_epoch = current->stamp.document_epoch;
++    }
++  }
++
++  PrometheusSupervisionDialogModel model;
++  model.kind = PrometheusSupervisionDialogKind::kEnableControl;
++  model.client_label = viewer->second->client_label;
++  model.target_tab_title = SafeTitle(exact_tab);
++  model.site_origin = SafeOrigin(exact_tab);
++  model.expires_label = base::UTF16ToUTF8(
++      base::TimeFormatShortDateAndTime(viewer->second->expires_at));
++
++  ++viewer->second->enable_confirmation_generation;
++  if (viewer->second->enable_confirmation_generation == 0) {
++    ++viewer->second->enable_confirmation_generation;
++  }
++  const uint64_t confirmation_generation =
++      viewer->second->enable_confirmation_generation;
++  const uint64_t authority_generation = viewer->second->authority_generation;
++  viewer->second->awaiting_enable_confirmation = true;
++  viewer->second->enable_target_contents = exact_tab->GetContents();
++  viewer->second->enable_target_url = exact_tab->GetURL();
++  viewer->second->enable_document_epoch = std::move(document_epoch);
++
++  const bool launched = dialog_launcher_.Run(
++      viewer->second->exact_browser.get(), model,
++      base::BindOnce(
++          &PrometheusSupervisionProfileService::OnEnableControlConfirmation,
++          weak_factory_.GetWeakPtr(), dashboard_session,
++          confirmation_generation, authority_generation));
++  if (!launched) {
++    viewer = viewers_.find(dashboard_session);
++    if (viewer != viewers_.end() &&
++        viewer->second->enable_confirmation_generation ==
++            confirmation_generation &&
++        viewer->second->awaiting_enable_confirmation) {
++      viewer->second->awaiting_enable_confirmation = false;
++      viewer->second->enable_target_contents = nullptr;
++      viewer->second->enable_target_url = GURL();
++      viewer->second->enable_document_epoch.reset();
++    }
++    return ServiceFailure(SupervisionErrorCode::kShutdown,
++                          "The native control confirmation is unavailable",
++                          "Retry from the live browser window");
++  }
++  return SupervisionServiceResult::Success();
++}
++
++void PrometheusSupervisionProfileService::OnEnableControlConfirmation(
++    const base::UnguessableToken& dashboard_session,
++    uint64_t confirmation_generation,
++    uint64_t authority_generation,
++    PrometheusSupervisionDialogResult result) {
++  auto viewer = viewers_.find(dashboard_session);
++  if (shutdown_ || viewer == viewers_.end() ||
++      !viewer->second->awaiting_enable_confirmation ||
++      viewer->second->enable_confirmation_generation !=
++          confirmation_generation) {
++    return;
++  }
++
++  content::WebContents* const expected_contents =
++      viewer->second->enable_target_contents;
++  const GURL expected_url = viewer->second->enable_target_url;
++  const std::optional<base::UnguessableToken> expected_document_epoch =
++      viewer->second->enable_document_epoch;
++  viewer->second->awaiting_enable_confirmation = false;
++  viewer->second->enable_target_contents = nullptr;
++  viewer->second->enable_target_url = GURL();
++  viewer->second->enable_document_epoch.reset();
++  if (result != PrometheusSupervisionDialogResult::kApproved) {
++    return;
++  }
++
++  SweepExpired();
++  viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end() ||
++      viewer->second->authority_generation != authority_generation ||
++      viewer->second->enable_confirmation_generation !=
++          confirmation_generation ||
++      viewer->second->viewer_state != SupervisionViewerState::kViewOnly ||
++      viewer->second->controller_lease.has_value() ||
++      viewer->second->immutable_owner_session_id.empty() ||
++      viewer->second->expires_at <= Now()) {
++    return;
++  }
++  if (!RevalidateViewerOwner(dashboard_session)) {
++    return;
++  }
++  viewer = viewers_.find(dashboard_session);
++  if (viewer == viewers_.end()) {
++    return;
++  }
++  tabs::TabInterface* const exact_tab = ResolveExactTarget(*viewer->second);
++  if (!exact_tab || exact_tab->GetContents() != expected_contents ||
++      exact_tab->GetURL() != expected_url) {
++    return;
++  }
++
++  std::optional<base::UnguessableToken> current_document_epoch;
++  if (CaptureHubEntry* const capture_hub = FindCaptureHub(*viewer->second);
++      capture_hub && viewer->second->capture_consumer_token.has_value()) {
++    std::optional<SupervisionCaptureBaselineDelivery> current =
++        capture_hub->hub->ReadCurrentBaseline(
++            *viewer->second->capture_consumer_token);
++    if (current.has_value()) {
++      current_document_epoch = current->stamp.document_epoch;
++    }
++  }
++  if (current_document_epoch != expected_document_epoch) {
++    return;
++  }
++
++  const int32_t stable_tab_id = viewer->second->stable_tab_id;
++  if (controllers_.contains(stable_tab_id)) {
++    return;
++  }
+   controllers_[stable_tab_id] = dashboard_session;
+   viewer->second->viewer_state = SupervisionViewerState::kController;
+   viewer->second->controller_lease = base::UnguessableToken::Create();
+@@ -988,7 +1144,6 @@ SupervisionServiceResult PrometheusSupervisionProfileService::EnableControl(
+   AddAudit(stable_tab_id, SupervisionAuditEvent::kControlEnabled,
+            std::optional<std::string>(viewer->second->client_label));
+   NotifySnapshotChanged(stable_tab_id);
+-  return SupervisionServiceResult::Success();
+ }
+ 
+ SupervisionServiceResult PrometheusSupervisionProfileService::StopControl(
+@@ -1001,6 +1156,14 @@ SupervisionServiceResult PrometheusSupervisionProfileService::StopControl(
+   if (viewer == viewers_.end()) {
+     return UnknownSessionResult();
+   }
++  if (viewer->second->awaiting_enable_confirmation) {
++    viewer->second->awaiting_enable_confirmation = false;
++    ++viewer->second->enable_confirmation_generation;
++    viewer->second->enable_target_contents = nullptr;
++    viewer->second->enable_target_url = GURL();
++    viewer->second->enable_document_epoch.reset();
++    return SupervisionServiceResult::Success();
++  }
+   if (viewer->second->viewer_state != SupervisionViewerState::kController) {
+     return ServiceFailure(SupervisionErrorCode::kViewOnly,
+                           "This dashboard is already view-only",
+@@ -1446,6 +1609,11 @@ void PrometheusSupervisionProfileService::Shutdown() {
+     }
+   }
+   for (auto& [dashboard_session, viewer] : viewers_) {
++    viewer->awaiting_enable_confirmation = false;
++    ++viewer->enable_confirmation_generation;
++    viewer->enable_target_contents = nullptr;
++    viewer->enable_target_url = GURL();
++    viewer->enable_document_epoch.reset();
+     viewer->controller_lease.reset();
+     ++viewer->authority_generation;
+     if (viewer->action_controller) {
+@@ -2102,6 +2270,11 @@ void PrometheusSupervisionProfileService::TerminateViewer(
+   viewer->stream_state = SupervisionStreamState::kEnded;
+   viewer->terminal_reason = reason;
+   viewer->controller_lease.reset();
++  viewer->awaiting_enable_confirmation = false;
++  ++viewer->enable_confirmation_generation;
++  viewer->enable_target_contents = nullptr;
++  viewer->enable_target_url = GURL();
++  viewer->enable_document_epoch.reset();
+   ++viewer->authority_generation;
+   if (viewer->action_controller &&
+       viewer->action_controller->has_in_flight_action_for_testing()) {
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.h b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+index 49e146569c..45d717c1d4 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+@@ -24,6 +24,7 @@
+ #include "chrome/browser/prometheus/prometheus_supervision_action_controller.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_capture_hub.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_types.h"
++#include "chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h"
+ #include "components/keyed_service/core/keyed_service.h"
+ 
+ class BrowserWindowInterface;
+@@ -119,7 +120,10 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+                                       SupervisionProfileKind profile_kind,
+                                       ObserveTabDataCallback observe_tab_data,
+                                       ActionRouteDispatcher action_dispatcher =
+-                                          ActionRouteDispatcher());
++                                          ActionRouteDispatcher(),
++                                      PrometheusSupervisionDialogLauncher
++                                          dialog_launcher =
++                                              PrometheusSupervisionDialogLauncher());
+   PrometheusSupervisionProfileService(
+       Profile* profile,
+       SupervisionProfileKind profile_kind,
+@@ -129,7 +133,9 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+       SupervisionLimits limits = SupervisionLimits(),
+       CaptureHubFactory capture_hub_factory = CaptureHubFactory(),
+       LocalUiOpener local_ui_opener = LocalUiOpener(),
+-      ActionRouteDispatcher action_dispatcher = ActionRouteDispatcher());
++      ActionRouteDispatcher action_dispatcher = ActionRouteDispatcher(),
++      PrometheusSupervisionDialogLauncher dialog_launcher =
++          PrometheusSupervisionDialogLauncher());
+   PrometheusSupervisionProfileService(
+       const PrometheusSupervisionProfileService&) = delete;
+   PrometheusSupervisionProfileService& operator=(
+@@ -271,6 +277,11 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+                               SupervisionAuditEvent audit_event,
+                               SupervisionErrorCode error_code);
+   bool RevalidateViewerOwner(const base::UnguessableToken& dashboard_session);
++  void OnEnableControlConfirmation(
++      const base::UnguessableToken& dashboard_session,
++      uint64_t confirmation_generation,
++      uint64_t authority_generation,
++      PrometheusSupervisionDialogResult result);
+   std::optional<SupervisionActionAuthoritySnapshot> ResolveActionAuthority(
+       const base::UnguessableToken& dashboard_session);
+   void OnDashboardActionCompleted(
+@@ -299,6 +310,7 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+   CaptureHubFactory capture_hub_factory_;
+   LocalUiOpener local_ui_opener_;
+   ActionRouteDispatcher action_dispatcher_;
++  PrometheusSupervisionDialogLauncher dialog_launcher_;
+   bool shutdown_ = false;
+   uint64_t next_pairing_serial_ = 0;
+   uint64_t next_compatibility_generation_ = 0;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+index 1e85b695af..ba7545a5bf 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+@@ -140,6 +140,7 @@ class PrometheusSupervisionProfileServiceTest : public testing::Test {
+       service_->RemoveObserver(&observer_);
+       service_.reset();
+     }
++    pending_dialog_callbacks_.clear();
+     service_ = std::make_unique<PrometheusSupervisionProfileService>(
+         profile_, kind,
+         base::BindRepeating(
+@@ -156,6 +157,10 @@ class PrometheusSupervisionProfileServiceTest : public testing::Test {
+             base::Unretained(this)),
+         base::BindRepeating(
+             &PrometheusSupervisionProfileServiceTest::OpenLocalUi,
++            base::Unretained(this)),
++        PrometheusSupervisionProfileService::ActionRouteDispatcher(),
++        base::BindRepeating(
++            &PrometheusSupervisionProfileServiceTest::LaunchDialog,
+             base::Unretained(this)));
+     service_->AddObserver(&observer_);
+   }
+@@ -195,6 +200,31 @@ class PrometheusSupervisionProfileServiceTest : public testing::Test {
+     return true;
+   }
+ 
++  bool LaunchDialog(
++      BrowserWindowInterface* exact_browser,
++      const PrometheusSupervisionDialogModel& model,
++      PrometheusSupervisionDialogCallback callback) {
++    EXPECT_EQ(&browser_, exact_browser);
++    dialog_models_.push_back(model);
++    if (!dialog_launch_succeeds_) {
++      return false;
++    }
++    if (hold_dialog_callbacks_) {
++      pending_dialog_callbacks_.push_back(std::move(callback));
++    } else {
++      std::move(callback).Run(PrometheusSupervisionDialogResult::kApproved);
++    }
++    return true;
++  }
++
++  void ReplyToNextDialog(PrometheusSupervisionDialogResult result) {
++    ASSERT_FALSE(pending_dialog_callbacks_.empty());
++    PrometheusSupervisionDialogCallback callback =
++        std::move(pending_dialog_callbacks_.front());
++    pending_dialog_callbacks_.pop_front();
++    std::move(callback).Run(result);
++  }
++
+   SupervisionPairingCreationResult CreatePairing() {
+     return service_->CreatePairing(&browser_, &tab_);
+   }
+@@ -263,6 +293,10 @@ class PrometheusSupervisionProfileServiceTest : public testing::Test {
+   RecordingSupervisionObserver observer_;
+   ServiceCaptureSource capture_source_;
+   size_t local_ui_open_count_ = 0;
++  bool dialog_launch_succeeds_ = true;
++  bool hold_dialog_callbacks_ = false;
++  std::vector<PrometheusSupervisionDialogModel> dialog_models_;
++  std::deque<PrometheusSupervisionDialogCallback> pending_dialog_callbacks_;
+   std::unique_ptr<PrometheusSupervisionProfileService> service_;
+ };
+ 
+@@ -473,6 +507,117 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+   EXPECT_TRUE(service_->EnableControl(viewer_b.dashboard_session).ok);
+ }
+ 
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       EnableControlCreatesLeaseOnlyAfterFreshNativeApproval) {
++  PrometheusAgentTabObservationLease owner_lease =
++      agent_service_->ObserveOrCreateTabData(&tab_, &observer_tab_data_);
++  ASSERT_NE(nullptr, owner_lease.data());
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-a", "Agent A").ok);
++  SupervisionPairingCreationResult creation = CreatePairing();
++  ASSERT_TRUE(creation.ok);
++  SupervisionRedemptionResult viewer = Redeem(creation, "Review console");
++  ASSERT_TRUE(viewer.ok);
++  hold_dialog_callbacks_ = true;
++
++  ASSERT_TRUE(service_->EnableControl(viewer.dashboard_session).ok);
++  EXPECT_EQ(0u, service_->controller_count_for_testing());
++  ASSERT_EQ(1u, pending_dialog_callbacks_.size());
++  ASSERT_EQ(1u, dialog_models_.size());
++  EXPECT_EQ(PrometheusSupervisionDialogKind::kEnableControl,
++            dialog_models_.back().kind);
++  EXPECT_EQ("Review console", dialog_models_.back().client_label);
++  EXPECT_EQ("Release notes", dialog_models_.back().target_tab_title);
++  EXPECT_EQ("https://example.test", dialog_models_.back().site_origin);
++  EXPECT_FALSE(dialog_models_.back().expires_label.empty());
++  EXPECT_EQ(std::string::npos,
++            dialog_models_.back().site_origin.find("private"));
++  EXPECT_EQ(std::string::npos,
++            dialog_models_.back().site_origin.find("secret"));
++
++  ReplyToNextDialog(PrometheusSupervisionDialogResult::kApproved);
++  EXPECT_EQ(1u, service_->controller_count_for_testing());
++  EXPECT_TRUE(service_->StopControl(viewer.dashboard_session).ok);
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       EnableControlDenyOwnerLossAndExpiryNeverCreateLease) {
++  PrometheusAgentTabObservationLease owner_lease =
++      agent_service_->ObserveOrCreateTabData(&tab_, &observer_tab_data_);
++  ASSERT_NE(nullptr, owner_lease.data());
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-a", "Agent A").ok);
++  hold_dialog_callbacks_ = true;
++
++  SupervisionPairingCreationResult denied_creation = CreatePairing();
++  ASSERT_TRUE(denied_creation.ok);
++  SupervisionRedemptionResult denied = Redeem(denied_creation, "Denied");
++  ASSERT_TRUE(denied.ok);
++  ASSERT_TRUE(service_->EnableControl(denied.dashboard_session).ok);
++  ReplyToNextDialog(PrometheusSupervisionDialogResult::kDenied);
++  EXPECT_EQ(0u, service_->controller_count_for_testing());
++
++  SupervisionPairingCreationResult owner_creation = CreatePairing();
++  ASSERT_TRUE(owner_creation.ok);
++  SupervisionRedemptionResult owner_lost =
++      Redeem(owner_creation, "Owner lost");
++  ASSERT_TRUE(owner_lost.ok);
++  ASSERT_TRUE(service_->EnableControl(owner_lost.dashboard_session).ok);
++  ASSERT_TRUE(owner_lease.data()->ReleaseIfOwned("owner-a").ok);
++  ReplyToNextDialog(PrometheusSupervisionDialogResult::kApproved);
++  EXPECT_EQ(0u, service_->controller_count_for_testing());
++  EXPECT_EQ(0u,
++            service_->viewer_count_for_testing(owner_creation.stable_tab_id));
++
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-b", "Agent B").ok);
++  SupervisionPairingCreationResult expiry_creation = CreatePairing();
++  ASSERT_TRUE(expiry_creation.ok);
++  SupervisionRedemptionResult expired =
++      Redeem(expiry_creation, "Expired");
++  ASSERT_TRUE(expired.ok);
++  ASSERT_TRUE(service_->EnableControl(expired.dashboard_session).ok);
++  now_ += base::Minutes(16);
++  ReplyToNextDialog(PrometheusSupervisionDialogResult::kApproved);
++  EXPECT_EQ(0u, service_->controller_count_for_testing());
++  EXPECT_EQ(0u,
++            service_->viewer_count_for_testing(expiry_creation.stable_tab_id));
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       EnableControlRejectsChangedDocumentAndCompetingController) {
++  PrometheusAgentTabObservationLease owner_lease =
++      agent_service_->ObserveOrCreateTabData(&tab_, &observer_tab_data_);
++  ASSERT_NE(nullptr, owner_lease.data());
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-a", "Agent A").ok);
++  hold_dialog_callbacks_ = true;
++
++  SupervisionPairingCreationResult first_creation = CreatePairing();
++  ASSERT_TRUE(first_creation.ok);
++  SupervisionRedemptionResult first = Redeem(first_creation, "First");
++  ASSERT_TRUE(first.ok);
++  ASSERT_EQ(1u, capture_source_.pending_count());
++  capture_source_.CompleteNext(MakeServiceBaseline("first document"));
++  ASSERT_TRUE(service_->EnableControl(first.dashboard_session).ok);
++  PrometheusSupervisionCaptureHub* const hub =
++      service_->capture_hub_for_testing(first_creation.stable_tab_id);
++  ASSERT_TRUE(hub);
++  hub->ReplaceDocumentForTesting();
++  ReplyToNextDialog(PrometheusSupervisionDialogResult::kApproved);
++  EXPECT_EQ(0u, service_->controller_count_for_testing());
++
++  SupervisionPairingCreationResult second_creation = CreatePairing();
++  ASSERT_TRUE(second_creation.ok);
++  SupervisionRedemptionResult second = Redeem(second_creation, "Second");
++  ASSERT_TRUE(second.ok);
++  ASSERT_TRUE(service_->EnableControl(first.dashboard_session).ok);
++  ASSERT_EQ(1u, pending_dialog_callbacks_.size());
++  hold_dialog_callbacks_ = false;
++  ASSERT_TRUE(service_->EnableControl(second.dashboard_session).ok);
++  EXPECT_EQ(1u, service_->controller_count_for_testing());
++  ReplyToNextDialog(PrometheusSupervisionDialogResult::kApproved);
++  EXPECT_EQ(1u, service_->controller_count_for_testing());
++  EXPECT_FALSE(service_->StopControl(first.dashboard_session).ok);
++  EXPECT_TRUE(service_->StopControl(second.dashboard_session).ok);
++}
++
+ TEST_F(PrometheusSupervisionProfileServiceTest,
+        ControllerDeniedForImmutableEmptyOwnerAndLaterClaimEndsViewer) {
+   SupervisionPairingCreationResult creation = CreatePairing();
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc b/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc
+index f1b5c4e577..1c6a209708 100644
+--- a/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc
++++ b/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h"
+ 
++#include <algorithm>
+ #include <memory>
+ #include <string>
+ #include <utility>
+@@ -14,6 +15,7 @@
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "components/constrained_window/constrained_window_views.h"
+@@ -66,14 +68,16 @@ views::Label* AddMultilineLabel(views::View* parent,
+ void ConfigureDialog(views::DialogDelegate* dialog,
+                      views::View* contents,
+                      std::u16string accept_label,
+-                     std::u16string cancel_label) {
++                     std::u16string cancel_label,
++                     ui::mojom::DialogButton default_button =
++                         ui::mojom::DialogButton::kOk) {
+   dialog->SetModalType(ui::mojom::ModalType::kWindow);
+   dialog->SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk) |
+                      static_cast<int>(ui::mojom::DialogButton::kCancel));
+   dialog->SetButtonLabel(ui::mojom::DialogButton::kOk, std::move(accept_label));
+   dialog->SetButtonLabel(ui::mojom::DialogButton::kCancel,
+                          std::move(cancel_label));
+-  dialog->SetDefaultButton(static_cast<int>(ui::mojom::DialogButton::kOk));
++  dialog->SetDefaultButton(static_cast<int>(default_button));
+   dialog->set_fixed_width(kDialogWidth);
+   contents->SetLayoutManager(std::make_unique<views::BoxLayout>(
+       views::BoxLayout::Orientation::kVertical, gfx::Insets(kDialogInset),
+@@ -83,12 +87,14 @@ void ConfigureDialog(views::DialogDelegate* dialog,
+ class RuntimeDialogDelegate : public views::DialogDelegate {
+  public:
+   RuntimeDialogDelegate(std::u16string accept_label,
+-                        std::u16string cancel_label) {
++                        std::u16string cancel_label,
++                        ui::mojom::DialogButton default_button =
++                            ui::mojom::DialogButton::kOk) {
+     auto contents = std::make_unique<views::View>();
+     contents_ = contents.get();
+     SetContentsView(std::move(contents));
+     ConfigureDialog(this, contents_, std::move(accept_label),
+-                    std::move(cancel_label));
++                    std::move(cancel_label), default_button);
+   }
+ 
+   RuntimeDialogDelegate(const RuntimeDialogDelegate&) = delete;
+@@ -267,6 +273,132 @@ class ConfirmationDialog final : public RuntimeDialogDelegate {
+   base::OnceCallback<void(bool)> callback_;
+ };
+ 
++bool IsSafeDisplayText(std::string_view value, size_t maximum_bytes) {
++  if (value.empty() || value.size() > maximum_bytes ||
++      !base::IsStringUTF8(value)) {
++    return false;
++  }
++  return std::ranges::none_of(value, [](unsigned char character) {
++    return character < 0x20 || character == 0x7f;
++  });
++}
++
++bool IsClosedActionLabel(std::string_view label) {
++  static constexpr std::string_view kLabels[] = {
++      "Click",  "Type",   "Key press", "Scroll", "Hover",
++      "Select", "Clear",  "Drag",      "Drop",   "Navigate",
++  };
++  return std::ranges::find(kLabels, label) != std::end(kLabels);
++}
++
++bool IsValidSupervisionDialogModel(
++    const PrometheusSupervisionDialogModel& model) {
++  if (!IsSafeDisplayText(model.client_label, 128u) ||
++      !IsSafeDisplayText(model.target_tab_title, 256u) ||
++      !IsSafeDisplayText(model.site_origin, 512u) ||
++      !IsSafeDisplayText(model.expires_label, 128u)) {
++    return false;
++  }
++  if (model.kind == PrometheusSupervisionDialogKind::kEnableControl) {
++    return model.action_label.empty() && model.permission_boundary.empty();
++  }
++  return IsClosedActionLabel(model.action_label) &&
++         model.permission_boundary == "Page actions";
++}
++
++class SupervisionConfirmationDialog final : public RuntimeDialogDelegate {
++ public:
++  SupervisionConfirmationDialog(
++      const PrometheusSupervisionDialogModel& model,
++      PrometheusSupervisionDialogCallback callback)
++      : RuntimeDialogDelegate(
++            model.kind == PrometheusSupervisionDialogKind::kEnableControl
++                ? u"Enable control"
++                : u"Allow once",
++            model.kind == PrometheusSupervisionDialogKind::kEnableControl
++                ? u"Keep view only"
++                : u"Block action",
++            ui::mojom::DialogButton::kCancel),
++        model_(model),
++        callback_(std::move(callback)) {
++    CHECK(callback_);
++    const bool enabling =
++        model_.kind == PrometheusSupervisionDialogKind::kEnableControl;
++    if (enabling) {
++      AddMultilineLabel(
++          contents(), base::UTF8ToUTF16(
++                          model_.client_label + " can act in " +
++                          model_.target_tab_title + " until " +
++                          model_.expires_label +
++                          ". Prometheus will still enforce tab ownership, "
++                          "permissions, target validation, and confirmations."));
++    } else {
++      AddMultilineLabel(
++          contents(), base::UTF8ToUTF16(
++                          model_.client_label + " wants to " +
++                          model_.action_label + " in " +
++                          model_.target_tab_title +
++                          ". Prometheus will recheck ownership, permissions, "
++                          "and the current page before acting."));
++    }
++    AddRow("Client", model_.client_label);
++    AddRow("Target tab", model_.target_tab_title);
++    AddRow("Site origin", model_.site_origin);
++    if (enabling) {
++      AddRow("Access", "Page actions");
++      AddRow("Expires", model_.expires_label);
++      AddRow("Vault", "Confirmation required");
++    } else {
++      AddRow("Action", model_.action_label);
++      AddRow("Controller expires", model_.expires_label);
++      AddRow("Permission boundary", model_.permission_boundary);
++    }
++    SetCloseCallback(
++        base::BindOnce(&SupervisionConfirmationDialog::Reply,
++                       base::Unretained(this),
++                       PrometheusSupervisionDialogResult::kDenied));
++  }
++
++  SupervisionConfirmationDialog(const SupervisionConfirmationDialog&) =
++      delete;
++  SupervisionConfirmationDialog& operator=(
++      const SupervisionConfirmationDialog&) = delete;
++  ~SupervisionConfirmationDialog() override = default;
++
++  std::u16string GetWindowTitle() const override {
++    return model_.kind == PrometheusSupervisionDialogKind::kEnableControl
++               ? u"Enable remote control?"
++               : u"Confirm remote action";
++  }
++
++  views::View* GetInitiallyFocusedView() override { return GetCancelButton(); }
++
++  bool Accept() override {
++    Reply(PrometheusSupervisionDialogResult::kApproved);
++    return true;
++  }
++
++  bool Cancel() override {
++    Reply(PrometheusSupervisionDialogResult::kDenied);
++    return true;
++  }
++
++ private:
++  void AddRow(std::string_view label, std::string_view value) {
++    AddMultilineLabel(contents(), base::UTF8ToUTF16(label));
++    AddMultilineLabel(contents(), base::UTF8ToUTF16(value));
++  }
++
++  void Reply(PrometheusSupervisionDialogResult result) {
++    if (callback_) {
++      std::move(callback_).Run(result);
++    }
++  }
++
++  const PrometheusSupervisionDialogModel model_;
++  PrometheusSupervisionDialogCallback callback_;
++};
++
+ class VaultSecretDialog final : public RuntimeDialogDelegate {
+  public:
+   VaultSecretDialog(const PrometheusVaultMetadata& metadata,
+@@ -443,9 +575,16 @@ bool ShowPrometheusSupervisionDialog(
+     BrowserWindowInterface* exact_browser,
+     const PrometheusSupervisionDialogModel& model,
+     PrometheusSupervisionDialogCallback reply_callback) {
+-  // Task 21-15 RED: the closed display contract exists before the native
+-  // consent surface and backend authority wiring.
+-  return false;
++  if (!reply_callback || !IsValidSupervisionDialogModel(model)) {
++    return false;
++  }
++  const PrometheusRuntimeDialogKind kind =
++      model.kind == PrometheusSupervisionDialogKind::kEnableControl
++          ? PrometheusRuntimeDialogKind::kSupervisionEnableControl
++          : PrometheusRuntimeDialogKind::kSupervisionConsequentialAction;
++  return ShowDialog(exact_browser, kind,
++                    std::make_unique<SupervisionConfirmationDialog>(
++                        model, std::move(reply_callback)));
+ }
+ 
+ size_t PrometheusRuntimeDialogLaunchCountForTesting() {
+-- 
+2.50.1 (Apple Git-155)
+

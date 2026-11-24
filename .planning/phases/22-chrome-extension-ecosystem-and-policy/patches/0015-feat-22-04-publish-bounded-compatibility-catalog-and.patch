@@ -1,0 +1,1082 @@
+From c3dc3f610456a4ebf0a1f7cab2da8bac16feacdc Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 29 Jul 2026 11:30:50 -0500
+Subject: [PATCH] feat(22-04): publish bounded compatibility catalog and MV2
+ observation
+
+- Add prometheus_extension_compatibility_catalog.{h,cc}: a closed,
+  compiled five-row evidence catalog (category/fixture/version/SHA-256,
+  manifest version, install source, Prometheus build, Chromium revision,
+  regular/Private mode exercised, actions, Verified/Degraded/Unsupported
+  result, bounded limitation, evidence artifact) plus a WebUI-shaped
+  projector and a closed-catalog validator.
+- Replace the fixed "unsupported"/"No verified fixture" Parity Matrix
+  placeholder in prometheus_web_ui.cc with the real catalog projection.
+- Add ManifestV2PinnedPolicyObservation to
+  prometheus_extension_fixtures_browsertest.cc: loads the observation-only
+  mv2_observation fixture through the ordinary UnpackedInstaller path with
+  no MV2 allowance helper or verification bypass, and records the
+  native accepted/rejected result plus one stable reason code both as
+  gtest properties and directly to a file for verify script consumption.
+  On this pinned revision, unpacked MV2 load is natively rejected
+  (reason: unpacked_load_failed) -- observed, not asserted.
+- Add the new mv2_observation MV2 manifest/background fixture, kept
+  entirely separate from the five MV3 acceptance fixtures.
+- Fix three pre-existing dead/incorrect BUILD.gn dependency labels
+  uncovered while wiring the new catalog target (dangling
+  //chrome/browser/ui/views/side_panel/extensions, non-existent
+  prometheus_page_action_dispatcher/page_element_reader/page_snapshot
+  targets that are actually files inside prometheus_page_adapter, and
+  //chrome/browser/ui/tabs:tab_features which is actually :impl).
+---
+ chrome/browser/prometheus/BUILD.gn            |  20 +-
+ ...metheus_extension_compatibility_catalog.cc | 300 ++++++++++++++++++
+ ...ometheus_extension_compatibility_catalog.h | 133 ++++++++
+ ...xtension_compatibility_catalog_unittest.cc | 236 ++++++++++++++
+ ...ometheus_extension_fixtures_browsertest.cc | 107 +++++++
+ chrome/browser/ui/webui/prometheus/BUILD.gn   |   1 +
+ .../ui/webui/prometheus/prometheus_web_ui.cc  |  30 +-
+ .../prometheus_web_ui_browsertest.cc          |  48 +++
+ .../extensions/mv2_observation/background.js  |  10 +
+ .../extensions/mv2_observation/manifest.json  |   9 +
+ 10 files changed, 867 insertions(+), 27 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_compatibility_catalog.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_compatibility_catalog.h
+ create mode 100644 chrome/browser/prometheus/prometheus_extension_compatibility_catalog_unittest.cc
+ create mode 100644 chrome/test/data/prometheus/extensions/mv2_observation/background.js
+ create mode 100644 chrome/test/data/prometheus/extensions/mv2_observation/manifest.json
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index e5e63b2926..61bf49324d 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -295,6 +295,15 @@ source_set("prometheus_extension_policy_prefs") {
+   ]
+ }
+ 
++source_set("prometheus_extension_compatibility_catalog") {
++  sources = [
++    "prometheus_extension_compatibility_catalog.cc",
++    "prometheus_extension_compatibility_catalog.h",
++  ]
++
++  deps = [ "//base" ]
++}
++
+ source_set("prometheus_extension_policy_service") {
+   sources = [
+     "prometheus_extension_policy_service.cc",
+@@ -332,9 +341,8 @@ source_set("prometheus_extension_surface_resolver") {
+     "//chrome/browser/ui",
+     "//chrome/browser/ui/browser_window",
+     "//chrome/browser/ui/side_panel",
+-    "//chrome/browser/ui/tabs:tab_features",
+-    "//chrome/browser/ui/views/extensions",
+-    "//chrome/browser/ui/views/side_panel/extensions",
++    "//chrome/browser/ui/tabs:impl",
++    "//chrome/browser/ui/views/side_panel",
+     "//components/tabs:public",
+     "//content/public/browser",
+     "//extensions/browser",
+@@ -355,10 +363,8 @@ source_set("prometheus_extension_page_adapter") {
+     ":prometheus_extension_policy_service",
+     ":prometheus_extension_policy_types",
+     ":prometheus_extension_surface_resolver",
+-    ":prometheus_page_action_dispatcher",
+     ":prometheus_page_action_history",
+-    ":prometheus_page_element_reader",
+-    ":prometheus_page_snapshot",
++    ":prometheus_page_adapter",
+     "//base",
+     "//chrome/browser/ui",
+     "//chrome/common",
+@@ -783,6 +789,7 @@ test("prometheus_unittests") {
+     "prometheus_chrome_mode_unittest.cc",
+     "prometheus_color_mixer_unittest.cc",
+     "prometheus_css_emission_unittest.cc",
++    "prometheus_extension_compatibility_catalog_unittest.cc",
+     "prometheus_extension_policy_service_unittest.cc",
+     "prometheus_extension_page_adapter_unittest.cc",
+     "prometheus_extension_surface_resolver_unittest.cc",
+@@ -834,6 +841,7 @@ test("prometheus_unittests") {
+     ":prometheus_ask_fsb_handoff",
+     ":prometheus_chrome_mode",
+     ":prometheus_endpoint_descriptor",
++    ":prometheus_extension_compatibility_catalog",
+     ":prometheus_extension_policy_prefs",
+     ":prometheus_extension_policy_service",
+     ":prometheus_extension_page_adapter",
+diff --git a/chrome/browser/prometheus/prometheus_extension_compatibility_catalog.cc b/chrome/browser/prometheus/prometheus_extension_compatibility_catalog.cc
+new file mode 100644
+index 0000000000..b529452309
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_compatibility_catalog.cc
+@@ -0,0 +1,300 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_extension_compatibility_catalog.h"
++
++#include <algorithm>
++#include <array>
++#include <set>
++#include <string>
++#include <string_view>
++
++#include "base/strings/strcat.h"
++#include "base/strings/string_util.h"
++
++namespace prometheus {
++
++namespace {
++
++// Evidence snapshot captured from the exact fixture run recorded in every
++// row's `evidence_artifact` (see `PrometheusExtensionFixturesBrowserTest` in
++// prometheus_extension_fixtures_browsertest.cc). Every row is loaded through
++// the same developer-mode unpacked path; no row implies Chrome Web Store or
++// Manifest V2 support. Regenerating `22-COMPATIBILITY.json`/`.md` from a
++// fresh fixture run must agree with these constants, and
++// verify-phase-22-extension-fixtures.sh statically enforces that the
++// `fixture_sha256` values below match the checked-in fixture manifests.
++inline constexpr std::string_view kInstallSourceUnpacked =
++    "Developer mode (unpacked)";
++inline constexpr std::string_view kPrometheusBuild = "151.0.7898.0";
++inline constexpr std::string_view kChromiumRevision = "cdaff22b49";
++inline constexpr std::string_view kLastVerified = "2026-07-29T14:56:28Z";
++// Kept short deliberately: the WebUI renderer bounds the projected
++// `limitation` field to 160 bytes (see `controlExtensionText` in
++// prometheus_webui.js) and silently falls back to a generic placeholder if a
++// row exceeds that bound. Every row's combined limitation + suffix must stay
++// well under that cap; see the unit test that guards this budget.
++inline constexpr std::string_view kLimitationSuffix =
++    " Fixture-only evidence; not a Web Store or broad compatibility claim.";
++
++constexpr std::array<ExtensionCompatibilityRow,
++                     kExtensionCompatibilityCatalogSize>
++    kExtensionCompatibilityCatalog = {{
++        {
++            .category = ExtensionCompatibilityCategory::kPasswordManagerLike,
++            .category_key = "password_manager_like",
++            .category_label = "Password manager",
++            .fixture_name = "password_manager_like",
++            .fixture_version = "1.0.0",
++            .fixture_sha256 =
++                "168be8a502fe1b68313838c249108729a45db63f131ee104ac86171e95ad8ceb",
++            .manifest_version = 3,
++            .install_source = kInstallSourceUnpacked,
++            .prometheus_build = kPrometheusBuild,
++            .chromium_revision = kChromiumRevision,
++            .regular_mode_exercised = true,
++            .private_mode_exercised = false,
++            .actions_exercised =
++                "Unpacked load; popup/options visibility; bounded DOM read; "
++                "Blocked/Read only/Interact admission matrix; execute_js "
++                "denial.",
++            .result = ExtensionCompatibilityResult::kVerified,
++            .limitation =
++                "Synthetic values only; no vault, session, or gateway "
++                "access.",
++            .evidence_artifact =
++                "chrome/browser/prometheus/prometheus_extension_fixtures_"
++                "browsertest.cc:PrometheusExtensionFixturesBrowserTest."
++                "PasswordManagerLikeLifecycleAndIsolation",
++            .last_verified = kLastVerified,
++        },
++        {
++            .category = ExtensionCompatibilityCategory::kAdBlocker,
++            .category_key = "ad_blocker",
++            .category_label = "Ad blocker",
++            .fixture_name = "ad_blocker",
++            .fixture_version = "1.0.0",
++            .fixture_sha256 =
++                "4f974c054329ff399658173564e428a364383ec363cfac1b68fc55bca1d0713a",
++            .manifest_version = 3,
++            .install_source = kInstallSourceUnpacked,
++            .prometheus_build = kPrometheusBuild,
++            .chromium_revision = kChromiumRevision,
++            .regular_mode_exercised = true,
++            .private_mode_exercised = true,
++            .actions_exercised =
++                "Unpacked load; static declarativeNetRequest rule blocks the "
++                "local target request; effective Agent grant confirmed "
++                "Blocked in both regular and Private mode.",
++            .result = ExtensionCompatibilityResult::kVerified,
++            .limitation =
++                "Blocks only the local test target; grants no Agent "
++                "access.",
++            .evidence_artifact =
++                "chrome/browser/prometheus/prometheus_extension_fixtures_"
++                "browsertest.cc:PrometheusExtensionFixturesBrowserTest."
++                "AdBlockerLifecycleAndPermissionIsolation",
++            .last_verified = kLastVerified,
++        },
++        {
++            .category =
++                ExtensionCompatibilityCategory::kProductivityContentScript,
++            .category_key = "productivity_content_script",
++            .category_label = "Productivity content script",
++            .fixture_name = "productivity_content_script",
++            .fixture_version = "1.0.0",
++            .fixture_sha256 =
++                "205766cc3f0129180a0906be45ef93522f1ed66c573d9f054e0180a9ef37a872",
++            .manifest_version = 3,
++            .install_source = kInstallSourceUnpacked,
++            .prometheus_build = kPrometheusBuild,
++            .chromium_revision = kChromiumRevision,
++            .regular_mode_exercised = true,
++            .private_mode_exercised = false,
++            .actions_exercised =
++                "Unpacked load; content script mutates a local HTTP(S) "
++                "page; the page remains ordinary normal-page-adapter "
++                "routed, not extension-routed.",
++            .result = ExtensionCompatibilityResult::kVerified,
++            .limitation =
++                "Injected DOM stays untrusted; cannot claim extension "
++                "authority.",
++            .evidence_artifact =
++                "chrome/browser/prometheus/prometheus_extension_fixtures_"
++                "browsertest.cc:PrometheusExtensionFixturesBrowserTest."
++                "ProductivityContentScriptRoutingAndIsolation",
++            .last_verified = kLastVerified,
++        },
++        {
++            .category = ExtensionCompatibilityCategory::kSidePanelTooling,
++            .category_key = "side_panel_tooling",
++            .category_label = "Side panel and tooling",
++            .fixture_name = "side_panel_tooling",
++            .fixture_version = "1.0.0",
++            .fixture_sha256 =
++                "35b459740bbe2c0f397fe5b314bc61afb9b16c86036419e9a84b437e3327a610",
++            .manifest_version = 3,
++            .install_source = kInstallSourceUnpacked,
++            .prometheus_build = kPrometheusBuild,
++            .chromium_revision = kChromiumRevision,
++            .regular_mode_exercised = true,
++            .private_mode_exercised = false,
++            .actions_exercised =
++                "Unpacked load; active visible side panel accepted for "
++                "routing; inactive/hidden panel and DevTools contexts "
++                "denied.",
++            .result = ExtensionCompatibilityResult::kVerified,
++            .limitation =
++                "Only the active, visible panel is Agent-routable.",
++            .evidence_artifact =
++                "chrome/browser/prometheus/prometheus_extension_fixtures_"
++                "browsertest.cc:PrometheusExtensionFixturesBrowserTest."
++                "SidePanelToolingVisibilityAndIsolation",
++            .last_verified = kLastVerified,
++        },
++        {
++            .category = ExtensionCompatibilityCategory::kDeveloperWorkflow,
++            .category_key = "developer_workflow",
++            .category_label = "Developer extension",
++            .fixture_name = "developer_workflow",
++            .fixture_version = "1.0.0",
++            .fixture_sha256 =
++                "eceeefa89e88a1ee09d62c2805ba77b6384d64ee541b9f54e6df2b28d4b3aad8",
++            .manifest_version = 3,
++            .install_source = kInstallSourceUnpacked,
++            .prometheus_build = kPrometheusBuild,
++            .chromium_revision = kChromiumRevision,
++            .regular_mode_exercised = true,
++            .private_mode_exercised = false,
++            .actions_exercised =
++                "Unpacked load; manual reload; disable; enable; uninstall "
++                "lifecycle; background service worker confirmed denied as "
++                "Agent-routable.",
++            .result = ExtensionCompatibilityResult::kVerified,
++            .limitation =
++                "Background/service worker stays outside the Agent route "
++                "surface.",
++            .evidence_artifact =
++                "chrome/browser/prometheus/prometheus_extension_fixtures_"
++                "browsertest.cc:PrometheusExtensionFixturesBrowserTest."
++                "DeveloperWorkflowLifecycleAndWorkerIsolation",
++            .last_verified = kLastVerified,
++        },
++    }};
++
++std::string ManifestVersionLabel(int manifest_version) {
++  switch (manifest_version) {
++    case 3:
++      return "Manifest V3";
++    case 2:
++      return "Manifest V2";
++    default:
++      return "Manifest unknown";
++  }
++}
++
++}  // namespace
++
++const std::array<ExtensionCompatibilityRow,
++                 kExtensionCompatibilityCatalogSize>&
++GetExtensionCompatibilityCatalog() {
++  return kExtensionCompatibilityCatalog;
++}
++
++std::string_view ExtensionCompatibilityResultToString(
++    ExtensionCompatibilityResult result) {
++  switch (result) {
++    case ExtensionCompatibilityResult::kVerified:
++      return "Verified";
++    case ExtensionCompatibilityResult::kDegraded:
++      return "Degraded";
++    case ExtensionCompatibilityResult::kUnsupported:
++      return "Unsupported";
++  }
++}
++
++std::optional<ExtensionCompatibilityResult>
++ExtensionCompatibilityResultFromString(std::string_view value) {
++  if (value == "Verified") {
++    return ExtensionCompatibilityResult::kVerified;
++  }
++  if (value == "Degraded") {
++    return ExtensionCompatibilityResult::kDegraded;
++  }
++  if (value == "Unsupported") {
++    return ExtensionCompatibilityResult::kUnsupported;
++  }
++  return std::nullopt;
++}
++
++base::DictValue ExtensionCompatibilityRowToValue(
++    const ExtensionCompatibilityRow& row) {
++  base::DictValue value;
++  value.Set("category", row.category_label);
++  value.Set("status", base::ToLowerASCII(
++                          ExtensionCompatibilityResultToString(row.result)));
++  value.Set("fixture",
++            base::StrCat({row.fixture_name, " v", row.fixture_version}));
++  value.Set("manifest", ManifestVersionLabel(row.manifest_version));
++  value.Set("source", row.install_source);
++  value.Set("behaviors", row.actions_exercised);
++  value.Set("revision", base::StrCat({"Prometheus ", row.prometheus_build,
++                                      " (Chromium ", row.chromium_revision,
++                                      ")"}));
++  value.Set("last_verified", row.last_verified);
++  value.Set("limitation", base::StrCat({row.limitation, kLimitationSuffix}));
++  return value;
++}
++
++bool IsClosedExtensionCompatibilityCatalog() {
++  const auto& catalog = GetExtensionCompatibilityCatalog();
++  if (catalog.size() != kExtensionCompatibilityCatalogSize) {
++    return false;
++  }
++
++  static constexpr std::array<std::string_view, kExtensionCompatibilityCatalogSize>
++      kRequiredCategoryKeys = {
++          "password_manager_like",
++          "ad_blocker",
++          "productivity_content_script",
++          "side_panel_tooling",
++          "developer_workflow",
++      };
++
++  std::set<std::string_view> seen_keys;
++  for (const ExtensionCompatibilityRow& row : catalog) {
++    if (row.category_key.empty() || row.category_label.empty() ||
++        row.fixture_name.empty() || row.fixture_version.empty() ||
++        row.install_source.empty() || row.prometheus_build.empty() ||
++        row.chromium_revision.empty() || row.actions_exercised.empty() ||
++        row.limitation.empty() || row.evidence_artifact.empty() ||
++        row.last_verified.empty()) {
++      return false;
++    }
++    if (row.manifest_version != 3) {
++      return false;
++    }
++    if (row.fixture_sha256.size() != kExtensionCompatibilitySha256HexLength ||
++        !std::ranges::all_of(row.fixture_sha256, [](char character) {
++          return base::IsHexDigit(character) &&
++                 (base::IsAsciiDigit(character) ||
++                  base::IsAsciiLower(character));
++        })) {
++      return false;
++    }
++    if (!std::ranges::any_of(kRequiredCategoryKeys,
++                             [&row](std::string_view key) {
++                               return key == row.category_key;
++                             })) {
++      return false;
++    }
++    if (!seen_keys.insert(row.category_key).second) {
++      return false;
++    }
++  }
++
++  return seen_keys.size() == kExtensionCompatibilityCatalogSize;
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_compatibility_catalog.h b/chrome/browser/prometheus/prometheus_extension_compatibility_catalog.h
+new file mode 100644
+index 0000000000..4de54f1de1
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_compatibility_catalog.h
+@@ -0,0 +1,133 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_COMPATIBILITY_CATALOG_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_COMPATIBILITY_CATALOG_H_
++
++#include <array>
++#include <optional>
++#include <string>
++#include <string_view>
++
++#include "base/values.h"
++
++namespace prometheus {
++
++// Closed bounded result vocabulary for representative extension-category
++// compatibility evidence. There is no "generally supported" value: every
++// result is scoped to the exact fixture/version/build/revision recorded
++// alongside it.
++enum class ExtensionCompatibilityResult {
++  kVerified,
++  kDegraded,
++  kUnsupported,
++};
++
++// Exactly five Prometheus-owned MV3 fixtures form the acceptance catalog.
++// This enum exists only to key `kExtensionCompatibilityCatalog` below; it is
++// not a general extension taxonomy.
++enum class ExtensionCompatibilityCategory {
++  kPasswordManagerLike,
++  kAdBlocker,
++  kProductivityContentScript,
++  kSidePanelTooling,
++  kDeveloperWorkflow,
++};
++
++inline constexpr size_t kExtensionCompatibilityCatalogSize = 5;
++inline constexpr size_t kExtensionCompatibilitySha256HexLength = 64;
++
++// One closed, bounded evidence row. Every field is a fixed compile-time
++// constant baked from the last exact fixture proof (see
++// `prometheus_extension_fixtures_browsertest.cc`); nothing here is derived
++// from live user data, network state, or renderer/MCP input. Regenerating
++// `22-COMPATIBILITY.json`/`.md` from a fresh fixture run and this catalog must
++// agree, and `verify-phase-22-extension-fixtures.sh` statically enforces that
++// agreement for `fixture_sha256`.
++struct ExtensionCompatibilityRow {
++  ExtensionCompatibilityCategory category =
++      ExtensionCompatibilityCategory::kPasswordManagerLike;
++
++  // Machine-stable key matching the fixture directory name under
++  // chrome/test/data/prometheus/extensions/.
++  std::string_view category_key;
++
++  // Exact human-facing label rendered by the existing Control Panel Parity
++  // Matrix renderer (`controlExtensionCompatibilityCategories` in
++  // prometheus_webui.js). Must not change without updating that closed list.
++  std::string_view category_label;
++
++  std::string_view fixture_name;
++  std::string_view fixture_version;
++
++  // Lowercase hex SHA-256 of the fixture's manifest.json, exactly
++  // `kExtensionCompatibilitySha256HexLength` characters.
++  std::string_view fixture_sha256;
++
++  int manifest_version = 3;
++
++  // How the fixture was installed for this evidence row. Every row in this
++  // catalog is loaded through the same developer-mode unpacked path; no row
++  // may claim Chrome Web Store support.
++  std::string_view install_source;
++
++  // Exact Prometheus/Chromium build and nested source revision this evidence
++  // was captured against (see chrome/VERSION and the nested git HEAD at
++  // capture time).
++  std::string_view prometheus_build;
++  std::string_view chromium_revision;
++
++  // Whether the browser test evidence exercised the extension while resolving
++  // Agent policy in a regular profile / an explicit Private (OTR) profile
++  // check, respectively. Only rows whose browser test actually calls
++  // `GetEffectiveGrant(..., /*private_mode=*/true)` may set the private flag;
++  // the shared policy/surface-resolver unit tests separately cover the full
++  // Private-mode lattice for every category.
++  bool regular_mode_exercised = true;
++  bool private_mode_exercised = false;
++
++  std::string_view actions_exercised;
++  ExtensionCompatibilityResult result = ExtensionCompatibilityResult::kVerified;
++  std::string_view limitation;
++
++  // Qualified `file.cc:Suite.Test` pointer to the exact retained evidence.
++  std::string_view evidence_artifact;
++
++  // ISO-8601 UTC timestamp of the fixture run this row reflects.
++  std::string_view last_verified;
++};
++
++// Returns the closed, bounded, exactly-five-row acceptance catalog in fixed
++// category order (password-manager-like, ad blocker, productivity content
++// script, side panel/tooling, developer workflow). The returned span is
++// backed by static storage and never mutates at runtime; there is no
++// per-profile, per-install, or live-network variant.
++const std::array<ExtensionCompatibilityRow, kExtensionCompatibilityCatalogSize>&
++GetExtensionCompatibilityCatalog();
++
++std::string_view ExtensionCompatibilityResultToString(
++    ExtensionCompatibilityResult result);
++std::optional<ExtensionCompatibilityResult> ExtensionCompatibilityResultFromString(
++    std::string_view value);
++
++// Projects one row into the same bounded shape the local Control Panel
++// already renders (see `normalizeControlExtensionCompatibility` in
++// prometheus_webui.js): `category`, `status`, `fixture`, `manifest`,
++// `source`, `behaviors`, `revision`, `last_verified`, `limitation`. `status`
++// is lowercased (`verified`/`degraded`/`unsupported`) to match the existing
++// renderer contract; every other field is bounded plain text with no
++// extension ID, permission, page content, or authority material.
++base::DictValue ExtensionCompatibilityRowToValue(
++    const ExtensionCompatibilityRow& row);
++
++// True iff the catalog has exactly five rows, unique category keys equal to
++// the required five, MV3 manifests, valid lowercase-hex SHA-256 fixture
++// hashes, and only closed `ExtensionCompatibilityResult` values. Used by the
++// unit test and safe to call from production code as a defensive assertion
++// seam.
++bool IsClosedExtensionCompatibilityCatalog();
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_COMPATIBILITY_CATALOG_H_
+diff --git a/chrome/browser/prometheus/prometheus_extension_compatibility_catalog_unittest.cc b/chrome/browser/prometheus/prometheus_extension_compatibility_catalog_unittest.cc
+new file mode 100644
+index 0000000000..bb1e5942fe
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_extension_compatibility_catalog_unittest.cc
+@@ -0,0 +1,236 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_extension_compatibility_catalog.h"
++
++#include <algorithm>
++#include <array>
++#include <set>
++#include <string>
++#include <string_view>
++
++#include "base/strings/string_util.h"
++#include "base/values.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++namespace {
++
++constexpr std::array<std::string_view, kExtensionCompatibilityCatalogSize>
++    kExpectedCategoryKeysInOrder = {
++        "password_manager_like",
++        "ad_blocker",
++        "productivity_content_script",
++        "side_panel_tooling",
++        "developer_workflow",
++    };
++
++// Exact order/spelling required by `controlExtensionCompatibilityCategories`
++// in prometheus_webui.js. The renderer silently drops any row whose
++// `category` does not match one of these five strings, so a spelling drift
++// here would make a whole row vanish from the Control Panel without any
++// visible error.
++constexpr std::array<std::string_view, kExtensionCompatibilityCatalogSize>
++    kExpectedCategoryLabelsInOrder = {
++        "Password manager",
++        "Ad blocker",
++        "Productivity content script",
++        "Side panel and tooling",
++        "Developer extension",
++    };
++
++bool IsLowercaseHexSha256(std::string_view value) {
++  if (value.size() != kExtensionCompatibilitySha256HexLength) {
++    return false;
++  }
++  return std::ranges::all_of(value, [](char character) {
++    return base::IsHexDigit(character) &&
++           (base::IsAsciiDigit(character) || base::IsAsciiLower(character));
++  });
++}
++
++TEST(PrometheusExtensionCompatibilityCatalogTest,
++    HasExactlyFiveRowsWithRequiredUniqueKeysInOrder) {
++  const auto& catalog = GetExtensionCompatibilityCatalog();
++  ASSERT_EQ(kExtensionCompatibilityCatalogSize, catalog.size());
++  for (size_t i = 0; i < catalog.size(); ++i) {
++    EXPECT_EQ(kExpectedCategoryKeysInOrder[i], catalog[i].category_key)
++        << "row " << i;
++    EXPECT_EQ(kExpectedCategoryLabelsInOrder[i], catalog[i].category_label)
++        << "row " << i;
++  }
++
++  std::set<std::string_view> keys;
++  for (const auto& row : catalog) {
++    keys.insert(row.category_key);
++  }
++  EXPECT_EQ(kExtensionCompatibilityCatalogSize, keys.size())
++      << "category keys must be unique";
++}
++
++TEST(PrometheusExtensionCompatibilityCatalogTest, EveryRowIsManifestV3) {
++  for (const auto& row : GetExtensionCompatibilityCatalog()) {
++    EXPECT_EQ(3, row.manifest_version) << row.category_key;
++  }
++}
++
++TEST(PrometheusExtensionCompatibilityCatalogTest,
++    EveryRowUsesTheClosedVerifiedResultVocabulary) {
++  for (const auto& row : GetExtensionCompatibilityCatalog()) {
++    const std::string_view result_string =
++        ExtensionCompatibilityResultToString(row.result);
++    EXPECT_TRUE(result_string == "Verified" || result_string == "Degraded" ||
++               result_string == "Unsupported")
++        << row.category_key;
++    ASSERT_TRUE(ExtensionCompatibilityResultFromString(result_string)
++                    .has_value());
++    EXPECT_EQ(row.result,
++             *ExtensionCompatibilityResultFromString(result_string));
++  }
++}
++
++TEST(PrometheusExtensionCompatibilityCatalogTest,
++    ResultFromStringRejectsUnknownAndCaseVariantValues) {
++  EXPECT_FALSE(ExtensionCompatibilityResultFromString("").has_value());
++  EXPECT_FALSE(ExtensionCompatibilityResultFromString("verified").has_value());
++  EXPECT_FALSE(ExtensionCompatibilityResultFromString("supported").has_value());
++  EXPECT_FALSE(
++      ExtensionCompatibilityResultFromString("Chrome-compatible").has_value());
++}
++
++TEST(PrometheusExtensionCompatibilityCatalogTest,
++    FixtureHashesAreValidLowercaseHexSha256) {
++  for (const auto& row : GetExtensionCompatibilityCatalog()) {
++    EXPECT_TRUE(IsLowercaseHexSha256(row.fixture_sha256))
++        << row.category_key << ": " << row.fixture_sha256;
++  }
++}
++
++TEST(PrometheusExtensionCompatibilityCatalogTest,
++    EveryRowHasNonEmptyBoundedEvidenceFields) {
++  for (const auto& row : GetExtensionCompatibilityCatalog()) {
++    EXPECT_FALSE(row.fixture_name.empty());
++    EXPECT_FALSE(row.fixture_version.empty());
++    EXPECT_FALSE(row.install_source.empty());
++    EXPECT_FALSE(row.prometheus_build.empty());
++    EXPECT_FALSE(row.chromium_revision.empty());
++    EXPECT_FALSE(row.actions_exercised.empty());
++    EXPECT_FALSE(row.limitation.empty());
++    EXPECT_FALSE(row.last_verified.empty());
++    ASSERT_FALSE(row.evidence_artifact.empty());
++    EXPECT_NE(std::string_view::npos,
++             row.evidence_artifact.find(
++                 "prometheus_extension_fixtures_browsertest.cc:"
++                 "PrometheusExtensionFixturesBrowserTest."))
++        << row.evidence_artifact;
++  }
++
++  std::set<std::string_view> evidence_artifacts;
++  for (const auto& row : GetExtensionCompatibilityCatalog()) {
++    evidence_artifacts.insert(row.evidence_artifact);
++  }
++  EXPECT_EQ(kExtensionCompatibilityCatalogSize, evidence_artifacts.size())
++      << "every row must point at a distinct retained test";
++}
++
++TEST(PrometheusExtensionCompatibilityCatalogTest,
++    OnlyTheAdBlockerRowExercisesAnExplicitPrivateModeCheck) {
++  for (const auto& row : GetExtensionCompatibilityCatalog()) {
++    EXPECT_TRUE(row.regular_mode_exercised) << row.category_key;
++    const bool expect_private = row.category_key == "ad_blocker";
++    EXPECT_EQ(expect_private, row.private_mode_exercised) << row.category_key;
++  }
++}
++
++TEST(PrometheusExtensionCompatibilityCatalogTest,
++    NoRowTextClaimsWebStoreOrManifestV2Support) {
++  static constexpr std::array<std::string_view, 4> kForbiddenSubstrings = {
++      "Web Store", "web store", "Manifest V2", "manifest_version 2",
++  };
++  for (const auto& row : GetExtensionCompatibilityCatalog()) {
++    for (std::string_view forbidden : kForbiddenSubstrings) {
++      EXPECT_EQ(std::string_view::npos,
++               row.actions_exercised.find(forbidden))
++          << row.category_key << " actions_exercised contains " << forbidden;
++      EXPECT_EQ(std::string_view::npos, row.limitation.find(forbidden))
++          << row.category_key << " limitation contains " << forbidden;
++      EXPECT_EQ(std::string_view::npos, row.install_source.find(forbidden))
++          << row.category_key << " install_source contains " << forbidden;
++    }
++  }
++}
++
++TEST(PrometheusExtensionCompatibilityCatalogTest,
++    IsClosedExtensionCompatibilityCatalogAcceptsTheRealCatalog) {
++  EXPECT_TRUE(IsClosedExtensionCompatibilityCatalog());
++}
++
++TEST(PrometheusExtensionCompatibilityCatalogTest,
++    RowToValueProjectsExactlyTheBoundedWebUiShapeWithNoRawHash) {
++  const auto& catalog = GetExtensionCompatibilityCatalog();
++  ASSERT_FALSE(catalog.empty());
++  const base::DictValue value = ExtensionCompatibilityRowToValue(catalog[0]);
++
++  static constexpr std::array<std::string_view, 9> kExpectedKeys = {
++      "category", "status",   "fixture",       "manifest", "source",
++      "behaviors", "revision", "last_verified", "limitation",
++  };
++  EXPECT_EQ(kExpectedKeys.size(), value.size());
++  for (std::string_view key : kExpectedKeys) {
++    EXPECT_TRUE(value.contains(key)) << key;
++  }
++
++  EXPECT_EQ("Password manager", *value.FindString("category"));
++  EXPECT_EQ("verified", *value.FindString("status"));
++  EXPECT_EQ("Manifest V3", *value.FindString("manifest"));
++
++  for (const auto [key, entry] : value) {
++    ASSERT_TRUE(entry.is_string()) << key;
++    const std::string& rendered = entry.GetString();
++    EXPECT_EQ(std::string::npos, rendered.find(catalog[0].fixture_sha256))
++        << key << " leaked the raw fixture SHA-256 into the WebUI dict";
++  }
++}
++
++TEST(PrometheusExtensionCompatibilityCatalogTest,
++    RowToValueLowercasesEveryClosedResultForTheExistingRenderer) {
++  for (const auto& row : GetExtensionCompatibilityCatalog()) {
++    const base::DictValue value = ExtensionCompatibilityRowToValue(row);
++    const std::string* status = value.FindString("status");
++    ASSERT_TRUE(status);
++    EXPECT_TRUE(*status == "verified" || *status == "degraded" ||
++               *status == "unsupported")
++        << row.category_key << ": " << *status;
++    EXPECT_EQ(base::ToLowerASCII(*status), *status);
++  }
++}
++
++// Regression guard: prometheus_webui.js's `controlExtensionText` bounds the
++// projected `limitation` field at 160 bytes and silently substitutes a
++// generic placeholder ("Representative compatibility evidence has not run
++// in this build.") whenever a row exceeds that bound -- there is no runtime
++// error, so an over-length row fails only visually. Assert the exact
++// projected value directly instead of only its length, so a future
++// oversized edit is caught here rather than by manually inspecting the
++// rendered Control Panel.
++TEST(PrometheusExtensionCompatibilityCatalogTest,
++    ProjectedLimitationStaysUnderTheWebUiRendererByteBudget) {
++  constexpr size_t kWebUiLimitationByteBudget = 160;
++  for (const auto& row : GetExtensionCompatibilityCatalog()) {
++    const base::DictValue value = ExtensionCompatibilityRowToValue(row);
++    const std::string* limitation = value.FindString("limitation");
++    ASSERT_TRUE(limitation);
++    EXPECT_LE(limitation->size(), kWebUiLimitationByteBudget)
++        << row.category_key << ": \"" << *limitation << "\" ("
++        << limitation->size() << " bytes)";
++    EXPECT_NE(*limitation,
++             "Representative compatibility evidence has not run in this "
++             "build.")
++        << row.category_key
++        << " rendered the WebUI's over-length fallback placeholder";
++  }
++}
++
++}  // namespace
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc b/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc
+index 137fc0ba26..e06927dce0 100644
+--- a/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc
+@@ -7,8 +7,14 @@
+ #include <string_view>
+ 
+ #include "base/base_paths.h"
++#include "base/command_line.h"
+ #include "base/files/file_path.h"
++#include "base/files/file_util.h"
+ #include "base/path_service.h"
++#include "base/run_loop.h"
++#include "base/strings/strcat.h"
++#include "base/test/bind.h"
++#include "base/threading/thread_restrictions.h"
+ #include "chrome/browser/extensions/chrome_test_extension_loader.h"
+ #include "chrome/browser/prometheus/prometheus_extension_page_adapter.h"
+ #include "chrome/browser/prometheus/prometheus_extension_policy_service.h"
+@@ -22,10 +28,12 @@
+ #include "content/public/test/browser_test.h"
+ #include "content/public/test/browser_test_utils.h"
+ #include "extensions/browser/disable_reason.h"
++#include "extensions/browser/extension_prefs.h"
+ #include "extensions/browser/extension_registrar.h"
+ #include "extensions/browser/extension_registry.h"
+ #include "extensions/browser/test_extension_registry_observer.h"
+ #include "extensions/browser/uninstall_reason.h"
++#include "extensions/browser/unpacked_installer.h"
+ #include "extensions/common/extension.h"
+ #include "extensions/test/extension_test_message_listener.h"
+ #include "extensions/test/test_extension_dir.h"
+@@ -294,4 +302,103 @@ IN_PROC_BROWSER_TEST_F(PrometheusExtensionFixturesBrowserTest,
+       << "retained RED: developer lifecycle and worker isolation";
+ }
+ 
++// Observation-only: this is not one of the five required MV3 acceptance
++// categories and must never be counted or rendered as a sixth compatibility
++// row (see PrometheusExtensionCompatibilityCatalogTest and
++// verify-phase-22-extension-fixtures.sh). It loads a minimal, non-component,
++// developer-mode Manifest V2 extension through the ordinary
++// `extensions::UnpackedInstaller` path -- the same native path
++// `chrome://extensions` Load unpacked uses -- with no test-only MV2
++// allowance helper, install-verification bypass, or hand-authored expected
++// outcome. Whatever the pinned Chromium revision's unmodified MV2
++// deprecation policy actually does (accept, or install-then-disable) is
++// recorded as closed gtest properties for
++// verify-phase-22-extension-fixtures.sh to turn into
++// `22-MV2-OBSERVATION.json`. The test intentionally exits 0 either way.
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionFixturesBrowserTest,
++                       ManifestV2PinnedPolicyObservation) {
++  extensions::TestExtensionDir fixture;
++  CopyFixture(&fixture, "mv2_observation", {"manifest.json", "background.js"});
++
++  scoped_refptr<extensions::UnpackedInstaller> installer =
++      extensions::UnpackedInstaller::Create(browser()->profile());
++  base::RunLoop run_loop;
++  scoped_refptr<const extensions::Extension> loaded_extension;
++  std::u16string load_error;
++  installer->set_completion_callback(base::BindLambdaForTesting(
++      [&](const extensions::Extension* extension, const base::FilePath&,
++          const std::u16string& error) {
++        if (extension) {
++          loaded_extension = extension;
++        }
++        load_error = error;
++        run_loop.Quit();
++      }));
++  installer->Load(fixture.UnpackedPath());
++  run_loop.Run();
++
++  std::string result;
++  std::string reason;
++
++  if (!loaded_extension) {
++    result = "rejected";
++    reason = "unpacked_load_failed";
++  } else {
++    EXPECT_EQ(2, loaded_extension->manifest_version());
++    extensions::ExtensionRegistry* const registry =
++        extensions::ExtensionRegistry::Get(browser()->profile());
++    ASSERT_TRUE(registry);
++    const std::string extension_id = loaded_extension->id();
++    if (registry->enabled_extensions().Contains(extension_id)) {
++      result = "accepted";
++      reason = "manifest_v2_loaded_enabled";
++    } else if (registry->disabled_extensions().Contains(extension_id)) {
++      result = "rejected";
++      extensions::ExtensionPrefs* const prefs =
++          extensions::ExtensionPrefs::Get(browser()->profile());
++      reason = (prefs &&
++               prefs->HasDisableReason(
++                   extension_id,
++                   extensions::disable_reason::
++                       DISABLE_UNSUPPORTED_MANIFEST_VERSION))
++                   ? "manifest_v2_disabled_unsupported"
++                   : "manifest_v2_disabled_other";
++    } else {
++      result = "rejected";
++      reason = "manifest_v2_installed_untracked";
++    }
++  }
++
++  // Closed two-value result and one bounded stable reason code. Recorded two
++  // ways: as gtest properties (for a full test-launcher aggregation that
++  // preserves them), and -- because this fixture's out-of-process browser
++  // test child does not reliably surface RecordProperty() through
++  // --test-launcher-summary-output in this synthesized-binary harness --
++  // written directly to the exact path verify-phase-22-extension-fixtures.sh
++  // passes via --prometheus-mv2-observation-output, which it then turns into
++  // 22-MV2-OBSERVATION.json. Never asserted against a hand-authored expected
++  // value: this test must pass whichever way the pinned, unmodified policy
++  // actually resolves.
++  RecordProperty("mv2_observation_result", result);
++  RecordProperty("mv2_observation_reason", reason);
++  RecordProperty("mv2_observation_manifest_version", "2");
++
++  const base::FilePath output_path =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
++          "prometheus-mv2-observation-output");
++  if (!output_path.empty()) {
++    const std::string json = base::StrCat(
++        {"{\"mv2_observation_result\":\"", result,
++         "\",\"mv2_observation_reason\":\"", reason,
++         "\",\"mv2_observation_manifest_version\":\"2\"}\n"});
++    base::ScopedAllowBlockingForTesting allow_blocking;
++    EXPECT_TRUE(base::WriteFile(output_path, json))
++        << "failed to write MV2 observation output to "
++        << output_path.AsUTF8Unsafe();
++  }
++
++  EXPECT_TRUE(result == "accepted" || result == "rejected")
++      << "unexpected observation result: " << result;
++}
++
+ }  // namespace prometheus
+diff --git a/chrome/browser/ui/webui/prometheus/BUILD.gn b/chrome/browser/ui/webui/prometheus/BUILD.gn
+index be81bbd7e5..75078d3a6b 100644
+--- a/chrome/browser/ui/webui/prometheus/BUILD.gn
++++ b/chrome/browser/ui/webui/prometheus/BUILD.gn
+@@ -19,6 +19,7 @@ source_set("side_panel_ui") {
+   ]
+ 
+   public_deps = [
++    "//chrome/browser/prometheus:prometheus_extension_compatibility_catalog",
+     "//chrome/browser/prometheus:prometheus_extension_policy_service",
+     "//chrome/common",
+     "//content/public/browser",
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index 20533acda4..985bedf1ee 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -20,6 +20,7 @@
+ #include "base/values.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/prometheus/prometheus_ask_fsb_handoff.h"
++#include "chrome/browser/prometheus/prometheus_extension_compatibility_catalog.h"
+ #include "chrome/browser/prometheus/prometheus_extension_policy_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_memory_store.h"
+ #include "chrome/browser/prometheus/prometheus_vault_service.h"
+@@ -2021,28 +2022,15 @@ base::DictValue PrometheusControlPanelUI::BuildExtensionPolicySnapshot() const {
+     value.Set("rows", std::move(rows));
+   }
+ 
+-  static constexpr std::string_view kCompatibilityCategories[] = {
+-      "Password manager",
+-      "Ad blocker",
+-      "Productivity content script",
+-      "Side panel and tooling",
+-      "Developer extension",
+-  };
++  // Exactly five closed, bounded MV3 category rows sourced from the compiled
++  // evidence catalog (see prometheus_extension_compatibility_catalog.h). This
++  // projection can only ever show the same five representative fixtures it
++  // was built from; it is not a live Web Store or install-time capability
++  // probe and must never widen into a general Chrome-compatibility claim.
+   base::ListValue compatibility;
+-  for (std::string_view category : kCompatibilityCategories) {
+-    base::DictValue row;
+-    row.Set("category", category);
+-    row.Set("status", "unsupported");
+-    row.Set("fixture", "No verified fixture");
+-    row.Set("manifest", "Manifest unknown");
+-    row.Set("source", "Not verified");
+-    row.Set("behaviors", "No representative behaviors verified");
+-    row.Set("revision", "Current Chromium and Prometheus revision");
+-    row.Set("last_verified", "Not verified");
+-    row.Set("limitation",
+-            "Representative compatibility evidence has not run in this "
+-            "build.");
+-    compatibility.Append(std::move(row));
++  for (const prometheus::ExtensionCompatibilityRow& row :
++       prometheus::GetExtensionCompatibilityCatalog()) {
++    compatibility.Append(prometheus::ExtensionCompatibilityRowToValue(row));
+   }
+   value.Set("compatibility", std::move(compatibility));
+   return value;
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 08b5c4607a..94935dde42 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -1537,6 +1537,54 @@ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+   EXPECT_TRUE(BodyContains(web_contents, "Parity Matrix"));
+ }
+ 
++// Proves the real native compiled catalog (not a JS-only test fixture) flows
++// through `PrometheusControlPanelUI::BuildExtensionPolicySnapshot()` into the
++// rendered Parity Matrix. Plan 22-04 Task 3 replaced the fixed
++// "unsupported"/"No verified fixture" placeholder with this data; this test
++// is the regression guard against that placeholder silently returning.
++IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
++                       ParityMatrixRendersRealFiveCategoryCompatibilityEvidence) {
++  content::WebContents* const web_contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++
++  ASSERT_TRUE(web_contents);
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(web_contents, R"(
++      window.prometheusControlSnapshotForTesting?.status === 'OK';
++    )")
++        .ExtractBool();
++  }));
++  ASSERT_TRUE(content::ExecJs(web_contents, R"(
++    document.querySelector('[data-section-target="parity"]').click();
++  )"));
++  EXPECT_TRUE(content::EvalJs(web_contents, R"(
++    (() => {
++      const rows = Array.from(document.querySelectorAll(
++          '#control-extension-compatibility [role="listitem"]'));
++      if (rows.length !== 5) {
++        return false;
++      }
++      const text = rows.map(row => row.textContent.replace(/\s+/g, ' '));
++      const noStalePlaceholder = text.every(entry =>
++          !entry.includes('No verified fixture') &&
++          !entry.includes(
++              'Representative compatibility evidence has not run'));
++      const allVerified = text.every(entry => entry.includes('Verified'));
++      return noStalePlaceholder && allVerified &&
++          text[0].includes('Password manager') &&
++          text[0].includes('password_manager_like v1.0.0') &&
++          text[0].includes('Manifest V3') &&
++          text[0].includes('Developer mode (unpacked)') &&
++          text.some(entry => entry.includes('ad_blocker v1.0.0')) &&
++          text.some(entry => entry.includes('productivity_content_script ' +
++              'v1.0.0')) &&
++          text.some(entry => entry.includes('side_panel_tooling v1.0.0')) &&
++          text.some(entry => entry.includes('developer_workflow v1.0.0'));
++    })();
++  )")
++                  .ExtractBool());
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusControlPanelBrowserTest,
+                        RendersAllSectionsAndRequiredEmptyStates) {
+   content::WebContents* const web_contents =
+diff --git a/chrome/test/data/prometheus/extensions/mv2_observation/background.js b/chrome/test/data/prometheus/extensions/mv2_observation/background.js
+new file mode 100644
+index 0000000000..b2d26bacd7
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/mv2_observation/background.js
+@@ -0,0 +1,10 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++//
++// Intentionally inert. This fixture exists only to observe whatever the
++// pinned Chromium revision's ordinary Manifest V2 deprecation policy does to
++// an unpacked, non-component, developer-mode Manifest V2 extension. It must
++// never message, poll, or otherwise signal a specific expected outcome back
++// to the browser test; the test observes native accepted/rejected state
++// through the extension registry and prefs, not through this script.
+diff --git a/chrome/test/data/prometheus/extensions/mv2_observation/manifest.json b/chrome/test/data/prometheus/extensions/mv2_observation/manifest.json
+new file mode 100644
+index 0000000000..a767f085b5
+--- /dev/null
++++ b/chrome/test/data/prometheus/extensions/mv2_observation/manifest.json
+@@ -0,0 +1,9 @@
++{
++  "name": "Prometheus MV2 Pinned Policy Observation Fixture",
++  "version": "1.0.0",
++  "manifest_version": 2,
++  "background": {
++    "scripts": ["background.js"],
++    "persistent": false
++  }
++}

@@ -21,7 +21,7 @@
 
 | Library | Version | Purpose | When to Use |
 |---------|---------|---------|-------------|
-| `@modelcontextprotocol/sdk` | Existing FSB MCP package uses `^1.29.0` | MCP server implementation | Use for a native/optimized FSB Browser MCP server. |
+| `@modelcontextprotocol/sdk` | Existing FSB MCP package uses `^1.29.0` | MCP server implementation | Use for a native/optimized Prometheus MCP server. |
 | `ws` | Existing FSB MCP package uses `^8.19.0` | Local bridge, dashboard sync, PhantomStream relay | Use where local WebSocket transport remains useful. |
 | `zod` | Existing FSB MCP package uses `^3.24.0` | Tool input schemas | Preserve MCP schema validation and typed errors. |
 | PhantomStream core | Extracted FSB package | DOM-native live mirroring | Use as reference or dependency for dashboard preview and supervision. |
@@ -72,5 +72,5 @@
 - Local `falkon/` checkout - Falkon CMake, README, COPYING, source layout.
 
 ---
-*Stack research for: FSB Browser*
+*Stack research for: Prometheus*
 *Researched: 2026-06-16*

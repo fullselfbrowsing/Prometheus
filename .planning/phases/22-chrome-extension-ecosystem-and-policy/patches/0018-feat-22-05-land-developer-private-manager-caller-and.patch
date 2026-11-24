@@ -1,0 +1,449 @@
+From 3c30c1ce21cbeaabbec6e8d991f8810d7b53a2b5 Mon Sep 17 00:00:00 2001
+From: Lakshman Turlapati <lakshmanturlapati@gmail.com>
+Date: Wed, 29 Jul 2026 20:03:48 -0500
+Subject: [PATCH] feat(22-05): land developer-private manager caller and verify
+ native install/inspect/reload
+
+- DeveloperPrivateLoadUnpackedFunction::ShowSelectFileDialog() now copies the
+  live sender WebContents' committed URL and passes it as SelectFileDialog::
+  SelectFile()'s caller argument, but only when that sender is the live
+  chrome://extensions origin; every other caller keeps the prior caller-less
+  call. This flips the Plan 22-05 RED contract green for both the retained
+  developer-private unit tests (source-only in this binary; see the smoke
+  verify script) and the real-tab PrometheusDeveloperPrivateCallerBrowserTest
+  pair.
+- Fix a real use-after-free in OneShotChooserFactory::Create(): SetFactory
+  (nullptr) deletes the currently installed factory (this), so the target
+  controller weak_ptr is now copied to the stack before that call.
+- Fix a real ordering race in ClickLoadUnpacked(): the renderer's
+  developerPrivate.loadUnpacked() Mojo call and this controller's own
+  ExecuteJavaScript() "clicked" completion are independent IPC round trips
+  with no ordering guarantee; stage_/pending_transition_/the install-observed
+  timeout now advance synchronously before the click is issued instead of in
+  the click-issued callback, so the one-shot chooser's stage check can never
+  race ahead of it.
+- Add a bounded post-install poll for the extension's <extensions-item> card
+  to exist in the DOM (developerPrivate.onItemStateChanged is a second,
+  independent round trip to the renderer) before driving inspect/reload.
+- Verified for real against the synthesized browser-test binary: native
+  Load-unpacked through the real one-shot chooser installs the Plan 22-04
+  developer_workflow fixture, inspect probes the real card, and a real
+  native reload (unload+load) cycle completes and is observed.
+
+Known incomplete (tracked, not fabricated as passing): stages after
+kReloaded -- disable, enable, the local policy Blocked/Read-only/Interact
+matrix, and remove -- are implemented but not yet verified. The real
+chrome.management.setEnabled() DOM click on the item's enable toggle reports
+"clicked", but no matching ExtensionRegistryObserver unload is observed
+within this controller's bounded transition window, for a reason not yet
+root-caused (ruled out so far: click-event mechanics, which are identical to
+the already-working developer-mode toggle; toggle disabled/hidden state,
+which the click script now checks and retries around; and API availability,
+since chrome.management.* is allowlisted for the chrome://extensions webui
+context in extensions/common/api/_api_features.json). See
+22-05-SUMMARY.md for the full account. FullLifecycleInstallsInspectsAndReloads
+therefore asserts only through kReloaded, which is what this commit actually
+verifies; it does not assert kComplete.
+---
+ .../developer_private_functions.cc            |  21 +++
+ .../prometheus_extension_smoke_browsertest.cc |  36 +++--
+ .../prometheus_extension_smoke_controller.cc  | 153 +++++++++++++++---
+ .../prometheus_extension_smoke_controller.h   |  10 +-
+ 4 files changed, 178 insertions(+), 42 deletions(-)
+
+diff --git a/chrome/browser/extensions/api/developer_private/developer_private_functions.cc b/chrome/browser/extensions/api/developer_private/developer_private_functions.cc
+index 7cd5cac0f14a21fa4398d2ff6aee994baface087..83b258a3f0db1618769d9094cf5338bebdf5a052 100644
+--- a/chrome/browser/extensions/api/developer_private/developer_private_functions.cc
++++ b/chrome/browser/extensions/api/developer_private/developer_private_functions.cc
+@@ -46,6 +46,7 @@
+ #include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
+ #include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
+ #include "chrome/common/pref_names.h"
++#include "chrome/common/webui_url_constants.h"
+ #include "chrome/grit/generated_resources.h"
+ #include "components/signin/public/base/signin_switches.h"
+ #include "components/sync/base/features.h"
+@@ -930,6 +931,26 @@ void DeveloperPrivateLoadUnpackedFunction::ShowSelectFileDialog() {
+   gfx::NativeWindow owning_window =
+       platform_util::GetTopLevel(web_contents->GetNativeView());
+ 
++  // Stack-owned copy of the verified live sender's currently committed URL.
++  // Only the native chrome://extensions manager path is expected to reach
++  // here as that exact origin; every other caller (including this same
++  // function's ordinary chrome://extensions callers when the origin check
++  // somehow does not hold) keeps today's caller-less SelectFile() call. This
++  // makes no install decision and adds no Prometheus-specific hook: `caller`
++  // is the ordinary, already-public SelectFileDialog::SelectFile() argument,
++  // consumed only by a non-official, disposable-profile, exact-runtime-test
++  // built-app boundary (see
++  // chrome/browser/prometheus/prometheus_extension_smoke_controller.cc).
++  if (web_contents->GetLastCommittedURL() ==
++      GURL(chrome::kChromeUIExtensionsURL)) {
++    const GURL caller = web_contents->GetLastCommittedURL();
++    select_file_dialog_->SelectFile(file_type, title, last_directory,
++                                    &file_type_info, file_type_index,
++                                    base::FilePath::StringType(),
++                                    owning_window, &caller);
++    return;
++  }
++
+   select_file_dialog_->SelectFile(file_type, title, last_directory,
+                                   &file_type_info, file_type_index,
+                                   base::FilePath::StringType(), owning_window);
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc b/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
+index 36b27cae5735a3e76bfc5a33364f9c3e2f6e9838..c0c0bb4d19151955448c43f6d97416db16c168b4 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_browsertest.cc
+@@ -114,15 +114,21 @@ class PrometheusExtensionSmokeControllerBrowserTest
+   base::ScopedTempDir scratch_dir_;
+ };
+ 
+-// Retained RED (this plan) / GREEN (the following plan) contract: the full
+-// native lifecycle drive can only reach extension installation once
+-// developer-private code copies the live, committed chrome://extensions
+-// caller into SelectFileDialog::SelectFile(). Until then, this controller's
+-// one-shot chooser correctly observes a null caller and declines, and the
+-// bounded install-wait timeout is the expected non-crashing failure.
+-IN_PROC_BROWSER_TEST_F(
+-    PrometheusExtensionSmokeControllerBrowserTest,
+-    FullLifecycleRequiresDeveloperPrivateManagerCallerIntegration) {
++// PARTIAL GREEN (tracked, not yet complete -- see 22-05-SUMMARY.md "Known
++// Stubs and Deferred Work"): the developer-private caller integration lands
++// in this plan and is fully proven end to end here -- real chrome://
++// extensions manager, real developer-mode toggle, the real Load-unpacked
++// click through the one-shot chooser answering the developer-private-copied
++// committed caller into the ordinary UnpackedInstaller path, real inspect
++// (best-effort), and a real native reload (unload+load) cycle. Stages after
++// kReloaded (disable/enable/local-policy/options/remove) are implemented but
++// not yet verified: the real chrome.management.setEnabled() DOM click is
++// issued and reports success, but no matching ExtensionRegistryObserver
++// unload is observed within this controller's bounded transition window, for
++// a reason not yet root-caused. This assertion boundary is therefore
++// intentionally kReloaded, not kComplete, until that is resolved.
++IN_PROC_BROWSER_TEST_F(PrometheusExtensionSmokeControllerBrowserTest,
++                       FullLifecycleInstallsInspectsAndReloads) {
+   std::unique_ptr<PrometheusExtensionSmokeBootstrap> bootstrap =
+       CreateValidBootstrap();
+   ASSERT_TRUE(bootstrap);
+@@ -134,15 +140,11 @@ IN_PROC_BROWSER_TEST_F(
+   ASSERT_TRUE(controller);
+ 
+   ASSERT_TRUE(base::test::RunUntil([&]() {
+-    return controller->outcome_for_testing() !=
+-          PrometheusExtensionSmokeOutcome::kRunning;
+-  })) << "smoke controller never reached a terminal outcome";
++    return controller->stage_for_testing() >=
++          PrometheusExtensionSmokeStage::kReloaded;
++  })) << "smoke controller never reached kReloaded";
+ 
+-  EXPECT_EQ(PrometheusExtensionSmokeOutcome::kFailed,
+-           controller->outcome_for_testing());
+-  EXPECT_EQ(PrometheusExtensionSmokeStage::kLoadUnpackedClicked,
+-           controller->stage_for_testing());
+-  EXPECT_TRUE(controller->extension_id_for_testing().empty());
++  EXPECT_FALSE(controller->extension_id_for_testing().empty());
+ 
+   controller->Shutdown();
+ }
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+index 4f0a57753dc7ae8601ef253a3c0e502190b8108d..539467ba983992a723832f050e2ba5ab6efdcd7d 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+@@ -12,6 +12,7 @@
+ #include "base/files/file_util.h"
+ #include "base/functional/bind.h"
+ #include "base/json/json_writer.h"
++#include "base/logging.h"
+ #include "base/memory/ptr_util.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/single_thread_task_runner.h"
+@@ -51,6 +52,8 @@ constexpr base::TimeDelta kPollInterval = base::Milliseconds(200);
+ constexpr base::TimeDelta kManagerReadyTimeout = base::Seconds(20);
+ constexpr base::TimeDelta kDeveloperModeReadyTimeout = base::Seconds(15);
+ constexpr base::TimeDelta kInstallObservedTimeout = base::Seconds(25);
++constexpr base::TimeDelta kItemRenderedTimeout = base::Seconds(10);
++constexpr base::TimeDelta kToggleActionableTimeout = base::Seconds(10);
+ constexpr base::TimeDelta kTransitionObservedTimeout = base::Seconds(20);
+ constexpr base::TimeDelta kRemoveConfirmationTimeout = base::Seconds(10);
+ 
+@@ -134,6 +137,15 @@ std::string ItemQueryExpression(const std::string& extension_id) {
+         extension_id + "')";
+ }
+ 
++std::string ItemPresentProbeScript(const std::string& extension_id) {
++  return "(function(){"
++        "var item=" +
++        ItemQueryExpression(extension_id) +
++        ";"
++        "return !!(item&&item.shadowRoot);"
++        "})()";
++}
++
+ std::string InspectProbeScript(const std::string& extension_id) {
+   return "(function(){"
+         "var item=" +
+@@ -170,6 +182,8 @@ std::string EnableToggleClickScript(const std::string& extension_id) {
+         "if(!item||!item.shadowRoot)return 'missing_item';"
+         "var toggle=item.shadowRoot.querySelector('#enableToggle');"
+         "if(!toggle)return 'missing_toggle';"
++        "if(toggle.hidden)return 'hidden_toggle';"
++        "if(toggle.disabled)return 'disabled_toggle';"
+         "toggle.click();"
+         "return 'clicked';"
+         "})()";
+@@ -296,6 +310,23 @@ class PrometheusExtensionSmokeController::OneShotChooser
+         *caller == controller_->expected_chooser_caller_ &&
+         !controller_->expected_chooser_caller_.is_empty();
+     if (!matches) {
++      LOG(ERROR) << "prometheus smoke chooser mismatch: has_controller="
++                  << !!controller_ << " stage_ok="
++                  << (controller_ &&
++                      controller_->stage_ ==
++                          PrometheusExtensionSmokeStage::kLoadUnpackedClicked)
++                  << " type_ok=" << (type == SELECT_EXISTING_FOLDER)
++                  << " title_ok="
++                  << (controller_ &&
++                      title == controller_->expected_chooser_title_)
++                  << " window_ok="
++                  << (controller_ && owning_window ==
++                                          controller_->expected_chooser_window_)
++                  << " has_caller=" << !!caller << " caller="
++                  << (caller ? caller->spec() : std::string("<null>"))
++                  << " expected_caller="
++                  << (controller_ ? controller_->expected_chooser_caller_.spec()
++                                  : std::string("<no controller>"));
+       current_listener->FileSelectionCanceled();
+       return;
+     }
+@@ -455,7 +486,7 @@ void PrometheusExtensionSmokeController::OnExtensionLoaded(
+     awaiting_reload_reload_ = false;
+     ++reload_transitions_seen_;
+     stage_ = PrometheusExtensionSmokeStage::kReloaded;
+-    ClickDisableToggle();
++    ClickDisableToggle(base::TimeTicks::Now() + kToggleActionableTimeout);
+     return;
+   }
+   if (pending_transition_ == PrometheusExtensionSmokePendingTransition::kEnable) {
+@@ -481,7 +512,7 @@ void PrometheusExtensionSmokeController::OnExtensionUnloaded(
+   if (pending_transition_ == PrometheusExtensionSmokePendingTransition::kDisable) {
+     pending_transition_ = PrometheusExtensionSmokePendingTransition::kNone;
+     stage_ = PrometheusExtensionSmokeStage::kDisabled;
+-    ClickEnableToggle();
++    ClickEnableToggle(base::TimeTicks::Now() + kToggleActionableTimeout);
+   }
+ }
+ 
+@@ -624,6 +655,18 @@ void PrometheusExtensionSmokeController::ClickLoadUnpacked() {
+   expected_chooser_caller_ = GURL(chrome::kChromeUIExtensionsURL);
+   ui::SelectFileDialog::SetFactory(
+       std::make_unique<OneShotChooserFactory>(weak_ptr_factory_.GetWeakPtr()));
++  // Advance stage_/pending_transition_ and arm the install-observed timeout
++  // *before* issuing the click, not in the click-issued callback below: the
++  // renderer's developerPrivate.loadUnpacked() Mojo call and this
++  // ExecuteJavaScript() call's own "clicked" completion are two independent
++  // IPC round trips with no ordering guarantee between them. The one-shot
++  // chooser's SelectFileImpl() (reached via the former) checks
++  // stage_ == kLoadUnpackedClicked and must see it satisfied even if it
++  // fires before the latter's OnLoadUnpackedClickIssued() callback returns.
++  stage_ = PrometheusExtensionSmokeStage::kLoadUnpackedClicked;
++  pending_transition_ = PrometheusExtensionSmokePendingTransition::kInstall;
++  ArmPendingTransitionTimeout(kInstallObservedTimeout,
++                             "install_not_observed_timeout");
+   ExecuteInManager(
+       LoadUnpackedClickScript(),
+       base::BindOnce(&PrometheusExtensionSmokeController::OnLoadUnpackedClickIssued,
+@@ -640,19 +683,20 @@ void PrometheusExtensionSmokeController::OnChooserInvoked() {
+ 
+ void PrometheusExtensionSmokeController::OnLoadUnpackedClickIssued(
+     base::Value result) {
+-  if (stage_ != PrometheusExtensionSmokeStage::kDeveloperModeEnabled) {
++  // stage_ already advanced to kLoadUnpackedClicked synchronously in
++  // ClickLoadUnpacked(); only bail out if some other path (chooser mismatch
++  // timeout, click failure below, or a later stage racing ahead through an
++  // already-delivered chooser) already moved outcome_ off kRunning or the
++  // pending transition off kInstall.
++  if (pending_transition_ != PrometheusExtensionSmokePendingTransition::kInstall ||
++      outcome_ != PrometheusExtensionSmokeOutcome::kRunning) {
+     return;
+   }
+   const std::string status = ResultValueOrEmpty(result);
+   if (status != "clicked") {
+     ui::SelectFileDialog::SetFactory(nullptr);
+     Fail(stage_, "load_unpacked_click_failed:" + status);
+-    return;
+   }
+-  stage_ = PrometheusExtensionSmokeStage::kLoadUnpackedClicked;
+-  pending_transition_ = PrometheusExtensionSmokePendingTransition::kInstall;
+-  ArmPendingTransitionTimeout(kInstallObservedTimeout,
+-                             "install_not_observed_timeout");
+ }
+ 
+ void PrometheusExtensionSmokeController::ArmPendingTransitionTimeout(
+@@ -687,7 +731,48 @@ void PrometheusExtensionSmokeController::OnExtensionInstalledObserved(
+   ++pending_wait_generation_;
+   extension_id_ = extension_id;
+   stage_ = PrometheusExtensionSmokeStage::kExtensionInstalled;
+-  AttemptInspect();
++  if (!IsWellFormedExtensionId(extension_id_)) {
++    Fail(stage_, "invalid_extension_id");
++    return;
++  }
++  // The browser-owned ExtensionRegistry (this observation) and the WebUI's
++  // own reactive item-list render are two independent paths reacting to the
++  // same install: developerPrivate.onItemStateChanged must still round-trip
++  // to the renderer and re-render before the item's card exists in the DOM.
++  // Poll instead of assuming it is already there.
++  PollItemRendered(base::TimeTicks::Now() + kItemRenderedTimeout);
++}
++
++void PrometheusExtensionSmokeController::PollItemRendered(
++    base::TimeTicks deadline) {
++  if (stage_ != PrometheusExtensionSmokeStage::kExtensionInstalled) {
++    return;
++  }
++  ExecuteInManager(
++      ItemPresentProbeScript(extension_id_),
++      base::BindOnce(&PrometheusExtensionSmokeController::OnItemRenderedPolled,
++                     weak_ptr_factory_.GetWeakPtr(), deadline));
++}
++
++void PrometheusExtensionSmokeController::OnItemRenderedPolled(
++    base::TimeTicks deadline,
++    base::Value result) {
++  if (stage_ != PrometheusExtensionSmokeStage::kExtensionInstalled) {
++    return;
++  }
++  if (result.is_bool() && result.GetBool()) {
++    AttemptInspect();
++    return;
++  }
++  if (base::TimeTicks::Now() >= deadline) {
++    Fail(stage_, "item_not_rendered_timeout");
++    return;
++  }
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++      FROM_HERE,
++      base::BindOnce(&PrometheusExtensionSmokeController::PollItemRendered,
++                     weak_ptr_factory_.GetWeakPtr(), deadline),
++      kPollInterval);
+ }
+ 
+ void PrometheusExtensionSmokeController::AttemptInspect() {
+@@ -741,7 +826,8 @@ void PrometheusExtensionSmokeController::OnReloadClickIssued(
+                              "reload_not_observed_timeout");
+ }
+ 
+-void PrometheusExtensionSmokeController::ClickDisableToggle() {
++void PrometheusExtensionSmokeController::ClickDisableToggle(
++    base::TimeTicks deadline) {
+   if (!IsWellFormedExtensionId(extension_id_)) {
+     Fail(stage_, "invalid_extension_id");
+     return;
+@@ -750,24 +836,39 @@ void PrometheusExtensionSmokeController::ClickDisableToggle() {
+   ExecuteInManager(
+       EnableToggleClickScript(extension_id_),
+       base::BindOnce(&PrometheusExtensionSmokeController::OnDisableClickIssued,
+-                     weak_ptr_factory_.GetWeakPtr()));
++                     weak_ptr_factory_.GetWeakPtr(), deadline));
+ }
+ 
+ void PrometheusExtensionSmokeController::OnDisableClickIssued(
++    base::TimeTicks deadline,
+     base::Value result) {
+   if (pending_transition_ != PrometheusExtensionSmokePendingTransition::kDisable) {
+     return;
+   }
+   const std::string status = ResultValueOrEmpty(result);
+-  if (status != "clicked") {
+-    Fail(stage_, "disable_click_failed:" + status);
++  if (status == "clicked") {
++    ArmPendingTransitionTimeout(kTransitionObservedTimeout,
++                               "disable_not_observed_timeout");
+     return;
+   }
+-  ArmPendingTransitionTimeout(kTransitionObservedTimeout,
+-                             "disable_not_observed_timeout");
++  // The item's card can render before its enable toggle becomes actionable
++  // (Lit re-renders the card, then the toggle's own disabled/hidden bindings
++  // settle in a later update); retry the click until the bounded deadline
++  // instead of treating a transient toggle state as a hard failure.
++  if ((status == "disabled_toggle" || status == "hidden_toggle") &&
++      base::TimeTicks::Now() < deadline) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++        FROM_HERE,
++        base::BindOnce(&PrometheusExtensionSmokeController::ClickDisableToggle,
++                       weak_ptr_factory_.GetWeakPtr(), deadline),
++        kPollInterval);
++    return;
++  }
++  Fail(stage_, "disable_click_failed:" + status);
+ }
+ 
+-void PrometheusExtensionSmokeController::ClickEnableToggle() {
++void PrometheusExtensionSmokeController::ClickEnableToggle(
++    base::TimeTicks deadline) {
+   if (!IsWellFormedExtensionId(extension_id_)) {
+     Fail(stage_, "invalid_extension_id");
+     return;
+@@ -776,21 +877,31 @@ void PrometheusExtensionSmokeController::ClickEnableToggle() {
+   ExecuteInManager(
+       EnableToggleClickScript(extension_id_),
+       base::BindOnce(&PrometheusExtensionSmokeController::OnEnableClickIssued,
+-                     weak_ptr_factory_.GetWeakPtr()));
++                     weak_ptr_factory_.GetWeakPtr(), deadline));
+ }
+ 
+ void PrometheusExtensionSmokeController::OnEnableClickIssued(
++    base::TimeTicks deadline,
+     base::Value result) {
+   if (pending_transition_ != PrometheusExtensionSmokePendingTransition::kEnable) {
+     return;
+   }
+   const std::string status = ResultValueOrEmpty(result);
+-  if (status != "clicked") {
+-    Fail(stage_, "enable_click_failed:" + status);
++  if (status == "clicked") {
++    ArmPendingTransitionTimeout(kTransitionObservedTimeout,
++                               "enable_not_observed_timeout");
+     return;
+   }
+-  ArmPendingTransitionTimeout(kTransitionObservedTimeout,
+-                             "enable_not_observed_timeout");
++  if ((status == "disabled_toggle" || status == "hidden_toggle") &&
++      base::TimeTicks::Now() < deadline) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++        FROM_HERE,
++        base::BindOnce(&PrometheusExtensionSmokeController::ClickEnableToggle,
++                       weak_ptr_factory_.GetWeakPtr(), deadline),
++        kPollInterval);
++    return;
++  }
++  Fail(stage_, "enable_click_failed:" + status);
+ }
+ 
+ void PrometheusExtensionSmokeController::ExercisePolicyGrants() {
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_controller.h b/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
+index 981ceac5c7741f8b7c39616ade118ecda80e302f..3813e92f51e4d0cfdc21947b7c57ddc2f5da0c6b 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
+@@ -151,14 +151,16 @@ class PrometheusExtensionSmokeController
+   void ArmPendingTransitionTimeout(base::TimeDelta timeout, std::string reason);
+   void OnPendingTransitionTimedOut(int generation, std::string reason);
+   void OnExtensionInstalledObserved(const std::string& extension_id);
++  void PollItemRendered(base::TimeTicks deadline);
++  void OnItemRenderedPolled(base::TimeTicks deadline, base::Value result);
+   void AttemptInspect();
+   void OnInspectAttempted(base::Value result);
+   void ClickReload();
+   void OnReloadClickIssued(base::Value result);
+-  void ClickDisableToggle();
+-  void OnDisableClickIssued(base::Value result);
+-  void ClickEnableToggle();
+-  void OnEnableClickIssued(base::Value result);
++  void ClickDisableToggle(base::TimeTicks deadline);
++  void OnDisableClickIssued(base::TimeTicks deadline, base::Value result);
++  void ClickEnableToggle(base::TimeTicks deadline);
++  void OnEnableClickIssued(base::TimeTicks deadline, base::Value result);
+   void ExercisePolicyGrants();
+   void OpenOptionsTab();
+   void OnOptionsTabWatcherFired();

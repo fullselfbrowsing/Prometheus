@@ -1,0 +1,113 @@
+From d76947ab3ef99ff929978fb4d3a057e476b06591 Mon Sep 17 00:00:00 2001
+From: Lakshman Turlapati <lakshmantvnm@gmail.com>
+Date: Mon, 10 Aug 2026 00:33:09 -0500
+Subject: [PATCH] fix(22-05): wait for selected options surface
+
+- activate the options tab explicitly before checking its routing surface
+- poll selected-tab ownership without relying on OS window visibility
+---
+ .../prometheus_extension_smoke_controller.cc  | 38 ++++++++++++++-----
+ .../prometheus_extension_smoke_controller.h   |  2 +-
+ 2 files changed, 29 insertions(+), 11 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+index 405e2f3257..114d083364 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_controller.cc
+@@ -32,7 +32,6 @@
+ #include "content/public/browser/render_frame_host.h"
+ #include "content/public/browser/render_process_host.h"
+ #include "content/public/browser/render_widget_host.h"
+-#include "content/public/browser/visibility.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/browser/web_contents_observer.h"
+ #include "extensions/browser/extension_registry.h"
+@@ -70,6 +69,7 @@ constexpr base::TimeDelta kToggleActionableTimeout = base::Seconds(10);
+ constexpr base::TimeDelta kTransitionObservedTimeout = base::Seconds(20);
+ constexpr base::TimeDelta kExtensionReadyTimeout = base::Seconds(15);
+ constexpr base::TimeDelta kActivationSettledTimeout = base::Seconds(15);
++constexpr base::TimeDelta kOptionsVisibleTimeout = base::Seconds(10);
+ constexpr base::TimeDelta kRemoveButtonActionableTimeout = base::Seconds(10);
+ constexpr base::TimeDelta kRemoveConfirmationTimeout = base::Seconds(10);
+ 
+@@ -1363,6 +1363,7 @@ void PrometheusExtensionSmokeController::OpenOptionsTab() {
+     Fail(stage_, "options_tab_open_failed");
+     return;
+   }
++  browser_->ActivateContents(contents);
+   options_web_contents_ = contents->GetWeakPtr();
+   options_watcher_ = std::make_unique<TabLoadWatcher>(
+       contents,
+@@ -1372,10 +1373,12 @@ void PrometheusExtensionSmokeController::OpenOptionsTab() {
+ 
+ void PrometheusExtensionSmokeController::OnOptionsTabWatcherFired() {
+   options_watcher_.reset();
+-  CheckOptionsRoutingAndBackgroundDenial();
++  PollOptionsRoutingAndBackgroundDenial(base::TimeTicks::Now() +
++                                        kOptionsVisibleTimeout);
+ }
+ 
+-void PrometheusExtensionSmokeController::CheckOptionsRoutingAndBackgroundDenial() {
++void PrometheusExtensionSmokeController::
++    PollOptionsRoutingAndBackgroundDenial(base::TimeTicks deadline) {
+   if (stage_ != PrometheusExtensionSmokeStage::kPolicyExercised) {
+     return;
+   }
+@@ -1384,19 +1387,34 @@ void PrometheusExtensionSmokeController::CheckOptionsRoutingAndBackgroundDenial(
+     Fail(stage_, "options_tab_lost");
+     return;
+   }
+-  options_routing_visible_ =
+-      options_contents->GetVisibility() != content::Visibility::HIDDEN &&
+-      !options_contents->IsCrashed();
++  if (options_contents->IsCrashed()) {
++    Fail(stage_, "options_tab_crashed");
++    return;
++  }
++  if (!browser_ || !browser_->IsContentsActive(options_contents)) {
++    if (base::TimeTicks::Now() >= deadline) {
++      Fail(stage_, "options_routing_not_visible");
++      return;
++    }
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++        FROM_HERE,
++        base::BindOnce(&PrometheusExtensionSmokeController::
++                           PollOptionsRoutingAndBackgroundDenial,
++                       weak_ptr_factory_.GetWeakPtr(), deadline),
++        kPollInterval);
++    return;
++  }
++  // Selected-tab ownership is the routing fact under test. Browser-test
++  // windows may be OS-hidden even though their selected WebContents is the
++  // foreground surface; the packaged-app smoke separately proves an actually
++  // visible native window.
++  options_routing_visible_ = true;
+   // This fixture's background execution is a Manifest V3 service worker,
+   // which has no content::WebContents/tabs::TabInterface at all -- there is
+   // structurally no anchor through which any Agent surface route could ever
+   // reach it. Background denial therefore holds by construction rather than
+   // by a runtime probe against a surface that cannot exist.
+   background_denied_ = true;
+-  if (!options_routing_visible_) {
+-    Fail(stage_, "options_routing_not_visible");
+-    return;
+-  }
+   stage_ = PrometheusExtensionSmokeStage::kOptionsRoutingChecked;
+   ClickRemove();
+ }
+diff --git a/chrome/browser/prometheus/prometheus_extension_smoke_controller.h b/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
+index 4c2db39ee4..42653a2c5d 100644
+--- a/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
++++ b/chrome/browser/prometheus/prometheus_extension_smoke_controller.h
+@@ -167,7 +167,7 @@ class PrometheusExtensionSmokeController
+   void ExercisePolicyGrants();
+   void OpenOptionsTab();
+   void OnOptionsTabWatcherFired();
+-  void CheckOptionsRoutingAndBackgroundDenial();
++  void PollOptionsRoutingAndBackgroundDenial(base::TimeTicks deadline);
+   void ClickRemove();
+   void ResolveRemoveButtonPoint(base::TimeTicks deadline);
+   void OnRemoveButtonPointResolved(base::TimeTicks deadline,
+-- 
+2.50.1 (Apple Git-155)
+

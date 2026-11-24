@@ -1,0 +1,39 @@
+From 9b541ee6a969121df8e8270eef0253f4ee583057 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 23:29:11 -0500
+Subject: [PATCH] test(21-25): acknowledge production viewer cursors
+
+---
+ .../prometheus_mcp_integration_browsertest.cc    | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+index fde2c2dcd0..b80a75e9c0 100644
+--- a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+@@ -1623,6 +1623,22 @@ IN_PROC_BROWSER_TEST_F(
+   ASSERT_FALSE(baseline_b.first.empty());
+   EXPECT_EQ(baseline_a.first, baseline_b.first);
+ 
++  auto ack = [&](std::string_view dashboard_session,
++                 const std::pair<std::string, double>& cursor) {
++    base::DictValue params;
++    params.Set("dashboard_session", dashboard_session);
++    params.Set("document_epoch", cursor.first);
++    params.Set("sequence", cursor.second);
++    base::DictValue request;
++    request.Set("operation", "ack");
++    request.Set("params", std::move(params));
++    base::DictValue response =
++        Parse(Exchange("POST", "/v1/supervision", Json(std::move(request))));
++    EXPECT_TRUE(response.FindBool("ok").value_or(false));
++  };
++  ack(viewer_a, baseline_a);
++  ack(viewer_b, baseline_b);
++
+   base::DictValue agent_started =
+       Command(agent_session, "start_supervision_session");
+   ASSERT_TRUE(agent_started.FindBool("ok").value_or(false));
+-- 
+2.50.1 (Apple Git-155)
+

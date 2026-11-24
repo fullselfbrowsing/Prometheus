@@ -1,0 +1,329 @@
+From d6ee3978a5d71762edfaaaee3a2cad1b985ec13b Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Sun, 12 Jul 2026 20:46:46 -0500
+Subject: [PATCH 02/19] feat(19-02): extend native MCP route contracts
+
+---
+ .../prometheus/prometheus_agent_route.cc      | 86 +++++++++++++++++
+ .../prometheus/prometheus_agent_route.h       | 96 +++++++++++++++++++
+ .../prometheus_agent_route_unittest.cc        | 35 ++++---
+ 3 files changed, 202 insertions(+), 15 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_agent_route.cc b/chrome/browser/prometheus/prometheus_agent_route.cc
+index 37c7537a61..37b6a8388b 100644
+--- a/chrome/browser/prometheus/prometheus_agent_route.cc
++++ b/chrome/browser/prometheus/prometheus_agent_route.cc
+@@ -34,6 +34,10 @@ constexpr RouteNameEntry kRouteNameEntries[] = {
+     {"read_page", AgentRouteName::kReadPage},
+     {"get_dom_snapshot", AgentRouteName::kGetDomSnapshot},
+     {"get_page_snapshot", AgentRouteName::kGetPageSnapshot},
++    {"get_text", AgentRouteName::kGetText},
++    {"get_attribute", AgentRouteName::kGetAttribute},
++    {"diagnostics", AgentRouteName::kDiagnostics},
++    {"open_internal_surface", AgentRouteName::kOpenInternalSurface},
+     {"execute_js", AgentRouteName::kExecuteJs},
+     {"click", AgentRouteName::kClick},
+     {"type_text", AgentRouteName::kTypeText},
+@@ -49,6 +53,38 @@ constexpr RouteNameEntry kRouteNameEntries[] = {
+ 
+ }  // namespace
+ 
++AgentVisualContext::AgentVisualContext() = default;
++AgentVisualContext::AgentVisualContext(const AgentVisualContext&) = default;
++AgentVisualContext& AgentVisualContext::operator=(const AgentVisualContext&) =
++    default;
++AgentVisualContext::~AgentVisualContext() = default;
++
++AgentTabMetadata::AgentTabMetadata() = default;
++AgentTabMetadata::AgentTabMetadata(const AgentTabMetadata&) = default;
++AgentTabMetadata& AgentTabMetadata::operator=(const AgentTabMetadata&) =
++    default;
++AgentTabMetadata::~AgentTabMetadata() = default;
++
++AgentWindowMetadata::AgentWindowMetadata() = default;
++AgentWindowMetadata::AgentWindowMetadata(const AgentWindowMetadata&) = default;
++AgentWindowMetadata& AgentWindowMetadata::operator=(
++    const AgentWindowMetadata&) = default;
++AgentWindowMetadata::~AgentWindowMetadata() = default;
++
++AgentElementReadResult::AgentElementReadResult() = default;
++AgentElementReadResult::AgentElementReadResult(const AgentElementReadResult&) =
++    default;
++AgentElementReadResult& AgentElementReadResult::operator=(
++    const AgentElementReadResult&) = default;
++AgentElementReadResult::~AgentElementReadResult() = default;
++
++AgentDiagnosticComponent::AgentDiagnosticComponent() = default;
++AgentDiagnosticComponent::AgentDiagnosticComponent(
++    const AgentDiagnosticComponent&) = default;
++AgentDiagnosticComponent& AgentDiagnosticComponent::operator=(
++    const AgentDiagnosticComponent&) = default;
++AgentDiagnosticComponent::~AgentDiagnosticComponent() = default;
++
+ AgentTarget::AgentTarget() = default;
+ AgentTarget::AgentTarget(const AgentTarget&) = default;
+ AgentTarget& AgentTarget::operator=(const AgentTarget&) = default;
+@@ -176,6 +212,56 @@ std::string_view AgentErrorCodeToString(AgentErrorCode error_code) {
+       return "VERIFICATION_FAILED";
+     case AgentErrorCode::kRepeatedAction:
+       return "REPEATED_ACTION";
++    case AgentErrorCode::kInvalidRequest:
++      return "INVALID_REQUEST";
++    case AgentErrorCode::kRequestTooLarge:
++      return "REQUEST_TOO_LARGE";
++    case AgentErrorCode::kBadgeNotAllowed:
++      return "BADGE_NOT_ALLOWED";
++    case AgentErrorCode::kCapabilityNotReady:
++      return "CAPABILITY_NOT_READY";
++    case AgentErrorCode::kToolRemoved:
++      return "TOOL_REMOVED";
++    case AgentErrorCode::kTimeout:
++      return "TIMEOUT";
++  }
++}
++
++std::optional<AgentInternalSurface> AgentInternalSurfaceFromString(
++    std::string_view surface) {
++  if (surface == "new_tab") {
++    return AgentInternalSurface::kNewTab;
++  }
++  if (surface == "side_panel") {
++    return AgentInternalSurface::kSidePanel;
++  }
++  if (surface == "control_panel") {
++    return AgentInternalSurface::kControlPanel;
++  }
++  return std::nullopt;
++}
++
++std::string_view AgentInternalSurfaceToString(AgentInternalSurface surface) {
++  switch (surface) {
++    case AgentInternalSurface::kNewTab:
++      return "new_tab";
++    case AgentInternalSurface::kSidePanel:
++      return "side_panel";
++    case AgentInternalSurface::kControlPanel:
++      return "control_panel";
++  }
++}
++
++std::string_view AgentDiagnosticStatusToString(AgentDiagnosticStatus status) {
++  switch (status) {
++    case AgentDiagnosticStatus::kReady:
++      return "ready";
++    case AgentDiagnosticStatus::kDegraded:
++      return "degraded";
++    case AgentDiagnosticStatus::kNotReady:
++      return "not_ready";
++    case AgentDiagnosticStatus::kUnavailable:
++      return "unavailable";
+   }
+ }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_agent_route.h b/chrome/browser/prometheus/prometheus_agent_route.h
+index 30f545d26b..4cc0b4904e 100644
+--- a/chrome/browser/prometheus/prometheus_agent_route.h
++++ b/chrome/browser/prometheus/prometheus_agent_route.h
+@@ -5,6 +5,7 @@
+ #ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_ROUTE_H_
+ #define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_ROUTE_H_
+ 
++#include <cstdint>
+ #include <optional>
+ #include <string>
+ #include <string_view>
+@@ -34,6 +35,10 @@ enum class AgentRouteName {
+   kReadPage,
+   kGetDomSnapshot,
+   kGetPageSnapshot,
++  kGetText,
++  kGetAttribute,
++  kDiagnostics,
++  kOpenInternalSurface,
+   kExecuteJs,
+   kClick,
+   kTypeText,
+@@ -63,6 +68,84 @@ enum class AgentErrorCode {
+   kFrameRestricted,
+   kVerificationFailed,
+   kRepeatedAction,
++  kInvalidRequest,
++  kRequestTooLarge,
++  kBadgeNotAllowed,
++  kCapabilityNotReady,
++  kToolRemoved,
++  kTimeout,
++};
++
++enum class AgentInternalSurface {
++  kNewTab,
++  kSidePanel,
++  kControlPanel,
++};
++
++enum class AgentDiagnosticStatus {
++  kReady,
++  kDegraded,
++  kNotReady,
++  kUnavailable,
++};
++
++struct AgentVisualContext {
++  AgentVisualContext();
++  AgentVisualContext(const AgentVisualContext&);
++  AgentVisualContext& operator=(const AgentVisualContext&);
++  ~AgentVisualContext();
++
++  std::optional<std::string> visual_reason;
++  std::optional<std::string> client;
++  std::optional<bool> is_final;
++};
++
++struct AgentTabMetadata {
++  AgentTabMetadata();
++  AgentTabMetadata(const AgentTabMetadata&);
++  AgentTabMetadata& operator=(const AgentTabMetadata&);
++  ~AgentTabMetadata();
++
++  int32_t tab_id = 0;
++  int32_t window_id = 0;
++  int index = 0;
++  std::string title;
++  GURL url;
++  bool active = false;
++  bool owned_by_session = false;
++};
++
++struct AgentWindowMetadata {
++  AgentWindowMetadata();
++  AgentWindowMetadata(const AgentWindowMetadata&);
++  AgentWindowMetadata& operator=(const AgentWindowMetadata&);
++  ~AgentWindowMetadata();
++
++  int32_t window_id = 0;
++  bool active = false;
++  size_t tab_count = 0;
++};
++
++struct AgentElementReadResult {
++  AgentElementReadResult();
++  AgentElementReadResult(const AgentElementReadResult&);
++  AgentElementReadResult& operator=(const AgentElementReadResult&);
++  ~AgentElementReadResult();
++
++  std::string value;
++  bool attribute_present = false;
++};
++
++struct AgentDiagnosticComponent {
++  AgentDiagnosticComponent();
++  AgentDiagnosticComponent(const AgentDiagnosticComponent&);
++  AgentDiagnosticComponent& operator=(const AgentDiagnosticComponent&);
++  ~AgentDiagnosticComponent();
++
++  std::string key;
++  AgentDiagnosticStatus status = AgentDiagnosticStatus::kUnavailable;
++  std::string reason;
++  std::string next_action;
+ };
+ 
+ struct AgentTarget {
+@@ -74,6 +157,7 @@ struct AgentTarget {
+   std::optional<int32_t> browser_session_id;
+   std::optional<int32_t> window_session_id;
+   tabs::TabHandle tab_handle;
++  std::optional<int> tab_index;
+ };
+ 
+ // Identifies a specific frame within a page target. All fields are data-only
+@@ -150,6 +234,7 @@ struct AgentPageRequest {
+   AgentPageReadOptions read_options;
+   AgentPageActionRequest action;
+   std::optional<std::string> javascript;
++  std::optional<std::string> attribute_name;
+   bool javascript_permission_granted = false;
+   bool verify_mutation = false;
+ };
+@@ -186,6 +271,9 @@ struct AgentRouteRequest {
+   AgentTarget target;
+   std::optional<GURL> url;
+   std::optional<AgentPageRequest> page_request;
++  std::optional<AgentVisualContext> visual_context;
++  std::optional<AgentInternalSurface> internal_surface;
++  bool foreground = false;
+ };
+ 
+ struct AgentRouteResult {
+@@ -207,12 +295,20 @@ struct AgentRouteResult {
+   std::vector<std::string> changed_state;
+   AgentTarget target;
+   std::optional<AgentPageResult> page_result;
++  std::vector<AgentTabMetadata> tabs;
++  std::vector<AgentWindowMetadata> windows;
++  std::optional<AgentElementReadResult> element_read_result;
++  std::vector<AgentDiagnosticComponent> diagnostics;
+ };
+ 
+ std::optional<AgentRouteName> AgentRouteNameFromString(
+     std::string_view route_name);
+ std::string_view AgentRouteNameToString(AgentRouteName route_name);
+ std::string_view AgentErrorCodeToString(AgentErrorCode error_code);
++std::optional<AgentInternalSurface> AgentInternalSurfaceFromString(
++    std::string_view surface);
++std::string_view AgentInternalSurfaceToString(AgentInternalSurface surface);
++std::string_view AgentDiagnosticStatusToString(AgentDiagnosticStatus status);
+ 
+ }  // namespace prometheus
+ 
+diff --git a/chrome/browser/prometheus/prometheus_agent_route_unittest.cc b/chrome/browser/prometheus/prometheus_agent_route_unittest.cc
+index 76d57c5df9..50a5c8342d 100644
+--- a/chrome/browser/prometheus/prometheus_agent_route_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_route_unittest.cc
+@@ -261,24 +261,29 @@ TEST(PrometheusAgentRouteTest, ExtendedRequestAndResultAreCopyable) {
+   EXPECT_EQ("aria-label", request_copy.page_request->attribute_name);
+ 
+   AgentRouteResult result = AgentRouteResult::Success({"metadata_returned"});
+-  result.tabs.push_back(
+-      {.tab_id = 42,
+-       .window_id = 7,
+-       .index = 3,
+-       .title = "Example",
+-       .url = GURL("https://example.test/"),
+-       .active = true,
+-       .owned_by_session = true});
+-  result.windows.push_back(
+-      {.window_id = 7, .active = true, .tab_count = 1});
++  AgentTabMetadata tab;
++  tab.tab_id = 42;
++  tab.window_id = 7;
++  tab.index = 3;
++  tab.title = "Example";
++  tab.url = GURL("https://example.test/");
++  tab.active = true;
++  tab.owned_by_session = true;
++  result.tabs.push_back(std::move(tab));
++  AgentWindowMetadata window;
++  window.window_id = 7;
++  window.active = true;
++  window.tab_count = 1;
++  result.windows.push_back(std::move(window));
+   result.element_read_result = AgentElementReadResult();
+   result.element_read_result->value = "Submit";
+   result.element_read_result->attribute_present = true;
+-  result.diagnostics.push_back(
+-      {.key = "browser",
+-       .status = AgentDiagnosticStatus::kReady,
+-       .reason = "available",
+-       .next_action = "none"});
++  AgentDiagnosticComponent diagnostic;
++  diagnostic.key = "browser";
++  diagnostic.status = AgentDiagnosticStatus::kReady;
++  diagnostic.reason = "available";
++  diagnostic.next_action = "none";
++  result.diagnostics.push_back(std::move(diagnostic));
+ 
+   AgentRouteResult result_copy = result;
+   ASSERT_EQ(1u, result_copy.tabs.size());
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,472 @@
+From ae51ea246d73a18ebec9cfec346ee326d3003fd9 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 11:46:23 -0500
+Subject: [PATCH 40/40] feat(21-16): publish fresh supervision tab state
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   1 +
+ .../prometheus/prometheus_agent_tab_data.cc   |  48 +++-
+ .../prometheus/prometheus_agent_tab_data.h    |   6 +-
+ .../prometheus_supervision_profile_service.cc |  22 ++
+ .../prometheus/prometheus_tab_state.cc        | 215 +++++++++++++++++-
+ 5 files changed, 285 insertions(+), 7 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index ec8345013e..6a2cf9f4fb 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -373,6 +373,7 @@ source_set("prometheus_supervision_profile_service") {
+     ":prometheus_supervision_capture_hub",
+     ":prometheus_supervision_action_controller",
+     ":prometheus_supervision_types",
++    ":prometheus_tab_state",
+     "//base",
+     "//base:i18n",
+     "//chrome/browser/profiles",
+diff --git a/chrome/browser/prometheus/prometheus_agent_tab_data.cc b/chrome/browser/prometheus/prometheus_agent_tab_data.cc
+index 500b7a2bd6..7cb5326bfe 100644
+--- a/chrome/browser/prometheus/prometheus_agent_tab_data.cc
++++ b/chrome/browser/prometheus/prometheus_agent_tab_data.cc
+@@ -109,6 +109,7 @@ AgentRouteResult PrometheusAgentTabData::ClaimIfUnowned(
+                                                 owner_session_id_);
+     }
+   }
++  NotifyTabStateIfChanged();
+   return AgentRouteResult::Success({"tab_claimed"});
+ }
+ 
+@@ -126,6 +127,7 @@ AgentRouteResult PrometheusAgentTabData::ReleaseIfOwned(
+   for (Observer& observer : observers_) {
+     observer.OnPrometheusAgentTabOwnerChanged(old_owner_session_id, "");
+   }
++  NotifyTabStateIfChanged();
+   return AgentRouteResult::Success({"tab_released"});
+ }
+ 
+@@ -139,15 +141,46 @@ bool PrometheusAgentTabData::ReleaseIfOwnedBy(std::string_view session_id) {
+   for (Observer& observer : observers_) {
+     observer.OnPrometheusAgentTabOwnerChanged(old_owner_session_id, "");
+   }
++  NotifyTabStateIfChanged();
+   return true;
+ }
+ 
+ void PrometheusAgentTabData::UpdateSupervisionState(
+     PrometheusTabState::Supervision supervision) {
+-  static_cast<void>(supervision);
++  if (supervision_ == supervision) {
++    return;
++  }
++  supervision_ = std::move(supervision);
++  NotifyTabStateIfChanged();
++}
++
++void PrometheusAgentTabData::ClearSupervisionState() {
++  UpdateSupervisionState(PrometheusTabState::Supervision());
++}
++
++void PrometheusAgentTabData::set_automation_active(bool active) {
++  if (automation_active_ == active) {
++    return;
++  }
++  automation_active_ = active;
++  NotifyTabStateIfChanged();
+ }
+ 
+-void PrometheusAgentTabData::ClearSupervisionState() {}
++void PrometheusAgentTabData::set_supervision_active(bool active) {
++  if (supervision_active_ == active) {
++    return;
++  }
++  supervision_active_ = active;
++  NotifyTabStateIfChanged();
++}
++
++void PrometheusAgentTabData::set_health(PrometheusTabState::Health health) {
++  if (health_ == health) {
++    return;
++  }
++  health_ = health;
++  NotifyTabStateIfChanged();
++}
+ 
+ void PrometheusAgentTabData::ClearOwnership() {
+   owner_session_id_.clear();
+@@ -172,7 +205,16 @@ PrometheusTabState PrometheusAgentTabData::ToTabState() const {
+   return state;
+ }
+ 
+-void PrometheusAgentTabData::NotifyTabStateIfChanged() {}
++void PrometheusAgentTabData::NotifyTabStateIfChanged() {
++  PrometheusTabState state = ToTabState();
++  if (last_notified_tab_state_ && *last_notified_tab_state_ == state) {
++    return;
++  }
++  last_notified_tab_state_ = state;
++  for (PrometheusTabStateObserver& observer : tab_state_observers_) {
++    observer.OnPrometheusTabStateChanged(state);
++  }
++}
+ 
+ bool PrometheusAgentTabData::HasOwner() const {
+   return !owner_session_id_.empty();
+diff --git a/chrome/browser/prometheus/prometheus_agent_tab_data.h b/chrome/browser/prometheus/prometheus_agent_tab_data.h
+index 81af2197d1..0b9339eb88 100644
+--- a/chrome/browser/prometheus/prometheus_agent_tab_data.h
++++ b/chrome/browser/prometheus/prometheus_agent_tab_data.h
+@@ -62,9 +62,9 @@ class PrometheusAgentTabData {
+   bool supervision_active() const { return supervision_active_; }
+   PrometheusTabState::Health health() const { return health_; }
+ 
+-  void set_automation_active(bool active) { automation_active_ = active; }
+-  void set_supervision_active(bool active) { supervision_active_ = active; }
+-  void set_health(PrometheusTabState::Health health) { health_ = health; }
++  void set_automation_active(bool active);
++  void set_supervision_active(bool active);
++  void set_health(PrometheusTabState::Health health);
+ 
+  private:
+   friend class PrometheusAgentService;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+index 67cf7be69a..dbab65fd8c 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+@@ -18,6 +18,7 @@
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "chrome/browser/prometheus/prometheus_agent_transport_codec.h"
++#include "chrome/browser/prometheus/prometheus_tab_state.h"
+ #include "chrome/browser/tab_list/tab_list_interface.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/common/webui_url_constants.h"
+@@ -705,6 +706,7 @@ PrometheusSupervisionProfileService::ReadDashboardBaseline(
+       viewer->second->stream_state !=
+           SupervisionStreamState::kPreparingBaseline) {
+     viewer->second->stream_state = SupervisionStreamState::kResyncing;
++    NotifySnapshotChanged(viewer->second->stable_tab_id);
+   }
+   static_cast<SupervisionServiceResult&>(result) =
+       SupervisionServiceResult::Success();
+@@ -757,6 +759,7 @@ PrometheusSupervisionProfileService::ReadDashboardDiff(
+   }
+   if (capture_hub->hub->ConsumerNeedsBaseline(consumer_token)) {
+     viewer->second->stream_state = SupervisionStreamState::kResyncing;
++    NotifySnapshotChanged(viewer->second->stable_tab_id);
+     static_cast<SupervisionServiceResult&>(result) =
+         ServiceFailure(SupervisionErrorCode::kResyncRequired,
+                        "A fresh dashboard baseline is required",
+@@ -768,6 +771,7 @@ PrometheusSupervisionProfileService::ReadDashboardDiff(
+   if (!result.delivery.has_value() &&
+       capture_hub->hub->ConsumerNeedsBaseline(consumer_token)) {
+     viewer->second->stream_state = SupervisionStreamState::kResyncing;
++    NotifySnapshotChanged(viewer->second->stable_tab_id);
+     static_cast<SupervisionServiceResult&>(result) =
+         ServiceFailure(SupervisionErrorCode::kResyncRequired,
+                        "The dashboard diff cursor is no longer retained",
+@@ -829,6 +833,7 @@ PrometheusSupervisionProfileService::BeginDashboardDiffWait(
+       *viewer->second->capture_consumer_token;
+   if (capture_hub->hub->ConsumerNeedsBaseline(consumer_token)) {
+     viewer->second->stream_state = SupervisionStreamState::kResyncing;
++    NotifySnapshotChanged(viewer->second->stable_tab_id);
+     static_cast<SupervisionServiceResult&>(result) = ServiceFailure(
+         SupervisionErrorCode::kResyncRequired,
+         "A fresh dashboard baseline is required",
+@@ -903,6 +908,7 @@ void PrometheusSupervisionProfileService::OnDashboardDiffWaitReady(
+     result = ReadDashboardDiff(dashboard_session);
+   } else if (reason == SupervisionCaptureWaitReason::kBaselineRequired) {
+     viewer->second->stream_state = SupervisionStreamState::kResyncing;
++    NotifySnapshotChanged(viewer->second->stable_tab_id);
+     static_cast<SupervisionServiceResult&>(result) =
+         ServiceFailure(SupervisionErrorCode::kResyncRequired,
+                        "A fresh dashboard baseline is required",
+@@ -951,6 +957,7 @@ SupervisionServiceResult PrometheusSupervisionProfileService::AckDashboard(
+   }
+   if (!capture_hub->hub->Ack(*viewer->second->capture_consumer_token, stamp)) {
+     viewer->second->stream_state = SupervisionStreamState::kResyncing;
++    NotifySnapshotChanged(viewer->second->stable_tab_id);
+     return ServiceFailure(SupervisionErrorCode::kResyncRequired,
+                           "The dashboard acknowledgement is stale",
+                           "Read and acknowledge the current baseline");
+@@ -958,6 +965,7 @@ SupervisionServiceResult PrometheusSupervisionProfileService::AckDashboard(
+   viewer->second->last_seen_at = Now();
+   viewer->second->stream_state = SupervisionStreamState::kLive;
+   viewer->second->last_acknowledged_stamp = stamp;
++  NotifySnapshotChanged(viewer->second->stable_tab_id);
+   return SupervisionServiceResult::Success();
+ }
+ 
+@@ -1610,6 +1618,12 @@ void PrometheusSupervisionProfileService::Shutdown() {
+   pending_pairings_.clear();
+   recent_terminal_sessions_.clear();
+   failed_attempts_.clear();
++  for (auto& [stable_tab_id, observed] : observed_tabs_) {
++    static_cast<void>(stable_tab_id);
++    if (observed->lease.data()) {
++      observed->lease.data()->ClearSupervisionState();
++    }
++  }
+   observed_tabs_.clear();
+   observers_.Clear();
+   for (DashboardDiffWaitCallback& callback : pending_waits) {
+@@ -2191,6 +2205,9 @@ void PrometheusSupervisionProfileService::ReleaseObservedTabIfUnused(
+       has_compatibility_session) {
+     return;
+   }
++  if (observed->second->lease.data()) {
++    observed->second->lease.data()->ClearSupervisionState();
++  }
+   observed_tabs_.erase(observed);
+ }
+ 
+@@ -2447,6 +2464,11 @@ void PrometheusSupervisionProfileService::NotifySnapshotChanged(
+   }
+   const SanitizedSupervisionSnapshot snapshot =
+       BuildSanitizedSnapshot(stable_tab_id);
++  auto observed = observed_tabs_.find(stable_tab_id);
++  if (observed != observed_tabs_.end() && observed->second->lease.data()) {
++    observed->second->lease.data()->UpdateSupervisionState(
++        ProjectPrometheusTabSupervisionState(snapshot));
++  }
+   for (Observer& observer : observers_) {
+     observer.OnPrometheusSupervisionSnapshotChanged(stable_tab_id, snapshot);
+   }
+diff --git a/chrome/browser/prometheus/prometheus_tab_state.cc b/chrome/browser/prometheus/prometheus_tab_state.cc
+index 19ae24e3ab..df780d2ea5 100644
+--- a/chrome/browser/prometheus/prometheus_tab_state.cc
++++ b/chrome/browser/prometheus/prometheus_tab_state.cc
+@@ -4,10 +4,125 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_tab_state.h"
+ 
++#include <algorithm>
++#include <set>
++#include <string_view>
++#include <vector>
++
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
+ #include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
+ #include "chrome/browser/prometheus/prometheus_supervision_types.h"
+ #include "components/tabs/public/tab_interface.h"
+ 
++namespace {
++
++using TabSupervision = PrometheusTabState::Supervision;
++
++bool IsActiveViewerState(prometheus::SupervisionViewerState state) {
++  return state == prometheus::SupervisionViewerState::kViewOnly ||
++         state == prometheus::SupervisionViewerState::kController;
++}
++
++TabSupervision::ActivityState ProjectActivityState(
++    prometheus::SupervisionRemoteActionState state) {
++  switch (state) {
++    case prometheus::SupervisionRemoteActionState::kIdle:
++      return TabSupervision::ActivityState::kNone;
++    case prometheus::SupervisionRemoteActionState::kValidating:
++      return TabSupervision::ActivityState::kValidating;
++    case prometheus::SupervisionRemoteActionState::kExecuting:
++      return TabSupervision::ActivityState::kExecuting;
++    case prometheus::SupervisionRemoteActionState::kAwaitingConfirmation:
++      return TabSupervision::ActivityState::kAwaitingConfirmation;
++    case prometheus::SupervisionRemoteActionState::kVerifying:
++      return TabSupervision::ActivityState::kVerifying;
++    case prometheus::SupervisionRemoteActionState::kCompleted:
++      return TabSupervision::ActivityState::kCompleted;
++    case prometheus::SupervisionRemoteActionState::kBlocked:
++      return TabSupervision::ActivityState::kBlocked;
++    case prometheus::SupervisionRemoteActionState::kFailed:
++      return TabSupervision::ActivityState::kFailed;
++  }
++}
++
++TabSupervision::ActionCategory ProjectActionCategory(
++    prometheus::SupervisionRemoteActionCategory category) {
++  switch (category) {
++    case prometheus::SupervisionRemoteActionCategory::kClick:
++      return TabSupervision::ActionCategory::kClick;
++    case prometheus::SupervisionRemoteActionCategory::kType:
++      return TabSupervision::ActionCategory::kType;
++    case prometheus::SupervisionRemoteActionCategory::kKeyPress:
++      return TabSupervision::ActionCategory::kKeyPress;
++    case prometheus::SupervisionRemoteActionCategory::kScroll:
++      return TabSupervision::ActionCategory::kScroll;
++    case prometheus::SupervisionRemoteActionCategory::kHover:
++      return TabSupervision::ActionCategory::kHover;
++    case prometheus::SupervisionRemoteActionCategory::kSelect:
++      return TabSupervision::ActionCategory::kSelect;
++    case prometheus::SupervisionRemoteActionCategory::kClear:
++      return TabSupervision::ActionCategory::kClear;
++    case prometheus::SupervisionRemoteActionCategory::kDrag:
++      return TabSupervision::ActionCategory::kDrag;
++    case prometheus::SupervisionRemoteActionCategory::kDrop:
++      return TabSupervision::ActionCategory::kDrop;
++    case prometheus::SupervisionRemoteActionCategory::kNavigate:
++      return TabSupervision::ActionCategory::kNavigate;
++  }
++}
++
++int ResyncRank(TabSupervision::ResyncState state) {
++  switch (state) {
++    case TabSupervision::ResyncState::kNone:
++      return 0;
++    case TabSupervision::ResyncState::kPreparing:
++      return 1;
++    case TabSupervision::ResyncState::kResyncing:
++      return 2;
++    case TabSupervision::ResyncState::kPaused:
++      return 3;
++  }
++}
++
++TabSupervision::ResyncState ProjectResyncState(
++    prometheus::SupervisionStreamState state) {
++  switch (state) {
++    case prometheus::SupervisionStreamState::kPreparingBaseline:
++      return TabSupervision::ResyncState::kPreparing;
++    case prometheus::SupervisionStreamState::kLive:
++      return TabSupervision::ResyncState::kNone;
++    case prometheus::SupervisionStreamState::kResyncing:
++      return TabSupervision::ResyncState::kResyncing;
++    case prometheus::SupervisionStreamState::kPaused:
++    case prometheus::SupervisionStreamState::kEnded:
++      return TabSupervision::ResyncState::kPaused;
++  }
++}
++
++std::string MakeUniqueViewerLabel(std::string_view untrusted_label,
++                                  std::set<std::string>& used_labels) {
++  const std::string safe_label =
++      prometheus::DeriveSupervisionSafeClientLabel(untrusted_label);
++  if (used_labels.insert(safe_label).second) {
++    return safe_label;
++  }
++
++  for (size_t suffix_number = 2;; ++suffix_number) {
++    const std::string suffix = " " + base::NumberToString(suffix_number);
++    const size_t prefix_bytes =
++        prometheus::kMaxSupervisionSafeLabelBytes - suffix.size();
++    std::string candidate(
++        base::TruncateUTF8ToByteSize(safe_label, prefix_bytes));
++    candidate += suffix;
++    if (used_labels.insert(candidate).second) {
++      return candidate;
++    }
++  }
++}
++
++}  // namespace
++
+ bool PrometheusTabState::Supervision::HasActiveAction() const {
+   switch (activity_state) {
+     case ActivityState::kValidating:
+@@ -29,7 +144,105 @@ PrometheusTabState PrometheusTabState::SafeDefault() {
+ 
+ PrometheusTabState::Supervision ProjectPrometheusTabSupervisionState(
+     const prometheus::SanitizedSupervisionSnapshot& snapshot) {
+-  return PrometheusTabState::Supervision();
++  TabSupervision result;
++  result.available = snapshot.target.eligible;
++  result.viewer_count =
++      std::min(snapshot.target.viewer_count,
++               static_cast<size_t>(prometheus::kHardSupervisionViewersPerTab));
++  if (result.viewer_count == 0) {
++    return result;
++  }
++
++  result.view_state = TabSupervision::ViewState::kViewing;
++  result.control_state = TabSupervision::ControlState::kViewOnly;
++
++  std::vector<const prometheus::SupervisionSessionSnapshot*> active_sessions;
++  const prometheus::SupervisionSessionSnapshot* controller_session = nullptr;
++  for (const prometheus::SupervisionSessionSnapshot& session :
++       snapshot.sessions) {
++    if (!IsActiveViewerState(session.viewer_state)) {
++      continue;
++    }
++    if (active_sessions.size() < result.viewer_count) {
++      active_sessions.push_back(&session);
++    }
++    if (!controller_session &&
++        session.viewer_state ==
++            prometheus::SupervisionViewerState::kController) {
++      controller_session = &session;
++    }
++  }
++
++  const bool has_authoritative_controller =
++      result.available && snapshot.target.agent_active &&
++      snapshot.target.controller_label && controller_session &&
++      prometheus::DeriveSupervisionSafeClientLabel(
++          *snapshot.target.controller_label) ==
++          prometheus::DeriveSupervisionSafeClientLabel(
++              controller_session->client.display_label);
++  if (has_authoritative_controller) {
++    auto controller = std::ranges::find(active_sessions, controller_session);
++    if (controller == active_sessions.end()) {
++      if (active_sessions.size() == result.viewer_count) {
++        active_sessions.pop_back();
++      }
++      active_sessions.insert(active_sessions.begin(), controller_session);
++    } else {
++      std::rotate(active_sessions.begin(), controller, controller + 1);
++    }
++  }
++
++  std::set<std::string> used_labels;
++  for (const prometheus::SupervisionSessionSnapshot* session :
++       active_sessions) {
++    result.viewer_labels.push_back(
++        MakeUniqueViewerLabel(session->client.display_label, used_labels));
++  }
++
++  for (const prometheus::SupervisionSessionSnapshot* session :
++       active_sessions) {
++    const TabSupervision::ResyncState candidate =
++        ProjectResyncState(session->stream_state);
++    if (ResyncRank(candidate) > ResyncRank(result.resync_state)) {
++      result.resync_state = candidate;
++    }
++  }
++
++  if (!has_authoritative_controller) {
++    if (result.resync_state == TabSupervision::ResyncState::kPaused) {
++      result.severity = TabSupervision::Severity::kBlocked;
++    } else if (result.resync_state != TabSupervision::ResyncState::kNone) {
++      result.severity = TabSupervision::Severity::kNeedsAttention;
++    }
++    return result;
++  }
++
++  result.control_state = TabSupervision::ControlState::kControllerReady;
++  result.controller_label = result.viewer_labels.empty()
++                                ? prometheus::DeriveSupervisionSafeClientLabel(
++                                      controller_session->client.display_label)
++                                : result.viewer_labels.front();
++  if (controller_session->client.expires_at_ms > 0) {
++    result.controller_expires_at_ms = controller_session->client.expires_at_ms;
++  }
++  result.activity_state =
++      ProjectActivityState(controller_session->action_state);
++  if (result.activity_state != TabSupervision::ActivityState::kNone &&
++      controller_session->action_category) {
++    result.action_category =
++        ProjectActionCategory(*controller_session->action_category);
++  }
++
++  if (result.activity_state == TabSupervision::ActivityState::kBlocked ||
++      result.activity_state == TabSupervision::ActivityState::kFailed ||
++      result.resync_state == TabSupervision::ResyncState::kPaused) {
++    result.severity = TabSupervision::Severity::kBlocked;
++  } else if (result.activity_state ==
++                 TabSupervision::ActivityState::kAwaitingConfirmation ||
++             result.resync_state != TabSupervision::ResyncState::kNone) {
++    result.severity = TabSupervision::Severity::kNeedsAttention;
++  }
++  return result;
+ }
+ 
+ PrometheusTabState GetPrometheusTabStateForWebContents(
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,283 @@
+From fd54a3821ba20d5cc61a5534f3acf82012820819 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 01:04:19 -0500
+Subject: [PATCH 07/11] feat(15-03): add Prometheus toolbar entry points
+
+---
+ .../vector_icons/fa_wand_magic_sparkles.icon  |  3 +-
+ chrome/browser/ui/views/prometheus/BUILD.gn   |  2 +
+ ...ometheus_toolbar_entrypoint_browsertest.cc | 48 ++++++++++++
+ .../browser/ui/views/toolbar/toolbar_view.cc  | 74 +++++++++++++++++++
+ .../browser/ui/views/toolbar/toolbar_view.h   | 19 +++++
+ 5 files changed, 145 insertions(+), 1 deletion(-)
+ create mode 100644 chrome/browser/ui/views/prometheus/prometheus_toolbar_entrypoint_browsertest.cc
+
+diff --git a/chrome/browser/resources/prometheus/vector_icons/fa_wand_magic_sparkles.icon b/chrome/browser/resources/prometheus/vector_icons/fa_wand_magic_sparkles.icon
+index d307e196b0..7d6fb9e9bb 100644
+--- a/chrome/browser/resources/prometheus/vector_icons/fa_wand_magic_sparkles.icon
++++ b/chrome/browser/resources/prometheus/vector_icons/fa_wand_magic_sparkles.icon
+@@ -5,7 +5,8 @@
+ // License: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+ 
+ CANVAS_DIMENSIONS, 512,
+-MOVE_TO, 234.7f, 42.7f, 197, 56.8f,
++MOVE_TO, 234.7f, 42.7f,
++LINE_TO, 197, 56.8f,
+ R_CUBIC_TO, -3, 1.1f, -5, 4, -5, 7.2f,
+ R_CUBIC_TO, 0, 3.2f, 2, 6.1f, 5, 7.2f,
+ R_LINE_TO, 37.7f, 14.1f,
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 3ee1f9ca8c..14138e5f84 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -38,6 +38,7 @@ source_set("browser_tests") {
+   sources = [
+     "prometheus_compact_chrome_browsertest.cc",
+     "prometheus_token_gallery_browsertest.cc",
++    "prometheus_toolbar_entrypoint_browsertest.cc",
+   ]
+ 
+   deps = [
+@@ -47,6 +48,7 @@ source_set("browser_tests") {
+     "//chrome/browser/themes",
+     "//chrome/browser/ui",
+     "//chrome/browser/ui/views/frame",
++    "//chrome/browser/ui/views/toolbar",
+     "//chrome/test:test_support",
+     "//components/prefs",
+     "//content/test:test_support",
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_toolbar_entrypoint_browsertest.cc b/chrome/browser/ui/views/prometheus/prometheus_toolbar_entrypoint_browsertest.cc
+new file mode 100644
+index 0000000000..1534c2bb10
+--- /dev/null
++++ b/chrome/browser/ui/views/prometheus/prometheus_toolbar_entrypoint_browsertest.cc
+@@ -0,0 +1,48 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
++
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/toolbar/prometheus_toolbar_button.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "content/public/test/browser_test.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "ui/gfx/geometry/size.h"
++#include "ui/views/accessibility/view_accessibility.h"
++
++class PrometheusToolbarEntryPointBrowserTest : public InProcessBrowserTest {
++ public:
++  ToolbarView* toolbar() {
++    return BrowserView::GetBrowserViewForBrowser(browser())->toolbar();
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(PrometheusToolbarEntryPointBrowserTest,
++                       ButtonsHaveExactAccessibleNamesAndTooltips) {
++  ASSERT_TRUE(toolbar());
++
++  PrometheusToolbarButton* const side_panel_button =
++      toolbar()->prometheus_side_panel_button_for_testing();
++  ASSERT_TRUE(side_panel_button);
++  EXPECT_TRUE(side_panel_button->GetVisible());
++  EXPECT_EQ(u"Toggle Prometheus side panel",
++            side_panel_button->GetTooltipText());
++  EXPECT_EQ(u"Toggle Prometheus side panel",
++            side_panel_button->GetViewAccessibility().GetCachedName());
++  EXPECT_EQ(gfx::Size(PrometheusToolbarButton::kVisualSize,
++                      PrometheusToolbarButton::kVisualSize),
++            side_panel_button->GetPreferredSize());
++
++  PrometheusToolbarButton* const ask_fsb_button =
++      toolbar()->prometheus_ask_fsb_button_for_testing();
++  ASSERT_TRUE(ask_fsb_button);
++  EXPECT_TRUE(ask_fsb_button->GetVisible());
++  EXPECT_EQ(u"Ask FSB", ask_fsb_button->GetTooltipText());
++  EXPECT_EQ(u"Ask FSB",
++            ask_fsb_button->GetViewAccessibility().GetCachedName());
++  EXPECT_EQ(gfx::Size(PrometheusToolbarButton::kVisualSize,
++                      PrometheusToolbarButton::kVisualSize),
++            ask_fsb_button->GetPreferredSize());
++}
+diff --git a/chrome/browser/ui/views/toolbar/toolbar_view.cc b/chrome/browser/ui/views/toolbar/toolbar_view.cc
+index 2c5223b226..643a6e0dc8 100644
+--- a/chrome/browser/ui/views/toolbar/toolbar_view.cc
++++ b/chrome/browser/ui/views/toolbar/toolbar_view.cc
+@@ -56,6 +56,9 @@
+ #include "chrome/browser/ui/layout_constants.h"
+ #include "chrome/browser/ui/omnibox/omnibox_view.h"
+ #include "chrome/browser/ui/page_action/page_action_properties_provider.h"
++#include "chrome/browser/ui/side_panel/side_panel_entry.h"
++#include "chrome/browser/ui/side_panel/side_panel_enums.h"
++#include "chrome/browser/ui/side_panel/side_panel_registry.h"
+ #include "chrome/browser/ui/tab_search_feature.h"
+ #include "chrome/browser/ui/tabs/features.h"
+ #include "chrome/browser/ui/tabs/public/tab_features.h"
+@@ -90,6 +93,7 @@
+ #include "chrome/browser/ui/views/performance_controls/battery_saver_button.h"
+ #include "chrome/browser/ui/views/performance_controls/performance_intervention_button.h"
+ #include "chrome/browser/ui/views/side_panel/side_panel.h"
++#include "chrome/browser/ui/views/side_panel/side_panel_coordinator.h"
+ #include "chrome/browser/ui/views/tabs/glic/glic_and_actor_buttons_container.h"
+ #include "chrome/browser/ui/views/tabs/tab_strip.h"
+ #include "chrome/browser/ui/views/tabs/tab_strip_controller.h"
+@@ -100,6 +104,7 @@
+ #include "chrome/browser/ui/views/toolbar/chrome_labs/chrome_labs_coordinator.h"
+ #include "chrome/browser/ui/views/toolbar/home_button.h"
+ #include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions_container.h"
++#include "chrome/browser/ui/views/toolbar/prometheus_toolbar_button.h"
+ #include "chrome/browser/ui/views/toolbar/reload_button.h"
+ #include "chrome/browser/ui/views/toolbar/split_tabs_button.h"
+ #include "chrome/browser/ui/views/toolbar/toolbar_button.h"
+@@ -211,6 +216,20 @@ constexpr int kLargeSpaceBetweenButtons = 6;
+ constexpr int kInsideBorderAroundGlicButtons = 2;
+ constexpr int kOutsideBorderAroundGlicButtons = 11;
+ constexpr int kGlicButtonMargin = 5;
++constexpr char16_t kPrometheusSidePanelButtonLabel[] =
++    u"Toggle Prometheus side panel";
++constexpr char16_t kPrometheusAskFsbButtonLabel[] = u"Ask FSB";
++
++SidePanelEntry::Key GetPrometheusSidePanelEntryKey() {
++  return SidePanelEntry::Key(SidePanelEntry::Id::kAssistant);
++}
++
++SidePanelNativeView CreatePrometheusSidePanelPlaceholderView(
++    SidePanelEntryScope& scope) {
++  auto view = std::make_unique<views::View>();
++  view->GetViewAccessibility().SetName(u"Prometheus side panel");
++  return view;
++}
+ 
+ // Returns whether `point` should be treated as part of the caption area in
+ // `view`. Recursively traverses into icon containers to correctly handle
+@@ -471,6 +490,20 @@ void ToolbarView::Init() {
+     location_bar_ = toolbar_webview_->GetLocationBar();
+   }
+ 
++  prometheus_side_panel_button_ =
++      AddChildView(std::make_unique<PrometheusToolbarButton>(
++          PrometheusAction::kSidebarFlip,
++          std::u16string(kPrometheusSidePanelButtonLabel),
++          base::BindRepeating(
++              &ToolbarView::OnPrometheusSidePanelButtonPressed,
++              base::Unretained(this))));
++  prometheus_ask_fsb_button_ =
++      AddChildView(std::make_unique<PrometheusToolbarButton>(
++          PrometheusAction::kWandMagicSparkles,
++          std::u16string(kPrometheusAskFsbButtonLabel),
++          base::BindRepeating(&ToolbarView::OnPrometheusAskFsbButtonPressed,
++                              base::Unretained(this))));
++
+   bool is_glic_left_of_profile =
+       features::kGlicToolbarButtonLocationParam.Get() ==
+           features::GlicToolbarButtonLocation::kLeftOfProfileChip ||
+@@ -1951,6 +1984,47 @@ void ToolbarView::OnTouchUiChanged() {
+   }
+ }
+ 
++void ToolbarView::OnPrometheusSidePanelButtonPressed(const ui::Event& event) {
++  TogglePrometheusSidePanel();
++}
++
++void ToolbarView::OnPrometheusAskFsbButtonPressed(const ui::Event& event) {
++  ShowPrometheusSidePanel();
++}
++
++void ToolbarView::EnsurePrometheusSidePanelEntry() {
++  SidePanelRegistry* const registry = SidePanelRegistry::From(browser_);
++  if (!registry || registry->GetEntryForKey(GetPrometheusSidePanelEntryKey())) {
++    return;
++  }
++
++  auto entry = std::make_unique<SidePanelEntry>(
++      GetPrometheusSidePanelEntryKey(),
++      base::BindRepeating(&CreatePrometheusSidePanelPlaceholderView),
++      base::BindRepeating(
++          []() { return SidePanelEntry::kSidePanelDefaultContentWidth; }));
++  entry->set_should_show_header(false);
++  entry->set_should_show_ephemerally_in_toolbar(false);
++  registry->Register(std::move(entry));
++}
++
++void ToolbarView::TogglePrometheusSidePanel() {
++  EnsurePrometheusSidePanelEntry();
++  if (auto* coordinator = SidePanelCoordinator::From(browser_)) {
++    coordinator->Toggle(GetPrometheusSidePanelEntryKey(),
++                        SidePanelOpenTrigger::kToolbarButton);
++  }
++}
++
++void ToolbarView::ShowPrometheusSidePanel() {
++  EnsurePrometheusSidePanelEntry();
++  if (auto* coordinator = SidePanelCoordinator::From(browser_)) {
++    coordinator->Show(GetPrometheusSidePanelEntryKey(),
++                      SidePanelOpenTrigger::kToolbarButton,
++                      /*suppress_animations=*/false);
++  }
++}
++
+ void ToolbarView::SetForwardButtonVisibility(bool visible) {
+   if (features::IsWebUIBackForwardButtonEnabled()) {
+     toolbar_webview_->SetForwardVisible(visible);
+diff --git a/chrome/browser/ui/views/toolbar/toolbar_view.h b/chrome/browser/ui/views/toolbar/toolbar_view.h
+index d62dd76d59..f671419c77 100644
+--- a/chrome/browser/ui/views/toolbar/toolbar_view.h
++++ b/chrome/browser/ui/views/toolbar/toolbar_view.h
+@@ -61,6 +61,7 @@ class MediaToolbarButtonView;
+ class ReloadButton;
+ class WebUIToolbarWebView;
+ class PinnedToolbarActionsContainer;
++class PrometheusToolbarButton;
+ class ToolbarButton;
+ class AvatarToolbarButtonBrowserTest;
+ class ToolbarController;
+@@ -72,6 +73,10 @@ namespace views {
+ class FlexLayout;
+ }  // namespace views
+ 
++namespace ui {
++class Event;
++}  // namespace ui
++
+ namespace glic {
+ class ToolbarGlicButton;
+ class ToolbarGlicActorTaskIcon;
+@@ -190,6 +195,12 @@ class ToolbarView : public views::AccessiblePaneView,
+   PinnedActionToolbarButton* tab_search_button() const {
+     return tab_search_button_;
+   }
++  PrometheusToolbarButton* prometheus_side_panel_button_for_testing() const {
++    return prometheus_side_panel_button_;
++  }
++  PrometheusToolbarButton* prometheus_ask_fsb_button_for_testing() const {
++    return prometheus_ask_fsb_button_;
++  }
+ 
+   // TODO(crbug.com/513238408): Remove this once toolbar layout/overflow is
+   // fixed.
+@@ -336,6 +347,12 @@ class ToolbarView : public views::AccessiblePaneView,
+ 
+   void OnTouchUiChanged();
+ 
++  void OnPrometheusSidePanelButtonPressed(const ui::Event& event);
++  void OnPrometheusAskFsbButtonPressed(const ui::Event& event);
++  void EnsurePrometheusSidePanelEntry();
++  void TogglePrometheusSidePanel();
++  void ShowPrometheusSidePanel();
++
+   void InitGlicContainer();
+ 
+   void OnVerticalTabStripModeChanged(
+@@ -402,6 +419,8 @@ class ToolbarView : public views::AccessiblePaneView,
+   raw_ptr<MediaToolbarButtonView> media_button_ = nullptr;
+   raw_ptr<BrowserAppMenuButton> app_menu_button_ = nullptr;
+   raw_ptr<PinnedActionToolbarButton> tab_search_button_ = nullptr;
++  raw_ptr<PrometheusToolbarButton> prometheus_side_panel_button_ = nullptr;
++  raw_ptr<PrometheusToolbarButton> prometheus_ask_fsb_button_ = nullptr;
+ 
+   // The button currently holding the lock to be shown/hidden.
+   raw_ptr<glic::GlicButtonInterface> locked_expansion_button_ = nullptr;
+-- 
+2.50.1 (Apple Git-155)
+

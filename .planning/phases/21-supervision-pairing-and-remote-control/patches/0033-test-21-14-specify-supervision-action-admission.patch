@@ -1,0 +1,913 @@
+From 45b5a0cb02e7404ce10b99ffb4693d79e8c49ddb Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 08:46:40 -0500
+Subject: [PATCH] test(21-14): specify supervision action admission
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  22 +
+ ...rometheus_supervision_action_controller.cc | 114 ++++
+ ...prometheus_supervision_action_controller.h | 127 ++++
+ ..._supervision_action_controller_unittest.cc | 582 ++++++++++++++++++
+ 4 files changed, 845 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_action_controller.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_action_controller.h
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index ae1751511a..7f9f83d6dc 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -335,6 +335,25 @@ source_set("prometheus_supervision_capture_hub") {
+   ]
+ }
+ 
++source_set("prometheus_supervision_action_controller") {
++  sources = [
++    "prometheus_supervision_action_controller.cc",
++    "prometheus_supervision_action_controller.h",
++  ]
++
++  deps = [
++    ":prometheus_agent_profile_service",
++    ":prometheus_agent_route",
++    ":prometheus_supervision_transport_codec",
++    ":prometheus_supervision_types",
++    "//base",
++    "//chrome/browser/ui/browser_window",
++    "//components/optimization_guide/content/browser",
++    "//components/tabs:public",
++    "//content/public/browser",
++  ]
++}
++
+ source_set("prometheus_supervision_profile_service") {
+   sources = [
+     "prometheus_supervision_profile_service.cc",
+@@ -348,6 +367,7 @@ source_set("prometheus_supervision_profile_service") {
+     ":prometheus_agent_service",
+     ":prometheus_agent_transport_codec",
+     ":prometheus_supervision_capture_hub",
++    ":prometheus_supervision_action_controller",
+     ":prometheus_supervision_types",
+     "//base",
+     "//chrome/browser/profiles",
+@@ -652,6 +672,7 @@ test("prometheus_unittests") {
+     "prometheus_runtime_types_unittest.cc",
+     "prometheus_secret_store_unittest.cc",
+     "prometheus_supervision_capture_hub_unittest.cc",
++    "prometheus_supervision_action_controller_unittest.cc",
+     "prometheus_supervision_diff_unittest.cc",
+     "prometheus_supervision_profile_service_unittest.cc",
+     "prometheus_supervision_projection_unittest.cc",
+@@ -695,6 +716,7 @@ test("prometheus_unittests") {
+     ":prometheus_runtime_types",
+     ":prometheus_secret_store",
+     ":prometheus_supervision_capture_hub",
++    ":prometheus_supervision_action_controller",
+     ":prometheus_supervision_diff",
+     ":prometheus_supervision_profile_service",
+     ":prometheus_supervision_projection",
+diff --git a/chrome/browser/prometheus/prometheus_supervision_action_controller.cc b/chrome/browser/prometheus/prometheus_supervision_action_controller.cc
+new file mode 100644
+index 0000000000..daaf8cb0d7
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_action_controller.cc
+@@ -0,0 +1,114 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_action_controller.h"
++
++#include <utility>
++
++#include "base/functional/bind.h"
++
++namespace prometheus {
++
++struct PrometheusSupervisionActionController::PendingAction {};
++
++PrometheusSupervisionActionController::PrometheusSupervisionActionController(
++    Profile* profile,
++    base::WeakPtr<BrowserWindowInterface> exact_browser,
++    tabs::TabHandle stable_tab,
++    base::UnguessableToken dashboard_session,
++    std::string immutable_owner_session_id,
++    AuthorityResolver authority_resolver,
++    AgentRouteDispatcher route_dispatcher,
++    FrameResolver frame_resolver)
++    : profile_(profile),
++      exact_browser_(std::move(exact_browser)),
++      stable_tab_(stable_tab),
++      dashboard_session_(dashboard_session),
++      immutable_owner_session_id_(std::move(immutable_owner_session_id)),
++      authority_resolver_(std::move(authority_resolver)),
++      route_dispatcher_(std::move(route_dispatcher)),
++      frame_resolver_(std::move(frame_resolver)) {}
++
++PrometheusSupervisionActionController::~PrometheusSupervisionActionController() =
++    default;
++
++// static
++SupervisionActionClassification
++PrometheusSupervisionActionController::Classify(
++    const SupervisionRemoteActionRequest& action) {
++  switch (action.category) {
++    case SupervisionRemoteActionCategory::kClick:
++    case SupervisionRemoteActionCategory::kType:
++    case SupervisionRemoteActionCategory::kKeyPress:
++    case SupervisionRemoteActionCategory::kScroll:
++    case SupervisionRemoteActionCategory::kHover:
++    case SupervisionRemoteActionCategory::kSelect:
++    case SupervisionRemoteActionCategory::kClear:
++      return SupervisionActionClassification::kOrdinary;
++    case SupervisionRemoteActionCategory::kDrag:
++    case SupervisionRemoteActionCategory::kDrop:
++    case SupervisionRemoteActionCategory::kNavigate:
++      return SupervisionActionClassification::kConsequential;
++  }
++  return SupervisionActionClassification::kRejected;
++}
++
++void PrometheusSupervisionActionController::ExecuteAction(
++    const base::UnguessableToken& dashboard_session,
++    std::string_view document_epoch,
++    uint64_t sequence,
++    const SupervisionRemoteActionRequest& action,
++    CompletionCallback callback) {
++  ++next_action_id_;
++  static_cast<void>(dashboard_session);
++  static_cast<void>(document_epoch);
++  static_cast<void>(sequence);
++  static_cast<void>(action);
++  SupervisionActionResult result;
++  result.error_code = SupervisionErrorCode::kViewOnly;
++  std::move(callback).Run(std::move(result));
++}
++
++void PrometheusSupervisionActionController::ResolvePendingConfirmation(
++    bool allow_once) {
++  static_cast<void>(allow_once);
++}
++
++void PrometheusSupervisionActionController::Cancel(
++    SupervisionErrorCode error_code) {
++  static_cast<void>(error_code);
++}
++
++bool PrometheusSupervisionActionController::has_in_flight_action_for_testing()
++    const {
++  return pending_action_ != nullptr;
++}
++
++bool PrometheusSupervisionActionController::awaiting_confirmation_for_testing()
++    const {
++  return false;
++}
++
++PrometheusSupervisionActionController::AgentRouteDispatcher
++BindPrometheusSupervisionAgentRouteDispatcher(
++    base::WeakPtr<PrometheusAgentProfileService> agent_profile_service) {
++  return base::BindRepeating(
++      [](base::WeakPtr<PrometheusAgentProfileService> service,
++         BrowserWindowInterface* exact_browser,
++         const AgentRouteRequest& request,
++         PrometheusAgentService::RouteCallback callback) {
++        if (!service) {
++          std::move(callback).Run(AgentRouteResult::Failure(
++              AgentErrorCode::kBrowserShuttingDown,
++              "The supervision action service is unavailable",
++              "Create a new supervision session"));
++          return;
++        }
++        service->ExecuteBrowserLocalRoute(exact_browser, request,
++                                          std::move(callback));
++      },
++      std::move(agent_profile_service));
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_action_controller.h b/chrome/browser/prometheus/prometheus_supervision_action_controller.h
+new file mode 100644
+index 0000000000..f246c35d18
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_action_controller.h
+@@ -0,0 +1,127 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_ACTION_CONTROLLER_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_ACTION_CONTROLLER_H_
++
++#include <cstdint>
++#include <memory>
++#include <optional>
++#include <string>
++#include <string_view>
++
++#include "base/functional/callback.h"
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "base/time/time.h"
++#include "base/unguessable_token.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_agent_route.h"
++#include "chrome/browser/prometheus/prometheus_supervision_transport_codec.h"
++#include "chrome/browser/prometheus/prometheus_supervision_types.h"
++#include "components/tabs/public/tab_interface.h"
++
++class BrowserWindowInterface;
++class Profile;
++
++namespace prometheus {
++
++enum class SupervisionActionClassification {
++  kOrdinary,
++  kConsequential,
++  kRejected,
++};
++
++// A browser-owned snapshot. Remote action envelopes never populate this type.
++struct SupervisionActionAuthoritySnapshot {
++  raw_ptr<Profile> profile = nullptr;
++  raw_ptr<BrowserWindowInterface> exact_browser = nullptr;
++  tabs::TabHandle stable_tab;
++  std::string live_owner_session_id;
++  std::optional<base::UnguessableToken> active_controller_session;
++  std::optional<base::UnguessableToken> controller_lease;
++  base::UnguessableToken document_epoch;
++  uint64_t sequence = 0;
++  uint64_t authority_generation = 0;
++  bool stream_live = false;
++};
++
++// Deliberately content-free. Raw action values and Agent result payloads never
++// cross the supervision boundary.
++struct SupervisionActionResult {
++  bool ok = false;
++  SupervisionRemoteActionState state =
++      SupervisionRemoteActionState::kBlocked;
++  SupervisionErrorCode error_code = SupervisionErrorCode::kNone;
++  AgentErrorCode agent_error_code = AgentErrorCode::kNone;
++  base::TimeDelta duration;
++};
++
++class PrometheusSupervisionActionController {
++ public:
++  using AuthorityResolver = base::RepeatingCallback<
++      std::optional<SupervisionActionAuthoritySnapshot>()>;
++  using FrameResolver = base::RepeatingCallback<std::optional<AgentFrameTarget>(
++      BrowserWindowInterface*,
++      tabs::TabHandle,
++      const SupervisionRemoteActionRequest&)>;
++  using AgentRouteDispatcher = base::RepeatingCallback<void(
++      BrowserWindowInterface*,
++      const AgentRouteRequest&,
++      PrometheusAgentService::RouteCallback)>;
++  using CompletionCallback = base::OnceCallback<void(SupervisionActionResult)>;
++
++  PrometheusSupervisionActionController(
++      Profile* profile,
++      base::WeakPtr<BrowserWindowInterface> exact_browser,
++      tabs::TabHandle stable_tab,
++      base::UnguessableToken dashboard_session,
++      std::string immutable_owner_session_id,
++      AuthorityResolver authority_resolver,
++      AgentRouteDispatcher route_dispatcher,
++      FrameResolver frame_resolver = FrameResolver());
++  PrometheusSupervisionActionController(
++      const PrometheusSupervisionActionController&) = delete;
++  PrometheusSupervisionActionController& operator=(
++      const PrometheusSupervisionActionController&) = delete;
++  ~PrometheusSupervisionActionController();
++
++  static SupervisionActionClassification Classify(
++      const SupervisionRemoteActionRequest& action);
++
++  void ExecuteAction(const base::UnguessableToken& dashboard_session,
++                     std::string_view document_epoch,
++                     uint64_t sequence,
++                     const SupervisionRemoteActionRequest& action,
++                     CompletionCallback callback);
++  void ResolvePendingConfirmation(bool allow_once);
++  void Cancel(SupervisionErrorCode error_code);
++
++  bool has_in_flight_action_for_testing() const;
++  bool awaiting_confirmation_for_testing() const;
++
++ private:
++  struct PendingAction;
++
++  raw_ptr<Profile> profile_ = nullptr;
++  base::WeakPtr<BrowserWindowInterface> exact_browser_;
++  const tabs::TabHandle stable_tab_;
++  const base::UnguessableToken dashboard_session_;
++  const std::string immutable_owner_session_id_;
++  AuthorityResolver authority_resolver_;
++  AgentRouteDispatcher route_dispatcher_;
++  FrameResolver frame_resolver_;
++  std::unique_ptr<PendingAction> pending_action_;
++  uint64_t next_action_id_ = 0;
++  base::WeakPtrFactory<PrometheusSupervisionActionController> weak_factory_{
++      this};
++};
++
++PrometheusSupervisionActionController::AgentRouteDispatcher
++BindPrometheusSupervisionAgentRouteDispatcher(
++    base::WeakPtr<PrometheusAgentProfileService> agent_profile_service);
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_ACTION_CONTROLLER_H_
+diff --git a/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc
+new file mode 100644
+index 0000000000..5c1a25e891
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc
+@@ -0,0 +1,582 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_action_controller.h"
++
++#include <optional>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "base/functional/bind.h"
++#include "base/test/bind.h"
++#include "base/test/task_environment.h"
++#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
++#include "components/sessions/core/session_id.h"
++#include "components/tabs/public/mock_tab_interface.h"
++#include "testing/gmock/include/gmock/gmock.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "ui/base/unowned_user_data/unowned_user_data_host.h"
++
++namespace prometheus {
++namespace {
++
++using testing::Return;
++using testing::ReturnRef;
++
++SupervisionRemoteActionRequest Action(
++    SupervisionRemoteActionCategory category) {
++  SupervisionRemoteActionRequest action;
++  action.category = category;
++  switch (category) {
++    case SupervisionRemoteActionCategory::kClick:
++    case SupervisionRemoteActionCategory::kHover:
++    case SupervisionRemoteActionCategory::kClear:
++    case SupervisionRemoteActionCategory::kDrop:
++      action.element_ref = "document-1:7";
++      break;
++    case SupervisionRemoteActionCategory::kType:
++      action.element_ref = "document-1:7";
++      action.text = "private text";
++      break;
++    case SupervisionRemoteActionCategory::kKeyPress:
++      action.key = "Enter";
++      break;
++    case SupervisionRemoteActionCategory::kScroll:
++      action.scroll_delta_y = 120;
++      break;
++    case SupervisionRemoteActionCategory::kSelect:
++      action.element_ref = "document-1:7";
++      action.option = "private option";
++      break;
++    case SupervisionRemoteActionCategory::kDrag:
++      action.element_ref = "document-1:7";
++      action.target_element_ref = "document-1:9";
++      break;
++    case SupervisionRemoteActionCategory::kNavigate:
++      action.navigation = "https://example.test/private-destination";
++      break;
++  }
++  return action;
++}
++
++class PrometheusSupervisionActionControllerTest : public testing::Test {
++ public:
++  PrometheusSupervisionActionControllerTest()
++      : profile_(reinterpret_cast<Profile*>(&profile_storage_)),
++        other_profile_(reinterpret_cast<Profile*>(&other_profile_storage_)),
++        browser_weak_factory_(&browser_),
++        other_browser_weak_factory_(&other_browser_),
++        dashboard_session_(base::UnguessableToken::Create()),
++        controller_lease_(base::UnguessableToken::Create()),
++        document_epoch_(base::UnguessableToken::Create()) {
++    ON_CALL(browser_, GetProfile()).WillByDefault(Return(profile_.get()));
++    ON_CALL(browser_, GetSessionID()).WillByDefault(ReturnRef(browser_id_));
++    ON_CALL(browser_, GetWeakPtr()).WillByDefault([this]() {
++      return browser_weak_factory_.GetWeakPtr();
++    });
++    ON_CALL(browser_, IsDeleteScheduled()).WillByDefault(Return(false));
++    ON_CALL(other_browser_, GetProfile())
++        .WillByDefault(Return(profile_.get()));
++    ON_CALL(other_browser_, GetSessionID())
++        .WillByDefault(ReturnRef(other_browser_id_));
++    ON_CALL(other_browser_, GetWeakPtr()).WillByDefault([this]() {
++      return other_browser_weak_factory_.GetWeakPtr();
++    });
++    ON_CALL(other_browser_, IsDeleteScheduled()).WillByDefault(Return(false));
++    ON_CALL(tab_, GetUnownedUserDataHost()).WillByDefault(ReturnRef(tab_host_));
++    ON_CALL(tab_, GetProfile()).WillByDefault(Return(profile_.get()));
++    ON_CALL(tab_, GetTabHandle()).WillByDefault(Return(43u));
++    ON_CALL(tab_, GetBrowserWindowInterface()).WillByDefault(Return(&browser_));
++    ON_CALL(other_tab_, GetUnownedUserDataHost())
++        .WillByDefault(ReturnRef(other_tab_host_));
++    ON_CALL(other_tab_, GetProfile()).WillByDefault(Return(profile_.get()));
++    ON_CALL(other_tab_, GetTabHandle()).WillByDefault(Return(44u));
++    ON_CALL(other_tab_, GetBrowserWindowInterface())
++        .WillByDefault(Return(&browser_));
++
++    authority_.profile = profile_;
++    authority_.exact_browser = &browser_;
++    authority_.stable_tab = tab_.GetHandle();
++    authority_.live_owner_session_id = owner_;
++    authority_.active_controller_session = dashboard_session_;
++    authority_.controller_lease = controller_lease_;
++    authority_.document_epoch = document_epoch_;
++    authority_.sequence = sequence_;
++    authority_.authority_generation = generation_;
++    authority_.stream_live = true;
++  }
++
++ protected:
++  std::unique_ptr<PrometheusSupervisionActionController> MakeController(
++      std::string immutable_owner = "agent-owner") {
++    return std::make_unique<PrometheusSupervisionActionController>(
++        profile_, browser_weak_factory_.GetWeakPtr(), tab_.GetHandle(),
++        dashboard_session_, std::move(immutable_owner),
++        base::BindRepeating(
++            &PrometheusSupervisionActionControllerTest::ResolveAuthority,
++            base::Unretained(this)),
++        base::BindRepeating(
++            &PrometheusSupervisionActionControllerTest::Dispatch,
++            base::Unretained(this)),
++        base::BindRepeating(
++            &PrometheusSupervisionActionControllerTest::ResolveFrame,
++            base::Unretained(this)));
++  }
++
++  std::optional<SupervisionActionAuthoritySnapshot> ResolveAuthority() {
++    ++authority_resolve_count_;
++    if (mutate_authority_at_ == authority_resolve_count_ &&
++        mutate_authority_) {
++      mutate_authority_.Run();
++    }
++    if (!authority_available_) {
++      return std::nullopt;
++    }
++    return authority_;
++  }
++
++  std::optional<AgentFrameTarget> ResolveFrame(
++      BrowserWindowInterface* browser,
++      tabs::TabHandle tab,
++      const SupervisionRemoteActionRequest&) {
++    ++frame_resolve_count_;
++    if (!frame_available_ || browser != &browser_ || tab != tab_.GetHandle()) {
++      return std::nullopt;
++    }
++    AgentFrameTarget frame;
++    frame.document_token = "document-1";
++    frame.render_process_id = 17;
++    frame.render_frame_routing_id = 19;
++    return frame;
++  }
++
++  void Dispatch(BrowserWindowInterface* browser,
++                const AgentRouteRequest& request,
++                PrometheusAgentService::RouteCallback callback) {
++    ++dispatch_count_;
++    dispatched_browser_ = browser;
++    dispatched_requests_.push_back(request);
++    if (hold_dispatch_) {
++      pending_agent_callbacks_.push_back(std::move(callback));
++      return;
++    }
++    std::move(callback).Run(next_agent_result_);
++  }
++
++  std::optional<SupervisionActionResult> Execute(
++      PrometheusSupervisionActionController& controller,
++      const SupervisionRemoteActionRequest& action,
++      const base::UnguessableToken& dashboard_session,
++      std::string_view document_epoch,
++      uint64_t sequence) {
++    std::optional<SupervisionActionResult> result;
++    controller.ExecuteAction(
++        dashboard_session, document_epoch, sequence, action,
++        base::BindLambdaForTesting([&](SupervisionActionResult action_result) {
++          result.emplace(std::move(action_result));
++        }));
++    return result;
++  }
++
++  std::optional<SupervisionActionResult> Execute(
++      PrometheusSupervisionActionController& controller,
++      const SupervisionRemoteActionRequest& action) {
++    return Execute(controller, action, dashboard_session_,
++                   document_epoch_.ToString(), sequence_);
++  }
++
++  base::test::TaskEnvironment task_environment_;
++  int profile_storage_ = 0;
++  int other_profile_storage_ = 0;
++  raw_ptr<Profile> profile_;
++  raw_ptr<Profile> other_profile_;
++  testing::NiceMock<MockBrowserWindowInterface> browser_;
++  testing::NiceMock<MockBrowserWindowInterface> other_browser_;
++  base::WeakPtrFactory<MockBrowserWindowInterface> browser_weak_factory_;
++  base::WeakPtrFactory<MockBrowserWindowInterface> other_browser_weak_factory_;
++  const SessionID browser_id_ = SessionID::FromSerializedValue(31);
++  const SessionID other_browser_id_ = SessionID::FromSerializedValue(32);
++  ui::UnownedUserDataHost tab_host_;
++  ui::UnownedUserDataHost other_tab_host_;
++  tabs::MockTabInterface tab_;
++  tabs::MockTabInterface other_tab_;
++  const base::UnguessableToken dashboard_session_;
++  const base::UnguessableToken controller_lease_;
++  const base::UnguessableToken document_epoch_;
++  const std::string owner_ = "agent-owner";
++  const uint64_t sequence_ = 7;
++  const uint64_t generation_ = 4;
++  SupervisionActionAuthoritySnapshot authority_;
++  bool authority_available_ = true;
++  bool frame_available_ = true;
++  int authority_resolve_count_ = 0;
++  int frame_resolve_count_ = 0;
++  int mutate_authority_at_ = 0;
++  base::RepeatingClosure mutate_authority_;
++  int dispatch_count_ = 0;
++  raw_ptr<BrowserWindowInterface> dispatched_browser_ = nullptr;
++  std::vector<AgentRouteRequest> dispatched_requests_;
++  bool hold_dispatch_ = false;
++  std::vector<PrometheusAgentService::RouteCallback> pending_agent_callbacks_;
++  AgentRouteResult next_agent_result_ = AgentRouteResult::Success({"changed"});
++};
++
++TEST_F(PrometheusSupervisionActionControllerTest, CategoryClickIsOrdinary) {
++  EXPECT_EQ(SupervisionActionClassification::kOrdinary,
++            PrometheusSupervisionActionController::Classify(
++                Action(SupervisionRemoteActionCategory::kClick)));
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest, CategoryTypeIsOrdinary) {
++  EXPECT_EQ(SupervisionActionClassification::kOrdinary,
++            PrometheusSupervisionActionController::Classify(
++                Action(SupervisionRemoteActionCategory::kType)));
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest, CategoryKeyPressIsOrdinary) {
++  EXPECT_EQ(SupervisionActionClassification::kOrdinary,
++            PrometheusSupervisionActionController::Classify(
++                Action(SupervisionRemoteActionCategory::kKeyPress)));
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest, CategoryScrollIsOrdinary) {
++  EXPECT_EQ(SupervisionActionClassification::kOrdinary,
++            PrometheusSupervisionActionController::Classify(
++                Action(SupervisionRemoteActionCategory::kScroll)));
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest, CategoryHoverIsOrdinary) {
++  EXPECT_EQ(SupervisionActionClassification::kOrdinary,
++            PrometheusSupervisionActionController::Classify(
++                Action(SupervisionRemoteActionCategory::kHover)));
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest, CategorySelectIsOrdinary) {
++  EXPECT_EQ(SupervisionActionClassification::kOrdinary,
++            PrometheusSupervisionActionController::Classify(
++                Action(SupervisionRemoteActionCategory::kSelect)));
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest, CategoryClearIsOrdinary) {
++  EXPECT_EQ(SupervisionActionClassification::kOrdinary,
++            PrometheusSupervisionActionController::Classify(
++                Action(SupervisionRemoteActionCategory::kClear)));
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest, CategoryDragIsConsequential) {
++  EXPECT_EQ(SupervisionActionClassification::kConsequential,
++            PrometheusSupervisionActionController::Classify(
++                Action(SupervisionRemoteActionCategory::kDrag)));
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest, CategoryDropIsConsequential) {
++  EXPECT_EQ(SupervisionActionClassification::kConsequential,
++            PrometheusSupervisionActionController::Classify(
++                Action(SupervisionRemoteActionCategory::kDrop)));
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       CategoryNavigateIsConsequential) {
++  EXPECT_EQ(SupervisionActionClassification::kConsequential,
++            PrometheusSupervisionActionController::Classify(
++                Action(SupervisionRemoteActionCategory::kNavigate)));
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       UnknownScriptVaultAndAmbiguousShapesAreRejected) {
++  SupervisionRemoteActionRequest unknown =
++      Action(SupervisionRemoteActionCategory::kClick);
++  unknown.category = static_cast<SupervisionRemoteActionCategory>(999);
++  EXPECT_EQ(SupervisionActionClassification::kRejected,
++            PrometheusSupervisionActionController::Classify(unknown));
++  SupervisionRemoteActionRequest ambiguous =
++      Action(SupervisionRemoteActionCategory::kClick);
++  ambiguous.text = "untyped payload";
++  EXPECT_EQ(SupervisionActionClassification::kRejected,
++            PrometheusSupervisionActionController::Classify(ambiguous));
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       ViewOnlyAndAbsentControllerDispatchZeroRoutes) {
++  authority_.active_controller_session.reset();
++  authority_.controller_lease.reset();
++  auto controller = MakeController();
++  auto result = Execute(*controller, Action(SupervisionRemoteActionCategory::kClick));
++  ASSERT_TRUE(result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kViewOnly, result->error_code);
++  EXPECT_EQ(0, dispatch_count_);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       CompetingControllerDispatchesZeroRoutes) {
++  authority_.active_controller_session = base::UnguessableToken::Create();
++  auto controller = MakeController();
++  auto result = Execute(*controller, Action(SupervisionRemoteActionCategory::kClick));
++  ASSERT_TRUE(result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kControllerConflict, result->error_code);
++  EXPECT_EQ(0, dispatch_count_);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       EmptyRedemptionOwnerNeverAcquiresLaterOwner) {
++  auto controller = MakeController("");
++  auto result = Execute(*controller, Action(SupervisionRemoteActionCategory::kClick));
++  ASSERT_TRUE(result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kViewOnly, result->error_code);
++  EXPECT_EQ(0, dispatch_count_);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       ChangedLiveOwnerRequiresNewPairingAndDispatchesZeroRoutes) {
++  authority_.live_owner_session_id = "new-agent-owner";
++  auto controller = MakeController();
++  auto result = Execute(*controller, Action(SupervisionRemoteActionCategory::kClick));
++  ASSERT_TRUE(result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kViewOnly, result->error_code);
++  EXPECT_EQ(0, dispatch_count_);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       StaleDashboardSessionDispatchesZeroRoutes) {
++  auto controller = MakeController();
++  auto result = Execute(*controller,
++                        Action(SupervisionRemoteActionCategory::kClick),
++                        base::UnguessableToken::Create(),
++                        document_epoch_.ToString(), sequence_);
++  ASSERT_TRUE(result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kUnknownSession, result->error_code);
++  EXPECT_EQ(0, dispatch_count_);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       StaleEpochDispatchesZeroRoutes) {
++  auto controller = MakeController();
++  auto result = Execute(*controller,
++                        Action(SupervisionRemoteActionCategory::kClick),
++                        dashboard_session_,
++                        base::UnguessableToken::Create().ToString(), sequence_);
++  ASSERT_TRUE(result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kStaleEpoch, result->error_code);
++  EXPECT_EQ(0, dispatch_count_);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       StaleSequenceDispatchesZeroRoutes) {
++  auto controller = MakeController();
++  auto result = Execute(*controller,
++                        Action(SupervisionRemoteActionCategory::kClick),
++                        dashboard_session_, document_epoch_.ToString(),
++                        sequence_ - 1);
++  ASSERT_TRUE(result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kStaleSequence, result->error_code);
++  EXPECT_EQ(0, dispatch_count_);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       ChangedGenerationBeforeDispatchDispatchesZeroRoutes) {
++  mutate_authority_at_ = 2;
++  mutate_authority_ = base::BindRepeating(
++      [](SupervisionActionAuthoritySnapshot* authority) {
++        ++authority->authority_generation;
++      },
++      base::Unretained(&authority_));
++  auto controller = MakeController();
++  auto result = Execute(*controller, Action(SupervisionRemoteActionCategory::kClick));
++  ASSERT_TRUE(result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kStaleTarget, result->error_code);
++  EXPECT_EQ(0, dispatch_count_);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       DeadOrDifferentBrowserDispatchesZeroRoutes) {
++  auto controller = MakeController();
++  authority_.exact_browser = &other_browser_;
++  auto different = Execute(*controller, Action(SupervisionRemoteActionCategory::kClick));
++  ASSERT_TRUE(different.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kStaleTarget, different->error_code);
++  EXPECT_EQ(0, dispatch_count_);
++
++  authority_.exact_browser = &browser_;
++  browser_weak_factory_.InvalidateWeakPtrs();
++  auto dead = Execute(*controller, Action(SupervisionRemoteActionCategory::kClick));
++  ASSERT_TRUE(dead.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kStaleTarget, dead->error_code);
++  EXPECT_EQ(0, dispatch_count_);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       WrongProfileTabOrDocumentDispatchesZeroRoutes) {
++  auto controller = MakeController();
++  authority_.profile = other_profile_;
++  auto profile_result =
++      Execute(*controller, Action(SupervisionRemoteActionCategory::kClick));
++  ASSERT_TRUE(profile_result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kStaleTarget, profile_result->error_code);
++  authority_.profile = profile_;
++  authority_.stable_tab = other_tab_.GetHandle();
++  auto tab_result =
++      Execute(*controller, Action(SupervisionRemoteActionCategory::kClick));
++  ASSERT_TRUE(tab_result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kStaleTarget, tab_result->error_code);
++  authority_.stable_tab = tab_.GetHandle();
++  frame_available_ = false;
++  auto frame_result =
++      Execute(*controller, Action(SupervisionRemoteActionCategory::kClick));
++  ASSERT_TRUE(frame_result.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kStaleTarget, frame_result->error_code);
++  EXPECT_EQ(0, dispatch_count_);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       OrdinaryCategoriesDispatchExactTypedRoutes) {
++  constexpr SupervisionRemoteActionCategory categories[] = {
++      SupervisionRemoteActionCategory::kClick,
++      SupervisionRemoteActionCategory::kType,
++      SupervisionRemoteActionCategory::kKeyPress,
++      SupervisionRemoteActionCategory::kScroll,
++      SupervisionRemoteActionCategory::kHover,
++      SupervisionRemoteActionCategory::kSelect,
++      SupervisionRemoteActionCategory::kClear,
++  };
++  for (SupervisionRemoteActionCategory category : categories) {
++    auto controller = MakeController();
++    auto result = Execute(*controller, Action(category));
++    ASSERT_TRUE(result.has_value());
++    EXPECT_TRUE(result->ok);
++  }
++  ASSERT_EQ(std::size(categories), dispatched_requests_.size());
++  EXPECT_EQ(&browser_, dispatched_browser_);
++  for (const AgentRouteRequest& request : dispatched_requests_) {
++    EXPECT_EQ(owner_, request.session_id);
++    EXPECT_EQ(browser_id_.id(), request.target.browser_session_id);
++    EXPECT_EQ(browser_id_.id(), request.target.window_session_id);
++    EXPECT_EQ(tab_.GetHandle(), request.target.tab_handle);
++  }
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       AgentDenialPropagatesOnlyTypedBoundedOutcome) {
++  next_agent_result_ = AgentRouteResult::Failure(
++      AgentErrorCode::kPermissionBlocked, "private page value",
++      "private recovery value");
++  auto controller = MakeController();
++  auto result = Execute(*controller, Action(SupervisionRemoteActionCategory::kClick));
++  ASSERT_TRUE(result.has_value());
++  EXPECT_FALSE(result->ok);
++  EXPECT_EQ(AgentErrorCode::kPermissionBlocked, result->agent_error_code);
++  EXPECT_EQ(1, dispatch_count_);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       PrivacyRawValuesStayInsideTypedAgentRequest) {
++  auto controller = MakeController();
++  auto result = Execute(*controller, Action(SupervisionRemoteActionCategory::kType));
++  ASSERT_TRUE(result.has_value());
++  EXPECT_TRUE(result->ok);
++  ASSERT_EQ(1u, dispatched_requests_.size());
++  ASSERT_TRUE(dispatched_requests_[0].page_request.has_value());
++  EXPECT_EQ("private text",
++            dispatched_requests_[0].page_request->action.text.value_or(""));
++  EXPECT_EQ(AgentErrorCode::kNone, result->agent_error_code);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       ConcurrentActionGetsConflictWithoutQueueGrowth) {
++  hold_dispatch_ = true;
++  auto controller = MakeController();
++  std::vector<SupervisionActionResult> first_results;
++  controller->ExecuteAction(
++      dashboard_session_, document_epoch_.ToString(), sequence_,
++      Action(SupervisionRemoteActionCategory::kClick),
++      base::BindLambdaForTesting([&](SupervisionActionResult result) {
++        first_results.push_back(std::move(result));
++      }));
++  auto second = Execute(*controller, Action(SupervisionRemoteActionCategory::kHover));
++  ASSERT_TRUE(second.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kControllerConflict, second->error_code);
++  EXPECT_EQ(1, dispatch_count_);
++  EXPECT_EQ(1u, pending_agent_callbacks_.size());
++  EXPECT_TRUE(first_results.empty());
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       ConsequentialActionWaitsInSingleConfirmationSlot) {
++  auto controller = MakeController();
++  std::vector<SupervisionActionResult> results;
++  controller->ExecuteAction(
++      dashboard_session_, document_epoch_.ToString(), sequence_,
++      Action(SupervisionRemoteActionCategory::kNavigate),
++      base::BindLambdaForTesting([&](SupervisionActionResult result) {
++        results.push_back(std::move(result));
++      }));
++  EXPECT_TRUE(results.empty());
++  EXPECT_TRUE(controller->awaiting_confirmation_for_testing());
++  EXPECT_EQ(0, dispatch_count_);
++  auto second = Execute(*controller, Action(SupervisionRemoteActionCategory::kDrop));
++  ASSERT_TRUE(second.has_value());
++  EXPECT_EQ(SupervisionErrorCode::kControllerConflict, second->error_code);
++  EXPECT_EQ(0, dispatch_count_);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       ConfirmationDenialNeverDispatches) {
++  auto controller = MakeController();
++  std::vector<SupervisionActionResult> results;
++  controller->ExecuteAction(
++      dashboard_session_, document_epoch_.ToString(), sequence_,
++      Action(SupervisionRemoteActionCategory::kNavigate),
++      base::BindLambdaForTesting([&](SupervisionActionResult result) {
++        results.push_back(std::move(result));
++      }));
++  controller->ResolvePendingConfirmation(false);
++  ASSERT_EQ(1u, results.size());
++  EXPECT_EQ(SupervisionErrorCode::kConfirmationDenied,
++            results[0].error_code);
++  EXPECT_EQ(0, dispatch_count_);
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       StopCancelInvalidatesPendingAndLateCallbackIsHarmless) {
++  hold_dispatch_ = true;
++  auto controller = MakeController();
++  std::vector<SupervisionActionResult> results;
++  controller->ExecuteAction(
++      dashboard_session_, document_epoch_.ToString(), sequence_,
++      Action(SupervisionRemoteActionCategory::kClick),
++      base::BindLambdaForTesting([&](SupervisionActionResult result) {
++        results.push_back(std::move(result));
++      }));
++  controller->Cancel(SupervisionErrorCode::kViewOnly);
++  ASSERT_EQ(1u, results.size());
++  EXPECT_EQ(SupervisionErrorCode::kViewOnly, results[0].error_code);
++  ASSERT_EQ(1u, pending_agent_callbacks_.size());
++  std::move(pending_agent_callbacks_[0])
++      .Run(AgentRouteResult::Success({"late"}));
++  EXPECT_EQ(1u, results.size());
++}
++
++TEST_F(PrometheusSupervisionActionControllerTest,
++       NavigationOrOwnerChangeBeforeCallbackInvalidatesResult) {
++  hold_dispatch_ = true;
++  auto controller = MakeController();
++  std::vector<SupervisionActionResult> results;
++  controller->ExecuteAction(
++      dashboard_session_, document_epoch_.ToString(), sequence_,
++      Action(SupervisionRemoteActionCategory::kClick),
++      base::BindLambdaForTesting([&](SupervisionActionResult result) {
++        results.push_back(std::move(result));
++      }));
++  authority_.document_epoch = base::UnguessableToken::Create();
++  authority_.live_owner_session_id = "new-owner";
++  ASSERT_EQ(1u, pending_agent_callbacks_.size());
++  std::move(pending_agent_callbacks_[0])
++      .Run(AgentRouteResult::Success({"late"}));
++  ASSERT_EQ(1u, results.size());
++  EXPECT_FALSE(results[0].ok);
++  EXPECT_EQ(0, static_cast<int>(results[0].duration.is_negative()));
++}
++
++}  // namespace
++}  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

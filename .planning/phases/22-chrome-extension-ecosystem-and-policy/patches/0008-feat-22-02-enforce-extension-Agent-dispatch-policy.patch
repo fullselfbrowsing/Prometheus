@@ -1,0 +1,1769 @@
+From 071759e50408d63b15a5431f01c5ddfbfe849eb6 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 29 Jul 2026 06:04:30 -0500
+Subject: [PATCH 8/8] feat(22-02): enforce extension Agent dispatch policy
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  12 +
+ .../prometheus/prometheus_agent_audit.cc      |  40 +
+ .../prometheus/prometheus_agent_audit.h       |   8 +
+ .../prometheus_agent_audit_unittest.cc        |  19 +
+ .../prometheus_agent_profile_service.cc       |   5 +
+ .../prometheus_agent_profile_service.h        |   4 +-
+ .../prometheus/prometheus_agent_service.cc    |  84 ++
+ .../prometheus/prometheus_agent_service.h     |  18 +
+ .../prometheus_extension_page_adapter.cc      | 834 +++++++++++++++++-
+ .../prometheus_extension_page_adapter.h       |  87 +-
+ .../prometheus_extension_surface_resolver.cc  |  26 +-
+ .../prometheus_page_action_dispatcher.cc      |  39 +-
+ .../prometheus_page_action_dispatcher.h       |  14 +-
+ .../prometheus_page_element_reader.cc         |  39 +-
+ .../prometheus_page_element_reader.h          |  11 +-
+ 15 files changed, 1199 insertions(+), 41 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 300cf731b2..9d542781bc 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -207,10 +207,13 @@ source_set("prometheus_agent_service") {
+     ":prometheus_agent_route",
+     ":prometheus_agent_session",
+     ":prometheus_agent_tab_data",
++    ":prometheus_extension_page_adapter",
++    ":prometheus_extension_policy_service",
+     ":prometheus_page_adapter",
+     ":prometheus_tab_commands",
+     "//base",
+     "//chrome/browser/tab_list",
++    "//chrome/browser/profiles",
+     "//chrome/browser/ui",
+     "//chrome/browser/ui/browser_window",
+     "//chrome/browser/ui/views/prometheus:side_panel",
+@@ -352,9 +355,18 @@ source_set("prometheus_extension_page_adapter") {
+     ":prometheus_extension_policy_service",
+     ":prometheus_extension_policy_types",
+     ":prometheus_extension_surface_resolver",
++    ":prometheus_page_action_dispatcher",
++    ":prometheus_page_action_history",
++    ":prometheus_page_element_reader",
++    ":prometheus_page_snapshot",
+     "//base",
+     "//chrome/browser/ui",
++    "//chrome/common",
++    "//components/content_extraction/content/browser",
++    "//components/optimization_guide/content/browser",
+     "//components/tabs:public",
++    "//content/public/browser",
++    "//extensions/common",
+     "//url",
+   ]
+ }
+diff --git a/chrome/browser/prometheus/prometheus_agent_audit.cc b/chrome/browser/prometheus/prometheus_agent_audit.cc
+index 51ac6fc65f..510c4604b9 100644
+--- a/chrome/browser/prometheus/prometheus_agent_audit.cc
++++ b/chrome/browser/prometheus/prometheus_agent_audit.cc
+@@ -4,10 +4,12 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_agent_audit.h"
+ 
++#include <algorithm>
+ #include <array>
+ #include <string>
+ #include <utility>
+ 
++#include "base/containers/span.h"
+ #include "base/strings/string_util.h"
+ 
+ namespace prometheus {
+@@ -21,6 +23,25 @@ constexpr auto kDisallowedAuditMetadataTerms = std::to_array<std::string_view>(
+      "selector",      "element_ref", "typed_text",   "file_path",
+      "drop_path",     "page_html",   "page_content", "local_path"});
+ 
++bool IsClosedExtensionAuditValue(
++    std::string_view value,
++    base::span<const std::string_view> allowed) {
++  return std::ranges::find(allowed, value) != allowed.end();
++}
++
++bool IsSafeExtensionIdSuffix(std::string_view suffix) {
++  if (suffix.empty()) {
++    return true;
++  }
++  if (suffix.size() != 6u) {
++    return false;
++  }
++  return std::ranges::all_of(suffix, [](unsigned char character) {
++    return (character >= 'a' && character <= 'z') ||
++           (character >= '0' && character <= '9');
++  });
++}
++
+ }  // namespace
+ 
+ AgentRouteAuditRecord::AgentRouteAuditRecord() = default;
+@@ -54,6 +75,25 @@ bool IsAgentRouteAuditRecordSafe(const AgentRouteAuditRecord& record) {
+       return false;
+     }
+   }
++  if (record.extension.has_value()) {
++    static constexpr auto kSurfaces = std::to_array<std::string_view>(
++        {"tab", "options_page", "popup", "side_panel", "options_guest"});
++    static constexpr auto kGrants = std::to_array<std::string_view>(
++        {"blocked", "read_only", "interact"});
++    static constexpr auto kResults = std::to_array<std::string_view>(
++        {"allowed", "surface_blocked", "read_denied",
++         "interaction_denied", "script_denied", "unsupported_context",
++         "stale_policy", "private_denied", "extension_not_found"});
++    const AgentExtensionAuditMetadata& extension = *record.extension;
++    if (!record.session_id.empty() || record.browser_session_id.has_value() ||
++        record.window_session_id.has_value() || record.tab_handle.has_value() ||
++        !IsSafeExtensionIdSuffix(extension.id_suffix) ||
++        !IsClosedExtensionAuditValue(extension.surface, kSurfaces) ||
++        !IsClosedExtensionAuditValue(extension.grant, kGrants) ||
++        !IsClosedExtensionAuditValue(extension.result, kResults)) {
++      return false;
++    }
++  }
+   return true;
+ }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_agent_audit.h b/chrome/browser/prometheus/prometheus_agent_audit.h
+index 8d94e9170e..4c90003882 100644
+--- a/chrome/browser/prometheus/prometheus_agent_audit.h
++++ b/chrome/browser/prometheus/prometheus_agent_audit.h
+@@ -16,6 +16,13 @@
+ 
+ namespace prometheus {
+ 
++struct AgentExtensionAuditMetadata {
++  std::string id_suffix;
++  std::string surface;
++  std::string grant;
++  std::string result;
++};
++
+ struct AgentRouteAuditRecord {
+   AgentRouteAuditRecord();
+   AgentRouteAuditRecord(const AgentRouteAuditRecord&);
+@@ -31,6 +38,7 @@ struct AgentRouteAuditRecord {
+   base::TimeDelta elapsed;
+   std::vector<std::string> changed_state;
+   base::Time timestamp;
++  std::optional<AgentExtensionAuditMetadata> extension;
+ };
+ 
+ bool IsAgentRouteAuditMetadataSafe(std::string_view value);
+diff --git a/chrome/browser/prometheus/prometheus_agent_audit_unittest.cc b/chrome/browser/prometheus/prometheus_agent_audit_unittest.cc
+index 12eb960c7f..48947faec3 100644
+--- a/chrome/browser/prometheus/prometheus_agent_audit_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_audit_unittest.cc
+@@ -160,6 +160,25 @@ TEST_F(PrometheusAgentAuditTest, StoresStableErrorAndTargetMetadata) {
+   EXPECT_EQ(base::Milliseconds(7), records[0].elapsed);
+ }
+ 
++TEST_F(PrometheusAgentAuditTest,
++       ExtensionMetadataIsClosedAndExcludesRouteAuthority) {
++  AgentRouteAuditRecord record;
++  record.route_name = AgentRouteName::kClick;
++  record.extension = AgentExtensionAuditMetadata{
++      .id_suffix = "abc123",
++      .surface = "side_panel",
++      .grant = "interact",
++      .result = "allowed",
++  };
++  EXPECT_TRUE(IsAgentRouteAuditRecordSafe(record));
++
++  record.session_id = "browser-issued-session";
++  EXPECT_FALSE(IsAgentRouteAuditRecordSafe(record));
++  record.session_id.clear();
++  record.extension->id_suffix = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
++  EXPECT_FALSE(IsAgentRouteAuditRecordSafe(record));
++}
++
+ TEST(PrometheusExtensionAgentAuditTest,
+      ProjectionRejectsContentFullIdentityAndAuthoritySentinels) {
+   ASSERT_TRUE(ExtensionAgentDispatchContractImplementedForTesting())
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.cc b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+index 80a5ce23a8..40356004fe 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+@@ -197,6 +197,11 @@ void PrometheusAgentProfileService::SetConfirmedVaultFieldInserterForTesting(
+   agent_service_.SetConfirmedVaultFieldInserterForTesting(std::move(inserter));
+ }
+ 
++base::WeakPtr<PrometheusAgentProfileService>
++PrometheusAgentProfileService::GetWeakPtr() {
++  return weak_factory_.GetWeakPtr();
++}
++
+ void PrometheusAgentProfileService::AddObserver(Observer* observer) {
+   if (!shutdown_) {
+     observers_.AddObserver(observer);
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.h b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+index 5128a531af..7ca8de13f2 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+@@ -78,9 +78,7 @@ class PrometheusAgentProfileService : public KeyedService {
+   void SetConfirmedVaultFieldInserterForTesting(
+       PrometheusAgentService::ConfirmedVaultFieldInserter inserter);
+   Profile* profile_for_composition() const { return profile_; }
+-  base::WeakPtr<PrometheusAgentProfileService> GetWeakPtr() {
+-    return weak_factory_.GetWeakPtr();
+-  }
++  base::WeakPtr<PrometheusAgentProfileService> GetWeakPtr();
+   void AddObserver(Observer* observer);
+   void RemoveObserver(Observer* observer);
+   void Shutdown() override;
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.cc b/chrome/browser/prometheus/prometheus_agent_service.cc
+index 99e0b4d1f2..65d1815847 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_service.cc
+@@ -20,9 +20,14 @@
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "chrome/browser/prometheus/prometheus_agent_tab_data.h"
++#include "chrome/browser/prometheus/prometheus_extension_page_adapter.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_service.h"
++#include "chrome/browser/prometheus/prometheus_extension_policy_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_page_adapter.h"
+ #include "chrome/browser/prometheus/prometheus_tab_commands.h"
++#include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/tab_list/tab_list_interface.h"
++#include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/browser_window/public/browser_collection.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+@@ -1433,6 +1438,53 @@ void PrometheusAgentService::ExecutePageRoute(BrowserWindowInterface* browser,
+     return;
+   }
+ 
++  content::WebContents* anchor_contents = resolved.tab->GetContents();
++  content::RenderFrameHost* anchor_primary =
++      anchor_contents ? anchor_contents->GetPrimaryMainFrame() : nullptr;
++  const bool use_extension_adapter =
++      PrometheusExtensionPageAdapter::ShouldUseExtensionAdapterForTesting(
++          request.target.extension_surface.has_value(),
++          anchor_primary ? anchor_primary->GetLastCommittedURL() : GURL());
++  if (use_extension_adapter) {
++    Browser* concrete_browser =
++        resolved.browser->GetBrowserForMigrationOnly();
++    Profile* profile = concrete_browser ? concrete_browser->profile() : nullptr;
++    PrometheusExtensionPolicyService* policy_service =
++        profile ? PrometheusExtensionPolicyServiceFactory::GetForProfile(
++                      profile->GetOriginalProfile())
++                : nullptr;
++    if (!concrete_browser || !policy_service) {
++      PrometheusExtensionAuditProjection projection;
++      projection.surface =
++          request.target.extension_surface.has_value()
++              ? std::string(AgentExtensionSurfaceSelectorToString(
++                    *request.target.extension_surface))
++              : "tab";
++      projection.grant = "blocked";
++      projection.result = "extension_not_found";
++      OnExtensionPageRouteComplete(
++          request, timestamp, started_at, std::move(callback),
++          AgentRouteResult::Failure(
++              AgentErrorCode::kStaleTarget,
++              "Extension no longer available. Refresh the policy list.",
++              "Extension no longer available. Refresh the policy list."),
++          std::move(projection));
++      return;
++    }
++    if (!extension_page_adapter_ ||
++        extension_policy_service_ != policy_service) {
++      extension_page_adapter_ =
++          std::make_unique<PrometheusExtensionPageAdapter>(policy_service);
++      extension_policy_service_ = policy_service;
++    }
++    extension_page_adapter_->Execute(
++        request, concrete_browser, resolved.tab.get(), *session_result.session,
++        base::BindOnce(&PrometheusAgentService::OnExtensionPageRouteComplete,
++                       weak_factory_.GetWeakPtr(), request, timestamp,
++                       started_at, std::move(callback)));
++    return;
++  }
++
+   page_adapter_->Execute(
+       request, resolved.browser.get(), resolved.tab.get(),
+       *session_result.session,
+@@ -1450,6 +1502,18 @@ void PrometheusAgentService::OnPageRouteComplete(AgentRouteRequest request,
+       FinishRoute(request, timestamp, started_at, std::move(result)));
+ }
+ 
++void PrometheusAgentService::OnExtensionPageRouteComplete(
++    AgentRouteRequest request,
++    base::Time timestamp,
++    base::TimeTicks started_at,
++    RouteCallback callback,
++    AgentRouteResult result,
++    PrometheusExtensionAuditProjection projection) {
++  result.elapsed = base::TimeTicks::Now() - started_at;
++  RecordExtensionAudit(request, result, projection, timestamp);
++  std::move(callback).Run(std::move(result));
++}
++
+ base::Time PrometheusAgentService::Now() const {
+   return now_callback_.Run();
+ }
+@@ -1693,4 +1757,24 @@ void PrometheusAgentService::RecordAudit(const AgentRouteRequest& request,
+   audit_log_.Append(std::move(record));
+ }
+ 
++void PrometheusAgentService::RecordExtensionAudit(
++    const AgentRouteRequest& request,
++    const AgentRouteResult& result,
++    const PrometheusExtensionAuditProjection& projection,
++    base::Time timestamp) {
++  AgentRouteAuditRecord record;
++  record.route_name = request.route_name;
++  record.error_code = result.error_code;
++  record.elapsed = result.elapsed;
++  record.changed_state = result.changed_state;
++  record.timestamp = timestamp;
++  record.extension = AgentExtensionAuditMetadata{
++      .id_suffix = projection.id_suffix,
++      .surface = projection.surface,
++      .grant = projection.grant,
++      .result = projection.result,
++  };
++  audit_log_.Append(std::move(record));
++}
++
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_service.h b/chrome/browser/prometheus/prometheus_agent_service.h
+index 39cb41d9cc..22debf4074 100644
+--- a/chrome/browser/prometheus/prometheus_agent_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_service.h
+@@ -35,6 +35,9 @@ class TabInterface;
+ namespace prometheus {
+ 
+ class PrometheusPageAdapter;
++class PrometheusExtensionPageAdapter;
++class PrometheusExtensionPolicyService;
++struct PrometheusExtensionAuditProjection;
+ class PrometheusAgentService;
+ 
+ // Move-only observation authority for Agent-owned tab data. The lease never
+@@ -295,6 +298,13 @@ class PrometheusAgentService {
+                            base::TimeTicks started_at,
+                            RouteCallback callback,
+                            AgentRouteResult result);
++  void OnExtensionPageRouteComplete(
++      AgentRouteRequest request,
++      base::Time timestamp,
++      base::TimeTicks started_at,
++      RouteCallback callback,
++      AgentRouteResult result,
++      PrometheusExtensionAuditProjection projection);
+   AgentRouteResult ResolveTarget(BrowserWindowInterface* browser,
+                                  const AgentTarget& target,
+                                  bool require_tab,
+@@ -329,6 +339,11 @@ class PrometheusAgentService {
+   void RecordAudit(const AgentRouteRequest& request,
+                    const AgentRouteResult& result,
+                    base::Time timestamp);
++  void RecordExtensionAudit(
++      const AgentRouteRequest& request,
++      const AgentRouteResult& result,
++      const PrometheusExtensionAuditProjection& projection,
++      base::Time timestamp);
+   void ContinueConfirmedVaultInsertion(uint64_t operation_id);
+   void OnConfirmedVaultFieldInserted(uint64_t operation_id,
+                                      size_t expected_field_index,
+@@ -353,6 +368,9 @@ class PrometheusAgentService {
+   std::map<std::pair<int32_t, PrometheusAgentTabData::Observer*>, uint64_t>
+       tab_observation_keys_;
+   std::unique_ptr<PrometheusPageAdapter> page_adapter_;
++  std::unique_ptr<PrometheusExtensionPageAdapter> extension_page_adapter_;
++  raw_ptr<PrometheusExtensionPolicyService> extension_policy_service_ =
++      nullptr;
+   ConfirmedVaultTargetInspector confirmed_vault_target_inspector_;
+   ConfirmedVaultFieldInserter confirmed_vault_field_inserter_;
+   uint64_t next_confirmed_vault_operation_id_ = 0;
+diff --git a/chrome/browser/prometheus/prometheus_extension_page_adapter.cc b/chrome/browser/prometheus/prometheus_extension_page_adapter.cc
+index 066124e9fc..c6655183ea 100644
+--- a/chrome/browser/prometheus/prometheus_extension_page_adapter.cc
++++ b/chrome/browser/prometheus/prometheus_extension_page_adapter.cc
+@@ -4,18 +4,145 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_extension_page_adapter.h"
+ 
++#include <algorithm>
++#include <array>
++#include <optional>
++#include <string_view>
+ #include <utility>
+ 
++#include "base/functional/bind.h"
++#include "base/memory/ref_counted.h"
++#include "base/strings/string_util.h"
+ #include "chrome/browser/prometheus/prometheus_agent_session.h"
+ #include "chrome/browser/prometheus/prometheus_extension_policy_service.h"
++#include "chrome/browser/prometheus/prometheus_page_action_dispatcher.h"
++#include "chrome/browser/prometheus/prometheus_page_element_reader.h"
++#include "chrome/browser/prometheus/prometheus_page_error.h"
++#include "chrome/browser/prometheus/prometheus_page_snapshot.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/common/prometheus_render_frame.mojom.h"
++#include "components/content_extraction/content/browser/inner_text.h"
++#include "components/optimization_guide/content/browser/page_content_proto_util.h"
++#include "components/tabs/public/tab_interface.h"
++#include "content/public/browser/page.h"
++#include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/render_process_host.h"
++#include "content/public/browser/web_contents.h"
++#include "extensions/common/constants.h"
++#include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
++#include "url/origin.h"
+ 
+ namespace prometheus {
++namespace {
++
++constexpr size_t kDefaultReadPageMaxChars = 24000;
++constexpr size_t kDefaultSnapshotMaxChars = 200000;
++constexpr size_t kDefaultDomSnapshotMaxNodes = 500;
++constexpr size_t kDefaultCompactSnapshotMaxNodes = 120;
++
++constexpr std::string_view kExtensionNotFound =
++    "Extension no longer available. Refresh the policy list.";
++constexpr std::string_view kSurfaceBlocked =
++    "Extension surface blocked. Change Agent access from the local Prometheus "
++    "control panel.";
++constexpr std::string_view kReadDenied =
++    "Read access is blocked for this extension.";
++constexpr std::string_view kInteractionDenied =
++    "Interaction is blocked for this extension. Choose Interact locally, then "
++    "retry.";
++constexpr std::string_view kUnsupportedContext =
++    "This extension context is not available to Agents. Open a visible "
++    "extension page and retry.";
++constexpr std::string_view kScriptDenied =
++    "Scripts are blocked on extension surfaces. Use an approved read or "
++    "interaction action.";
++constexpr std::string_view kStalePolicy =
++    "Extension policy changed before the action ran. Refresh the target and "
++    "try again.";
++constexpr std::string_view kPrivateDenied =
++    "Agent access is blocked for this extension in Private mode.";
++
++std::optional<chrome::mojom::PrometheusActionKind> ActionKindForRoute(
++    AgentRouteName route_name) {
++  switch (route_name) {
++    case AgentRouteName::kClick:
++      return chrome::mojom::PrometheusActionKind::kClick;
++    case AgentRouteName::kTypeText:
++      return chrome::mojom::PrometheusActionKind::kTypeText;
++    case AgentRouteName::kPressKey:
++      return chrome::mojom::PrometheusActionKind::kPressKey;
++    case AgentRouteName::kScroll:
++      return chrome::mojom::PrometheusActionKind::kScroll;
++    case AgentRouteName::kHover:
++      return chrome::mojom::PrometheusActionKind::kHover;
++    case AgentRouteName::kSelectOption:
++      return chrome::mojom::PrometheusActionKind::kSelectOption;
++    case AgentRouteName::kClear:
++      return chrome::mojom::PrometheusActionKind::kClear;
++    default:
++      return std::nullopt;
++  }
++}
++
++std::string GrantToAuditString(ExtensionAgentGrant grant) {
++  switch (grant) {
++    case ExtensionAgentGrant::kBlocked:
++      return "blocked";
++    case ExtensionAgentGrant::kReadOnly:
++      return "read_only";
++    case ExtensionAgentGrant::kInteract:
++      return "interact";
++  }
++}
++
++bool IsExtensionPrimaryFrame(content::WebContents* web_contents,
++                             content::RenderFrameHost* frame,
++                             std::string_view extension_id) {
++  if (!web_contents || web_contents->IsBeingDestroyed() ||
++      web_contents->IsCrashed() || !frame || !frame->IsActive() ||
++      !frame->IsRenderFrameLive() ||
++      content::WebContents::FromRenderFrameHost(frame) != web_contents ||
++      web_contents->GetPrimaryMainFrame() != frame ||
++      !frame->GetPage().IsPrimary()) {
++    return false;
++  }
++  const url::Origin& origin = frame->GetLastCommittedOrigin();
++  return !origin.opaque() &&
++         origin.scheme() == extensions::kExtensionScheme &&
++         origin.host() == extension_id;
++}
++
++AgentRouteResult ExactCopyFailure(AgentErrorCode code,
++                                  std::string_view copy) {
++  return AgentRouteResult::Failure(code, std::string(copy),
++                                   std::string(copy));
++}
++
++}  // namespace
+ 
+ PrometheusExtensionPageAdapter::PrometheusExtensionPageAdapter(
+     PrometheusExtensionPolicyService* policy_service)
+     : policy_service_(policy_service) {}
+ 
+-PrometheusExtensionPageAdapter::~PrometheusExtensionPageAdapter() = default;
++PrometheusExtensionPageAdapter::~PrometheusExtensionPageAdapter() {
++  weak_factory_.InvalidateWeakPtrs();
++  auto actions = std::move(in_flight_action_operations_);
++  for (auto& [operation_id, operation] : actions) {
++    static_cast<void>(operation_id);
++    operation->Cancel(AgentRouteResult::Failure(
++        AgentErrorCode::kBrowserShuttingDown,
++        "The browser stopped while an extension action was pending",
++        "Reconnect and request a fresh extension snapshot"));
++  }
++  auto reads = std::move(in_flight_element_read_operations_);
++  for (auto& [operation_id, operation] : reads) {
++    static_cast<void>(operation_id);
++    operation->Cancel(AgentRouteResult::Failure(
++        AgentErrorCode::kBrowserShuttingDown,
++        "The browser stopped while an extension read was pending",
++        "Reconnect and request a fresh extension snapshot"));
++  }
++}
+ 
+ void PrometheusExtensionPageAdapter::Execute(
+     const AgentRouteRequest& request,
+@@ -23,17 +150,316 @@ void PrometheusExtensionPageAdapter::Execute(
+     tabs::TabInterface* anchor_tab,
+     const AgentSession& session,
+     CompletionCallback callback) {
+-  std::move(callback).Run(AgentRouteResult::Failure(
+-      AgentErrorCode::kCapabilityNotReady,
+-      "Extension page dispatch is not implemented",
+-      "Retry after extension page dispatch is available"));
++  if (!policy_service_ || !browser || !anchor_tab || !session.active ||
++      session.id.empty()) {
++    PrometheusExtensionAuditProjection projection;
++    projection.surface =
++        request.target.extension_surface.has_value()
++            ? std::string(AgentExtensionSurfaceSelectorToString(
++                  *request.target.extension_surface))
++            : "tab";
++    projection.grant = "blocked";
++    projection.result = "extension_not_found";
++    CompleteWithAudit(
++        request.target, std::move(projection), std::move(callback),
++        ExactCopyFailure(AgentErrorCode::kStaleTarget, kExtensionNotFound));
++    return;
++  }
++
++  PrometheusExtensionSurfaceResolver resolver(policy_service_);
++  auto resolution = resolver.Resolve(browser, anchor_tab,
++                                     request.target.extension_surface);
++  if (!resolution.has_value()) {
++    PrometheusExtensionAuditProjection projection;
++    projection.surface =
++        request.target.extension_surface.has_value()
++            ? std::string(AgentExtensionSurfaceSelectorToString(
++                  *request.target.extension_surface))
++            : "tab";
++    projection.grant = "blocked";
++    const bool extension_unavailable =
++        resolution.error().message == kExtensionNotFound;
++    projection.result =
++        extension_unavailable
++            ? "extension_not_found"
++            : (resolution.error().error_code == AgentErrorCode::kStaleTarget
++                   ? "stale_policy"
++                   : "unsupported_context");
++    AgentRouteResult failure =
++        extension_unavailable
++            ? ExactCopyFailure(AgentErrorCode::kStaleTarget,
++                               kExtensionNotFound)
++        : resolution.error().error_code == AgentErrorCode::kStaleTarget
++            ? ExactCopyFailure(AgentErrorCode::kStaleTarget, kStalePolicy)
++            : ExactCopyFailure(AgentErrorCode::kInvalidTarget,
++                               kUnsupportedContext);
++    CompleteWithAudit(request.target, std::move(projection),
++                      std::move(callback), std::move(failure));
++    return;
++  }
++
++  PrometheusResolvedExtensionSurface resolved = std::move(resolution.value());
++  content::WebContents* web_contents = resolved.web_contents.get();
++  content::RenderFrameHost* primary_frame =
++      content::RenderFrameHost::FromID(resolved.primary_frame_id);
++  if (!IsExtensionPrimaryFrame(web_contents, primary_frame,
++                               resolved.extension_id)) {
++    auto projection = BuildAuditProjectionForTesting(
++        resolved.extension_id, resolved.kind, ExtensionAgentGrant::kBlocked,
++        "unsupported_context");
++    CompleteWithAudit(
++        request.target, std::move(projection), std::move(callback),
++        ExactCopyFailure(AgentErrorCode::kInvalidTarget, kUnsupportedContext));
++    return;
++  }
++
++  const ExtensionAgentGrant grant = policy_service_->GetEffectiveGrant(
++      resolved.extension_id, web_contents->GetBrowserContext(),
++      resolved.private_mode);
++  PrometheusExtensionAdmissionEvidence evidence;
++  evidence.private_mode = resolved.private_mode;
++  evidence.private_policy_allowed =
++      !resolved.private_mode || grant != ExtensionAgentGrant::kBlocked;
++  const PrometheusExtensionAdmissionDecision admission =
++      EvaluateAdmissionForTesting(request.route_name, grant, evidence);
++  auto projection = BuildAuditProjectionForTesting(
++      resolved.extension_id, resolved.kind, grant,
++      admission.allowed ? "allowed" : "surface_blocked");
++  if (!admission.allowed) {
++    CompleteWithAudit(request.target, std::move(projection),
++                      std::move(callback),
++                      AdmissionFailure(admission.denial));
++    return;
++  }
++
++  SurfaceValidationCallback validation_callback = base::BindRepeating(
++      [](base::WeakPtr<PrometheusExtensionPageAdapter> adapter,
++         base::WeakPtr<Browser> browser,
++         base::WeakPtr<tabs::TabInterface> anchor_tab,
++         std::optional<AgentExtensionSurfaceSelector> selector,
++         std::string extension_id,
++         PrometheusExtensionSurfaceKind surface,
++         uint64_t policy_generation,
++         content::GlobalRenderFrameHostId primary_frame_id,
++         AgentRouteName route_name,
++         content::WebContents* dispatched_web_contents,
++         content::RenderFrameHost* dispatched_frame) {
++        if (!adapter) {
++          return AgentRouteResult::Failure(
++              AgentErrorCode::kBrowserShuttingDown,
++              "The browser stopped before extension dispatch",
++              "Reconnect and request a fresh extension target");
++        }
++        return adapter->ValidateSurfaceForDispatch(
++            std::move(browser), std::move(anchor_tab), selector,
++            std::move(extension_id), surface, policy_generation,
++            primary_frame_id, route_name, dispatched_web_contents,
++            dispatched_frame);
++      },
++      weak_factory_.GetWeakPtr(), browser->AsWeakPtr(), resolved.anchor_tab,
++      request.target.extension_surface, resolved.extension_id, resolved.kind,
++      resolved.policy_generation, resolved.primary_frame_id,
++      request.route_name);
++
++  AuditedRouteCallback audited_callback = base::BindOnce(
++      &PrometheusExtensionPageAdapter::CompleteWithAudit, request.target,
++      projection, std::move(callback));
++  const AgentPageRequest page_request =
++      request.page_request.value_or(AgentPageRequest());
++
++  switch (request.route_name) {
++    case AgentRouteName::kReadPage: {
++      content::RenderFrameHost* frame = nullptr;
++      AgentRouteResult frame_result = ResolveRequestedPrimaryFrame(
++          web_contents, resolved.primary_frame_id, page_request.frame, &frame);
++      if (!frame_result.ok) {
++        std::move(audited_callback).Run(std::move(frame_result));
++        return;
++      }
++      const size_t max_chars = page_request.read_options.max_chars > 0
++                                   ? page_request.read_options.max_chars
++                                   : kDefaultReadPageMaxChars;
++      content_extraction::GetInnerText(
++          *frame, std::nullopt,
++          base::BindOnce(
++              &PrometheusExtensionPageAdapter::OnInnerTextReady,
++              weak_factory_.GetWeakPtr(), max_chars, validation_callback,
++              resolved.primary_frame_id, std::move(audited_callback)));
++      return;
++    }
++
++    case AgentRouteName::kGetDomSnapshot:
++    case AgentRouteName::kGetPageSnapshot: {
++      content::RenderFrameHost* frame = nullptr;
++      AgentRouteResult frame_result = ResolveRequestedPrimaryFrame(
++          web_contents, resolved.primary_frame_id, page_request.frame, &frame);
++      if (!frame_result.ok) {
++        std::move(audited_callback).Run(std::move(frame_result));
++        return;
++      }
++      auto options = optimization_guide::ActionableAIPageContentOptions(
++          /*on_critical_path=*/true);
++      options->include_same_site_only = true;
++      optimization_guide::GetAIPageContent(
++          web_contents, std::move(options),
++          base::BindOnce(&PrometheusExtensionPageAdapter::OnSnapshotReady,
++                         weak_factory_.GetWeakPtr(), request.route_name,
++                         page_request, validation_callback,
++                         resolved.primary_frame_id,
++                         std::move(audited_callback)));
++      return;
++    }
++
++    case AgentRouteName::kGetText:
++    case AgentRouteName::kGetAttribute: {
++      if (!request.page_request.has_value()) {
++        std::move(audited_callback)
++            .Run(InvalidPageInput(
++                "Element reads require a page request",
++                "Provide one bounded element ref or selector and retry"));
++        return;
++      }
++      content::RenderFrameHost* frame = nullptr;
++      AgentRouteResult frame_result = ResolveRequestedPrimaryFrame(
++          web_contents, resolved.primary_frame_id,
++          request.page_request->action.frame, &frame);
++      if (!frame_result.ok) {
++        std::move(audited_callback).Run(std::move(frame_result));
++        return;
++      }
++      const uint64_t operation_id = ++next_element_read_operation_id_;
++      scoped_refptr<PrometheusPageElementReader> operation =
++          base::MakeRefCounted<PrometheusPageElementReader>(
++              request.route_name, web_contents, frame,
++              request.page_request->action.element,
++              request.page_request->attribute_name.value_or(std::string()),
++              std::move(audited_callback),
++              base::BindOnce(
++                  &PrometheusExtensionPageAdapter::OnElementReadFinished,
++                  weak_factory_.GetWeakPtr(), operation_id),
++              validation_callback);
++      in_flight_element_read_operations_.emplace(operation_id, operation);
++      operation->Execute();
++      return;
++    }
++
++    case AgentRouteName::kClick:
++    case AgentRouteName::kTypeText:
++    case AgentRouteName::kPressKey:
++    case AgentRouteName::kScroll:
++    case AgentRouteName::kHover:
++    case AgentRouteName::kSelectOption:
++    case AgentRouteName::kClear: {
++      if (!request.page_request.has_value()) {
++        std::move(audited_callback)
++            .Run(InvalidPageInput(
++                "Extension actions require an action request",
++                "Provide a bounded extension action request and retry"));
++        return;
++      }
++      content::RenderFrameHost* frame = nullptr;
++      AgentRouteResult frame_result = ResolveRequestedPrimaryFrame(
++          web_contents, resolved.primary_frame_id,
++          request.page_request->action.frame, &frame);
++      if (!frame_result.ok) {
++        std::move(audited_callback).Run(std::move(frame_result));
++        return;
++      }
++      const std::optional<chrome::mojom::PrometheusActionKind> kind =
++          ActionKindForRoute(request.route_name);
++      if (!kind.has_value()) {
++        std::move(audited_callback)
++            .Run(AdmissionFailure(
++                PrometheusExtensionAdmissionDenial::kUnsupportedRoute));
++        return;
++      }
++      const uint64_t operation_id = ++next_action_operation_id_;
++      scoped_refptr<PrometheusPageActionDispatcher> operation =
++          base::MakeRefCounted<PrometheusPageActionDispatcher>(
++              request.route_name, *kind, web_contents, frame,
++              request.page_request->action,
++              base::BindOnce(
++                  [](base::WeakPtr<PrometheusExtensionPageAdapter> adapter,
++                     std::string session_id, int32_t tab_handle_value,
++                     std::string fingerprint) -> std::optional<bool> {
++                    if (!adapter) {
++                      return std::nullopt;
++                    }
++                    return adapter->RecordActionFingerprint(
++                        std::move(session_id), tab_handle_value,
++                        std::move(fingerprint));
++                  },
++                  weak_factory_.GetWeakPtr(), session.id,
++                  anchor_tab->GetHandle().raw_value()),
++              std::move(audited_callback),
++              base::BindOnce(
++                  &PrometheusExtensionPageAdapter::OnActionOperationFinished,
++                  weak_factory_.GetWeakPtr(), operation_id),
++              validation_callback);
++      in_flight_action_operations_.emplace(operation_id, operation);
++      operation->Execute();
++      return;
++    }
++
++    case AgentRouteName::kExecuteJs:
++    case AgentRouteName::kDrag:
++    case AgentRouteName::kDropFile:
++    case AgentRouteName::kListTabs:
++    case AgentRouteName::kListWindows:
++    case AgentRouteName::kOpenTab:
++    case AgentRouteName::kActivateTab:
++    case AgentRouteName::kCloseTab:
++    case AgentRouteName::kNavigate:
++    case AgentRouteName::kReload:
++    case AgentRouteName::kGoBack:
++    case AgentRouteName::kGoForward:
++    case AgentRouteName::kDuplicateTab:
++    case AgentRouteName::kMoveTabToNewWindow:
++    case AgentRouteName::kOpenPrometheusNewTab:
++    case AgentRouteName::kOpenPrometheusSidePanel:
++    case AgentRouteName::kOpenPrometheusControlPanel:
++    case AgentRouteName::kDiagnostics:
++    case AgentRouteName::kOpenInternalSurface:
++    case AgentRouteName::kCreateSupervisionPairing:
++    case AgentRouteName::kStartSupervisionSession:
++    case AgentRouteName::kGetSupervisionSnapshot:
++    case AgentRouteName::kGetSupervisionDiff:
++    case AgentRouteName::kEndSupervisionSession:
++    case AgentRouteName::kUnsupportedPageAction:
++      std::move(audited_callback)
++          .Run(AdmissionFailure(
++              PrometheusExtensionAdmissionDenial::kUnsupportedRoute));
++      return;
++  }
+ }
+ 
+ // static
+ PrometheusExtensionRouteFamily
+ PrometheusExtensionPageAdapter::RouteFamilyForTesting(
+     AgentRouteName route_name) {
+-  return PrometheusExtensionRouteFamily::kOutsidePageBoundary;
++  switch (route_name) {
++    case AgentRouteName::kReadPage:
++    case AgentRouteName::kGetDomSnapshot:
++    case AgentRouteName::kGetPageSnapshot:
++    case AgentRouteName::kGetText:
++    case AgentRouteName::kGetAttribute:
++      return PrometheusExtensionRouteFamily::kRead;
++    case AgentRouteName::kClick:
++    case AgentRouteName::kTypeText:
++    case AgentRouteName::kPressKey:
++    case AgentRouteName::kScroll:
++    case AgentRouteName::kHover:
++    case AgentRouteName::kSelectOption:
++    case AgentRouteName::kClear:
++      return PrometheusExtensionRouteFamily::kInteract;
++    case AgentRouteName::kExecuteJs:
++      return PrometheusExtensionRouteFamily::kScript;
++    case AgentRouteName::kDrag:
++    case AgentRouteName::kDropFile:
++      return PrometheusExtensionRouteFamily::kAlwaysDenied;
++    default:
++      return PrometheusExtensionRouteFamily::kOutsidePageBoundary;
++  }
+ }
+ 
+ // static
+@@ -42,14 +468,66 @@ PrometheusExtensionPageAdapter::EvaluateAdmissionForTesting(
+     AgentRouteName route_name,
+     ExtensionAgentGrant grant,
+     const PrometheusExtensionAdmissionEvidence& evidence) {
+-  return {};
++  PrometheusExtensionAdmissionDecision decision;
++  decision.family = RouteFamilyForTesting(route_name);
++  decision.denial = PrometheusExtensionAdmissionDenial::kNone;
++  decision.error_code = AgentErrorCode::kNone;
++
++  auto deny = [&](PrometheusExtensionAdmissionDenial denial,
++                  AgentErrorCode error_code) {
++    decision.allowed = false;
++    decision.denial = denial;
++    decision.error_code = error_code;
++    return decision;
++  };
++  if (!evidence.surface_resolved) {
++    return deny(PrometheusExtensionAdmissionDenial::kSurfaceBlocked,
++                AgentErrorCode::kPermissionBlocked);
++  }
++  if (!evidence.policy_generation_current) {
++    return deny(PrometheusExtensionAdmissionDenial::kStalePolicy,
++                AgentErrorCode::kStaleTarget);
++  }
++  if (!evidence.exact_browser_context || !evidence.visible ||
++      !evidence.exact_document) {
++    return deny(PrometheusExtensionAdmissionDenial::kUnsupportedRoute,
++                AgentErrorCode::kInvalidTarget);
++  }
++  if (evidence.private_mode && !evidence.private_policy_allowed) {
++    return deny(PrometheusExtensionAdmissionDenial::kPrivateDenied,
++                AgentErrorCode::kPermissionBlocked);
++  }
++  if (decision.family == PrometheusExtensionRouteFamily::kScript) {
++    return deny(PrometheusExtensionAdmissionDenial::kScriptDenied,
++                AgentErrorCode::kPermissionBlocked);
++  }
++  if (decision.family == PrometheusExtensionRouteFamily::kAlwaysDenied ||
++      decision.family ==
++          PrometheusExtensionRouteFamily::kOutsidePageBoundary) {
++    return deny(PrometheusExtensionAdmissionDenial::kUnsupportedRoute,
++                AgentErrorCode::kUnsupportedRoute);
++  }
++  if (decision.family == PrometheusExtensionRouteFamily::kRead &&
++      grant == ExtensionAgentGrant::kBlocked) {
++    return deny(PrometheusExtensionAdmissionDenial::kReadDenied,
++                AgentErrorCode::kPermissionBlocked);
++  }
++  if (decision.family == PrometheusExtensionRouteFamily::kInteract &&
++      grant != ExtensionAgentGrant::kInteract) {
++    return deny(PrometheusExtensionAdmissionDenial::kInteractionDenied,
++                AgentErrorCode::kPermissionBlocked);
++  }
++  decision.allowed = true;
++  return decision;
+ }
+ 
+ // static
+ bool PrometheusExtensionPageAdapter::ShouldUseExtensionAdapterForTesting(
+     bool has_extension_surface_selector,
+     const GURL& committed_primary_url) {
+-  return false;
++  return has_extension_surface_selector ||
++         (committed_primary_url.is_valid() &&
++          committed_primary_url.SchemeIs(extensions::kExtensionScheme));
+ }
+ 
+ // static
+@@ -59,17 +537,351 @@ PrometheusExtensionPageAdapter::BuildAuditProjectionForTesting(
+     PrometheusExtensionSurfaceKind surface,
+     ExtensionAgentGrant grant,
+     std::string result) {
+-  return {};
++  PrometheusExtensionAuditProjection projection;
++  projection.id_suffix = ExtensionPolicyIdSuffix(extension_id);
++  projection.surface = SurfaceToString(surface);
++  projection.grant = GrantToAuditString(grant);
++  projection.result = std::move(result);
++  return projection;
+ }
+ 
+ // static
+ bool PrometheusExtensionPageAdapter::IsAuditProjectionSafeForTesting(
+     const PrometheusExtensionAuditProjection& projection) {
+-  return false;
++  static constexpr auto kSurfaces = std::to_array<std::string_view>(
++      {"tab", "options_page", "popup", "side_panel", "options_guest"});
++  static constexpr auto kGrants = std::to_array<std::string_view>(
++      {"blocked", "read_only", "interact"});
++  static constexpr auto kResults = std::to_array<std::string_view>(
++      {"allowed", "surface_blocked", "read_denied", "interaction_denied",
++       "script_denied", "unsupported_context", "stale_policy",
++       "private_denied", "extension_not_found"});
++  const bool suffix_safe =
++      (projection.id_suffix.empty() ||
++       (projection.id_suffix.size() == kExtensionPolicyIdSuffixBytes &&
++        std::ranges::all_of(projection.id_suffix,
++                            [](unsigned char character) {
++                              return (character >= 'a' && character <= 'z') ||
++                                     (character >= '0' && character <= '9');
++                            })));
++  return suffix_safe &&
++         std::ranges::find(kSurfaces, projection.surface) != kSurfaces.end() &&
++         std::ranges::find(kGrants, projection.grant) != kGrants.end() &&
++         std::ranges::find(kResults, projection.result) != kResults.end();
++}
++
++// static
++AgentRouteResult PrometheusExtensionPageAdapter::AdmissionFailure(
++    PrometheusExtensionAdmissionDenial denial) {
++  switch (denial) {
++    case PrometheusExtensionAdmissionDenial::kNone:
++      return AgentRouteResult::Success({});
++    case PrometheusExtensionAdmissionDenial::kSurfaceBlocked:
++      return ExactCopyFailure(AgentErrorCode::kPermissionBlocked,
++                              kSurfaceBlocked);
++    case PrometheusExtensionAdmissionDenial::kReadDenied:
++      return ExactCopyFailure(AgentErrorCode::kPermissionBlocked, kReadDenied);
++    case PrometheusExtensionAdmissionDenial::kInteractionDenied:
++      return ExactCopyFailure(AgentErrorCode::kPermissionBlocked,
++                              kInteractionDenied);
++    case PrometheusExtensionAdmissionDenial::kScriptDenied:
++      return ExactCopyFailure(AgentErrorCode::kPermissionBlocked,
++                              kScriptDenied);
++    case PrometheusExtensionAdmissionDenial::kUnsupportedRoute:
++      return ExactCopyFailure(AgentErrorCode::kUnsupportedRoute,
++                              kUnsupportedContext);
++    case PrometheusExtensionAdmissionDenial::kStalePolicy:
++      return ExactCopyFailure(AgentErrorCode::kStaleTarget, kStalePolicy);
++    case PrometheusExtensionAdmissionDenial::kPrivateDenied:
++      return ExactCopyFailure(AgentErrorCode::kPermissionBlocked,
++                              kPrivateDenied);
++    case PrometheusExtensionAdmissionDenial::kUnavailable:
++      return ExactCopyFailure(AgentErrorCode::kStaleTarget,
++                              kExtensionNotFound);
++  }
++}
++
++// static
++std::string PrometheusExtensionPageAdapter::AuditResultFor(
++    const AgentRouteResult& result) {
++  if (result.ok) {
++    return "allowed";
++  }
++  if (result.message == kSurfaceBlocked) {
++    return "surface_blocked";
++  }
++  if (result.message == kReadDenied) {
++    return "read_denied";
++  }
++  if (result.message == kInteractionDenied) {
++    return "interaction_denied";
++  }
++  if (result.message == kScriptDenied) {
++    return "script_denied";
++  }
++  if (result.message == kExtensionNotFound) {
++    return "extension_not_found";
++  }
++  if (result.message == kStalePolicy ||
++      result.error_code == AgentErrorCode::kStaleTarget) {
++    return "stale_policy";
++  }
++  if (result.message == kPrivateDenied) {
++    return "private_denied";
++  }
++  return "unsupported_context";
++}
++
++// static
++std::string PrometheusExtensionPageAdapter::SurfaceToString(
++    PrometheusExtensionSurfaceKind surface) {
++  switch (surface) {
++    case PrometheusExtensionSurfaceKind::kTab:
++      return "tab";
++    case PrometheusExtensionSurfaceKind::kOptionsPage:
++      return "options_page";
++    case PrometheusExtensionSurfaceKind::kPopup:
++      return "popup";
++    case PrometheusExtensionSurfaceKind::kSidePanel:
++      return "side_panel";
++    case PrometheusExtensionSurfaceKind::kOptionsGuest:
++      return "options_guest";
++  }
++}
++
++// static
++std::string PrometheusExtensionPageAdapter::BoundString(
++    std::string input,
++    size_t max_chars,
++    bool* truncated,
++    size_t* omitted_count) {
++  if (input.size() <= max_chars) {
++    *truncated = false;
++    *omitted_count = 0;
++    return input;
++  }
++  const size_t original_size = input.size();
++  input = std::string(base::TruncateUTF8ToByteSize(input, max_chars));
++  *truncated = true;
++  *omitted_count = original_size - input.size();
++  return input;
++}
++
++// static
++void PrometheusExtensionPageAdapter::CompleteWithAudit(
++    AgentTarget target,
++    PrometheusExtensionAuditProjection projection,
++    CompletionCallback callback,
++    AgentRouteResult result) {
++  projection.result = AuditResultFor(result);
++  result.target = std::move(target);
++  std::move(callback).Run(std::move(result), std::move(projection));
++}
++
++AgentRouteResult
++PrometheusExtensionPageAdapter::ValidateSurfaceForDispatch(
++    base::WeakPtr<Browser> browser,
++    base::WeakPtr<tabs::TabInterface> anchor_tab,
++    std::optional<AgentExtensionSurfaceSelector> selector,
++    std::string extension_id,
++    PrometheusExtensionSurfaceKind surface,
++    uint64_t policy_generation,
++    content::GlobalRenderFrameHostId primary_frame_id,
++    AgentRouteName route_name,
++    content::WebContents* dispatched_web_contents,
++    content::RenderFrameHost* dispatched_frame) {
++  if (!browser || !anchor_tab || !policy_service_) {
++    return AdmissionFailure(PrometheusExtensionAdmissionDenial::kUnavailable);
++  }
++  PrometheusExtensionSurfaceResolver resolver(policy_service_);
++  auto resolution =
++      resolver.Resolve(browser.get(), anchor_tab.get(), selector,
++                       policy_generation);
++  if (!resolution.has_value()) {
++    return resolution.error().error_code == AgentErrorCode::kStaleTarget
++               ? AdmissionFailure(
++                     PrometheusExtensionAdmissionDenial::kStalePolicy)
++               : AdmissionFailure(
++                     PrometheusExtensionAdmissionDenial::kUnsupportedRoute);
++  }
++  const PrometheusResolvedExtensionSurface& current = resolution.value();
++  if (current.extension_id != extension_id || current.kind != surface ||
++      current.policy_generation != policy_generation ||
++      current.primary_frame_id != primary_frame_id ||
++      current.web_contents.get() != dispatched_web_contents ||
++      !IsExtensionPrimaryFrame(dispatched_web_contents, dispatched_frame,
++                               extension_id) ||
++      dispatched_frame->GetGlobalId() != primary_frame_id) {
++    return AdmissionFailure(
++        PrometheusExtensionAdmissionDenial::kStalePolicy);
++  }
++  const ExtensionAgentGrant grant = policy_service_->GetEffectiveGrant(
++      extension_id, dispatched_web_contents->GetBrowserContext(),
++      current.private_mode);
++  PrometheusExtensionAdmissionEvidence evidence;
++  evidence.private_mode = current.private_mode;
++  evidence.private_policy_allowed =
++      !current.private_mode || grant != ExtensionAgentGrant::kBlocked;
++  const PrometheusExtensionAdmissionDecision admission =
++      EvaluateAdmissionForTesting(route_name, grant, evidence);
++  return admission.allowed ? AgentRouteResult::Success({})
++                           : AdmissionFailure(admission.denial);
++}
++
++AgentRouteResult PrometheusExtensionPageAdapter::ResolveRequestedPrimaryFrame(
++    content::WebContents* web_contents,
++    content::GlobalRenderFrameHostId expected_frame_id,
++    const AgentFrameTarget& frame_target,
++    content::RenderFrameHost** frame) const {
++  content::RenderFrameHost* primary_frame =
++      content::RenderFrameHost::FromID(expected_frame_id);
++  if (!web_contents || !frame || !primary_frame ||
++      web_contents->GetPrimaryMainFrame() != primary_frame ||
++      content::WebContents::FromRenderFrameHost(primary_frame) !=
++          web_contents) {
++    return AdmissionFailure(
++        PrometheusExtensionAdmissionDenial::kStalePolicy);
++  }
++  const bool has_process = frame_target.render_process_id.has_value();
++  const bool has_routing = frame_target.render_frame_routing_id.has_value();
++  if (has_process != has_routing) {
++    return InvalidPageInput(
++        "Explicit frame targets require both process and routing identifiers",
++        "Request a fresh extension snapshot and use its exact frame target");
++  }
++  if (has_process &&
++      (*frame_target.render_process_id !=
++           primary_frame->GetProcess()->GetDeprecatedID() ||
++       *frame_target.render_frame_routing_id !=
++           primary_frame->GetRoutingID())) {
++    return AdmissionFailure(
++        PrometheusExtensionAdmissionDenial::kStalePolicy);
++  }
++  if (frame_target.document_token.has_value()) {
++    const std::optional<std::string> live_document =
++        optimization_guide::DocumentIdentifierUserData::GetDocumentIdentifier(
++            primary_frame->GetGlobalFrameToken());
++    if (frame_target.document_token->empty() || !live_document.has_value() ||
++        *live_document != *frame_target.document_token) {
++      return AdmissionFailure(
++          PrometheusExtensionAdmissionDenial::kStalePolicy);
++    }
++  }
++  *frame = primary_frame;
++  return AgentRouteResult::Success({});
++}
++
++void PrometheusExtensionPageAdapter::OnInnerTextReady(
++    size_t max_chars,
++    SurfaceValidationCallback validation_callback,
++    content::GlobalRenderFrameHostId frame_id,
++    AuditedRouteCallback callback,
++    std::unique_ptr<content_extraction::InnerTextResult> inner_text_result) {
++  content::RenderFrameHost* frame = content::RenderFrameHost::FromID(frame_id);
++  content::WebContents* web_contents =
++      frame ? content::WebContents::FromRenderFrameHost(frame) : nullptr;
++  AgentRouteResult validation =
++      validation_callback.Run(web_contents, frame);
++  if (!validation.ok) {
++    std::move(callback).Run(std::move(validation));
++    return;
++  }
++  if (!inner_text_result) {
++    std::move(callback).Run(
++        AdmissionFailure(PrometheusExtensionAdmissionDenial::kStalePolicy));
++    return;
++  }
++  AgentPageResult page_result;
++  page_result.visible_text =
++      BoundString(std::move(inner_text_result->inner_text), max_chars,
++                  &page_result.truncated, &page_result.omitted_count);
++  AgentRouteResult result =
++      AgentRouteResult::Success({"visible_text_returned"});
++  result.page_result = std::move(page_result);
++  std::move(callback).Run(std::move(result));
++}
++
++void PrometheusExtensionPageAdapter::OnSnapshotReady(
++    AgentRouteName route_name,
++    AgentPageRequest page_request,
++    SurfaceValidationCallback validation_callback,
++    content::GlobalRenderFrameHostId frame_id,
++    AuditedRouteCallback callback,
++    optimization_guide::AIPageContentResultOrError snapshot_result) {
++  content::RenderFrameHost* frame = content::RenderFrameHost::FromID(frame_id);
++  content::WebContents* web_contents =
++      frame ? content::WebContents::FromRenderFrameHost(frame) : nullptr;
++  AgentRouteResult validation =
++      validation_callback.Run(web_contents, frame);
++  if (!validation.ok) {
++    std::move(callback).Run(std::move(validation));
++    return;
++  }
++  if (!snapshot_result.has_value()) {
++    std::move(callback).Run(VerificationFailed(
++        "Failed to extract extension page content",
++        "Reopen the extension surface and retry the snapshot route"));
++    return;
++  }
++  const optimization_guide::proto::AnnotatedPageContent& page_content =
++      snapshot_result.value().proto;
++  if (!page_content.has_main_frame_data() ||
++      !page_content.main_frame_data().has_document_identifier() ||
++      page_content.main_frame_data()
++          .document_identifier()
++          .serialized_token()
++          .empty()) {
++    std::move(callback).Run(
++        AdmissionFailure(PrometheusExtensionAdmissionDenial::kStalePolicy));
++    return;
++  }
++  const bool compact = route_name == AgentRouteName::kGetPageSnapshot;
++  const size_t max_nodes = page_request.read_options.max_nodes > 0
++                               ? page_request.read_options.max_nodes
++                               : (compact ? kDefaultCompactSnapshotMaxNodes
++                                          : kDefaultDomSnapshotMaxNodes);
++  const size_t max_chars = page_request.read_options.max_chars > 0
++                               ? page_request.read_options.max_chars
++                               : kDefaultSnapshotMaxChars;
++  AgentPageResult page_result;
++  std::string snapshot_json = BuildSnapshotJson(
++      page_content,
++      page_content.main_frame_data().document_identifier().serialized_token(),
++      compact, max_nodes, max_chars, &page_result.truncated,
++      &page_result.omitted_count);
++  if (compact) {
++    page_result.compact_snapshot_json = std::move(snapshot_json);
++  } else {
++    page_result.dom_snapshot_json = std::move(snapshot_json);
++  }
++  AgentRouteResult result = AgentRouteResult::Success(
++      {compact ? "compact_snapshot_returned" : "snapshot_returned"});
++  result.page_result = std::move(page_result);
++  std::move(callback).Run(std::move(result));
++}
++
++void PrometheusExtensionPageAdapter::OnElementReadFinished(
++    uint64_t operation_id) {
++  in_flight_element_read_operations_.erase(operation_id);
++}
++
++bool PrometheusExtensionPageAdapter::RecordActionFingerprint(
++    std::string session_id,
++    int32_t tab_handle_value,
++    std::string fingerprint) {
++  return action_history_.RecordAndCheck(
++      {.session_id = std::move(session_id),
++       .tab_handle_value = tab_handle_value,
++       .fingerprint = std::move(fingerprint)});
++}
++
++void PrometheusExtensionPageAdapter::OnActionOperationFinished(
++    uint64_t operation_id) {
++  in_flight_action_operations_.erase(operation_id);
+ }
+ 
+ bool ExtensionAgentDispatchContractImplementedForTesting() {
+-  return false;
++  return true;
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_extension_page_adapter.h b/chrome/browser/prometheus/prometheus_extension_page_adapter.h
+index 4e55bfd106..5f9f7de7de 100644
+--- a/chrome/browser/prometheus/prometheus_extension_page_adapter.h
++++ b/chrome/browser/prometheus/prometheus_extension_page_adapter.h
+@@ -5,14 +5,23 @@
+ #ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_PAGE_ADAPTER_H_
+ #define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_EXTENSION_PAGE_ADAPTER_H_
+ 
++#include <cstddef>
++#include <cstdint>
++#include <map>
++#include <memory>
++#include <optional>
+ #include <string>
+ 
+ #include "base/functional/callback.h"
+ #include "base/memory/raw_ptr.h"
++#include "base/memory/scoped_refptr.h"
+ #include "base/memory/weak_ptr.h"
+ #include "chrome/browser/prometheus/prometheus_agent_route.h"
+ #include "chrome/browser/prometheus/prometheus_extension_policy_types.h"
+ #include "chrome/browser/prometheus/prometheus_extension_surface_resolver.h"
++#include "chrome/browser/prometheus/prometheus_page_action_history.h"
++#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
++#include "content/public/browser/global_routing_id.h"
+ #include "url/gurl.h"
+ 
+ class Browser;
+@@ -21,9 +30,20 @@ namespace tabs {
+ class TabInterface;
+ }
+ 
++namespace content {
++class RenderFrameHost;
++class WebContents;
++}
++
++namespace content_extraction {
++struct InnerTextResult;
++}
++
+ namespace prometheus {
+ 
+ class PrometheusExtensionPolicyService;
++class PrometheusPageActionDispatcher;
++class PrometheusPageElementReader;
+ struct AgentSession;
+ 
+ enum class PrometheusExtensionRouteFamily {
+@@ -74,7 +94,9 @@ struct PrometheusExtensionAuditProjection {
+ 
+ class PrometheusExtensionPageAdapter {
+  public:
+-  using CompletionCallback = base::OnceCallback<void(AgentRouteResult)>;
++  using CompletionCallback = base::OnceCallback<void(
++      AgentRouteResult,
++      PrometheusExtensionAuditProjection)>;
+ 
+   explicit PrometheusExtensionPageAdapter(
+       PrometheusExtensionPolicyService* policy_service);
+@@ -104,11 +126,72 @@ class PrometheusExtensionPageAdapter {
+       PrometheusExtensionSurfaceKind surface,
+       ExtensionAgentGrant grant,
+       std::string result);
+-  static bool IsAuditProjectionSafeForTesting(
++ static bool IsAuditProjectionSafeForTesting(
+       const PrometheusExtensionAuditProjection& projection);
+ 
+  private:
++  using AuditedRouteCallback =
++      base::OnceCallback<void(AgentRouteResult)>;
++  using SurfaceValidationCallback =
++      base::RepeatingCallback<AgentRouteResult(content::WebContents*,
++                                               content::RenderFrameHost*)>;
++
++  static AgentRouteResult AdmissionFailure(
++      PrometheusExtensionAdmissionDenial denial);
++  static std::string AuditResultFor(const AgentRouteResult& result);
++  static std::string SurfaceToString(
++      PrometheusExtensionSurfaceKind surface);
++  static std::string BoundString(std::string input,
++                                 size_t max_chars,
++                                 bool* truncated,
++                                 size_t* omitted_count);
++  static void CompleteWithAudit(AgentTarget target,
++                                PrometheusExtensionAuditProjection projection,
++                                CompletionCallback callback,
++                                AgentRouteResult result);
++  AgentRouteResult ValidateSurfaceForDispatch(
++      base::WeakPtr<Browser> browser,
++      base::WeakPtr<tabs::TabInterface> anchor_tab,
++      std::optional<AgentExtensionSurfaceSelector> selector,
++      std::string extension_id,
++      PrometheusExtensionSurfaceKind surface,
++      uint64_t policy_generation,
++      content::GlobalRenderFrameHostId primary_frame_id,
++      AgentRouteName route_name,
++      content::WebContents* dispatched_web_contents,
++      content::RenderFrameHost* dispatched_frame);
++  AgentRouteResult ResolveRequestedPrimaryFrame(
++      content::WebContents* web_contents,
++      content::GlobalRenderFrameHostId expected_frame_id,
++      const AgentFrameTarget& frame_target,
++      content::RenderFrameHost** frame) const;
++  void OnInnerTextReady(
++      size_t max_chars,
++      SurfaceValidationCallback validation_callback,
++      content::GlobalRenderFrameHostId frame_id,
++      AuditedRouteCallback callback,
++      std::unique_ptr<content_extraction::InnerTextResult> inner_text_result);
++  void OnSnapshotReady(
++      AgentRouteName route_name,
++      AgentPageRequest page_request,
++      SurfaceValidationCallback validation_callback,
++      content::GlobalRenderFrameHostId frame_id,
++      AuditedRouteCallback callback,
++      optimization_guide::AIPageContentResultOrError snapshot_result);
++  void OnElementReadFinished(uint64_t operation_id);
++  bool RecordActionFingerprint(std::string session_id,
++                               int32_t tab_handle_value,
++                               std::string fingerprint);
++  void OnActionOperationFinished(uint64_t operation_id);
++
+   raw_ptr<PrometheusExtensionPolicyService> policy_service_;
++  uint64_t next_action_operation_id_ = 0;
++  std::map<uint64_t, scoped_refptr<PrometheusPageActionDispatcher>>
++      in_flight_action_operations_;
++  uint64_t next_element_read_operation_id_ = 0;
++  std::map<uint64_t, scoped_refptr<PrometheusPageElementReader>>
++      in_flight_element_read_operations_;
++  PrometheusPageActionHistory action_history_;
+   base::WeakPtrFactory<PrometheusExtensionPageAdapter> weak_factory_{this};
+ };
+ 
+diff --git a/chrome/browser/prometheus/prometheus_extension_surface_resolver.cc b/chrome/browser/prometheus/prometheus_extension_surface_resolver.cc
+index 08f73a0a01..0d297a109d 100644
+--- a/chrome/browser/prometheus/prometheus_extension_surface_resolver.cc
++++ b/chrome/browser/prometheus/prometheus_extension_surface_resolver.cc
+@@ -67,16 +67,32 @@ PrometheusExtensionSurfaceClassification Accept(
+ 
+ AgentRouteResult SurfaceFailure(
+     const PrometheusExtensionSurfaceClassification& classification) {
+-  if (classification.error_code == AgentErrorCode::kStaleTarget) {
++  if (classification.denial ==
++          PrometheusExtensionSurfaceDenial::kExtensionUnavailable ||
++      classification.denial ==
++          PrometheusExtensionSurfaceDenial::kLifecycleLost ||
++      classification.denial ==
++          PrometheusExtensionSurfaceDenial::kSystemUnavailable) {
+     return AgentRouteResult::Failure(
+         AgentErrorCode::kStaleTarget,
+-        "The selected extension surface changed before it could be used",
+-        "Reopen the extension surface and retry with its stable tab id");
++        "Extension no longer available. Refresh the policy list.",
++        "Extension no longer available. Refresh the policy list.");
++  }
++  if (classification.denial ==
++      PrometheusExtensionSurfaceDenial::kStaleGeneration) {
++    return AgentRouteResult::Failure(
++        AgentErrorCode::kStaleTarget,
++        "Extension policy changed before the action ran. Refresh the target "
++        "and try again.",
++        "Extension policy changed before the action ran. Refresh the target "
++        "and try again.");
+   }
+   return AgentRouteResult::Failure(
+       AgentErrorCode::kInvalidTarget,
+-      "The selected extension surface is not a current visible browser view",
+-      "Show the extension tab, popup, or side panel and retry");
++      "This extension context is not available to Agents. Open a visible "
++      "extension page and retry.",
++      "This extension context is not available to Agents. Open a visible "
++      "extension page and retry.");
+ }
+ 
+ PrometheusExtensionObservedContext ObservedContextForViewType(
+diff --git a/chrome/browser/prometheus/prometheus_page_action_dispatcher.cc b/chrome/browser/prometheus/prometheus_page_action_dispatcher.cc
+index a21898babf..89a511e670 100644
+--- a/chrome/browser/prometheus/prometheus_page_action_dispatcher.cc
++++ b/chrome/browser/prometheus/prometheus_page_action_dispatcher.cc
+@@ -87,14 +87,17 @@ PrometheusPageActionDispatcher::PrometheusPageActionDispatcher(
+     AgentPageActionRequest action_request,
+     HistoryCheckCallback history_check_callback,
+     CompletionCallback completion_callback,
+-    base::OnceClosure finished_callback)
++    base::OnceClosure finished_callback,
++    DispatchValidationCallback dispatch_validation_callback)
+     : route_name_(route_name),
+       kind_(kind),
+       action_request_(std::move(action_request)),
+       initial_url_(web_contents ? web_contents->GetLastCommittedURL() : GURL()),
+       history_check_callback_(std::move(history_check_callback)),
+       completion_callback_(std::move(completion_callback)),
+-      finished_callback_(std::move(finished_callback)) {
++      finished_callback_(std::move(finished_callback)),
++      dispatch_validation_callback_(
++          std::move(dispatch_validation_callback)) {
+   if (web_contents) {
+     web_contents_ = web_contents->GetWeakPtr();
+   }
+@@ -316,7 +319,8 @@ AgentRouteResult PrometheusPageActionDispatcher::ResolveFallback(
+ AgentRouteResult PrometheusPageActionDispatcher::ValidateExactActionFrame(
+     content::WebContents* web_contents,
+     const content::WeakDocumentPtr& requested_document,
+-    content::RenderFrameHost* resolved_frame) {
++    content::RenderFrameHost* resolved_frame,
++    bool allow_extension_page) {
+   content::RenderFrameHost* requested_frame =
+       requested_document.AsRenderFrameHostIfValid();
+   if (!web_contents || web_contents->IsBeingDestroyed() ||
+@@ -363,7 +367,8 @@ AgentRouteResult PrometheusPageActionDispatcher::ValidateExactActionFrame(
+     return FrameRestricted("Cross-origin child frame actions are restricted",
+                            "Choose the primary frame or a same-origin child");
+   }
+-  if (!IsNormalPageUrl(resolved_frame->GetLastCommittedURL())) {
++  if (!allow_extension_page &&
++      !IsNormalPageUrl(resolved_frame->GetLastCommittedURL())) {
+     return PermissionBlocked(
+         "Page actions are blocked on internal or non-web URLs",
+         "Navigate the owned tab to a normal http or https page and retry");
+@@ -374,7 +379,8 @@ AgentRouteResult PrometheusPageActionDispatcher::ValidateExactActionFrame(
+ // static
+ AgentRouteResult PrometheusPageActionDispatcher::ValidateWaitFrame(
+     content::WebContents* web_contents,
+-    content::RenderFrameHost* frame) {
++    content::RenderFrameHost* frame,
++    bool allow_extension_page) {
+   if (!web_contents || web_contents->IsBeingDestroyed() ||
+       web_contents->IsCrashed() || !frame || !frame->IsActive() ||
+       !frame->IsRenderFrameLive() || !frame->GetPage().IsPrimary()) {
+@@ -390,7 +396,8 @@ AgentRouteResult PrometheusPageActionDispatcher::ValidateWaitFrame(
+   }
+   content::RenderFrameHost* primary_frame = web_contents->GetPrimaryMainFrame();
+   if (!primary_frame || frame->GetMainFrame() != primary_frame ||
+-      !IsNormalPageUrl(frame->GetLastCommittedURL())) {
++      (!allow_extension_page &&
++       !IsNormalPageUrl(frame->GetLastCommittedURL()))) {
+     return StaleFrame("The action verification target is no longer current",
+                       "Request a fresh snapshot and retry");
+   }
+@@ -478,7 +485,8 @@ void PrometheusPageActionDispatcher::OnPageContentReady(
+       optimization_guide::GetRenderFrameForDocumentIdentifier(
+           *web_contents, document_identifier.serialized_token());
+   AgentRouteResult frame_result = ValidateExactActionFrame(
+-      web_contents, requested_document_, resolved_frame);
++      web_contents, requested_document_, resolved_frame,
++      !dispatch_validation_callback_.is_null());
+   if (!frame_result.ok) {
+     Complete(std::move(frame_result));
+     return;
+@@ -519,11 +527,20 @@ void PrometheusPageActionDispatcher::OnPageContentReady(
+   resolved_frame = optimization_guide::GetRenderFrameForDocumentIdentifier(
+       *web_contents, document_identifier.serialized_token());
+   frame_result = ValidateExactActionFrame(web_contents, requested_document_,
+-                                          resolved_frame);
++                                          resolved_frame,
++                                          !dispatch_validation_callback_.is_null());
+   if (!frame_result.ok) {
+     Complete(std::move(frame_result));
+     return;
+   }
++  if (dispatch_validation_callback_) {
++    AgentRouteResult dispatch_validation =
++        dispatch_validation_callback_.Run(web_contents, resolved_frame);
++    if (!dispatch_validation.ok) {
++      Complete(std::move(dispatch_validation));
++      return;
++    }
++  }
+ 
+   resolved_frame->GetRemoteAssociatedInterfaces()->GetInterface(&remote_);
+   remote_.set_disconnect_handler(
+@@ -565,6 +582,11 @@ void PrometheusPageActionDispatcher::OnActionPerformed(
+     wait_frame = web_contents->GetPrimaryMainFrame();
+   }
+   AgentRouteResult frame_result = ValidateWaitFrame(web_contents, wait_frame);
++  if (!dispatch_validation_callback_.is_null()) {
++    frame_result =
++        ValidateWaitFrame(web_contents, wait_frame,
++                          /*allow_extension_page=*/true);
++  }
+   if (!frame_result.ok) {
+     Complete(std::move(frame_result));
+     return;
+@@ -611,6 +633,7 @@ void PrometheusPageActionDispatcher::Complete(AgentRouteResult result) {
+   remote_.reset();
+   waiter_.reset();
+   history_check_callback_.Reset();
++  dispatch_validation_callback_.Reset();
+ 
+   CompletionCallback completion_callback = std::move(completion_callback_);
+   base::OnceClosure finished_callback = std::move(finished_callback_);
+diff --git a/chrome/browser/prometheus/prometheus_page_action_dispatcher.h b/chrome/browser/prometheus/prometheus_page_action_dispatcher.h
+index c3be485077..12b8dcb786 100644
+--- a/chrome/browser/prometheus/prometheus_page_action_dispatcher.h
++++ b/chrome/browser/prometheus/prometheus_page_action_dispatcher.h
+@@ -40,6 +40,9 @@ class PrometheusPageActionDispatcher
+   using CompletionCallback = base::OnceCallback<void(AgentRouteResult)>;
+   using HistoryCheckCallback =
+       base::OnceCallback<std::optional<bool>(std::string)>;
++  using DispatchValidationCallback = base::RepeatingCallback<AgentRouteResult(
++      content::WebContents*,
++      content::RenderFrameHost*)>;
+ 
+   PrometheusPageActionDispatcher(AgentRouteName route_name,
+                                  chrome::mojom::PrometheusActionKind kind,
+@@ -48,7 +51,9 @@ class PrometheusPageActionDispatcher
+                                  AgentPageActionRequest action_request,
+                                  HistoryCheckCallback history_check_callback,
+                                  CompletionCallback completion_callback,
+-                                 base::OnceClosure finished_callback);
++                                 base::OnceClosure finished_callback,
++                                 DispatchValidationCallback
++                                     dispatch_validation_callback = {});
+   PrometheusPageActionDispatcher(const PrometheusPageActionDispatcher&) =
+       delete;
+   PrometheusPageActionDispatcher& operator=(
+@@ -95,9 +100,11 @@ class PrometheusPageActionDispatcher
+   static AgentRouteResult ValidateExactActionFrame(
+       content::WebContents* web_contents,
+       const content::WeakDocumentPtr& requested_document,
+-      content::RenderFrameHost* resolved_frame);
++      content::RenderFrameHost* resolved_frame,
++      bool allow_extension_page = false);
+   static AgentRouteResult ValidateWaitFrame(content::WebContents* web_contents,
+-                                            content::RenderFrameHost* frame);
++                                            content::RenderFrameHost* frame,
++                                            bool allow_extension_page = false);
+   static std::string ChangedStateForKind(
+       chrome::mojom::PrometheusActionKind kind);
+   void OnPageContentReady(
+@@ -119,6 +126,7 @@ class PrometheusPageActionDispatcher
+   HistoryCheckCallback history_check_callback_;
+   CompletionCallback completion_callback_;
+   base::OnceClosure finished_callback_;
++  DispatchValidationCallback dispatch_validation_callback_;
+   std::string resolved_ref_;
+   bool value_changed_ = false;
+   bool completed_ = false;
+diff --git a/chrome/browser/prometheus/prometheus_page_element_reader.cc b/chrome/browser/prometheus/prometheus_page_element_reader.cc
+index 0eeac3d739..a3177747ac 100644
+--- a/chrome/browser/prometheus/prometheus_page_element_reader.cc
++++ b/chrome/browser/prometheus/prometheus_page_element_reader.cc
+@@ -72,12 +72,15 @@ PrometheusPageElementReader::PrometheusPageElementReader(
+     AgentElementTarget element_target,
+     std::string attribute_name,
+     CompletionCallback completion_callback,
+-    base::OnceClosure finished_callback)
++    base::OnceClosure finished_callback,
++    DispatchValidationCallback dispatch_validation_callback)
+     : route_name_(route_name),
+       element_target_(std::move(element_target)),
+       attribute_name_(std::move(attribute_name)),
+       completion_callback_(std::move(completion_callback)),
+-      finished_callback_(std::move(finished_callback)) {
++      finished_callback_(std::move(finished_callback)),
++      dispatch_validation_callback_(
++          std::move(dispatch_validation_callback)) {
+   if (web_contents) {
+     web_contents_ = web_contents->GetWeakPtr();
+   }
+@@ -158,7 +161,8 @@ AgentRouteResult PrometheusPageElementReader::ValidateRequest(
+ AgentRouteResult PrometheusPageElementReader::ValidateExactReadFrame(
+     content::WebContents* web_contents,
+     const content::WeakDocumentPtr& requested_document,
+-    content::RenderFrameHost* resolved_frame) {
++    content::RenderFrameHost* resolved_frame,
++    bool allow_extension_page) {
+   content::RenderFrameHost* requested_frame =
+       requested_document.AsRenderFrameHostIfValid();
+   if (!web_contents || web_contents->IsBeingDestroyed() ||
+@@ -202,7 +206,8 @@ AgentRouteResult PrometheusPageElementReader::ValidateExactReadFrame(
+     return FrameRestricted("Cross-origin element reads are restricted",
+                            "Choose the primary frame or a same-origin child");
+   }
+-  if (!IsNormalPageUrl(resolved_frame->GetLastCommittedURL())) {
++  if (!allow_extension_page &&
++      !IsNormalPageUrl(resolved_frame->GetLastCommittedURL())) {
+     return PermissionBlocked(
+         "Element reads are blocked on internal or non-web URLs",
+         "Navigate the owned tab to a normal http or https page and retry");
+@@ -267,7 +272,8 @@ void PrometheusPageElementReader::OnPageContentReady(
+       optimization_guide::GetRenderFrameForDocumentIdentifier(*web_contents,
+                                                               document_token);
+   AgentRouteResult frame_result =
+-      ValidateExactReadFrame(web_contents, requested_document_, resolved_frame);
++      ValidateExactReadFrame(web_contents, requested_document_, resolved_frame,
++                             !dispatch_validation_callback_.is_null());
+   if (!frame_result.ok) {
+     Complete(std::move(frame_result));
+     return;
+@@ -278,11 +284,20 @@ void PrometheusPageElementReader::OnPageContentReady(
+   resolved_frame = optimization_guide::GetRenderFrameForDocumentIdentifier(
+       *web_contents, document_token);
+   frame_result =
+-      ValidateExactReadFrame(web_contents, requested_document_, resolved_frame);
++      ValidateExactReadFrame(web_contents, requested_document_, resolved_frame,
++                             !dispatch_validation_callback_.is_null());
+   if (!frame_result.ok) {
+     Complete(std::move(frame_result));
+     return;
+   }
++  if (dispatch_validation_callback_) {
++    AgentRouteResult dispatch_validation =
++        dispatch_validation_callback_.Run(web_contents, resolved_frame);
++    if (!dispatch_validation.ok) {
++      Complete(std::move(dispatch_validation));
++      return;
++    }
++  }
+   resolved_document_ = resolved_frame->GetWeakDocumentPtr();
+   resolved_frame->GetRemoteAssociatedInterfaces()->GetInterface(&remote_);
+   remote_.set_disconnect_handler(
+@@ -308,11 +323,20 @@ void PrometheusPageElementReader::OnElementRead(
+   content::RenderFrameHost* resolved_frame =
+       resolved_document_.AsRenderFrameHostIfValid();
+   AgentRouteResult frame_result =
+-      ValidateExactReadFrame(web_contents, requested_document_, resolved_frame);
++      ValidateExactReadFrame(web_contents, requested_document_, resolved_frame,
++                             !dispatch_validation_callback_.is_null());
+   if (!frame_result.ok) {
+     Complete(std::move(frame_result));
+     return;
+   }
++  if (dispatch_validation_callback_) {
++    AgentRouteResult dispatch_validation =
++        dispatch_validation_callback_.Run(web_contents, resolved_frame);
++    if (!dispatch_validation.ok) {
++      Complete(std::move(dispatch_validation));
++      return;
++    }
++  }
+   if (!read_result || !read_result->ok ||
+       read_result->value.size() > kMaxReadValueBytes) {
+     Complete(VerificationFailed(
+@@ -345,6 +369,7 @@ void PrometheusPageElementReader::Complete(AgentRouteResult result) {
+     remote_.set_disconnect_handler(base::OnceClosure());
+   }
+   remote_.reset();
++  dispatch_validation_callback_.Reset();
+ 
+   CompletionCallback completion_callback = std::move(completion_callback_);
+   base::OnceClosure finished_callback = std::move(finished_callback_);
+diff --git a/chrome/browser/prometheus/prometheus_page_element_reader.h b/chrome/browser/prometheus/prometheus_page_element_reader.h
+index 2c98d42e35..e0c0d232ab 100644
+--- a/chrome/browser/prometheus/prometheus_page_element_reader.h
++++ b/chrome/browser/prometheus/prometheus_page_element_reader.h
+@@ -30,6 +30,9 @@ class PrometheusPageElementReader
+     : public base::RefCounted<PrometheusPageElementReader> {
+  public:
+   using CompletionCallback = base::OnceCallback<void(AgentRouteResult)>;
++  using DispatchValidationCallback = base::RepeatingCallback<AgentRouteResult(
++      content::WebContents*,
++      content::RenderFrameHost*)>;
+ 
+   PrometheusPageElementReader(AgentRouteName route_name,
+                               content::WebContents* web_contents,
+@@ -37,7 +40,9 @@ class PrometheusPageElementReader
+                               AgentElementTarget element_target,
+                               std::string attribute_name,
+                               CompletionCallback completion_callback,
+-                              base::OnceClosure finished_callback);
++                              base::OnceClosure finished_callback,
++                              DispatchValidationCallback
++                                  dispatch_validation_callback = {});
+   PrometheusPageElementReader(const PrometheusPageElementReader&) = delete;
+   PrometheusPageElementReader& operator=(const PrometheusPageElementReader&) =
+       delete;
+@@ -57,7 +62,8 @@ class PrometheusPageElementReader
+   static AgentRouteResult ValidateExactReadFrame(
+       content::WebContents* web_contents,
+       const content::WeakDocumentPtr& requested_document,
+-      content::RenderFrameHost* resolved_frame);
++      content::RenderFrameHost* resolved_frame,
++      bool allow_extension_page = false);
+   void OnPageContentReady(
+       optimization_guide::AIPageContentResultOrError page_content_result);
+   void OnElementRead(chrome::mojom::PrometheusElementReadResultPtr read_result);
+@@ -72,6 +78,7 @@ class PrometheusPageElementReader
+   const std::string attribute_name_;
+   CompletionCallback completion_callback_;
+   base::OnceClosure finished_callback_;
++  DispatchValidationCallback dispatch_validation_callback_;
+   std::string resolved_ref_;
+   bool completed_ = false;
+   mojo::AssociatedRemote<chrome::mojom::PrometheusRenderFrame> remote_;
+-- 
+2.50.1 (Apple Git-155)
+

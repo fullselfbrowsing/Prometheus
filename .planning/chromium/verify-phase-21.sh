@@ -1,0 +1,2993 @@
+#!/usr/bin/env bash
+set -euo pipefail
+shopt -s nullglob
+
+FOCUS_FILTER=''
+FOCUS_KIND=''
+EXPECT_FAILURE=false
+CLOSEOUT_MODE=false
+LIVE_REGRESSIONS_ONLY=false
+
+usage() {
+  printf 'Usage: %s [--focus FILTER | --focus-browser FILTER | --focus-content FILTER | --focus-blink FILTER | --focus-node PATTERN | --live-regressions-only] [--expect-failure]\n' "$0" >&2
+}
+
+if [[ "$#" -eq 0 ]]; then
+  CLOSEOUT_MODE=true
+  FOCUS_KIND='browser-integration'
+fi
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --focus)
+      [[ "$#" -ge 2 ]] || {
+        usage
+        exit 2
+      }
+      [[ -z "${FOCUS_FILTER}" ]] || {
+        usage
+        exit 2
+      }
+      FOCUS_FILTER="$2"
+      FOCUS_KIND='browser'
+      shift 2
+      ;;
+    --focus-browser)
+      [[ "$#" -ge 2 ]] || {
+        usage
+        exit 2
+      }
+      [[ -z "${FOCUS_FILTER}" ]] || {
+        usage
+        exit 2
+      }
+      FOCUS_FILTER="$2"
+      FOCUS_KIND='browser-integration'
+      shift 2
+      ;;
+    --focus-content)
+      [[ "$#" -ge 2 ]] || {
+        usage
+        exit 2
+      }
+      [[ -z "${FOCUS_FILTER}" ]] || {
+        usage
+        exit 2
+      }
+      FOCUS_FILTER="$2"
+      FOCUS_KIND='content'
+      shift 2
+      ;;
+    --focus-blink)
+      [[ "$#" -ge 2 ]] || {
+        usage
+        exit 2
+      }
+      [[ -z "${FOCUS_FILTER}" ]] || {
+        usage
+        exit 2
+      }
+      FOCUS_FILTER="$2"
+      FOCUS_KIND='blink'
+      shift 2
+      ;;
+    --focus-node)
+      [[ "$#" -ge 2 ]] || {
+        usage
+        exit 2
+      }
+      [[ -z "${FOCUS_FILTER}" ]] || {
+        usage
+        exit 2
+      }
+      FOCUS_FILTER="$2"
+      FOCUS_KIND='node'
+      shift 2
+      ;;
+    --expect-failure)
+      [[ "${EXPECT_FAILURE}" == false ]] || {
+        usage
+        exit 2
+      }
+      EXPECT_FAILURE=true
+      shift
+      ;;
+    --live-regressions-only)
+      [[ "${LIVE_REGRESSIONS_ONLY}" == false && -z "${FOCUS_FILTER}" ]] || {
+        usage
+        exit 2
+      }
+      LIVE_REGRESSIONS_ONLY=true
+      FOCUS_KIND='browser-integration'
+      shift
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "${CLOSEOUT_MODE}" == false &&
+      "${LIVE_REGRESSIONS_ONLY}" == false &&
+      -z "${FOCUS_FILTER//[[:space:]]/}" ]]; then
+  printf 'Phase 21 focused verification failed: focus selector must be non-empty\n' >&2
+  exit 2
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
+CHROMIUM_DIR="${ROOT_DIR}/.context/chromium/src"
+OUT_DIR="${CHROMIUM_DIR}/out/Default"
+if [[ "${LIVE_REGRESSIONS_ONLY}" == true ]]; then
+  LOG_DIR="${OUT_DIR}/phase21-live-regressions"
+elif [[ "${CLOSEOUT_MODE}" == true ]]; then
+  LOG_DIR="${OUT_DIR}/phase21-closeout"
+else
+  LOG_DIR="${OUT_DIR}/phase21-focused"
+fi
+LOG_DIR_RELATIVE="${LOG_DIR#"${OUT_DIR}/"}"
+FOCUSED_BLINK_MODULES_DIR="${LOG_DIR}/blink-modules"
+FOCUSED_BLINK_MODULES="${FOCUSED_BLINK_MODULES_DIR}/libblink_modules.dylib"
+FOCUSED_RESOURCE_DIR="${LOG_DIR}/resources"
+FOCUSED_PROMETHEUS_PAK="${FOCUSED_RESOURCE_DIR}/prometheus/prometheus_resources.pak"
+FOCUSED_FRAMEWORK_RESOURCES_PAK="${FOCUSED_RESOURCE_DIR}/framework-resources.pak"
+FRAMEWORK_RESOURCES_PAK="${OUT_DIR}/Prometheus Framework.framework/Resources/resources.pak"
+FRAMEWORK_RESOURCES_PAK_BACKUP="${FOCUSED_RESOURCE_DIR}/framework-resources.before-phase21.pak"
+SISO="${CHROMIUM_DIR}/third_party/siso/cipd/siso"
+FOCUSED_BINARY="${OUT_DIR}/browser_tests"
+TEMP_FOCUSED_BINARY="${OUT_DIR}/phase21_browser_tests"
+CONTENT_FOCUSED_BINARY="${OUT_DIR}/phase21_content_focused_unittests"
+LIST_LOG="${LOG_DIR}/phase21-focused-list.log"
+TEST_LOG="${LOG_DIR}/phase21-focused-test.log"
+BUILD_LOG="${LOG_DIR}/phase21-focused-build.log"
+PHASE_DIR="${ROOT_DIR}/.planning/phases/21-supervision-pairing-and-remote-control"
+PATCH_DIR="${PHASE_DIR}/patches"
+BASELINE='5632dcef07121bf4c3444cc2da13f222b6a61e91'
+EXPECTED_NINJA_LOG_SHA256='eccf79f3dfdc6c8d51af20f56bf1973eb35ff486b1dab9b2b0653cc37b586dce'
+EXPECTED_NINJA_DEPS_SHA256='ab1a6ad4639e8db53459384f8636dc53f396397363f3c2751bcdadc0349947c0'
+EXPECTED_BLINK_MODULES_SHA256='663af12ba1a986db789c4c05967dda8b3b3615030e6cecb569de0f74ba01ff8e'
+EXPECTED_BLINK_MODULES_TOC_SHA256='bdc164a10b8616fa099b089a1f4542c789a584c84212b0f4d92b616701a3ce9b'
+EXPECTED_FRAMEWORK_RESOURCES_SHA256='c9c541d780ad9c0054eaec0abd8453703972ebcc3ce3607d06e3c80e5a8f79ff'
+EXPECTED_PHASE21_NATIVE_COUNT=190
+EXPECTED_PHASE21_RENDERER_COUNT=14
+EXPECTED_PHASE21_BROWSER_COUNT=52
+EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT=208
+EXPECTED_PHASE17_19_NATIVE_REGRESSION_COUNT=84
+EXPECTED_PHASE20_CONTENT_REGRESSION_COUNT=21
+EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT=3
+EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT=37
+EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT=83
+EXPECTED_NODE_COUNT=81
+EXPECTED_PATCH_COUNT=74
+PHASE21_NATIVE_FILTER='PrometheusSupervisionTypesTest.*:PrometheusSupervisionTransportCodecTest.*:PrometheusSupervisionProjectionTest.*:PrometheusSupervisionDiffTest.*:PrometheusSupervisionProfileServiceTest.*:PrometheusSupervisionCaptureHubTest.*:PrometheusSupervisionActionControllerTest.*:PrometheusSupervisionTestBootstrapTest.*:PrometheusAgentServiceObservationTest.*:PrometheusAgentTransportCodecTest.*:PrometheusAgentProfileServiceTest.*:PrometheusAgentGatewayTest.Supervision*:PrometheusAgentServiceTest.Supervision*:PrometheusTabStateTest.Supervision*'
+PHASE21_RENDERER_FILTER='PrometheusSupervisionDocumentSupplementTest.*'
+PHASE21_BROWSER_FILTER='PrometheusAgentGatewayBrowserTest.Supervision*:PrometheusMcpIntegrationBrowserTest.Supervision*:PrometheusWebUIBrowserTest.*:PrometheusSupervisionCaptureHubBrowserTest.*:PrometheusSupervisionConfirmationBrowserTest.*:PrometheusTabSupervisionBadgeBrowserTest.*'
+PHASE20_NATIVE_REGRESSION_FILTER='PrometheusRuntimeTypesTest.*:PrometheusRuntimeStoreTest.*:PrometheusMemoryStoreTest.*:PrometheusSecretStoreTest.*:PrometheusProviderRegistryTest.*:PrometheusProviderCodecTest.*:PrometheusRuntimeProfileServiceTest.*:PrometheusRuntimeTestBootstrapTest.*:PrometheusRuntimeTransportCodecTest.*:PrometheusVaultServiceTest.*:PrometheusAgentServiceTest.*:PrometheusAgentSessionTest.*:PrometheusAgentGatewayTest.*-*.Supervision*'
+PHASE17_19_NATIVE_REGRESSION_FILTER='PrometheusAgentAuditTest.*:PrometheusAgentRouteTest.*:PrometheusAgentTabDataTest.*:PrometheusAgentTransportTest.*:PrometheusEndpointDescriptorTest.*:PrometheusPageActionDispatcherTest.*:PrometheusPageActionHistoryTest.*:PrometheusPageAdapterTest.*:PrometheusPageErrorTest.*:PrometheusPageJsExecutorTest.*:PrometheusPageSnapshotTest.*:PrometheusWebUIHandoffTest.*:PrometheusWebUIResourceTest.*-*.Supervision*'
+PHASE20_CONTENT_REGRESSION_FILTER='PrometheusProviderTransportTest.*:PrometheusTabStateTest.*:PrometheusTabStateWebContentsTest.*'
+PHASE19_RENDERER_REGRESSION_FILTER='PrometheusActionDispatcherTest.ElementReadDistinguishesEmptyAndAbsent:PrometheusActionDispatcherTest.ElementReadRejectsInvalidDisconnectedOrOtherDocumentReference:PrometheusActionDispatcherTest.ElementReadRejectsOversizedValue'
+PHASE20_BROWSER_REGRESSION_FILTER='PrometheusMcpIntegrationBrowserTest.*:PrometheusVaultConfirmationBrowserTest.*:PrometheusControlPanelBrowserTest.*-*.Supervision*'
+PHASE17_19_BROWSER_REGRESSION_FILTER='PrometheusAgentGatewayBrowserTest.*:PrometheusAgentGatewayLifecycleBrowserTest.*:PrometheusAgentProfileServiceBrowserTest.*:PrometheusAgentServiceBrowserTest.*:PrometheusAgentInternalSurfaceBrowserTest.*:PrometheusPageAdapterBrowserTest.*:PrometheusPrerenderedFrameBrowserTest.*:PrometheusFencedFrameBrowserTest.*:PrometheusPageActionBrowserTest.*:PrometheusTabCommandsBrowserTest.*:PrometheusWebUIFoundationBrowserTest.*-*.Supervision*'
+METADATA_CAPTURED=false
+FRAMEWORK_RESOURCES_SWAPPED=false
+NODE_TEST_FILES=(
+  "${ROOT_DIR}/tools/prometheus-mcp/test/catalog.test.mjs"
+  "${ROOT_DIR}/tools/prometheus-mcp/test/tools.test.mjs"
+  "${ROOT_DIR}/tools/prometheus-mcp/test/diagnostics.test.mjs"
+  "${ROOT_DIR}/tools/prometheus-mcp/test/visual-session.test.mjs"
+  "${ROOT_DIR}/tools/prometheus-mcp/test/errors.test.mjs"
+)
+NODE_RED_FAILURES=(
+  'Phase 21 supervision diagnostics preserves live readiness while extensions stay not_ready'
+  'Phase 21 supervision promotes exactly five identities from later to native'
+  'catalog partition is exactly 54/12/22/0/2'
+  'native supervision forwarding sanitizes thrown native failures'
+  'native supervision forwarding uses empty browser-scoped envelopes'
+)
+LIFECYCLE_BROWSER_RED_FILTER='PrometheusWebUIBrowserTest.SupervisionRuntimeLifecycle*'
+LIFECYCLE_BROWSER_RED_FAILURES=(
+  'PrometheusWebUIBrowserTest.SupervisionRuntimeLifecycleActionsAreExactBoundedAndCodeFree'
+  'PrometheusWebUIBrowserTest.SupervisionRuntimeLifecycleObserversInvalidateBeforeFreshSnapshots'
+  'PrometheusWebUIBrowserTest.SupervisionRuntimeLifecyclePresentationErasesAtEveryBoundary'
+)
+CONTROL_SUPERVISION_BROWSER_RED_FILTER='PrometheusWebUIBrowserTest.ControlSupervision*'
+CONTROL_SUPERVISION_BROWSER_RED_FAILURES=(
+  'PrometheusWebUIBrowserTest.ControlSupervisionActionsFocusAndStatePreservation'
+  'PrometheusWebUIBrowserTest.ControlSupervisionErrorsPrivatePrivacyAndResourceBoundaries'
+  'PrometheusWebUIBrowserTest.ControlSupervisionLifecycleMatrixAndExactCopy'
+  'PrometheusWebUIBrowserTest.ControlSupervisionResponsiveAtContractWidthsAndZoom'
+)
+SUPERVISION_TEST_COMPOSITION_RED_FILTER='PrometheusSupervisionTestBootstrapTest.Composition*'
+SUPERVISION_TEST_COMPOSITION_RED_FAILURES=(
+  'PrometheusSupervisionTestBootstrapTest.CompositionRejectsEveryExactBindingMismatchWithoutFallback'
+  'PrometheusSupervisionTestBootstrapTest.CompositionUnbindRestores404BeforeBootstrapAndProductionTeardown'
+  'PrometheusSupervisionTestBootstrapTest.CompositionValidLaunchBindsAfterProductionAndCreatesExactCode'
+)
+
+if [[ "${FOCUS_KIND}" == 'blink' ]]; then
+  FOCUSED_BINARY="${OUT_DIR}/phase21_blink_tests"
+  TEMP_FOCUSED_BINARY="${FOCUSED_BINARY}"
+fi
+
+fail() {
+  printf 'Phase 21 verification failed: %s\n' "$1" >&2
+  exit 1
+}
+
+note() {
+  printf '[phase21] %s\n' "$1"
+}
+
+require_file() {
+  [[ -s "$1" ]] || fail "missing or empty file: $1"
+}
+
+require_literal() {
+  local literal="$1"
+  local file="$2"
+  rg -q --fixed-strings -- "${literal}" "${file}" \
+    || fail "missing composition contract '${literal}' in ${file}"
+}
+
+reject_pattern() {
+  local pattern="$1"
+  local description="$2"
+  shift 2
+  if rg -n -- "${pattern}" "$@" >"${LOG_DIR}/phase21-static-guard.log"; then
+    tail -n 80 "${LOG_DIR}/phase21-static-guard.log" >&2 || true
+    fail "${description}"
+  fi
+}
+
+list_selected_node_tests() {
+  local file
+  for file in "${NODE_TEST_FILES[@]}"; do
+    require_file "${file}"
+    node --check "${file}" >>"${BUILD_LOG}" 2>&1 \
+      || fail "Node test syntax check failed: ${file}"
+  done
+
+  if ! node --input-type=module - "${FOCUS_FILTER}" "${NODE_TEST_FILES[@]}" \
+      >"${LIST_LOG}" 2>>"${BUILD_LOG}" <<'NODE_DISCOVERY'
+import { readFileSync } from 'node:fs';
+
+const [patternText, ...files] = process.argv.slice(2);
+let pattern;
+try {
+  pattern = new RegExp(patternText, 'u');
+} catch (error) {
+  process.stderr.write(`invalid Node test-name pattern: ${error.message}\n`);
+  process.exit(2);
+}
+
+const names = [];
+const declaration = /^\s*test\(\s*(['"])([^'"\n]+)\1\s*,/gmu;
+for (const file of files) {
+  const source = readFileSync(file, 'utf8');
+  for (const match of source.matchAll(declaration)) {
+    if (pattern.test(match[2])) names.push(match[2]);
+  }
+}
+names.sort((left, right) => left.localeCompare(right));
+if (names.length === 0 || new Set(names).size !== names.length) process.exit(3);
+process.stdout.write(`${names.join('\n')}\n`);
+NODE_DISCOVERY
+  then
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused Node test discovery failed or selected no unique tests'
+  fi
+
+  local selected_count
+  selected_count="$(awk 'NF { count += 1 } END { print count + 0 }' "${LIST_LOG}")"
+  [[ "${selected_count}" -gt 0 ]] \
+    || fail "Node pattern selected zero tests: ${FOCUS_FILTER}"
+  note "selected ${selected_count} named Node test(s)"
+}
+
+run_selected_node_tests() {
+  local test_status
+  set +e
+  node --input-type=module - "${FOCUS_FILTER}" "${NODE_TEST_FILES[@]}" \
+      >"${TEST_LOG}" 2>&1 <<'NODE_RUNNER'
+import { spawnSync } from 'node:child_process';
+
+const [pattern, ...files] = process.argv.slice(2);
+const result = spawnSync(
+  process.execPath,
+  ['--test', '--test-reporter=tap', `--test-name-pattern=${pattern}`, ...files],
+  { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 120_000 },
+);
+process.stdout.write(result.stdout ?? '');
+process.stderr.write(result.stderr ?? '');
+if (result.error?.code === 'ETIMEDOUT') {
+  process.stderr.write('Phase 21 focused Node run timed out.\n');
+  process.exit(124);
+}
+process.exit(result.status ?? 125);
+NODE_RUNNER
+  test_status="$?"
+  set -e
+
+  if rg -qi 'ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|Cannot find module|SyntaxError:|ReferenceError:|timed out|# cancelled [1-9]' \
+      "${TEST_LOG}"; then
+    tail -n 100 "${TEST_LOG}" >&2 || true
+    fail 'focused Node run rejected parser, import, startup, or timeout output'
+  fi
+
+  local selected_name
+  while IFS= read -r selected_name; do
+    rg -q --fixed-strings -- "# Subtest: ${selected_name}" "${TEST_LOG}" \
+      || fail "focused Node run did not execute discovered test: ${selected_name}"
+  done <"${LIST_LOG}"
+
+  if [[ "${EXPECT_FAILURE}" == true ]]; then
+    [[ "${test_status}" -ne 0 ]] || fail '--expect-failure requires a nonzero Node exit'
+    [[ "${test_status}" -eq 1 ]] || {
+      tail -n 100 "${TEST_LOG}" >&2 || true
+      fail "--expect-failure requires ordinary Node assertion status 1, got ${test_status}"
+    }
+    local actual_failures="${LOG_DIR}/phase21-node-actual-failures.log"
+    local expected_failures="${LOG_DIR}/phase21-node-expected-failures.log"
+    sed -nE 's/^not ok [0-9]+ - (.*)$/\1/p' "${TEST_LOG}" | LC_ALL=C sort \
+      >"${actual_failures}"
+    printf '%s\n' "${NODE_RED_FAILURES[@]}" | LC_ALL=C sort >"${expected_failures}"
+    if ! diff -u "${expected_failures}" "${actual_failures}" >"${BUILD_LOG}.failures"; then
+      cat "${BUILD_LOG}.failures" >&2
+      fail 'focused Node RED failures differ from the frozen allowlist'
+    fi
+    note "selected Node suite failed only through ${#NODE_RED_FAILURES[@]} intended assertions"
+    return
+  fi
+
+  if [[ "${test_status}" -ne 0 ]]; then
+    tail -n 100 "${TEST_LOG}" >&2 || true
+    fail "selected Node suite failed with status ${test_status}"
+  fi
+  rg -q '^# fail 0$' "${TEST_LOG}" \
+    || fail 'selected Node suite did not report zero failures'
+  note 'selected Node suite passed'
+}
+
+verify_composition_contract() {
+  local agent_service="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_service.cc"
+  local agent_profile="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_profile_service.cc"
+  local supervision="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local supervision_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.h"
+  local factory="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc"
+  local factory_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h"
+
+  require_file "${agent_service}"
+  require_file "${agent_profile}"
+  require_file "${supervision}"
+  require_file "${supervision_header}"
+  require_file "${factory}"
+  require_file "${factory_header}"
+
+  require_literal 'agent_service_.ObserveOrCreateTabData(tab, observer)' "${agent_profile}"
+  require_literal 'ProfileSelections::BuildForRegularProfile()' "${factory}"
+  require_literal 'DependsOn(PrometheusAgentProfileServiceFactory::GetInstance())' "${factory}"
+  require_literal 'PrometheusAgentProfileServiceFactory::GetForProfile(profile)' "${factory}"
+  require_literal 'agent_profile_service->GetWeakPtr()' "${factory}"
+
+  reject_pattern \
+    'GetOrCreateForTab|EnsureTabData|RegisterWillDetach|OnTabWillDetach|OwnedTabData|(^|[^[:alnum:]_])tab_data_|InvalidateTabObservations|PruneUnownedTabData' \
+    'supervision gained an independent Agent tab-data ownership path' \
+    "${agent_profile}" "${supervision}" "${supervision_header}" \
+    "${factory}" "${factory_header}"
+  reject_pattern 'PrometheusAgentProfileServiceFactory' \
+    'supervision service bypassed its composition factory' \
+    "${supervision}" "${supervision_header}"
+
+  require_literal 'PrometheusAgentTabData::GetOrCreateForTab(tab)' "${agent_service}"
+  require_literal 'std::make_unique<OwnedTabData>' "${agent_service}"
+  require_literal 'tab->RegisterWillDetach' "${agent_service}"
+  require_literal '&PrometheusAgentService::OnTabWillDetach' "${agent_service}"
+  require_literal 'tab_data_.erase' "${agent_service}"
+  note 'Agent ownership and keyed-service composition static guards passed'
+}
+
+verify_blink_contract() {
+  local mojom="${CHROMIUM_DIR}/third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom"
+  local public_build="${CHROMIUM_DIR}/third_party/blink/public/mojom/BUILD.gn"
+  local supplement_header="${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h"
+  local supplement_source="${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc"
+  local supplement_test="${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement_unittest.cc"
+  local content_build="${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/BUILD.gn"
+  local modules_build="${CHROMIUM_DIR}/third_party/blink/renderer/modules/BUILD.gn"
+  local modules_initializer="${CHROMIUM_DIR}/third_party/blink/renderer/modules/modules_initializer.cc"
+
+  require_file "${mojom}"
+  require_file "${supplement_header}"
+  require_file "${supplement_source}"
+  require_file "${supplement_test}"
+  require_file "${modules_initializer}"
+  require_literal 'enum PrometheusSupervisionDirtySignal {' "${mojom}"
+  require_literal 'kDirty,' "${mojom}"
+  require_literal 'kOverflow,' "${mojom}"
+  require_literal 'interface PrometheusSupervisionDocumentHost {' "${mojom}"
+  require_literal 'OnDocumentDirty(PrometheusSupervisionDirtySignal signal);' "${mojom}"
+  require_literal 'interface PrometheusSupervisionDocument {' "${mojom}"
+  require_literal 'Enable(pending_remote<PrometheusSupervisionDocumentHost> host);' "${mojom}"
+  require_literal 'Disable();' "${mojom}"
+  reject_pattern \
+    '(^|[^[:alnum:]_])(string|array|map|struct|union|url|origin|node|record|identity|epoch|sequence)([^[:alnum:]_]|$)' \
+    'Blink supervision Mojo contract gained content or identity payloads' \
+    "${mojom}"
+
+  [[ "$(rg -c '^[[:space:]]*OnDocumentDirty\(' "${mojom}")" -eq 1 ]] \
+    || fail 'Blink host contract must expose exactly one dirty callback'
+  [[ "$(rg -c '^[[:space:]]*(Enable|Disable)\(' "${mojom}")" -eq 2 ]] \
+    || fail 'Blink document contract must expose only Enable and Disable'
+
+  require_literal '"content_extraction/prometheus_supervision_document.mojom"' "${public_build}"
+  require_literal '"prometheus_supervision_document_supplement.cc"' "${content_build}"
+  require_literal '"prometheus_supervision_document_supplement.h"' "${content_build}"
+  require_literal '"content_extraction/prometheus_supervision_document_supplement_unittest.cc"' "${modules_build}"
+  require_literal 'public Supplement<Document>' "${supplement_header}"
+  require_literal 'PrometheusSupervisionDocumentSupplement::BindReceiver' "${supplement_source}"
+  require_literal 'supplement_->OnMutationRecordCount(records.size());' "${supplement_source}"
+  require_literal 'kMaxPendingMutationRecords = 256u' "${supplement_header}"
+  require_literal 'kDirtyDebounce = base::Milliseconds(50)' "${supplement_header}"
+  require_literal 'init->setChildList(true);' "${supplement_source}"
+  require_literal 'init->setAttributes(true);' "${supplement_source}"
+  require_literal 'init->setCharacterData(true);' "${supplement_source}"
+  require_literal 'init->setSubtree(true);' "${supplement_source}"
+  require_literal 'mutation_observer_->observe(GetSupplementable()' \
+    "${supplement_source}"
+  require_literal 'EnableBeforeDocumentElementCreationObservesLaterRoot' \
+    "${supplement_test}"
+  require_literal 'DocumentElementReplacementObservesNewRootMutations' \
+    "${supplement_test}"
+  reject_pattern \
+    'documentElement\(' \
+    'Blink supervision observation regressed to one document root' \
+    "${supplement_source}"
+  reject_pattern \
+    '(record|records)[[:space:]]*(\[|->)|addedNodes|removedNodes|attributeName|oldValue|newValue|target\(' \
+    'Blink supervision inspected MutationRecord content' \
+    "${supplement_source}" "${supplement_header}"
+  reject_pattern \
+    'JSONReader|JSONWriter|Serialize|innerHTML|outerHTML|ExecuteScript|ScriptState' \
+    'Blink supervision gained serialization or script execution' \
+    "${supplement_source}" "${supplement_header}"
+  require_literal \
+    '#include "third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h"' \
+    "${modules_initializer}"
+  require_literal \
+    '&PrometheusSupervisionDocumentSupplement::BindReceiver' \
+    "${modules_initializer}"
+  require_literal \
+    '&PrometheusSupervisionDocumentSupplement::OnReceiverDisconnected' \
+    "${supplement_source}"
+  require_literal \
+    '&PrometheusSupervisionDocumentSupplement::OnHostDisconnected' \
+    "${supplement_source}"
+  note 'Blink document, Mojo privacy, and GN static guards passed'
+}
+
+verify_capture_hub_contract() {
+  local hub_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h"
+  local hub_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc"
+  local hub_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc"
+  local hub_browser_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc"
+  local profile_service="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local profile_service_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.h"
+  local profile_service_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc"
+  local browser_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
+  local views_build="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/BUILD.gn"
+
+  require_file "${hub_header}"
+  require_file "${hub_source}"
+  require_file "${hub_test}"
+  require_file "${hub_browser_test}"
+  require_file "${profile_service_test}"
+  require_literal 'class PrometheusSupervisionCaptureHub : public content::WebContentsObserver' "${hub_header}"
+  require_literal 'SupervisionCaptureConsumerKind::kDashboard' "${hub_test}"
+  require_literal 'SupervisionCaptureConsumerKind::kAgentCompatibility' "${hub_test}"
+  require_literal 'using CaptureConsumerToken = uint64_t;' "${hub_header}"
+  require_literal 'WaitForNextDiff' "${hub_header}"
+  require_literal 'CancelDiffWait' "${hub_header}"
+  require_literal 'DashboardLongPoll' "${hub_test}"
+  require_literal 'capture_requested_while_in_flight_' "${hub_header}"
+  require_literal 'DirtyAfterSnapshotStartsQueuesFollowUpCapture' "${hub_test}"
+  require_literal 'mojo::Remote<blink::mojom::PrometheusSupervisionDocument>' "${hub_source}"
+  require_literal 'mojo::Receiver<blink::mojom::PrometheusSupervisionDocumentHost>' "${hub_source}"
+  require_literal 'content::WeakDocumentPtr requested_document' "${hub_source}"
+  require_literal 'optimization_guide::GetAIPageContent(' "${hub_source}"
+  require_literal 'options->include_same_site_only = true;' "${hub_source}"
+  require_literal 'options->include_passwords_for_redaction = true;' "${hub_source}"
+  require_literal 'options->include_sensitive_payments_for_redaction = true;' "${hub_source}"
+  require_literal 'options->include_otps_for_redaction = true;' "${hub_source}"
+  require_literal 'CollectRawFormValuesForSupervision' "${hub_source}"
+  require_literal 'RemoveRawFormValuesForSupervision' "${hub_source}"
+  require_literal 'net::test_server::ControllableHttpResponse' "${hub_browser_test}"
+  require_literal 'TwoConsumersUseOneRendererEnableAndApcCapture' "${hub_browser_test}"
+  require_literal 'TwoDashboardConsumersShareRealMutationsAndDetachIndependently' "${hub_browser_test}"
+  require_literal 'TwoDashboardConsumersNavigationRequiresIndependentBaselines' "${hub_browser_test}"
+  require_literal 'DocumentElementReplacementKeepsRealCaptureLive' \
+    "${hub_browser_test}"
+  require_literal 'kSecondReleasePath' "${hub_browser_test}"
+  require_literal 'kMutationMarker' "${hub_browser_test}"
+  require_literal '"prometheus_supervision_capture_hub.cc"' "${browser_build}"
+  require_literal '"prometheus_supervision_capture_hub_unittest.cc"' "${browser_build}"
+  require_literal '"../../../prometheus/prometheus_supervision_capture_hub_browsertest.cc"' "${views_build}"
+  require_literal '"//chrome/browser/prometheus:prometheus_supervision_profile_service"' "${views_build}"
+  require_literal 'GetOrCreateCaptureHub(' "${profile_service}"
+  require_literal 'SupervisionCaptureConsumerKind::kDashboard' "${profile_service}"
+  require_literal 'capture_consumer_token' "${profile_service}"
+  require_literal 'ReadDashboardBaseline' "${profile_service_header}"
+  require_literal 'ReadDashboardDiff' "${profile_service_header}"
+  require_literal 'BeginDashboardDiffWait' "${profile_service_header}"
+  require_literal 'CancelDashboardDiffWait' "${profile_service_header}"
+  require_literal 'AckDashboard' "${profile_service_header}"
+  require_literal 'HubDashboardLongPoll' "${profile_service_test}"
+  reject_pattern \
+    'mojo::|PrometheusSupervisionDocument' \
+    'capture-hub consumer API exposed a renderer or Mojo endpoint' \
+    "${hub_header}"
+  reject_pattern \
+    'ExecuteScript|MutationObserver|MutationRecord|innerHTML|outerHTML' \
+    'browser capture hub gained production script injection or raw mutation access' \
+    "${hub_source}"
+  reject_pattern \
+    'ExecJs|EvalJs|ExecuteScript|MutationObserver' \
+    'capture-hub browser proof used test-side script injection or a synthetic observer' \
+    "${hub_browser_test}"
+  reject_pattern \
+    'mojo::|blink::mojom::PrometheusSupervisionDocument|optimization_guide::GetAIPageContent|SupervisionNormalizedNode|SharedBatch|document_remote_|capture_for_testing_|retained_batches_|acknowledged_sequence|next_sequence' \
+    'profile service duplicated renderer, capture-tree, history, or cursor ownership' \
+    "${profile_service}" "${profile_service_header}"
+  [[ "$(rg -c --fixed-strings 'document_remote_->Enable' "${hub_source}")" -eq 1 ]] \
+    || fail 'capture hub must own exactly one renderer Enable call site'
+  note 'capture-hub ownership, consumer API, privacy, and GN static guards passed'
+}
+
+verify_gateway_contract() {
+  local gateway_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway.h"
+  local gateway_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway.cc"
+  local contract_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway_contract.h"
+  local contract_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc"
+  local browser_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
+  local gateway_build_block="${LOG_DIR}/phase21-gateway-build.gn"
+
+  require_file "${gateway_header}"
+  require_file "${gateway_source}"
+  require_file "${contract_header}"
+  require_file "${contract_source}"
+  require_literal 'struct SupervisionGatewayDispatcher' "${contract_header}"
+  require_literal 'SupervisionGatewayCancellationToken' "${contract_header}"
+  require_literal 'SupervisionGatewayReadiness' "${contract_header}"
+  require_literal 'base::RepeatingClosure shutdown;' "${contract_header}"
+  require_literal '"/v1/supervision"' "${contract_source}"
+  require_literal 'SetSupervisionGatewayDispatcher' "${gateway_source}"
+  require_literal 'ParseSupervisionTransportRequest' "${gateway_source}"
+  require_literal 'supervision_dispatcher_->dispatch.Run' "${gateway_source}"
+  require_literal 'supervision_dispatcher_->cancel.Run' "${gateway_source}"
+  require_literal 'supervision_dispatcher_->readiness.Run' "${gateway_source}"
+  require_literal 'ShutdownSupervisionDispatcher' "${gateway_source}"
+  require_literal 'OnTransportRequestTerminated' "${gateway_source}"
+  require_literal '"prometheus_agent_gateway_contract.h"' "${browser_build}"
+  sed -n '/source_set("prometheus_agent_gateway") {/,/^}/p' \
+    "${browser_build}" >"${gateway_build_block}"
+  require_file "${gateway_build_block}"
+  reject_pattern \
+    '#include .*prometheus_supervision_(profile_service|capture_hub)|#include .*(browser_window|web_contents|render_frame_host)|(^|[^[:alnum:]_])(raw_ptr|WeakPtr|unique_ptr)<(Profile|Browser|BrowserWindowInterface|WebContents|RenderFrameHost|PrometheusSupervisionProfileService|PrometheusSupervisionCaptureHub)>' \
+    'gateway contract gained concrete profile, target, capture, or renderer authority' \
+    "${contract_header}"
+  reject_pattern \
+    'prometheus_supervision_(profile_service|profile_service_factory|capture_hub)|PrometheusSupervision(ProfileService|ProfileServiceFactory|CaptureHub)|RenderFrameHost|WebContents|prometheus_supervision_document' \
+    'Agent gateway gained a concrete supervision service, capture, or renderer edge' \
+    "${gateway_header}" "${gateway_source}" "${gateway_build_block}"
+  note 'gateway abstract-dispatch contract and GN static guards passed'
+}
+
+verify_live_supervision_dispatch_contract() {
+  local agent_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_service.h"
+  local agent_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_service.cc"
+  local profile_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_profile_service.h"
+  local profile_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_profile_service.cc"
+  local gateway_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway.h"
+  local gateway_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway.cc"
+  local main_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.h"
+  local main_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
+  local prometheus_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
+  local browser_build="${CHROMIUM_DIR}/chrome/browser/BUILD.gn"
+  local gateway_block="${LOG_DIR}/phase21-agent-gateway-target.gn"
+  local composition_block="${LOG_DIR}/phase21-browser-composition-target.gn"
+  local supervision_dispatch="${LOG_DIR}/phase21-agent-supervision-dispatch.cc"
+  local exact_test_binding="${LOG_DIR}/phase21-exact-test-binding.cc"
+
+  require_literal 'using SupervisionRouteDispatcher =' "${agent_header}"
+  require_literal 'SetSupervisionRouteDispatcher' "${agent_header}"
+  require_literal 'SupervisionRouteDispatcherStorage()' "${agent_source}"
+  require_literal 'ExecuteSupervisionRoute(browser, request' "${agent_source}"
+  require_literal 'case AgentRouteName::kCreateSupervisionPairing:' "${agent_source}"
+  require_literal 'case AgentRouteName::kStartSupervisionSession:' "${agent_source}"
+  require_literal 'case AgentRouteName::kGetSupervisionSnapshot:' "${agent_source}"
+  require_literal 'case AgentRouteName::kGetSupervisionDiff:' "${agent_source}"
+  require_literal 'case AgentRouteName::kEndSupervisionSession:' "${agent_source}"
+  require_literal 'service->ExecuteBrowserLocalRoute(exact_browser' "${gateway_source}"
+  require_literal 'HasCallerSelectedSupervisionTarget' "${gateway_source}"
+  require_literal 'binding->second.browser.get()' "${gateway_source}"
+  require_literal 'binding->second.stable_tab_id' "${gateway_source}"
+  require_literal 'GetExactSessionBindingForComposition' "${gateway_header}"
+  require_literal 'GetExactSessionBindingForComposition' "${gateway_source}"
+
+  reject_pattern \
+    '#include .*prometheus_supervision_(profile_service|profile_service_factory|capture_hub|test_bootstrap)|#include .*prometheus_supervision_document|PrometheusSupervision(ProfileService|ProfileServiceFactory|CaptureHub|TestBootstrap)' \
+    'Agent service/profile/gateway gained a concrete supervision implementation edge' \
+    "${agent_header}" "${agent_source}" "${profile_header}" \
+    "${profile_source}" "${gateway_header}" "${gateway_source}"
+  sed -n '/void PrometheusAgentService::ExecuteSupervisionRoute(/,/void PrometheusAgentService::OnSupervisionRouteComplete(/p' \
+    "${agent_source}" >"${supervision_dispatch}"
+  require_file "${supervision_dispatch}"
+  reject_pattern \
+    'RenderFrameHost|WebContents|PrometheusSupervisionDocument|prometheus_supervision_(profile_service|capture_hub)' \
+    'Agent supervision dispatcher reached a renderer, capture hub, or concrete service' \
+    "${supervision_dispatch}"
+
+  sed -n '/source_set("prometheus_agent_gateway") {/,/^}/p' \
+    "${prometheus_build}" >"${gateway_block}"
+  sed -n '/source_set("prometheus_browser_composition") {/,/^}/p' \
+    "${prometheus_build}" >"${composition_block}"
+  require_file "${gateway_block}"
+  require_file "${composition_block}"
+  reject_pattern \
+    'prometheus_browser_main_extra_parts|prometheus_supervision_(profile_service|profile_service_factory|capture_hub)' \
+    'Agent gateway target owns the concrete supervision composition' \
+    "${gateway_block}"
+  require_literal '"prometheus_browser_main_extra_parts.cc"' \
+    "${composition_block}"
+  require_literal '":prometheus_agent_gateway"' "${composition_block}"
+  require_literal '":prometheus_supervision_profile_service"' \
+    "${composition_block}"
+  require_literal '":prometheus_supervision_test_bootstrap"' \
+    "${composition_block}"
+  require_literal \
+    '"//chrome/browser/prometheus:prometheus_browser_composition"' \
+    "${browser_build}"
+  reject_pattern \
+    '"//chrome/browser/prometheus:prometheus_agent_gateway"' \
+    'top-level browser bypasses the supervision-aware composition target' \
+    "${browser_build}"
+
+  require_literal '#include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"' \
+    "${main_parts}"
+  require_literal 'class PrometheusSupervisionTestComposition' "${main_header}"
+  require_literal 'PrometheusSupervisionTestComposition::Create' "${main_parts}"
+  require_literal 'SupervisionTestHandoffDispatcher' "${main_header}"
+  require_literal 'ResolveExactSupervisionTestBinding' "${main_parts}"
+  require_literal 'GetExactSessionBindingForComposition' "${main_parts}"
+  require_literal 'CreateExactSupervisionTestPairingCode' "${main_parts}"
+  require_literal \
+    'resolved->service->CreatePairing(resolved->browser, resolved->tab);' \
+    "${main_parts}"
+  require_literal 'ObservePairingRedeemedForExactTarget' "${main_parts}"
+  require_literal 'SetSupervisionTestHandoffDispatcher' "${main_parts}"
+  require_literal 'CreateDashboardDispatcher' "${main_parts}"
+  require_literal 'DispatchAgentRoute' "${main_parts}"
+  require_literal 'MatchesPendingPairingForComposition' "${main_parts}"
+  require_literal 'OwnsDashboardSessionForComposition' "${main_parts}"
+  require_literal 'gateway_->SetSupervisionGatewayDispatcher({});' \
+    "${main_parts}"
+  require_literal 'PrometheusAgentService::SetSupervisionRouteDispatcher({});' \
+    "${main_parts}"
+  sed -n '/^ResolveExactSupervisionTestBinding(/,/^}/p' \
+    "${main_parts}" >"${exact_test_binding}"
+  require_file "${exact_test_binding}"
+  require_literal \
+    'gateway->GetExactSessionBindingForComposition(requesting_session_id)' \
+    "${exact_test_binding}"
+  require_literal 'PrometheusAgentTabData::From(tab)' "${exact_test_binding}"
+  require_literal \
+    'PrometheusSupervisionProfileServiceFactory::GetForProfile(profile)' \
+    "${exact_test_binding}"
+  reject_pattern \
+    'GetActiveTab|GetLastActive|GetLoadedProfiles|FindLastActive|ProfileManager|GetPrimaryUserProfile|GetLastUsedProfile' \
+    'supervision test request binding gained an active/global target fallback' \
+    "${exact_test_binding}"
+
+  local redemption_clear test_unbind dashboard_clear agent_clear
+  local gateway_shutdown
+  redemption_clear="$(rg -n --fixed-strings \
+    'supervision_composition_->SetPairingRedeemedCallback({});' \
+    "${main_parts}" | tail -1 | cut -d: -f1)"
+  test_unbind="$(rg -n --fixed-strings \
+    'supervision_test_composition_->Shutdown();' "${main_parts}" | tail -1 | cut -d: -f1)"
+  dashboard_clear="$(rg -n --fixed-strings \
+    'gateway_->SetSupervisionGatewayDispatcher({});' "${main_parts}" | tail -1 | cut -d: -f1)"
+  agent_clear="$(rg -n --fixed-strings \
+    'PrometheusAgentService::SetSupervisionRouteDispatcher({});' "${main_parts}" | tail -1 | cut -d: -f1)"
+  gateway_shutdown="$(rg -n --fixed-strings \
+    'gateway_->Shutdown(stopped.QuitClosure());' "${main_parts}" | tail -1 | cut -d: -f1)"
+  [[ -n "${redemption_clear}" && -n "${test_unbind}" && \
+     -n "${dashboard_clear}" && -n "${agent_clear}" && \
+     -n "${gateway_shutdown}" && \
+     "${redemption_clear}" -lt "${test_unbind}" && \
+     "${test_unbind}" -lt "${dashboard_clear}" && \
+     "${dashboard_clear}" -lt "${agent_clear}" && \
+     "${agent_clear}" -lt "${gateway_shutdown}" ]] \
+    || fail 'composition teardown order is not redemption clear, test unbind/zeroize, dashboard clear, Agent clear, gateway shutdown'
+  note 'exact Agent/test dispatch, no-fallback bridge, and early-unbind teardown guards passed'
+}
+
+verify_agent_supervision_transport_contract() {
+  local route_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_route.h"
+  local route_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_route.cc"
+  local codec_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_transport_codec.h"
+  local codec_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_transport_codec.cc"
+  local codec_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc"
+  local browser_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
+
+  require_file "${route_header}"
+  require_file "${route_source}"
+  require_file "${codec_header}"
+  require_file "${codec_source}"
+  require_file "${codec_test}"
+  require_literal 'kAgentSupervisionRouteCount = 5' "${route_header}"
+  require_literal 'kCreateSupervisionPairing' "${route_header}"
+  require_literal 'kStartSupervisionSession' "${route_header}"
+  require_literal 'kGetSupervisionSnapshot' "${route_header}"
+  require_literal 'kGetSupervisionDiff' "${route_header}"
+  require_literal 'kEndSupervisionSession' "${route_header}"
+  require_literal 'using AgentSupervisionPayload =' "${route_header}"
+  require_literal 'AgentSupervisionLocalUiResult' "${route_header}"
+  require_literal 'AgentSupervisionBaselineResult' "${route_header}"
+  require_literal 'AgentSupervisionDiffResult' "${route_header}"
+  require_literal 'AgentSupervisionNoChangeResult' "${route_header}"
+  require_literal 'AgentSupervisionEndedResult' "${route_header}"
+  require_literal 'SupervisionManifestHasExactlyFiveBijectiveRoutes' "${codec_test}"
+  require_literal 'SupervisionRequestsAcceptOnlyEmptyCallerScopedObjects' "${codec_test}"
+  require_literal 'SupervisionRejectsRecursiveAuthorityContentAndSecretSentinels' "${codec_test}"
+  require_literal '"prometheus_agent_transport_codec_unittest.cc"' "${browser_build}"
+  reject_pattern \
+    'prometheus_supervision_(profile_service|profile_service_factory|capture_hub)|PrometheusSupervision(ProfileService|ProfileServiceFactory|CaptureHub)|prometheus_supervision_document|RenderFrameHost|WebContents' \
+    'Agent route/codec contract gained concrete supervision service, capture, or renderer ownership' \
+    "${route_header}" "${route_source}" "${codec_header}" "${codec_source}"
+  reject_pattern \
+    'start_visual_session|end_visual_session' \
+    'legacy visual-session names re-entered the native Agent route or codec' \
+    "${route_header}" "${route_source}" "${codec_header}" "${codec_source}"
+  note 'Agent supervision route/result declarations, privacy fixture, and GN guards passed'
+}
+
+verify_supervision_action_controller_contract() {
+  local header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller.h"
+  local source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller.cc"
+  local test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc"
+  local profile_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local factory_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc"
+  require_file "${header}"
+  require_file "${source}"
+  require_file "${test_source}"
+  rg -q 'PrometheusSupervisionActionController' "${header}" "${source}" \
+    || fail 'supervision action controller boundary is missing'
+  rg -q 'ExecuteBrowserLocalRoute' "${source}" \
+    || fail 'supervision actions do not reuse exact-browser Agent dispatch'
+  rg -q 'SupervisionActionClassification' "${header}" "${source}" \
+    || fail 'supervision action classification is not closed and typed'
+  rg -q 'PrometheusSupervisionActionControllerTest' "${test_source}" \
+    || fail 'supervision action controller tests are missing'
+  require_literal 'SuccessfulRouteMayAdvanceCaptureBeforeCompletion' \
+    "${test_source}"
+  rg -q 'ExecuteDashboardAction' "${profile_source}" \
+    || fail 'dashboard actions are not owned by the supervision profile service'
+  rg -q 'controller_lease' "${profile_source}" \
+    || fail 'supervision action dispatch is missing its controller lease fence'
+  rg -q 'last_acknowledged_stamp' "${profile_source}" \
+    || fail 'supervision action dispatch is missing its acknowledged stream fence'
+  rg -q 'action_controller->Cancel' "${profile_source}" \
+    || fail 'supervision lifecycle does not cancel action work before release'
+  rg -q 'BindPrometheusSupervisionAgentRouteDispatcher' "${factory_source}" \
+    || fail 'supervision composition does not inject the exact Agent dispatcher'
+  if rg -n 'ClaimIfUnowned|(^|[^A-Za-z])ExecuteRoute\(|ExecuteScript|MutationObserver|execute_js|ExecuteConfirmedVaultInsertion|PrometheusVault' \
+      "${header}" "${source}"; then
+    fail 'supervision action controller contains a forbidden authority, DOM, script, or vault bypass'
+  fi
+  note 'supervision action controller reuses only the closed exact-browser Agent seam'
+}
+
+verify_built_supervision_smoke_contract() {
+  local shell="${ROOT_DIR}/tools/prometheus-mcp/smoke-browser.sh"
+  local client="${ROOT_DIR}/tools/prometheus-mcp/test/smoke-client.mjs"
+  local test_source="${ROOT_DIR}/tools/prometheus-mcp/test/smoke.test.mjs"
+  require_file "${shell}"
+  require_file "${client}"
+  require_file "${test_source}"
+  require_literal '--prometheus-supervision-test-bootstrap=' "${shell}"
+  require_literal '--disable-background-networking' "${shell}"
+  require_literal '--disable-component-update' "${shell}"
+  require_literal 'crypto.randomBytes(32)' "${shell}"
+  require_literal "fs.openSync(bootstrapFile, 'wx', 0o600)" "${shell}"
+  require_literal '/v1/test/supervision-handoff' "${client}"
+  require_literal 'supervision_resync_gap_targets' "${client}"
+  require_literal 'supervision_resync_gap_compatibility_' "${client}"
+  require_literal 'endDashboardSession' "${client}"
+  require_literal "key.startsWith('PROMETHEUS_MCP_SMOKE_')" "${client}"
+  require_literal 'live client freezes handoff order' "${test_source}"
+  note 'built-app supervision smoke, retention-gap, and credential-isolation guards passed'
+}
+
+verify_production_supervision_shutdown_contract() {
+  local integration_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc"
+  local main_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
+  local shutdown_block="${LOG_DIR}/phase21-production-supervision-shutdown.txt"
+  require_file "${integration_test}"
+  require_file "${main_parts}"
+  require_literal \
+    'SupervisionProductionBindingCancelsPendingDiffBeforeGatewayShutdown' \
+    "${integration_test}"
+  require_literal 'BindSupervisionGatewayForTesting(gateway_.get())' \
+    "${integration_test}"
+  require_literal \
+    'pending_supervision_request_count_for_testing() == 1u' \
+    "${integration_test}"
+  require_literal 'SetSupervisionTestHandoffDispatcher({})' \
+    "${integration_test}"
+  require_literal 'late_dialog_callbacks' "${integration_test}"
+  require_literal 'CAPABILITY_NOT_READY' "${integration_test}"
+
+  sed -n '/void PrometheusBrowserMainExtraParts::PostMainMessageLoopRun()/,/^}/p' \
+    "${main_parts}" >"${shutdown_block}"
+  require_file "${shutdown_block}"
+  local dialog_line
+  local test_composition_line
+  local dashboard_line
+  local agent_line
+  local gateway_line
+  dialog_line="$(rg -n -m1 'SetPrometheusSupervisionDialogAutomationForTesting' \
+    "${shutdown_block}" | cut -d: -f1)"
+  test_composition_line="$(rg -n -m1 'supervision_test_composition_->Shutdown' \
+    "${shutdown_block}" | cut -d: -f1)"
+  dashboard_line="$(rg -n -m1 'SetSupervisionGatewayDispatcher' \
+    "${shutdown_block}" | cut -d: -f1)"
+  agent_line="$(rg -n -m1 'SetSupervisionRouteDispatcher' \
+    "${shutdown_block}" | cut -d: -f1)"
+  gateway_line="$(rg -n -m1 'gateway_->Shutdown' \
+    "${shutdown_block}" | cut -d: -f1)"
+  [[ -n "${dialog_line}" && -n "${test_composition_line}" &&
+     -n "${dashboard_line}" && -n "${agent_line}" &&
+     -n "${gateway_line}" ]] \
+    || fail 'production supervision teardown steps are incomplete'
+  ((dialog_line < test_composition_line &&
+    test_composition_line < dashboard_line &&
+    dashboard_line < agent_line &&
+    agent_line < gateway_line)) \
+    || fail 'production supervision teardown order regressed'
+  note 'production binding, pending cancellation, privacy, and teardown-order guards passed'
+}
+
+verify_supervision_dialog_contract() {
+  local header="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h"
+  local source="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc"
+  local test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc"
+  local browser_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
+  local views_build="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/BUILD.gn"
+  local model_block="${LOG_DIR}/phase21-supervision-dialog-model.txt"
+  local api_block="${LOG_DIR}/phase21-runtime-dialog-api-target.txt"
+  local implementation_block="${LOG_DIR}/phase21-runtime-dialog-implementation-target.txt"
+  local action_block="${LOG_DIR}/phase21-supervision-action-target.txt"
+  local profile_block="${LOG_DIR}/phase21-supervision-profile-target.txt"
+
+  require_file "${header}"
+  require_file "${source}"
+  require_file "${test_source}"
+  require_literal 'struct PrometheusSupervisionDialogModel' "${header}"
+  require_literal 'PrometheusSupervisionDialogResult' "${header}"
+  require_literal 'PrometheusSupervisionDialogLauncher' "${header}"
+  require_literal 'PrometheusSupervisionDialogAutomation' "${header}"
+  require_literal 'SetPrometheusSupervisionDialogAutomationForTesting' "${header}"
+  require_literal 'ShowPrometheusSupervisionDialog' "${source}"
+  require_literal 'PrometheusSupervisionConfirmationBrowserTest' "${test_source}"
+  require_literal 'Enable remote control?' "${test_source}"
+  require_literal 'Confirm remote action' "${test_source}"
+  require_literal 'Keep view only' "${test_source}"
+  require_literal 'Block action' "${test_source}"
+  require_literal 'TestBootstrapAcceptsOnlyVisibleExactSupervisionWidgetOnce' \
+    "${test_source}"
+  require_literal 'TestBootstrapMismatchReplayAndRemovalDoNotClick' \
+    "${test_source}"
+  require_literal 'TestBootstrapProviderAndVaultDialogsDoNotConsultAutomation' \
+    "${test_source}"
+
+  sed -n '/struct PrometheusSupervisionDialogModel {/,/^};/p' \
+    "${header}" >"${model_block}"
+  require_file "${model_block}"
+  reject_pattern \
+    'pairing_code|dashboard_session|controller_lease|owner_session|document_epoch|sequence|selector|raw_(text|key|url)|typed_value|secret_value' \
+    'supervision dialog model carries backend authority or raw action values' \
+    "${model_block}"
+  reject_pattern \
+    '#include .*prometheus_supervision_(profile_service|action_controller)' \
+    'runtime dialog API or implementation depends back on supervision backend' \
+    "${header}" "${source}"
+
+  sed -n '/source_set("runtime_dialogs_api") {/,/^}/p' \
+    "${views_build}" >"${api_block}"
+  sed -n '/static_library("runtime_dialogs") {/,/^}/p' \
+    "${views_build}" >"${implementation_block}"
+  sed -n '/source_set("prometheus_supervision_action_controller") {/,/^}/p' \
+    "${browser_build}" >"${action_block}"
+  sed -n '/source_set("prometheus_supervision_profile_service") {/,/^}/p' \
+    "${browser_build}" >"${profile_block}"
+  require_file "${api_block}"
+  require_file "${implementation_block}"
+  require_file "${action_block}"
+  require_file "${profile_block}"
+  require_literal '":runtime_dialogs_api"' "${implementation_block}"
+  require_literal '"//chrome/browser/ui/views/prometheus:runtime_dialogs_api"' \
+    "${action_block}"
+  require_literal '"//chrome/browser/ui/views/prometheus:runtime_dialogs_api"' \
+    "${profile_block}"
+  reject_pattern \
+    'prometheus_supervision_(profile_service|action_controller)' \
+    'Views dialog API/implementation gained a supervision backend target edge' \
+    "${api_block}" "${implementation_block}"
+  require_literal 'prometheus_supervision_confirmation_browsertest.cc' \
+    "${views_build}"
+  require_literal '"//chrome/browser/prometheus:prometheus_supervision_action_controller"' \
+    "${views_build}"
+  note 'sanitized supervision dialog API and acyclic GN source guards passed'
+}
+
+verify_supervision_tab_state_contract() {
+  local state_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_tab_state.h"
+  local state_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_tab_state.cc"
+  local state_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_tab_state_unittest.cc"
+  local tab_data_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_tab_data.h"
+  local tab_data_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_tab_data.cc"
+  local tab_data_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_tab_data_unittest.cc"
+  local profile_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local profile_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc"
+  local browser_build="${CHROMIUM_DIR}/chrome/browser/prometheus/BUILD.gn"
+  local dto_block="${LOG_DIR}/phase21-supervision-tab-state-dto.txt"
+  local notification_block="${LOG_DIR}/phase21-supervision-tab-state-notify.txt"
+
+  require_file "${state_header}"
+  require_file "${state_source}"
+  require_file "${state_test}"
+  require_file "${tab_data_header}"
+  require_file "${tab_data_source}"
+  require_file "${tab_data_test}"
+  require_file "${profile_source}"
+  require_file "${profile_test}"
+  require_literal 'struct Supervision {' "${state_header}"
+  require_literal 'viewer_count' "${state_header}"
+  require_literal 'viewer_labels' "${state_header}"
+  require_literal 'controller_label' "${state_header}"
+  require_literal 'ActionCategory' "${state_header}"
+  require_literal 'ProjectPrometheusTabSupervisionState' "${state_source}"
+  require_literal 'UpdateSupervisionState' "${tab_data_source}"
+  require_literal 'ClearSupervisionState' "${tab_data_source}"
+  require_literal 'OnPrometheusTabStateChanged' "${tab_data_source}"
+  require_literal 'SupervisionOwnerLossPublishesOnlyClearedCoherentState' \
+    "${tab_data_test}"
+  require_literal 'SupervisionExactTabUpdateDoesNotAttachToAnotherTab' \
+    "${tab_data_test}"
+  require_literal 'SupervisionBoundsHostileLabelsAndOmitsTerminalSessions' \
+    "${state_test}"
+  require_literal 'TabStateProjectionPrecedesObserversAndClearsOnOwnerLoss' \
+    "${profile_test}"
+  require_literal '":prometheus_tab_state"' "${browser_build}"
+
+  sed -n '/  struct Supervision {/,/^  };/p' \
+    "${state_header}" >"${dto_block}"
+  require_file "${dto_block}"
+  reject_pattern \
+    '(?i)session|pairing(_|[[:space:]])?code|lease|owner|profile|browser|stable_?tab|document|epoch|sequence|url|origin|selector|content|raw_?value|token|argument' \
+    'supervision tab-state DTO gained authority, target, content, or secret fields' \
+    "${dto_block}"
+  reject_pattern \
+    'owner_session_id|controller_lease|document_epoch|stable_tab_id|target_generation|authority_generation|raw_value|GetURL|GetContents' \
+    'tab-state projection began reading authority, exact-target, URL, or content state' \
+    "${state_source}"
+  reject_pattern \
+    'PrometheusSupervisionProfileService' \
+    'Agent tab state gained a callback dependency on the supervision service' \
+    "${tab_data_header}" "${tab_data_source}"
+
+  sed -n '/void PrometheusSupervisionProfileService::NotifySnapshotChanged(/,/^}/p' \
+    "${profile_source}" >"${notification_block}"
+  require_file "${notification_block}"
+  require_literal 'UpdateSupervisionState(' "${notification_block}"
+  require_literal 'OnPrometheusSupervisionSnapshotChanged' \
+    "${notification_block}"
+  local tab_update_line service_observer_line
+  tab_update_line="$(rg -n --fixed-strings 'UpdateSupervisionState(' \
+    "${notification_block}" | head -1 | cut -d: -f1)"
+  service_observer_line="$(rg -n --fixed-strings \
+    'OnPrometheusSupervisionSnapshotChanged' "${notification_block}" | \
+    head -1 | cut -d: -f1)"
+  [[ -n "${tab_update_line}" && -n "${service_observer_line}" && \
+     "${tab_update_line}" -lt "${service_observer_line}" ]] \
+    || fail 'tab-state replacement does not precede service observer delivery'
+  note 'sanitized supervision tab-state, ordering, and privacy guards passed'
+}
+
+verify_supervision_tab_badge_contract() {
+  local badge_header="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h"
+  local badge_source="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc"
+  local tab_state_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_tab_state.h"
+  local tab_state_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_tab_state.cc"
+  local agent_tab_data="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_tab_data.cc"
+  local tab_header="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/tab.h"
+  local tab_source="${CHROMIUM_DIR}/chrome/browser/ui/views/tabs/tab.cc"
+  local badge_test="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc"
+  local compact_test="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_compact_chrome_browsertest.cc"
+  local views_build="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/BUILD.gn"
+
+  require_file "${badge_header}"
+  require_file "${badge_source}"
+  require_file "${tab_state_header}"
+  require_file "${tab_state_source}"
+  require_file "${agent_tab_data}"
+  require_file "${tab_header}"
+  require_file "${tab_source}"
+  require_file "${badge_test}"
+  require_file "${compact_test}"
+  require_literal 'kIconSize = 12' "${badge_header}"
+  require_literal 'kIconSpacing = 4' "${badge_header}"
+  require_literal 'kMaximumWidth' "${badge_header}"
+  require_literal 'SetAvailableWidth' "${badge_header}"
+  require_literal 'ApplyVisualCompression' "${badge_source}"
+  require_literal 'SetAvailableWidth' "${tab_source}"
+  require_literal 'SetCanProcessEventsWithinSubtree(false)' "${badge_source}"
+  require_literal 'StateSafeDefaultOwnerAgentAndSlotContract' "${badge_test}"
+  require_literal 'StateViewerControllerAndActionPriority' "${badge_test}"
+  require_literal 'StateCompleteOrderedNameAndHealthSeverity' "${badge_test}"
+  require_literal 'StateTextIsContentFreeAndEventTransparent' "${badge_test}"
+  require_literal 'RealTabLiveTransitionsAndTerminalClear' "${badge_test}"
+  require_literal 'RealTabExactTabIsolation' "${badge_test}"
+  require_literal 'StateCompressionPriorityKeepsCompleteAccessibleName' \
+    "${badge_test}"
+  require_literal 'RealTabCompressionPreservesNativeGeometry' "${badge_test}"
+  require_literal 'kInitialWebUI' "${badge_test}"
+  require_literal 'kInitialWebUI' "${compact_test}"
+  require_literal 'kWebUIToolbarProcessOverheadExperiment' "${badge_test}"
+  require_literal 'kWebUIToolbarProcessOverheadExperiment' "${compact_test}"
+  require_literal 'PrometheusTabStateObservation' "${badge_header}"
+  require_literal 'PrometheusTabStatusBadge>(tab_handle_.Get())' "${tab_source}"
+  require_literal 'NotifySourceAvailable' "${tab_state_source}"
+  require_literal 'NotifySourceAvailable' "${agent_tab_data}"
+  require_literal '8J7K-2MNP' "${badge_test}"
+  require_literal 'https://private.example/path' "${badge_test}"
+  require_literal 'prometheus_tab_supervision_badge_browsertest.cc' \
+    "${views_build}"
+  reject_pattern \
+    'PrometheusSupervisionProfileService|PrometheusSupervisionProfileServiceFactory|PrometheusAgentProfileServiceFactory|controller_lease|pairing_code|session_id|document_epoch|stable_tab_id|GetURL|GetLastActive|ExecuteRoute' \
+    'native tab badge gained service, authority, fallback-target, or content access' \
+    "${badge_header}" "${badge_source}" "${tab_header}" "${tab_source}"
+  reject_pattern 'gfx::Animation|Throb|[Pp]uls(e|ing)' \
+    'native supervision badge gained motion despite its steady-state contract' \
+    "${badge_header}" "${badge_source}"
+  note 'native supervision badge contract and privacy guards passed'
+}
+
+sha256_file() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
+capture_build_metadata() {
+  require_file "${OUT_DIR}/.ninja_log"
+  require_file "${OUT_DIR}/.ninja_deps"
+  require_file "${OUT_DIR}/libblink_modules.dylib"
+  require_file "${OUT_DIR}/libblink_modules.dylib.TOC"
+  NINJA_LOG_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/.ninja_log")"
+  NINJA_DEPS_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/.ninja_deps")"
+  BLINK_MODULES_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/libblink_modules.dylib")"
+  BLINK_MODULES_TOC_SHA256_BEFORE="$(sha256_file "${OUT_DIR}/libblink_modules.dylib.TOC")"
+  [[ "${NINJA_LOG_SHA256_BEFORE}" == "${EXPECTED_NINJA_LOG_SHA256}" ]] \
+    || fail 'the restored .ninja_log does not match the reviewed Phase 21 metadata'
+  [[ "${NINJA_DEPS_SHA256_BEFORE}" == "${EXPECTED_NINJA_DEPS_SHA256}" ]] \
+    || fail 'the restored .ninja_deps does not match the reviewed Phase 21 metadata'
+  [[ "${BLINK_MODULES_SHA256_BEFORE}" == "${EXPECTED_BLINK_MODULES_SHA256}" ]] \
+    || fail 'the reviewed Blink modules library does not match its frozen hash'
+  [[ "${BLINK_MODULES_TOC_SHA256_BEFORE}" == "${EXPECTED_BLINK_MODULES_TOC_SHA256}" ]] \
+    || fail 'the reviewed Blink modules TOC does not match its frozen hash'
+  if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+    require_file "${FRAMEWORK_RESOURCES_PAK}"
+    FRAMEWORK_RESOURCES_SHA256_BEFORE="$(
+      sha256_file "${FRAMEWORK_RESOURCES_PAK}"
+    )"
+    [[ "${FRAMEWORK_RESOURCES_SHA256_BEFORE}" == \
+       "${EXPECTED_FRAMEWORK_RESOURCES_SHA256}" ]] \
+      || fail 'the reviewed framework resources do not match their frozen hash'
+  fi
+  METADATA_CAPTURED=true
+}
+
+verify_build_metadata_on_exit() {
+  local status="$?"
+  trap - EXIT
+  if [[ "${FRAMEWORK_RESOURCES_SWAPPED}" == true ]]; then
+    if ! cp -p "${FRAMEWORK_RESOURCES_PAK_BACKUP}" \
+        "${FRAMEWORK_RESOURCES_PAK}"; then
+      printf 'Phase 21 focused verification failed: could not restore framework resources.pak\n' >&2
+      status=1
+    fi
+    FRAMEWORK_RESOURCES_SWAPPED=false
+  fi
+  if [[ "${METADATA_CAPTURED}" == true ]]; then
+    local ninja_log_after ninja_deps_after blink_modules_after
+    local blink_modules_toc_after framework_resources_after
+    ninja_log_after="$(sha256_file "${OUT_DIR}/.ninja_log" 2>/dev/null || true)"
+    ninja_deps_after="$(sha256_file "${OUT_DIR}/.ninja_deps" 2>/dev/null || true)"
+    blink_modules_after="$(sha256_file "${OUT_DIR}/libblink_modules.dylib" 2>/dev/null || true)"
+    blink_modules_toc_after="$(sha256_file "${OUT_DIR}/libblink_modules.dylib.TOC" 2>/dev/null || true)"
+    printf '[phase21] .ninja_log SHA-256 before=%s after=%s\n' \
+      "${NINJA_LOG_SHA256_BEFORE}" "${ninja_log_after}"
+    printf '[phase21] .ninja_deps SHA-256 before=%s after=%s\n' \
+      "${NINJA_DEPS_SHA256_BEFORE}" "${ninja_deps_after}"
+    printf '[phase21] reviewed libblink_modules.dylib SHA-256 before=%s after=%s\n' \
+      "${BLINK_MODULES_SHA256_BEFORE}" "${blink_modules_after}"
+    printf '[phase21] reviewed libblink_modules.dylib.TOC SHA-256 before=%s after=%s\n' \
+      "${BLINK_MODULES_TOC_SHA256_BEFORE}" "${blink_modules_toc_after}"
+    if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+      framework_resources_after="$(
+        sha256_file "${FRAMEWORK_RESOURCES_PAK}" 2>/dev/null || true
+      )"
+      printf '[phase21] framework resources.pak SHA-256 before=%s after=%s\n' \
+        "${FRAMEWORK_RESOURCES_SHA256_BEFORE}" "${framework_resources_after}"
+    fi
+    if [[ "${ninja_log_after}" != "${NINJA_LOG_SHA256_BEFORE}" ||
+          "${ninja_deps_after}" != "${NINJA_DEPS_SHA256_BEFORE}" ||
+          "${blink_modules_after}" != "${BLINK_MODULES_SHA256_BEFORE}" ||
+          "${blink_modules_toc_after}" != "${BLINK_MODULES_TOC_SHA256_BEFORE}" ]]; then
+      printf 'Phase 21 focused verification failed: direct verification changed reviewed build artifacts\n' >&2
+      status=1
+    fi
+    if [[ "${FOCUS_KIND}" == 'browser-integration' &&
+          "${framework_resources_after}" != "${FRAMEWORK_RESOURCES_SHA256_BEFORE}" ]]; then
+      printf 'Phase 21 focused verification failed: direct verification changed reviewed build artifacts\n' >&2
+      status=1
+    fi
+  fi
+  exit "${status}"
+}
+
+query_compile_command() {
+  local object="$1"
+  LC_ALL=C "${SISO}" query commands -C "${OUT_DIR}" "${object}" 2>/dev/null \
+    | LC_ALL=C awk -v output=" -o ${object}" \
+        'index($0, output) { command = $0 } END { print command }'
+}
+
+compile_exact_object() {
+  local object="$1"
+  local command
+  command="$(query_compile_command "${object}")"
+  [[ -n "${command}" ]] || fail "compile command not found for ${object}"
+  mkdir -p "${OUT_DIR}/$(dirname "${object}")"
+  printf 'compile %s\n' "${object}" >>"${BUILD_LOG}"
+  (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${command}"
+  ) >>"${BUILD_LOG}" 2>&1 || {
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail "direct compile failed for ${object}"
+  }
+}
+
+compile_synthesized_object() {
+  local template_object="$1"
+  local object="$2"
+  local template_stem="$3"
+  local target_stem="$4"
+  local command
+  command="$(query_compile_command "${template_object}")"
+  [[ -n "${command}" ]] || fail "compile template not found for ${template_object}"
+  command="${command//${template_stem}/${target_stem}}"
+  [[ "${command}" == *" -o ${object}"* ]] \
+    || fail "synthesized command does not produce ${object}"
+  mkdir -p "${OUT_DIR}/$(dirname "${object}")"
+  printf 'compile %s from exact same-target template %s\n' \
+    "${object}" "${template_object}" >>"${BUILD_LOG}"
+  (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${command}"
+  ) >>"${BUILD_LOG}" 2>&1 || {
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail "direct synthesized compile failed for ${object}"
+  }
+}
+
+query_browser_link_command() {
+  LC_ALL=C "${SISO}" query commands -C "${OUT_DIR}" browser_tests 2>/dev/null \
+    | LC_ALL=C awk \
+        'index($0, "linker_driver.py") && index($0, "@./browser_tests.rsp") {
+           command = $0
+         }
+         END { print command }'
+}
+
+query_blink_link_command() {
+  LC_ALL=C "${SISO}" query commands -C "${OUT_DIR}" \
+      prometheus_action_dispatcher_unittests 2>/dev/null \
+    | LC_ALL=C awk \
+        'index($0, "linker_driver.py") &&
+         index($0, "@./prometheus_action_dispatcher_unittests.rsp") {
+           command = $0
+         }
+         END { print command }'
+}
+
+query_blink_modules_link_command() {
+  LC_ALL=C "${SISO}" query commands -C "${OUT_DIR}" \
+      libblink_modules.dylib 2>/dev/null \
+    | LC_ALL=C awk \
+        'index($0, "linker_driver.py") &&
+         index($0, " -o \"./libblink_modules.dylib\"") &&
+         index($0, "@./libblink_modules.dylib.rsp") {
+           command = $0
+         }
+         END { print command }'
+}
+
+query_framework_resource_repack_command() {
+  LC_ALL=C "${SISO}" query commands -C "${OUT_DIR}" \
+      gen/repack/resources.pak 2>/dev/null \
+    | LC_ALL=C awk \
+        'index($0, "pak_util.py repack gen/repack/resources.pak ") {
+           command = $0
+         }
+         END { print command }'
+}
+
+build_and_install_focused_resources() {
+  local prometheus_output="${FOCUSED_RESOURCE_DIR}/prometheus"
+  mkdir -p "${prometheus_output}"
+  (
+    cd "${OUT_DIR}"
+    python3 ../../tools/grit/grit.py \
+      -i ../../chrome/browser/resources/prometheus/prometheus_resources.grd \
+      build -o "${LOG_DIR_RELATIVE}/resources/prometheus" \
+      --depdir . \
+      --depfile "${LOG_DIR_RELATIVE}/resources/prometheus/prometheus_resources_grit.d" \
+      --write-only-new=1 \
+      -D DEVTOOLS_GRD_PATH=gen/third_party/devtools-frontend/src/front_end/devtools_resources \
+      -D SHARED_INTERMEDIATE_DIR=gen \
+      -D _google_chrome=false \
+      -D _is_chrome_for_testing_branded=false \
+      -D reven=false \
+      -D toolkit_views=true \
+      -D use_aura=false \
+      -D use_ozone=false \
+      -D use_titlecase=true \
+      -D is_desktop_android=false \
+      -D scale_factors=2x \
+      -E branding_path_component=chromium \
+      -E root_gen_dir=gen \
+      -E root_src_dir=../../ \
+      -E CHROMIUM_BUILD=chromium \
+      -t darwin \
+      -f gen/tools/gritsettings/default_resource_ids \
+      -p ../../tools/gritsettings/startup_resources_mac.txt
+  ) >>"${BUILD_LOG}" 2>&1 || {
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused Prometheus GRIT build failed'
+  }
+  require_file "${FOCUSED_PROMETHEUS_PAK}"
+  cmp -s \
+      "${OUT_DIR}/gen/chrome/grit/prometheus_resources.h" \
+      "${prometheus_output}/grit/prometheus_resources.h" \
+    || fail 'focused Prometheus GRIT build changed reviewed resource IDs'
+
+  local repack_command
+  repack_command="$(query_framework_resource_repack_command)"
+  [[ -n "${repack_command}" ]] \
+    || fail 'framework resource repack command not found'
+  local original_output='repack gen/repack/resources.pak'
+  local focused_output="repack ${LOG_DIR_RELATIVE}/resources/framework-resources.pak"
+  local original_prometheus=' gen/chrome/prometheus_resources.pak '
+  local focused_prometheus=" ${LOG_DIR_RELATIVE}/resources/prometheus/prometheus_resources.pak "
+  [[ "${repack_command}" == *"${original_output}"* &&
+     "${repack_command}" == *"${original_prometheus}"* ]] \
+    || fail 'framework resource repack command lacks expected Prometheus input'
+  repack_command="${repack_command/${original_output}/${focused_output}}"
+  repack_command="${repack_command/${original_prometheus}/${focused_prometheus}}"
+  (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${repack_command}"
+  ) >>"${BUILD_LOG}" 2>&1 || {
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused framework resource repack failed'
+  }
+  require_file "${FOCUSED_FRAMEWORK_RESOURCES_PAK}"
+
+  mkdir -p "${FOCUSED_RESOURCE_DIR}"
+  cp -p "${FRAMEWORK_RESOURCES_PAK}" "${FRAMEWORK_RESOURCES_PAK_BACKUP}"
+  FRAMEWORK_RESOURCES_SWAPPED=true
+  cp -p "${FOCUSED_FRAMEWORK_RESOURCES_PAK}" "${FRAMEWORK_RESOURCES_PAK}"
+  note 'focused framework resource pack contains current Prometheus HTML, JS, and CSS'
+}
+
+write_link_response() {
+  local target_ninja="$1"
+  local edge_output="$2"
+  local response_file="$3"
+  shift 3
+
+  {
+    perl -0777 -pe 's/\$\r?\n//g' "${OUT_DIR}/${target_ninja}" \
+      | awk -v output="${edge_output}" '
+          $1 == "build" {
+            first = $2
+            sub(/:$/, "", first)
+            if (first != output) next
+            start = 0
+            for (i = 1; i <= NF; ++i) {
+              if ($i == "link" || $i == "solink" ||
+                  $i == "solink_module") {
+                start = i + 1
+                break
+              }
+            }
+            if (!start) exit 2
+            for (i = start; i <= NF; ++i) {
+              if ($i == "|" || $i == "||") break
+              printf "%s ", $i
+            }
+            found = 1
+            exit
+          }
+          END { if (!found) exit 2 }
+        '
+    local extra
+    for extra in "$@"; do
+      printf '%s ' "${extra}"
+    done
+    perl -0777 -pe 's/\$\r?\n//g' "${OUT_DIR}/${target_ninja}" \
+      | awk -v output="${edge_output}" '
+          function value(prefix) {
+            return substr($0, length(prefix) + 1)
+          }
+          $1 == "build" {
+            if (active) exit
+            first = $2
+            sub(/:$/, "", first)
+            if (first == output) {
+              active = 1
+              found = 1
+            }
+            next
+          }
+          active && /^  frameworks = / { frameworks = value("  frameworks = ") }
+          active && /^  swiftmodules = / { swiftmodules = value("  swiftmodules = ") }
+          active && /^  solibs = / { solibs = value("  solibs = ") }
+          active && /^  libs = / { libs = value("  libs = ") }
+          END {
+            if (!found) exit 2
+            printf "%s %s %s %s\n", frameworks, swiftmodules, solibs, libs
+          }
+        '
+  } >"${OUT_DIR}/${response_file}"
+  require_file "${OUT_DIR}/${response_file}"
+}
+
+generate_blink_mojo_bindings() {
+  local mojom='../../third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom'
+  local parser_rsp="${LOG_DIR_RELATIVE}/prometheus-supervision-parser.rsp"
+  local blink_rsp="${LOG_DIR_RELATIVE}/prometheus-supervision-blink.rsp"
+  local shared_rsp="${LOG_DIR_RELATIVE}/prometheus-supervision-shared.rsp"
+  local message_ids_rsp="${LOG_DIR_RELATIVE}/prometheus-supervision-message-ids.rsp"
+  local browser_rsp="${LOG_DIR_RELATIVE}/prometheus-supervision-browser.rsp"
+  printf '%s\n' "${mojom}" >"${OUT_DIR}/${parser_rsp}"
+  printf '%s\n' "${mojom}" >"${OUT_DIR}/${blink_rsp}"
+  printf '%s\n' "${mojom}" >"${OUT_DIR}/${shared_rsp}"
+  printf '%s\n' "${mojom}" >"${OUT_DIR}/${message_ids_rsp}"
+  printf '%s\n' "${mojom}" >"${OUT_DIR}/${browser_rsp}"
+
+  if ! (
+    cd "${OUT_DIR}"
+    python3 ../../mojo/public/tools/mojom/mojom_parser.py \
+      --input-root ../.. --input-root gen --output-root gen \
+      --mojom-file-list="${parser_rsp}" \
+      --enable-feature is_posix --enable-feature is_mac --enable-feature is_apple
+    python3 ../../mojo/public/tools/bindings/mojom_bindings_generator.py \
+      --use_bundled_pylibs -o gen generate -d ../../ -I ../../ \
+      --bytecode_path gen/mojo/public/tools/bindings \
+      --filelist="${message_ids_rsp}" --generate_non_variant_code \
+      --generate_message_ids -g c++
+    python3 ../../mojo/public/tools/bindings/mojom_bindings_generator.py \
+      --use_bundled_pylibs -o gen generate -d ../../ -I ../../ \
+      --bytecode_path gen/mojo/public/tools/bindings \
+      --export_attribute BLINK_COMMON_EXPORT \
+      --export_header third_party/blink/public/common/common_export.h \
+      --filelist="${browser_rsp}" -g c++
+    python3 ../../mojo/public/tools/bindings/mojom_bindings_generator.py \
+      --use_bundled_pylibs -o gen generate -d ../../ -I ../../ \
+      --bytecode_path gen/mojo/public/tools/bindings \
+      --export_attribute PLATFORM_EXPORT \
+      --export_header third_party/blink/renderer/platform/platform_export.h \
+      --filelist="${blink_rsp}" -g c++ --variant blink \
+      --typemap gen/third_party/blink/public/mojom/mojom_platform_blink__type_mappings \
+      --for_blink
+    python3 ../../mojo/public/tools/bindings/mojom_bindings_generator.py \
+      --use_bundled_pylibs -o gen generate -d ../../ -I ../../ \
+      --bytecode_path gen/mojo/public/tools/bindings \
+      --filelist="${shared_rsp}" --generate_non_variant_code -g c++ \
+      --export_attribute 'COMPONENT_EXPORT(MOJOM_SHARED_BLINK_COMMON_EXPORT)' \
+      --export_header base/component_export.h
+  ) >>"${BUILD_LOG}" 2>&1; then
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused Blink Mojo generation failed'
+  fi
+
+  require_file "${OUT_DIR}/gen/third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom-blink.cc"
+  require_file "${OUT_DIR}/gen/third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom.cc"
+  require_file "${OUT_DIR}/gen/third_party/blink/public/mojom/content_extraction/prometheus_supervision_document.mojom-shared.cc"
+}
+
+build_blink_focused_binary() {
+  local production_template='obj/third_party/blink/renderer/modules/content_extraction/content_extraction/frame_metadata_observer_registry.o'
+  local production_object='obj/third_party/blink/renderer/modules/content_extraction/content_extraction/prometheus_supervision_document_supplement.o'
+  local test_template='obj/third_party/blink/renderer/modules/unit_tests/frame_metadata_observer_registry_unittest.o'
+  local test_object='obj/third_party/blink/renderer/modules/unit_tests/prometheus_supervision_document_supplement_unittest.o'
+  local blink_template='obj/third_party/blink/public/mojom/mojom_platform_blink/frame_metadata_observer_registry.mojom-blink.o'
+  local blink_object='obj/third_party/blink/public/mojom/mojom_platform_blink/prometheus_supervision_document.mojom-blink.o'
+  local shared_template='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/frame_metadata_observer_registry.mojom-shared.o'
+  local shared_object='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/prometheus_supervision_document.mojom-shared.o'
+  local frame_test_helpers_object='obj/third_party/blink/renderer/core/unit_test_support/frame_test_helpers.o'
+  local fake_web_plugin_object='obj/third_party/blink/renderer/core/unit_test_support/fake_web_plugin.o'
+  local blink_test_main_object='obj/third_party/blink/renderer/controller/blink_unittests_sources/run_all_tests.o'
+  local modules_initializer_object='obj/third_party/blink/renderer/modules/modules/modules_initializer.o'
+  local target_ninja='obj/chrome/renderer/prometheus_action_dispatcher_unittests.ninja'
+  local response_file='phase21_blink_tests.rsp'
+  local extra_objects=(
+    "${production_object}"
+    "${test_object}"
+    "${blink_object}"
+    "${shared_object}"
+    "${frame_test_helpers_object}"
+    "${fake_web_plugin_object}"
+    "${blink_test_main_object}"
+  )
+
+  : >"${BUILD_LOG}"
+  generate_blink_mojo_bindings
+  compile_synthesized_object "${production_template}" "${production_object}" \
+    frame_metadata_observer_registry prometheus_supervision_document_supplement
+  compile_synthesized_object "${test_template}" "${test_object}" \
+    frame_metadata_observer_registry_unittest prometheus_supervision_document_supplement_unittest
+  compile_synthesized_object "${blink_template}" "${blink_object}" \
+    frame_metadata_observer_registry prometheus_supervision_document
+  compile_synthesized_object "${shared_template}" "${shared_object}" \
+    frame_metadata_observer_registry prometheus_supervision_document
+  compile_exact_object "${frame_test_helpers_object}"
+  compile_exact_object "${fake_web_plugin_object}"
+  compile_exact_object "${blink_test_main_object}"
+  compile_exact_object "${modules_initializer_object}"
+
+  local object
+  for object in "${extra_objects[@]}"; do
+    require_file "${OUT_DIR}/${object}"
+  done
+  write_link_response "${target_ninja}" \
+    ./prometheus_action_dispatcher_unittests "${response_file}" \
+    "${extra_objects[@]}"
+  perl -0pi -e \
+    's#obj/content/test/librun_all_unittests\.a[[:space:]]*##g' \
+    "${OUT_DIR}/${response_file}"
+
+  local link_command
+  link_command="$(query_blink_link_command)"
+  [[ -n "${link_command}" ]] \
+    || fail 'Blink-capable direct link command not found'
+  local original_output='-o "./prometheus_action_dispatcher_unittests"'
+  local focused_output='-o "./phase21_blink_tests"'
+  local original_response='@./prometheus_action_dispatcher_unittests.rsp'
+  local focused_response="@./${response_file}"
+  link_command="${link_command/${original_output}/${focused_output}}"
+  link_command="${link_command/${original_response}/${focused_response}}"
+  [[ "${link_command}" == *'-o "./phase21_blink_tests"'* ]] \
+    || fail 'Blink-capable output argument was not replaced'
+  [[ "${link_command}" == *"@./${response_file}"* ]] \
+    || fail 'Blink-capable response file was not replaced'
+
+  rm -f "${FOCUSED_BINARY}"
+  if ! (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${link_command}"
+    codesign --force --sign - ./phase21_blink_tests
+    codesign --verify --strict ./phase21_blink_tests
+  ) >>"${BUILD_LOG}" 2>&1; then
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused Blink unit-test link failed'
+  fi
+  require_file "${FOCUSED_BINARY}"
+}
+
+build_browser_focused_blink_modules() {
+  local production_template='obj/third_party/blink/renderer/modules/content_extraction/content_extraction/frame_metadata_observer_registry.o'
+  local production_object='obj/third_party/blink/renderer/modules/content_extraction/content_extraction/prometheus_supervision_document_supplement.o'
+  local blink_template='obj/third_party/blink/public/mojom/mojom_platform_blink/frame_metadata_observer_registry.mojom-blink.o'
+  local blink_object='obj/third_party/blink/public/mojom/mojom_platform_blink/prometheus_supervision_document.mojom-blink.o'
+  local shared_template='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/frame_metadata_observer_registry.mojom-shared.o'
+  local shared_object='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/prometheus_supervision_document.mojom-shared.o'
+  local modules_initializer_object='obj/third_party/blink/renderer/modules/modules/modules_initializer.o'
+  local target_ninja='obj/third_party/blink/renderer/modules/modules.ninja'
+  local response_file="${LOG_DIR_RELATIVE}/libblink_modules.dylib.rsp"
+  local focused_output="./${LOG_DIR_RELATIVE}/blink-modules/libblink_modules.dylib"
+  local focused_toc="./${LOG_DIR_RELATIVE}/blink-modules/libblink_modules.dylib.TOC"
+  local original_output='-o "./libblink_modules.dylib"'
+  local focused_output_argument="-o \"${focused_output}\""
+  local original_toc='-Wcrl,tocname,"./libblink_modules.dylib.TOC"'
+  local focused_toc_argument="-Wcrl,tocname,\"${focused_toc}\""
+  local original_response='@./libblink_modules.dylib.rsp'
+  local focused_response="@./${response_file}"
+
+  generate_blink_mojo_bindings
+  compile_synthesized_object "${production_template}" "${production_object}" \
+    frame_metadata_observer_registry prometheus_supervision_document_supplement
+  compile_synthesized_object "${blink_template}" "${blink_object}" \
+    frame_metadata_observer_registry prometheus_supervision_document
+  compile_synthesized_object "${shared_template}" "${shared_object}" \
+    frame_metadata_observer_registry prometheus_supervision_document
+  compile_exact_object "${modules_initializer_object}"
+
+  write_link_response "${target_ninja}" ./libblink_modules.dylib \
+    "${response_file}" "${production_object}" "${blink_object}" "${shared_object}"
+
+  local link_command
+  link_command="$(query_blink_modules_link_command)"
+  [[ -n "${link_command}" ]] \
+    || fail 'libblink_modules direct link command not found'
+  link_command="${link_command/${original_toc}/${focused_toc_argument}}"
+  link_command="${link_command/${original_output}/${focused_output_argument}}"
+  link_command="${link_command/${original_response}/${focused_response}}"
+  [[ "${link_command}" == *"${focused_toc_argument}"* ]] \
+    || fail 'focused Blink modules TOC argument was not replaced'
+  [[ "${link_command}" == *"${focused_output_argument}"* ]] \
+    || fail 'focused Blink modules output argument was not replaced'
+  [[ "${link_command}" == *"@./${response_file}"* ]] \
+    || fail 'focused Blink modules response file was not replaced'
+
+  mkdir -p "${FOCUSED_BLINK_MODULES_DIR}"
+  rm -f "${FOCUSED_BLINK_MODULES}" "${FOCUSED_BLINK_MODULES}.TOC"
+  if ! (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${link_command}"
+    codesign --force --sign - "${focused_output}"
+    codesign --verify --strict "${focused_output}"
+  ) >>"${BUILD_LOG}" 2>&1; then
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused Blink modules link failed'
+  fi
+  require_file "${FOCUSED_BLINK_MODULES}"
+  local symbol_manifest="${FOCUSED_BLINK_MODULES_DIR}/symbols.txt"
+  nm -gU "${FOCUSED_BLINK_MODULES}" >"${symbol_manifest}"
+  rg -q 'PrometheusSupervisionDocumentSupplement.*BindReceiver' \
+    "${symbol_manifest}" \
+    || fail 'focused Blink modules library omitted the supervision document binder'
+  note 'temporary Blink modules library contains the supervision document endpoint'
+}
+
+verify_side_panel_supervision_runtime_contract() {
+  local pairing_code_boolean_predicate=$'!!supervision.querySelector(\n              \'[data-prometheus-sensitive="pairing-code"]\')'
+  local runtime_header="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+  local runtime_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc"
+  local webui_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc"
+  local browser_test="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc"
+  local supervision_service="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local browser_extra_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
+  require_file "${runtime_header}"
+  require_file "${runtime_source}"
+  require_file "${webui_source}"
+  require_file "${browser_test}"
+  require_file "${browser_extra_parts}"
+  require_file "${supervision_service}"
+  require_file "${supervision_service}"
+  require_file "${browser_extra_parts}"
+  require_literal 'kMaxSidePanelSafeTargetTitleCharacters = 80' "${runtime_header}"
+  require_literal 'PrometheusSidePanelSupervisionActivity' "${runtime_header}"
+  require_literal 'SanitizeSidePanelSupervisionTargetTitle' "${runtime_source}"
+  require_literal '"prometheusStopSupervisionControl"' "${webui_source}"
+  require_literal '"prometheusEndSelectedTabSupervision"' "${webui_source}"
+  require_literal '"prometheusOpenSupervisionManagement"' "${webui_source}"
+  require_literal 'SidePanelSupervisionRuntimeStateIsSanitizedAndBounded' "${browser_test}"
+  require_literal 'SidePanelSupervisionRuntimeActionsRequireZeroArguments' "${browser_test}"
+  require_literal \
+    'content::TitleWatcher title_watcher(target_contents, u"Quarterly report")' \
+    "${browser_test}"
+  require_literal 'title_watcher.WaitAndGetTitle()' "${browser_test}"
+  require_literal "!Object.hasOwn(state, 'client_label')" "${browser_test}"
+  require_literal \
+    "!!supervision.querySelector('#control-supervision-target')" \
+    "${browser_test}"
+  require_literal \
+    "!!supervision.querySelector('#control-supervision-create')" \
+    "${browser_test}"
+  if ! rg -Uq --fixed-strings -- \
+      "${pairing_code_boolean_predicate}" "${browser_test}"; then
+    fail 'pairing-code presence predicate is not explicitly Boolean'
+  fi
+  require_literal 'EndSelectedTabSupervision' "${supervision_service}"
+  require_literal 'EndSelectedTabSupervision() override' "${browser_extra_parts}"
+  require_literal 'SidePanelSupervisionRuntimeEndIsZeroArgumentBulkExactAndTeardownSafe' "${browser_test}"
+}
+
+verify_side_panel_supervision_strip_contract() {
+  local side_panel_html="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_side_panel.html"
+  local webui_source="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_webui.js"
+  local stylesheet="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_webui.css"
+  local resource_partial="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_resources.grdp"
+  local resource_build="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/BUILD.gn"
+  local browser_test="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc"
+
+  require_file "${side_panel_html}"
+  require_file "${webui_source}"
+  require_file "${stylesheet}"
+  require_file "${resource_partial}"
+  require_file "${resource_build}"
+  require_file "${browser_test}"
+  require_literal 'id="supervision-strip-template"' "${side_panel_html}"
+  require_literal 'id="supervision-end-dialog"' "${side_panel_html}"
+  require_literal 'aria-live="polite" aria-atomic="true"' "${side_panel_html}"
+  require_literal 'normalizeSupervisionSnapshot' "${webui_source}"
+  require_literal "sanitizeSupervisionText(value.safe_target_title, 'this tab')" \
+    "${webui_source}"
+  require_literal "Controlled by \${supervision.client_label}" \
+    "${webui_source}"
+  require_literal "'View only'" "${webui_source}"
+  require_literal "sendSupervisionMessage('prometheusStopSupervisionControl')" \
+    "${webui_source}"
+  require_literal "sendSupervisionMessage('prometheusEndSelectedTabSupervision')" \
+    "${webui_source}"
+  require_literal "sendSupervisionMessage('prometheusOpenSupervisionManagement')" \
+    "${webui_source}"
+  require_literal '.supervision-strip__action-slot button' "${stylesheet}"
+  require_literal 'overflow-wrap: anywhere' "${stylesheet}"
+  require_literal 'IDR_PROMETHEUS_SIDE_PANEL_HTML' "${resource_partial}"
+  require_literal 'grit("prometheus_resources")' "${resource_build}"
+  require_literal 'SidePanelSupervisionStripStateRendersEveryModeAndClosedCopy' \
+    "${browser_test}"
+  require_literal 'SidePanelSupervisionStripActionsAreZeroArgumentSafeAndFocusStable' \
+    "${browser_test}"
+  require_literal 'SidePanelSupervisionStripResponsiveKeyboardPrivacyAndReachability' \
+    "${browser_test}"
+  reject_pattern \
+    'src="https?://|href="https?://|<iframe|<frame|<object|<embed' \
+    'side-panel supervision scaffold gained a remote resource or frame' \
+    "${side_panel_html}"
+  reject_pattern \
+    'innerHTML|insertAdjacentHTML|document\.write' \
+    'side-panel supervision rendering gained an unsafe HTML sink' \
+    "${webui_source}"
+  reject_pattern \
+    'chrome\.send\(.prometheus(StopSupervisionControl|EndSelectedTabSupervision|OpenSupervisionManagement).*,[[:space:]]*\[' \
+    'side-panel supervision authority action gained renderer arguments' \
+    "${webui_source}"
+  note 'side-panel supervision strip scaffold, resource, and privacy guards passed'
+}
+
+verify_control_panel_supervision_runtime_contract() {
+  local runtime_header="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+  local runtime_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc"
+  local webui_source="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc"
+  local renderer_source="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_webui.js"
+  local control_html="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_control_panel.html"
+  local stylesheet="${CHROMIUM_DIR}/chrome/browser/resources/prometheus/prometheus_webui.css"
+  local asset_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_asset_resource_unittest.cc"
+  local browser_test="${CHROMIUM_DIR}/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc"
+  local browser_extra_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
+  local supervision_service="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local supervision_service_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc"
+  local capture_hub="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc"
+  require_file "${runtime_header}"
+  require_file "${runtime_source}"
+  require_file "${webui_source}"
+  require_file "${renderer_source}"
+  require_file "${control_html}"
+  require_file "${stylesheet}"
+  require_file "${asset_test}"
+  require_file "${browser_test}"
+  require_file "${browser_extra_parts}"
+  require_file "${supervision_service}"
+  require_file "${supervision_service_test}"
+  require_file "${capture_hub}"
+  require_literal 'PrometheusControlSupervisionSnapshot' "${runtime_header}"
+  require_literal 'PrometheusControlSupervisionCreateResult' "${runtime_header}"
+  require_literal 'snapshot_generation' "${runtime_header}"
+  require_literal 'formatted_code' "${runtime_header}"
+  require_literal '"prometheusControlSelectSupervisionTarget"' "${webui_source}"
+  require_literal '"prometheusControlCreatePairing"' "${webui_source}"
+  require_literal '"prometheusControlReplacePairing"' "${webui_source}"
+  require_literal '"prometheusControlCancelPairingPresentation"' "${webui_source}"
+  require_literal 'prometheusControlReceivePairingCreateResult' "${webui_source}"
+  require_literal 'SupervisionRuntimeSnapshotContractIsClosedAndCodeFree' \
+    "${browser_test}"
+  require_literal 'SupervisionRuntimeCreateContractIsOneShotAndStrict' \
+    "${browser_test}"
+  require_literal 'SupervisionRuntimeLifecycleActionsAreExactBoundedAndCodeFree' \
+    "${browser_test}"
+  require_literal 'SupervisionRuntimeLifecycleObserversInvalidateBeforeFreshSnapshots' \
+    "${browser_test}"
+  require_literal 'SupervisionRuntimeLifecyclePresentationErasesAtEveryBoundary' \
+    "${browser_test}"
+  require_literal 'ControlSupervisionLifecycleMatrixAndExactCopy' \
+    "${browser_test}"
+  require_literal 'ControlSupervisionActionsFocusAndStatePreservation' \
+    "${browser_test}"
+  require_literal 'SupervisionRuntimeDestructiveActionsRejectStaleSnapshotGeneration' \
+    "${browser_test}"
+  require_literal 'ControlSupervisionErrorsPrivatePrivacyAndResourceBoundaries' \
+    "${browser_test}"
+  require_literal 'ControlSupervisionResponsiveAtContractWidthsAndZoom' \
+    "${browser_test}"
+  require_literal 'data-prometheus-sensitive="pairing-code"' \
+    "${control_html}"
+  require_literal 'controlPairingCode' "${renderer_source}"
+  require_literal 'normalizeControlSupervisionSnapshot' "${renderer_source}"
+  require_literal 'cancelStaleControlSupervisionDialog' "${renderer_source}"
+  require_literal 'prometheusControlReceivePairingCreateResult' \
+    "${renderer_source}"
+  require_literal 'prometheusControlClearPairingPresentation' \
+    "${renderer_source}"
+  require_literal '@media (prefers-color-scheme: light)' "${stylesheet}"
+  require_literal '@media (min-width: 1024px)' "${stylesheet}"
+  require_literal '@media (max-width: 719px)' "${stylesheet}"
+  require_literal '@media (max-width: 479px)' "${stylesheet}"
+  require_literal 'IDR_PROMETHEUS_WEBUI_CSS' "${asset_test}"
+  require_literal 'IDR_PROMETHEUS_WEBUI_JS' "${asset_test}"
+  require_literal 'IDR_PROMETHEUS_CONTROL_PANEL_HTML' "${asset_test}"
+  if ! [[ "${EXPECT_FAILURE}" == true ]]; then
+    require_literal 'BuildSupervisionSnapshot' "${browser_extra_parts}"
+    require_literal 'ResolveSupervisionTarget' "${browser_extra_parts}"
+    require_literal 'CreateOrReplaceSupervisionPairing' \
+      "${browser_extra_parts}"
+    require_literal 'IsEligibleTargetForLocalControl' "${supervision_service}"
+    require_literal 'ReplacePairing' "${supervision_service}"
+    require_literal 'GetDashboardRowsForLocalUi' "${supervision_service}"
+    require_literal 'IsDashboardRowFreshForLocalUi' "${supervision_service}"
+    require_literal 'RequestDashboardBaseline' "${supervision_service}"
+    require_literal 'EndSupervisionForLocalUi' "${supervision_service}"
+    require_literal 'RequestBaseline' "${capture_hub}"
+    require_literal 'ControllerRetryBaselineMarksOnlyRequestedDashboardConsumer' \
+      "${supervision_service_test}"
+    require_literal 'ControllerShutdownObserverRunsAfterAuthorityAndPairingErasure' \
+      "${supervision_service_test}"
+    require_literal 'retained_pairing_digest_count_for_testing' \
+      "${supervision_service_test}"
+    require_literal 'SupervisionRuntimeTargetRejectsStaleCrossWindowAndPrivilegedRows' \
+      "${browser_test}"
+    require_literal 'SupervisionRuntimeCreateReplacementIsExplicitAndOneShot' \
+      "${browser_test}"
+    require_literal '"prometheusControlEnableSupervisionControl"' \
+      "${webui_source}"
+    require_literal '"prometheusControlStopSupervisionControl"' \
+      "${webui_source}"
+    require_literal '"prometheusControlRevokeSupervisionSession"' \
+      "${webui_source}"
+    require_literal '"prometheusControlEndTargetSupervision"' \
+      "${webui_source}"
+    require_literal '"prometheusControlRetrySupervisionBaseline"' \
+      "${webui_source}"
+    require_literal 'prometheusControlClearPairingPresentation' \
+      "${webui_source}"
+  fi
+  reject_pattern \
+    'Set\("(pairing_code|session_id|lease_id|owner_id|profile_path|browser_id|tab_id|document_epoch|sequence|bearer|address|content|raw_value)"' \
+    'Control Panel supervision transport gained identity, content, or an alternate bearer field' \
+    "${runtime_source}"
+  reject_pattern \
+    'window\.[A-Za-z0-9_]*(Pairing|pairing)[A-Za-z0-9_]*(Code|code)[[:space:]]*=' \
+    'Control Panel renderer exposed pairing characters through a window property' \
+    "${renderer_source}"
+  reject_pattern \
+    'innerHTML|insertAdjacentHTML|document\.write' \
+    'Control Panel supervision rendering gained an unsafe HTML sink' \
+    "${renderer_source}"
+  reject_pattern \
+    'src="https?://|href="https?://|<iframe|<frame|<object|<embed' \
+    'Control Panel supervision scaffold gained a remote resource or frame' \
+    "${control_html}"
+  note 'Control Panel supervision snapshot, UI, resource, message, and one-shot guards passed'
+}
+
+build_focused_binary() {
+  local chrome_browser_main_object='obj/chrome/browser/core/chrome_browser_main.o'
+  local route_object='obj/chrome/browser/prometheus/prometheus_agent_route/prometheus_agent_route.o'
+  local route_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_route_unittest.o'
+  local agent_codec_object='obj/chrome/browser/prometheus/prometheus_agent_transport_codec/prometheus_agent_transport_codec.o'
+  local agent_codec_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_transport_codec_unittest.o'
+  local agent_codec_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_transport_codec_unittest.cc"
+  local agent_transport_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_transport_unittest.o'
+  local agent_session_object='obj/chrome/browser/prometheus/prometheus_agent_session/prometheus_agent_session.o'
+  local agent_session_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_session_unittest.o'
+  local agent_service_object='obj/chrome/browser/prometheus/prometheus_agent_service/prometheus_agent_service.o'
+  local agent_service_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_service_unittest.o'
+  local agent_tab_data_object='obj/chrome/browser/prometheus/prometheus_agent_tab_data/prometheus_agent_tab_data.o'
+  local agent_tab_data_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_tab_data_unittest.o'
+  local tab_state_object='obj/chrome/browser/prometheus/prometheus_tab_state/prometheus_tab_state.o'
+  local tab_state_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_tab_state_unittest.o'
+  local agent_profile_object='obj/chrome/browser/prometheus/prometheus_agent_profile_service/prometheus_agent_profile_service.o'
+  local agent_profile_factory_object='obj/chrome/browser/prometheus/prometheus_agent_profile_service/prometheus_agent_profile_service_factory.o'
+  local agent_profile_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_profile_service_unittest.o'
+  local agent_profile_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_profile_service_unittest.cc"
+  local runtime_object='obj/chrome/browser/prometheus/prometheus_runtime_types/prometheus_runtime_types.o'
+  local runtime_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_runtime_types_unittest.o'
+  local supervision_object='obj/chrome/browser/prometheus/prometheus_supervision_types/prometheus_supervision_types.o'
+  local supervision_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_types_unittest.o'
+  local supervision_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_types.cc"
+  local supervision_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_types_unittest.cc"
+  local runtime_codec_object='obj/chrome/browser/prometheus/prometheus_runtime_transport_codec/prometheus_runtime_transport_codec.o'
+  local runtime_codec_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_runtime_transport_codec_unittest.o'
+  local provider_transport_object='obj/chrome/browser/prometheus/prometheus_provider_transport/prometheus_provider_transport.o'
+  local provider_transport_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_provider_transport_unittest.o'
+  local supervision_codec_object='obj/chrome/browser/prometheus/prometheus_supervision_transport_codec/prometheus_supervision_transport_codec.o'
+  local supervision_codec_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_transport_codec_unittest.o'
+  local supervision_codec_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_transport_codec.cc"
+  local supervision_codec_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_transport_codec_unittest.cc"
+  local supervision_projection_object='obj/chrome/browser/prometheus/prometheus_supervision_projection/prometheus_supervision_projection.o'
+  local supervision_projection_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_projection_unittest.o'
+  local supervision_projection_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_projection.cc"
+  local supervision_projection_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_projection_unittest.cc"
+  local supervision_diff_object='obj/chrome/browser/prometheus/prometheus_supervision_diff/prometheus_supervision_diff.o'
+  local supervision_diff_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_diff_unittest.o'
+  local supervision_diff_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_diff.cc"
+  local supervision_diff_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_diff_unittest.cc"
+  local runtime_profile_object='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_profile_service.o'
+  local runtime_profile_factory_object='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_profile_service_factory.o'
+  local runtime_profile_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_runtime_profile_service_unittest.o'
+  local supervision_profile_object='obj/chrome/browser/prometheus/prometheus_supervision_profile_service/prometheus_supervision_profile_service.o'
+  local supervision_profile_factory_object='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_supervision_profile_service_factory.o'
+  local supervision_profile_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_profile_service_unittest.o'
+  local supervision_profile_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service.cc"
+  local supervision_profile_factory_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc"
+  local supervision_profile_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc"
+  local supervision_hub_object='obj/chrome/browser/prometheus/prometheus_supervision_capture_hub/prometheus_supervision_capture_hub.o'
+  local supervision_hub_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_capture_hub_unittest.o'
+  local supervision_hub_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_supervision_capture_hub_browsertest.o'
+  local supervision_hub_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc"
+  local supervision_hub_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_unittest.cc"
+  local supervision_hub_browser_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc"
+  local supervision_confirmation_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_supervision_confirmation_browsertest.o'
+  local supervision_confirmation_browser_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_confirmation_browsertest.cc"
+  local supervision_badge_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_tab_supervision_badge_browsertest.o'
+  local supervision_badge_browser_source="${CHROMIUM_DIR}/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc"
+  local page_action_dispatcher_object='obj/chrome/browser/prometheus/prometheus_page_adapter/prometheus_page_action_dispatcher.o'
+  local page_action_dispatcher_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_page_action_dispatcher_unittest.o'
+  local page_adapter_object='obj/chrome/browser/prometheus/prometheus_page_adapter/prometheus_page_adapter.o'
+  local page_adapter_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_page_adapter_unittest.o'
+  local page_js_executor_object='obj/chrome/browser/prometheus/prometheus_page_adapter/prometheus_page_js_executor.o'
+  local page_js_executor_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_page_js_executor_unittest.o'
+  local tab_view_object='obj/chrome/browser/ui/ui/tab.o'
+  local tab_badge_object='obj/chrome/browser/ui/ui/prometheus_tab_status_badge.o'
+  local supervision_action_object='obj/chrome/browser/prometheus/prometheus_supervision_action_controller/prometheus_supervision_action_controller.o'
+  local supervision_action_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_action_controller_unittest.o'
+  local supervision_action_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller.cc"
+  local supervision_action_test_source="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_action_controller_unittest.cc"
+  local gateway_contract_object='obj/chrome/browser/prometheus/prometheus_agent_gateway_contract/prometheus_agent_gateway_contract.o'
+  local gateway_object='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_agent_gateway.o'
+  local browser_composition_object='obj/chrome/browser/prometheus/prometheus_agent_gateway/prometheus_browser_main_extra_parts.o'
+  local runtime_test_bootstrap_object='obj/chrome/browser/prometheus/prometheus_runtime_test_bootstrap/prometheus_runtime_test_bootstrap.o'
+  local runtime_test_bootstrap_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_runtime_test_bootstrap_unittest.o'
+  local supervision_test_bootstrap_object='obj/chrome/browser/prometheus/prometheus_supervision_test_bootstrap/prometheus_supervision_test_bootstrap.o'
+  local supervision_test_bootstrap_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_supervision_test_bootstrap_unittest.o'
+  local side_panel_runtime_object='obj/chrome/browser/ui/webui/prometheus/side_panel_ui/prometheus_side_panel_runtime.o'
+  local side_panel_webui_object='obj/chrome/browser/ui/webui/prometheus/side_panel_ui/prometheus_web_ui.o'
+  local side_panel_browser_test_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_web_ui_browsertest.o'
+  local vault_confirmation_browser_test_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_vault_confirmation_browsertest.o'
+  local gateway_test_object='obj/chrome/browser/prometheus/prometheus_unittests/prometheus_agent_gateway_unittest.o'
+  local gateway_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_agent_gateway_browsertest.o'
+  local agent_profile_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_agent_profile_service_browsertest.o'
+  local agent_service_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_agent_service_browsertest.o'
+  local mcp_integration_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_mcp_integration_browsertest.o'
+  local browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_page_adapter_browsertest.o'
+  local tab_commands_browser_object='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_tab_commands_browsertest.o'
+  local views_browser_test_template='obj/chrome/browser/ui/views/prometheus/browser_tests/prometheus_compact_chrome_browsertest.o'
+  local runtime_dialogs='obj/chrome/browser/ui/views/prometheus/runtime_dialogs/prometheus_runtime_dialogs.o'
+  local mojom_template='obj/third_party/blink/public/mojom/mojom_platform/frame_metadata_observer_registry.mojom.o'
+  local mojom_object='obj/third_party/blink/public/mojom/mojom_platform/prometheus_supervision_document.mojom.o'
+  local mojom_shared_template='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/frame_metadata_observer_registry.mojom-shared.o'
+  local mojom_shared_object='obj/third_party/blink/public/mojom/mojom_platform_shared_cpp_sources/prometheus_supervision_document.mojom-shared.o'
+  local extra_objects=()
+
+  : >"${BUILD_LOG}"
+  (
+    cd "${OUT_DIR}"
+    compile_exact_object "${chrome_browser_main_object}"
+    compile_exact_object "${route_object}"
+    compile_exact_object "${route_test_object}"
+    compile_exact_object "${agent_codec_object}"
+    compile_exact_object "${agent_transport_test_object}"
+    compile_exact_object "${agent_session_object}"
+    compile_exact_object "${agent_session_test_object}"
+    compile_exact_object "${agent_tab_data_object}"
+    compile_exact_object "${agent_tab_data_test_object}"
+    compile_exact_object "${tab_state_object}"
+    compile_exact_object "${tab_state_test_object}"
+    compile_exact_object "${agent_service_object}"
+    compile_exact_object "${agent_service_test_object}"
+    compile_exact_object "${agent_profile_object}"
+    compile_exact_object "${agent_profile_factory_object}"
+    compile_exact_object "${runtime_profile_object}"
+    compile_exact_object "${runtime_profile_test_object}"
+    compile_exact_object "${provider_transport_object}"
+    compile_exact_object "${provider_transport_test_object}"
+    compile_exact_object "${page_action_dispatcher_object}"
+    compile_exact_object "${page_action_dispatcher_test_object}"
+    compile_exact_object "${page_adapter_object}"
+    compile_exact_object "${page_adapter_test_object}"
+    compile_exact_object "${page_js_executor_object}"
+    compile_exact_object "${page_js_executor_test_object}"
+    compile_exact_object "${gateway_contract_object}"
+    compile_exact_object "${gateway_object}"
+    compile_exact_object "${browser_composition_object}"
+    compile_exact_object "${side_panel_runtime_object}"
+    compile_exact_object "${side_panel_webui_object}"
+    compile_exact_object "${gateway_test_object}"
+    compile_exact_object "${runtime_dialogs}"
+    compile_exact_object "${tab_view_object}"
+    compile_exact_object "${tab_badge_object}"
+    if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+      compile_exact_object "${views_browser_test_template}"
+      compile_exact_object "${gateway_browser_object}"
+      compile_exact_object "${agent_profile_browser_object}"
+      compile_exact_object "${agent_service_browser_object}"
+      compile_exact_object "${mcp_integration_browser_object}"
+      compile_exact_object "${browser_test_template}"
+      compile_exact_object "${tab_commands_browser_object}"
+      compile_exact_object "${side_panel_browser_test_object}"
+      compile_exact_object "${vault_confirmation_browser_test_object}"
+    fi
+  )
+
+  compile_synthesized_object "${runtime_test_bootstrap_object}" \
+    "${supervision_test_bootstrap_object}" \
+    prometheus_runtime_test_bootstrap prometheus_supervision_test_bootstrap
+  compile_synthesized_object "${runtime_test_bootstrap_test_object}" \
+    "${supervision_test_bootstrap_test_object}" \
+    prometheus_runtime_test_bootstrap_unittest \
+    prometheus_supervision_test_bootstrap_unittest
+
+  [[ -s "${agent_codec_test_source}" ]] \
+    || fail 'Agent supervision transport codec test is missing or empty'
+  compile_synthesized_object "${agent_transport_test_object}" "${agent_codec_test_object}" \
+    prometheus_agent_transport_unittest prometheus_agent_transport_codec_unittest
+
+  if [[ -e "${agent_profile_test_source}" ]]; then
+    [[ -s "${agent_profile_test_source}" ]] \
+      || fail 'Agent profile service test is missing or empty'
+    compile_synthesized_object "${runtime_profile_test_object}" "${agent_profile_test_object}" \
+      prometheus_runtime_profile_service_unittest prometheus_agent_profile_service_unittest
+  fi
+
+  if [[ -e "${supervision_source}" || -e "${supervision_test_source}" ]]; then
+    [[ -s "${supervision_source}" ]] \
+      || fail 'supervision type implementation is missing or empty'
+    [[ -s "${supervision_test_source}" ]] \
+      || fail 'supervision type test is missing or empty'
+    compile_synthesized_object "${runtime_object}" "${supervision_object}" \
+      prometheus_runtime_types prometheus_supervision_types
+    compile_synthesized_object "${runtime_test_object}" "${supervision_test_object}" \
+      prometheus_runtime_types_unittest prometheus_supervision_types_unittest
+  fi
+
+  if [[ -e "${supervision_codec_source}" || -e "${supervision_codec_test_source}" ]]; then
+    [[ -s "${supervision_codec_source}" ]] \
+      || fail 'supervision transport codec implementation is missing or empty'
+    [[ -s "${supervision_codec_test_source}" ]] \
+      || fail 'supervision transport codec test is missing or empty'
+    compile_synthesized_object "${runtime_codec_object}" "${supervision_codec_object}" \
+      prometheus_runtime_transport_codec prometheus_supervision_transport_codec
+    compile_synthesized_object "${runtime_codec_test_object}" "${supervision_codec_test_object}" \
+      prometheus_runtime_transport_codec_unittest prometheus_supervision_transport_codec_unittest
+  fi
+
+  if [[ -e "${supervision_projection_source}" || -e "${supervision_projection_test_source}" ]]; then
+    [[ -s "${supervision_projection_source}" ]] \
+      || fail 'supervision projection implementation is missing or empty'
+    [[ -s "${supervision_projection_test_source}" ]] \
+      || fail 'supervision projection test is missing or empty'
+    compile_synthesized_object "${runtime_object}" "${supervision_projection_object}" \
+      prometheus_runtime_types prometheus_supervision_projection
+    compile_synthesized_object "${runtime_test_object}" "${supervision_projection_test_object}" \
+      prometheus_runtime_types_unittest prometheus_supervision_projection_unittest
+  fi
+
+  if [[ -e "${supervision_diff_source}" || -e "${supervision_diff_test_source}" ]]; then
+    [[ -s "${supervision_diff_source}" ]] \
+      || fail 'supervision diff implementation is missing or empty'
+    [[ -s "${supervision_diff_test_source}" ]] \
+      || fail 'supervision diff test is missing or empty'
+    compile_synthesized_object "${runtime_object}" "${supervision_diff_object}" \
+      prometheus_runtime_types prometheus_supervision_diff
+    compile_synthesized_object "${runtime_test_object}" "${supervision_diff_test_object}" \
+      prometheus_runtime_types_unittest prometheus_supervision_diff_unittest
+  fi
+
+  if [[ -e "${supervision_profile_source}" || -e "${supervision_profile_test_source}" ]]; then
+    [[ -s "${supervision_profile_source}" ]] \
+      || fail 'supervision profile service implementation is missing or empty'
+    [[ -s "${supervision_profile_test_source}" ]] \
+      || fail 'supervision profile service test is missing or empty'
+    compile_synthesized_object "${runtime_profile_object}" "${supervision_profile_object}" \
+      prometheus_runtime_profile_service prometheus_supervision_profile_service
+    compile_synthesized_object "${runtime_profile_test_object}" "${supervision_profile_test_object}" \
+      prometheus_runtime_profile_service_unittest prometheus_supervision_profile_service_unittest
+  fi
+
+  if [[ -e "${supervision_profile_factory_source}" ]]; then
+    [[ -s "${supervision_profile_factory_source}" ]] \
+      || fail 'supervision profile factory implementation is missing or empty'
+    compile_synthesized_object "${runtime_profile_factory_object}" "${supervision_profile_factory_object}" \
+      prometheus_runtime_profile_service_factory prometheus_supervision_profile_service_factory
+  fi
+
+  if [[ -e "${supervision_hub_source}" || -e "${supervision_hub_test_source}" ]]; then
+    [[ -s "${supervision_hub_source}" ]] \
+      || fail 'supervision capture hub implementation is missing or empty'
+    [[ -s "${supervision_hub_test_source}" ]] \
+      || fail 'supervision capture hub unit test is missing or empty'
+    generate_blink_mojo_bindings
+    compile_synthesized_object "${runtime_profile_object}" "${supervision_hub_object}" \
+      prometheus_runtime_profile_service prometheus_supervision_capture_hub
+    compile_synthesized_object "${runtime_profile_test_object}" "${supervision_hub_test_object}" \
+      prometheus_runtime_profile_service_unittest prometheus_supervision_capture_hub_unittest
+    compile_synthesized_object "${mojom_template}" "${mojom_object}" \
+      frame_metadata_observer_registry prometheus_supervision_document
+    compile_synthesized_object "${mojom_shared_template}" "${mojom_shared_object}" \
+      frame_metadata_observer_registry prometheus_supervision_document
+    if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+      [[ -s "${supervision_hub_browser_source}" ]] \
+        || fail 'supervision capture hub browser test is missing or empty'
+      compile_synthesized_object "${browser_test_template}" "${supervision_hub_browser_object}" \
+        prometheus_page_adapter_browsertest prometheus_supervision_capture_hub_browsertest
+      [[ -s "${supervision_confirmation_browser_source}" ]] \
+        || fail 'supervision confirmation browser test is missing or empty'
+      compile_synthesized_object "${browser_test_template}" "${supervision_confirmation_browser_object}" \
+        prometheus_page_adapter_browsertest prometheus_supervision_confirmation_browsertest
+      [[ -s "${supervision_badge_browser_source}" ]] \
+        || fail 'supervision tab badge browser test is missing or empty'
+      compile_synthesized_object "${views_browser_test_template}" "${supervision_badge_browser_object}" \
+        prometheus_compact_chrome_browsertest prometheus_tab_supervision_badge_browsertest
+      build_browser_focused_blink_modules
+    fi
+  fi
+
+  if [[ -e "${supervision_action_source}" || -e "${supervision_action_test_source}" ]]; then
+    [[ -s "${supervision_action_source}" ]] \
+      || fail 'supervision action controller implementation is missing or empty'
+    [[ -s "${supervision_action_test_source}" ]] \
+      || fail 'supervision action controller test is missing or empty'
+    compile_synthesized_object "${runtime_profile_object}" "${supervision_action_object}" \
+      prometheus_runtime_profile_service prometheus_supervision_action_controller
+    compile_synthesized_object "${runtime_profile_test_object}" "${supervision_action_test_object}" \
+      prometheus_runtime_profile_service_unittest prometheus_supervision_action_controller_unittest
+  fi
+
+  require_file "${OUT_DIR}/browser_tests.rsp"
+  local ui_archive='obj/chrome/browser/ui/libui.a'
+  require_file "${OUT_DIR}/${ui_archive}"
+  local ui_archive_members
+  ui_archive_members="$(
+    cd "${OUT_DIR}"
+    "${CHROMIUM_DIR}/third_party/llvm-build/Release+Asserts/bin/llvm-ar" \
+      t "${ui_archive}"
+  )"
+  rg -Fxq -- "${tab_view_object}" <<<"${ui_archive_members}" \
+    || fail 'fresh tab view object is not linked through the UI thin archive'
+  rg -Fxq -- "${tab_badge_object}" <<<"${ui_archive_members}" \
+    || fail 'fresh supervision tab badge object is not linked through the UI thin archive'
+  local runtime_contract='obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o'
+  local candidates=(
+    "${runtime_contract}"
+    "${runtime_dialogs}"
+    "${gateway_object}"
+    "${tab_state_object}"
+  )
+  local unit_object_path
+  for unit_object_path in \
+      "${OUT_DIR}"/obj/chrome/browser/prometheus/prometheus_unittests/*_unittest.o; do
+    candidates+=("${unit_object_path#${OUT_DIR}/}")
+  done
+  if [[ -s "${supervision_source}" ]]; then
+    candidates+=("${supervision_object}")
+  fi
+  if [[ -s "${supervision_codec_source}" ]]; then
+    candidates+=("${supervision_codec_object}")
+  fi
+  if [[ -s "${supervision_projection_source}" ]]; then
+    candidates+=("${supervision_projection_object}")
+  fi
+  if [[ -s "${supervision_diff_source}" ]]; then
+    candidates+=("${supervision_diff_object}")
+  fi
+  if [[ -s "${supervision_profile_source}" ]]; then
+    candidates+=("${supervision_profile_object}")
+  fi
+  if [[ -s "${supervision_profile_factory_source}" ]]; then
+    candidates+=("${supervision_profile_factory_object}")
+  fi
+  if [[ -s "${supervision_hub_source}" ]]; then
+    candidates+=("${supervision_hub_object}" "${mojom_object}" "${mojom_shared_object}")
+  fi
+  if [[ -s "${supervision_action_source}" ]]; then
+    candidates+=("${supervision_action_object}")
+  fi
+  candidates+=("${supervision_test_bootstrap_object}")
+  if [[ "${FOCUS_KIND}" == 'browser-integration' &&
+        -s "${supervision_hub_browser_source}" ]]; then
+    candidates+=("${supervision_hub_browser_object}")
+  fi
+  if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+    candidates+=("${gateway_browser_object}" "${supervision_confirmation_browser_object}" \
+      "${supervision_badge_browser_object}")
+  fi
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    require_file "${OUT_DIR}/${candidate}"
+    if ! rg -q --fixed-strings -- "${candidate}" "${OUT_DIR}/browser_tests.rsp"; then
+      extra_objects+=("${candidate}")
+    fi
+  done
+
+  local link_command
+  link_command="$(query_browser_link_command)"
+  [[ -n "${link_command}" ]] || fail 'browser_tests direct link command not found'
+  local original_output='-o "./browser_tests"'
+  local focused_output='-o "./phase21_browser_tests"'
+  [[ "${link_command}" == *"${original_output}"* ]] \
+    || fail 'browser_tests output argument was not found'
+  link_command="${link_command/${original_output}/${focused_output}}"
+  if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+    local original_rpath='-Wl,-rpath,@loader_path/.'
+    local focused_rpath="-Wl,-rpath,${FOCUSED_BLINK_MODULES_DIR} ${original_rpath}"
+    [[ "${link_command}" == *"${original_rpath}"* ]] \
+      || fail 'browser_tests loader rpath argument was not found'
+    link_command="${link_command/${original_rpath}/${focused_rpath}}"
+  fi
+  if [[ "${#extra_objects[@]}" -gt 0 ]]; then
+    link_command="${link_command} ${extra_objects[*]}"
+  fi
+
+  rm -f "${TEMP_FOCUSED_BINARY}"
+  if ! (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${link_command}" &&
+      codesign --force --sign - ./phase21_browser_tests &&
+      codesign --verify --strict ./phase21_browser_tests &&
+      mv -f ./phase21_browser_tests ./browser_tests
+  ) >>"${BUILD_LOG}" 2>&1; then
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused browser-test link failed'
+  fi
+  require_file "${FOCUSED_BINARY}"
+}
+
+build_content_focused_binary() {
+  local target_ninja='obj/chrome/renderer/prometheus_action_dispatcher_unittests.ninja'
+  local response_file="${LOG_DIR_RELATIVE}/phase21-content-unittests.rsp"
+  local focused_output='./phase21_content_focused_unittests'
+  local original_output='-o "./prometheus_action_dispatcher_unittests"'
+  local focused_output_argument="-o \"${focused_output}\""
+  local original_response='@./prometheus_action_dispatcher_unittests.rsp'
+  local focused_response="@./${response_file}"
+  local extras=(
+    obj/chrome/browser/prometheus/prometheus_unittests/prometheus_provider_transport_unittest.o
+    obj/chrome/browser/prometheus/prometheus_unittests/prometheus_tab_state_unittest.o
+    obj/chrome/browser/prometheus/prometheus_provider_transport/prometheus_provider_transport.o
+    obj/chrome/browser/prometheus/prometheus_provider_registry/prometheus_provider_registry.o
+    obj/chrome/browser/prometheus/prometheus_provider_codec/prometheus_provider_codec.o
+    obj/chrome/browser/prometheus/prometheus_secret_store/prometheus_secret_store.o
+    obj/chrome/browser/prometheus/prometheus_runtime_prefs/prometheus_runtime_prefs.o
+    obj/chrome/browser/prometheus/prometheus_runtime_profile_service/prometheus_runtime_tool_contract.o
+    obj/chrome/browser/prometheus/prometheus_runtime_types/prometheus_runtime_types.o
+    obj/chrome/browser/prometheus/prometheus_supervision_types/prometheus_supervision_types.o
+    obj/chrome/browser/prometheus/prometheus_tab_state/prometheus_tab_state.o
+    obj/chrome/browser/prometheus/prometheus_agent_tab_data/prometheus_agent_tab_data.o
+    obj/chrome/browser/prometheus/prometheus_agent_route/prometheus_agent_route.o
+    obj/components/tabs/test_support/mock_tab_interface.o
+    obj/components/tabs/impl/tab_interface.o
+    obj/components/tabs/impl/supports_handles.o
+    obj/components/tabs/impl/tab_handle_factory.o
+    obj/components/sync_preferences/features/features.o
+    obj/components/sync_preferences/libtest_support.a
+    obj/components/sync_preferences/libsync_preferences.a
+    ./libui_base_unowned_user_data.dylib
+  )
+
+  local extra
+  for extra in "${extras[@]}"; do
+    require_file "${OUT_DIR}/${extra#./}"
+  done
+  write_link_response "${target_ninja}" \
+    ./prometheus_action_dispatcher_unittests "${response_file}" \
+    "${extras[@]}"
+
+  local link_command
+  link_command="$(query_blink_link_command)"
+  [[ -n "${link_command}" ]] \
+    || fail 'content-capable direct link command not found'
+  link_command="${link_command/${original_output}/${focused_output_argument}}"
+  link_command="${link_command/${original_response}/${focused_response}}"
+  [[ "${link_command}" == *"${focused_output_argument}"* ]] \
+    || fail 'focused content output argument was not replaced'
+  [[ "${link_command}" == *"${focused_response}"* ]] \
+    || fail 'focused content response file was not replaced'
+
+  rm -f "${CONTENT_FOCUSED_BINARY}"
+  if ! (
+    cd "${OUT_DIR}"
+    /bin/zsh -c "${link_command}"
+    codesign --force --sign - "${focused_output}"
+    codesign --verify --strict "${focused_output}"
+  ) >>"${BUILD_LOG}" 2>&1; then
+    tail -n 80 "${BUILD_LOG}" >&2 || true
+    fail 'focused content unit-test link failed'
+  fi
+  require_file "${CONTENT_FOCUSED_BINARY}"
+  note 'content-focused binary uses the Mojo-initializing renderer unit-test harness'
+}
+
+run_logged() {
+  local log_name="$1"
+  shift
+  note "running ${log_name}"
+  "$@" >"${LOG_DIR}/${log_name}.log" 2>&1 || {
+    tail -n 100 "${LOG_DIR}/${log_name}.log" >&2 || true
+    fail "${log_name} (see ${LOG_DIR}/${log_name}.log)"
+  }
+}
+
+count_listed_gtests() {
+  LC_ALL=C awk '
+    /^  [^ ]/ && $0 !~ /DISABLED_/ { count += 1 }
+    END { print count + 0 }
+  ' "$1"
+}
+
+count_listed_suite_tests() {
+  local suite="$1"
+  local log="$2"
+  LC_ALL=C awk -v suite="${suite}." '
+    $0 == suite { active = 1; next }
+    /^[^ ]/ { active = 0 }
+    active && /^  [^ ]/ && $0 !~ /DISABLED_/ { count += 1 }
+    END { print count + 0 }
+  ' "${log}"
+}
+
+verify_gtest_cohort() {
+  local binary="$1"
+  local filter="$2"
+  local log_name="$3"
+  local expected_count="$4"
+  local launcher="$5"
+  local list_log="${LOG_DIR}/${log_name}-list.log"
+  local test_log="${LOG_DIR}/${log_name}.log"
+  local actual_count
+
+  require_file "${binary}"
+  if ! "${binary}" --gtest_list_tests --gtest_filter="${filter}" \
+      >"${list_log}" 2>&1; then
+    tail -n 80 "${list_log}" >&2 || true
+    fail "${log_name} discovery failed"
+  fi
+  actual_count="$(count_listed_gtests "${list_log}")"
+  [[ "${actual_count}" -gt 0 ]] \
+    || fail "${log_name} selected zero runnable tests"
+  [[ "${actual_count}" -eq "${expected_count}" ]] \
+    || fail "${log_name} expected ${expected_count} tests, found ${actual_count}"
+
+  local status
+  set +e
+  if [[ "${launcher}" == true ]]; then
+    "${binary}" --gtest_filter="${filter}" --test-launcher-jobs=1 \
+      --test-launcher-retry-limit=0 >"${test_log}" 2>&1
+  else
+    "${binary}" --gtest_filter="${filter}" >"${test_log}" 2>&1
+  fi
+  status="$?"
+  set -e
+  if [[ "${status}" -ne 0 ]]; then
+    tail -n 100 "${test_log}" >&2 || true
+    fail "${log_name} failed with status ${status}"
+  fi
+  if rg -q '^\[  FAILED  \]' "${test_log}"; then
+    tail -n 100 "${test_log}" >&2 || true
+    fail "${log_name} reported a failed test"
+  fi
+  if rg -q '^\[  SKIPPED \] [1-9][0-9]* test' "${test_log}"; then
+    tail -n 100 "${test_log}" >&2 || true
+    fail "${log_name} reported a skipped test"
+  fi
+  if [[ "${launcher}" == true ]]; then
+    rg -q 'SUCCESS: all tests passed\.' "${test_log}" \
+      || fail "${log_name} lacks the browser-test success marker"
+    rg -q "\\[${expected_count}/${expected_count}\\]" "${test_log}" \
+      || fail "${log_name} did not pass exactly ${expected_count}/${expected_count}"
+  else
+    rg -q "^\\[  PASSED  \\] ${expected_count} test" "${test_log}" \
+      || fail "${log_name} did not pass exactly ${expected_count} tests"
+  fi
+  note "${log_name}: PASS ${expected_count}/${expected_count}, fail=0, skip=0"
+}
+
+verify_renderer_closeout() {
+  local combined_filter="${PHASE21_RENDERER_FILTER}:${PHASE19_RENDERER_REGRESSION_FILTER}"
+  local focused_log_dir="${OUT_DIR}/phase21-focused"
+  local focused_list="${focused_log_dir}/phase21-focused-list.log"
+  local focused_test="${focused_log_dir}/phase21-focused-test.log"
+  local phase21_count phase19_count total_count
+
+  run_logged phase21-renderer-build-and-test \
+    bash "${ROOT_DIR}/.planning/chromium/verify-phase-21.sh" \
+      --focus-blink "${combined_filter}"
+  require_file "${focused_list}"
+  require_file "${focused_test}"
+  cp -p "${focused_list}" "${LOG_DIR}/phase21-renderer-list.log"
+  cp -p "${focused_test}" "${LOG_DIR}/phase21-renderer.log"
+  phase21_count="$(
+    count_listed_suite_tests PrometheusSupervisionDocumentSupplementTest \
+      "${LOG_DIR}/phase21-renderer-list.log"
+  )"
+  phase19_count="$(
+    count_listed_suite_tests PrometheusActionDispatcherTest \
+      "${LOG_DIR}/phase21-renderer-list.log"
+  )"
+  total_count="$(count_listed_gtests "${LOG_DIR}/phase21-renderer-list.log")"
+  [[ "${phase21_count}" -eq "${EXPECTED_PHASE21_RENDERER_COUNT}" ]] \
+    || fail "Phase 21 renderer expected ${EXPECTED_PHASE21_RENDERER_COUNT}, found ${phase21_count}"
+  [[ "${phase19_count}" -eq "${EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT}" ]] \
+    || fail "Phase 19 renderer regression expected ${EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT}, found ${phase19_count}"
+  [[ "${total_count}" -eq \
+      "$((EXPECTED_PHASE21_RENDERER_COUNT + EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT))" ]] \
+    || fail "renderer closeout selected an unexpected total of ${total_count}"
+  rg -q "\\[${total_count}/${total_count}\\]" \
+    "${LOG_DIR}/phase21-renderer.log" \
+    || fail "renderer closeout did not pass exactly ${total_count}/${total_count}"
+  rg -q 'SUCCESS: all tests passed\.' "${LOG_DIR}/phase21-renderer.log" \
+    || fail 'renderer closeout lacks the launcher success marker'
+  if rg -q '^\[  FAILED  \]|^\[  SKIPPED \] [1-9][0-9]* test' \
+      "${LOG_DIR}/phase21-renderer.log"; then
+    fail 'renderer closeout reported a failure or skip'
+  fi
+  note "phase21-renderer: PASS ${phase21_count}/${phase21_count}, fail=0, skip=0"
+  note "phase19-renderer-regression: PASS ${phase19_count}/${phase19_count}, fail=0, skip=0"
+}
+
+verify_node_closeout() {
+  local discovery_log="${LOG_DIR}/phase21-node-list.log"
+  local test_log="${LOG_DIR}/phase21-node-tap.log"
+  local node_files=()
+  local file discovered_count
+
+  while IFS= read -r file; do
+    node_files+=("${file}")
+  done < <(find "${ROOT_DIR}/tools/prometheus-mcp/test" -maxdepth 1 \
+    -type f -name '*.test.mjs' | LC_ALL=C sort)
+  [[ "${#node_files[@]}" -eq 8 ]] \
+    || fail "expected 8 Node test files, found ${#node_files[@]}"
+  for file in "${node_files[@]}"; do
+    node --check "${file}" >>"${LOG_DIR}/phase21-node-syntax.log" 2>&1 \
+      || fail "Node syntax check failed: ${file}"
+  done
+
+  if ! node --input-type=module - "${node_files[@]}" >"${discovery_log}" <<'NODE_DISCOVERY'
+import { readFileSync } from 'node:fs';
+
+const names = [];
+const declaration = /^\s*test\(\s*(['"])([^'"\n]+)\1\s*,/gmu;
+for (const file of process.argv.slice(2)) {
+  const source = readFileSync(file, 'utf8');
+  for (const match of source.matchAll(declaration)) names.push(match[2]);
+}
+names.sort((left, right) => left.localeCompare(right));
+if (names.length === 0 || new Set(names).size !== names.length) process.exit(1);
+process.stdout.write(`${names.join('\n')}\n`);
+NODE_DISCOVERY
+  then
+    fail 'Node discovery found zero or duplicate named tests'
+  fi
+  discovered_count="$(awk 'NF { count += 1 } END { print count + 0 }' \
+    "${discovery_log}")"
+  [[ "${discovered_count}" -eq "${EXPECTED_NODE_COUNT}" ]] \
+    || fail "expected ${EXPECTED_NODE_COUNT} Node tests, found ${discovered_count}"
+
+  set +e
+  node --test "${node_files[@]}" >"${test_log}" 2>&1
+  local status="$?"
+  set -e
+  if [[ "${status}" -ne 0 ]]; then
+    tail -n 100 "${test_log}" >&2 || true
+    fail "Node closeout failed with status ${status}"
+  fi
+  rg -q "^(#|ℹ) tests ${EXPECTED_NODE_COUNT}$" "${test_log}" \
+    || fail "Node closeout did not report exactly ${EXPECTED_NODE_COUNT} tests"
+  for field in fail cancelled skipped todo; do
+    rg -q "^(#|ℹ) ${field} 0$" "${test_log}" \
+      || fail "Node closeout ${field} count is not zero"
+  done
+  note "phase21-node: PASS ${EXPECTED_NODE_COUNT}/${EXPECTED_NODE_COUNT}, fail=0, skip=0"
+}
+
+verify_catalog_closeout() {
+  local log="${LOG_DIR}/phase21-catalog.log"
+  if ! node --input-type=module - \
+      "${ROOT_DIR}/tools/prometheus-mcp/src/catalog.mjs" >"${log}" <<'NODE_CATALOG'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const { COMPATIBILITY_CATALOG } = await import(pathToFileURL(process.argv[2]).href);
+const counts = Object.fromEntries(
+  ['native', 'alias', 'typed_stub', 'later_phase', 'removed'].map((disposition) => [
+    disposition,
+    COMPATIBILITY_CATALOG.filter((entry) => entry.disposition === disposition).length,
+  ]),
+);
+assert.deepEqual(counts, {
+  native: 54,
+  alias: 12,
+  typed_stub: 22,
+  later_phase: 0,
+  removed: 2,
+});
+const forbiddenAuthorityFields = new Set([
+  'bearer', 'challenge', 'controller_lease', 'document_epoch',
+  'owner_session_id', 'pairing_code', 'session_id',
+]);
+for (const entry of COMPATIBILITY_CATALOG) {
+  const visit = (value) => {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      assert.equal(forbiddenAuthorityFields.has(key), false, `${entry.name}:${key}`);
+      visit(child);
+    }
+  };
+  visit(entry.inputSchema);
+}
+console.log(JSON.stringify(counts));
+NODE_CATALOG
+  then
+    tail -n 80 "${log}" >&2 || true
+    fail 'catalog partition or authority-field guard failed'
+  fi
+  rg -q --fixed-strings \
+    '{"native":54,"alias":12,"typed_stub":22,"later_phase":0,"removed":2}' \
+    "${log}" || fail 'catalog closeout did not print the frozen partition'
+  note 'catalog: PASS 54/12/22/0/2'
+}
+
+extract_single_stable_patch_id() {
+  local output="$1"
+  local patch_id
+  patch_id="$(printf '%s\n' "${output}" | LC_ALL=C awk '
+    NF != 2 { invalid = 1 }
+    NF == 2 { count += 1; patch_id = $1 }
+    END {
+      if (invalid || count != 1) exit 1
+      print patch_id
+    }
+  ')" || return 1
+  [[ "${patch_id}" =~ ^[0-9a-f]{40}$ ]] || return 1
+  printf '%s\n' "${patch_id}"
+}
+
+stable_patch_id_for_file() {
+  local output
+  output="$(git patch-id --stable <"$1")" || return 1
+  extract_single_stable_patch_id "${output}"
+}
+
+stable_patch_id_for_commit() {
+  local output
+  output="$(git -C "${CHROMIUM_DIR}" show --pretty=format: --binary "$1" \
+    | git patch-id --stable)" || return 1
+  extract_single_stable_patch_id "${output}"
+}
+
+stable_patch_identity_matches() {
+  local patch_id commit_patch_id
+  patch_id="$(stable_patch_id_for_file "$1")" || return 1
+  commit_patch_id="$(stable_patch_id_for_commit "$2")" || return 1
+  [[ "${patch_id}" == "${commit_patch_id}" ]]
+}
+
+verify_patch_identity_self_test() {
+  local source_patch="$1"
+  local commit="$2"
+  local mutated_patch="${LOG_DIR}/phase21-patch-identity-mutated.patch"
+  local test_index="${LOG_DIR}/phase21-patch-identity-self-test.index"
+  local log="${LOG_DIR}/phase21-patch-identity-self-test.log"
+  local mutated_patch_id commit_patch_id
+
+  rm -f "${mutated_patch}" "${test_index}"
+  if ! LC_ALL=C awk '
+    !mutated && substr($0, 1, 1) == "+" && substr($0, 1, 3) != "+++" {
+      if ($0 == "+") {
+        print "+PHASE21_MUTATED_PATCH_BODY"
+      } else {
+        print $0 "PHASE21_MUTATED_PATCH_BODY"
+      }
+      mutated = 1
+      next
+    }
+    { print }
+    END { if (!mutated) exit 1 }
+  ' "${source_patch}" >"${mutated_patch}"; then
+    fail 'patch identity self-test could not create a deterministic mutation'
+  fi
+  require_file "${mutated_patch}"
+  git -C "${CHROMIUM_DIR}" apply --stat "${mutated_patch}" >"${log}" 2>&1 \
+    || fail 'patch identity self-test mutation is not a valid patch'
+  GIT_INDEX_FILE="${test_index}" git -C "${CHROMIUM_DIR}" \
+    read-tree "${commit}^" \
+    || fail 'patch identity self-test could not load the commit parent'
+  GIT_INDEX_FILE="${test_index}" git -C "${CHROMIUM_DIR}" \
+    apply --check --cached "${mutated_patch}" >>"${log}" 2>&1 \
+    || fail 'patch identity self-test mutation did not apply to the commit parent'
+  mutated_patch_id="$(stable_patch_id_for_file "${mutated_patch}")" \
+    || fail 'patch identity self-test mutation had no stable patch ID'
+  commit_patch_id="$(stable_patch_id_for_commit "${commit}")" \
+    || fail 'patch identity self-test commit had no stable patch ID'
+  [[ "${mutated_patch_id}" != "${commit_patch_id}" ]] \
+    || fail 'patch identity self-test mutation preserved the original identity'
+  if stable_patch_identity_matches "${mutated_patch}" "${commit}"; then
+    fail 'patch identity verifier accepted a valid but mutated patch body'
+  fi
+  printf 'PASS valid mutation rejected: %s != %s\n' \
+    "${mutated_patch_id}" "${commit_patch_id}" >>"${log}"
+  rm -f "${mutated_patch}" "${test_index}"
+}
+
+verify_patches_closeout() {
+  local log="${LOG_DIR}/phase21-patches.log"
+  local replay_log="${LOG_DIR}/phase21-patch-replay.log"
+  local replay_index="${LOG_DIR}/phase21-patch-replay.index"
+  local commits=()
+  local patches=()
+  local commit patch changed_files patch_id commit_patch_id patch_sha
+  local index expected_prefix root_relative
+
+  while IFS= read -r commit; do
+    commits+=("${commit}")
+  done < <(git -C "${CHROMIUM_DIR}" rev-list --reverse "${BASELINE}..HEAD")
+  while IFS= read -r patch; do
+    patches+=("${patch}")
+  done < <(find "${PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' \
+    | LC_ALL=C sort)
+  [[ "${#commits[@]}" -eq "${EXPECTED_PATCH_COUNT}" ]] \
+    || fail "expected ${EXPECTED_PATCH_COUNT} nested commits, found ${#commits[@]}"
+  [[ "${#patches[@]}" -eq "${EXPECTED_PATCH_COUNT}" ]] \
+    || fail "expected ${EXPECTED_PATCH_COUNT} patches, found ${#patches[@]}"
+
+  : >"${log}"
+  : >"${replay_log}"
+  rm -f "${replay_index}"
+  GIT_INDEX_FILE="${replay_index}" git -C "${CHROMIUM_DIR}" \
+    read-tree "${BASELINE}" \
+    || fail 'ordered patch replay could not load the fixed baseline'
+  for index in "${!commits[@]}"; do
+    commit="${commits[$index]}"
+    patch="${patches[$index]}"
+    printf -v expected_prefix '%04d-' "$((index + 1))"
+    [[ "$(basename "${patch}")" == "${expected_prefix}"* ]] \
+      || fail "out-of-order patch: ${patch}"
+    require_file "${patch}"
+    [[ "$(head -n 1 "${patch}")" == "From ${commit} "* ]] \
+      || fail "patch $(basename "${patch}") does not export ${commit}"
+    root_relative="${patch#"${ROOT_DIR}/"}"
+    git -C "${ROOT_DIR}" ls-files --error-unmatch "${root_relative}" \
+      >/dev/null \
+      || fail "patch is not tracked by the root repository: ${root_relative}"
+
+    changed_files="$(
+      git -C "${CHROMIUM_DIR}" diff-tree --no-commit-id --name-only -r "${commit}"
+    )"
+    [[ -n "${changed_files}" ]] || fail "nested commit ${commit} is empty"
+    if printf '%s\n' "${changed_files}" | rg -q \
+        '(^|/)(out|gen)(/|$)|(^|/)\.ninja|[.](o|dylib|a|rsp|runtime_deps)$'; then
+      fail "nested commit ${commit} contains a generated build artifact"
+    fi
+    if rg -q '^diff --git a/((out|gen)/|\.ninja|.*[.](o|dylib|a|rsp|runtime_deps)( |$))' \
+        "${patch}"; then
+      fail "patch $(basename "${patch}") contains a generated build artifact"
+    fi
+    git -C "${CHROMIUM_DIR}" apply --stat "${patch}" >>"${log}" \
+      || fail "patch $(basename "${patch}") is malformed"
+    patch_id="$(stable_patch_id_for_file "${patch}")" \
+      || fail "could not derive one stable patch ID from $(basename "${patch}")"
+    commit_patch_id="$(stable_patch_id_for_commit "${commit}")" \
+      || fail "could not derive one stable patch ID from ${commit}"
+    [[ "${patch_id}" == "${commit_patch_id}" ]] \
+      || fail "patch body $(basename "${patch}") does not match ${commit}"
+    patch_sha="$(sha256_file "${patch}")"
+    printf '%s %s %s %s\n' "${commit}" "${patch_id}" "${patch_sha}" \
+      "$(basename "${patch}")" >>"${log}"
+
+    GIT_INDEX_FILE="${replay_index}" git -C "${CHROMIUM_DIR}" \
+      apply --check --cached "${patch}" >>"${replay_log}" 2>&1 \
+      || fail "ordered patch $(basename "${patch}") does not apply"
+    GIT_INDEX_FILE="${replay_index}" git -C "${CHROMIUM_DIR}" \
+      apply --cached "${patch}" >>"${replay_log}" 2>&1 \
+      || fail "ordered patch $(basename "${patch}") could not be replayed"
+  done
+
+  local replay_tree head_tree last_index
+  replay_tree="$(
+    GIT_INDEX_FILE="${replay_index}" git -C "${CHROMIUM_DIR}" write-tree
+  )"
+  head_tree="$(git -C "${CHROMIUM_DIR}" rev-parse 'HEAD^{tree}')"
+  [[ "${replay_tree}" == "${head_tree}" ]] \
+    || fail "ordered patch replay tree ${replay_tree} does not match HEAD ${head_tree}"
+  last_index="$((${#commits[@]} - 1))"
+  verify_patch_identity_self_test "${patches[$last_index]}" \
+    "${commits[$last_index]}"
+  rm -f "${replay_index}"
+  note "patches: PASS ${EXPECTED_PATCH_COUNT}/${EXPECTED_PATCH_COUNT}, ordered source-only identities and mutation rejection"
+}
+
+verify_closeout_static_boundaries() {
+  local log="${LOG_DIR}/phase21-closeout-static.log"
+  local gateway="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway.cc"
+  local gateway_contract="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc"
+  local bootstrap="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.cc"
+  local bootstrap_header="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_test_bootstrap.h"
+  local main_parts="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc"
+  local supervision_profile_test="${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc"
+  local agent_sources=(
+    "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_service.cc"
+    "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_service.h"
+    "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_profile_service.cc"
+    "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_profile_service.h"
+    "${gateway}"
+    "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_agent_gateway.h"
+  )
+  local production=(
+    "${ROOT_DIR}/tools/prometheus-mcp/src"
+    "${ROOT_DIR}/tools/prometheus-mcp/bin"
+    "${CHROMIUM_DIR}/chrome/browser/prometheus"
+    "${CHROMIUM_DIR}/chrome/browser/resources/prometheus"
+    "${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.cc"
+    "${CHROMIUM_DIR}/third_party/blink/renderer/modules/content_extraction/prometheus_supervision_document_supplement.h"
+  )
+  local production_path
+  for production_path in "${production[@]}"; do
+    if [[ -d "${production_path}" ]]; then
+      [[ -r "${production_path}" ]] \
+        || fail "unreadable production scan directory: ${production_path}"
+    else
+      require_file "${production_path}"
+    fi
+  done
+  : >"${log}"
+
+  require_literal 'net::IPAddress::IPv4Localhost()' "${gateway}"
+  require_literal 'PrometheusAgentRequestRejection::kMethodNotAllowed' "${gateway}"
+  require_literal 'void OnWebSocketRequest' "${gateway}"
+  require_literal 'base::File::FLAG_NO_FOLLOW' "${bootstrap}"
+  require_literal 'constexpr int kRequiredFilePermissions = 0600;' "${bootstrap}"
+  require_literal '#if defined(OFFICIAL_BUILD)' "${bootstrap}"
+  require_literal 'kPrometheusRuntimeTestTypeSwitch' "${bootstrap}"
+  require_literal 'kPrometheusSupervisionTestBootstrapSwitch' "${bootstrap}"
+  require_literal 'kPrometheusSupervisionTestPairingSlots = 2' "${bootstrap_header}"
+  require_literal 'crypto::SecureZeroBuffer' "${bootstrap}"
+  require_literal 'binding.profile_identity != 0 && binding.browser_identity != 0' \
+    "${bootstrap}"
+  require_literal '!binding.owner_session_id.empty()' "${bootstrap}"
+  require_literal 'binding.expected_origin == expected_origin' "${bootstrap}"
+  require_literal 'PrometheusSupervisionTestComposition::Create' "${main_parts}"
+  require_literal 'supervision_test_composition_->Shutdown();' "${main_parts}"
+  require_literal 'SetSupervisionTestHandoffDispatcher' "${main_parts}"
+  require_literal 'ConsumeDialogResponse' "${main_parts}"
+  require_literal 'ClaimIfUnowned' "${supervision_profile_test}"
+
+  if rg -n '#include .*prometheus_(supervision_profile_service|supervision_capture_hub|supervision_action_controller|supervision_document)' \
+      "${agent_sources[@]}" >>"${log}"; then
+    fail 'Agent service/profile/gateway gained a concrete supervision dependency'
+  fi
+  if rg -n --glob 'prometheus_supervision_*.cc' \
+      --glob 'prometheus_supervision_*.h' --glob '!**/*test*' \
+      'ClaimIfUnowned' "${CHROMIUM_DIR}/chrome/browser/prometheus" \
+      >>"${log}"; then
+    fail 'supervision production code can implicitly claim an unowned Agent tab'
+  fi
+  if rg -n --pcre2 \
+      '@import\b|<[^>]+\b(?:src|href)=[\x22\x27]https?://|url\(\s*[\x22\x27]?https?://|fetch\(\s*[\x22\x27]?https?://' \
+      "${CHROMIUM_DIR}/chrome/browser/resources/prometheus" >>"${log}"; then
+    fail 'remote Prometheus WebUI resource reference found'
+  fi
+  local secret_scan_status
+  set +e
+  rg -n --pcre2 --glob '!**/*test*' --glob '!**/*browsertest*' \
+      'Bearer [A-Za-z0-9_-]{12,}|BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY|(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{12,}' \
+      "${production[@]}" >>"${log}" 2>&1
+  secret_scan_status="$?"
+  set -e
+  case "${secret_scan_status}" in
+    0) fail 'literal secret-like material found in production sources' ;;
+    1) ;;
+    *) fail "production secret scan failed with status ${secret_scan_status}" ;;
+  esac
+
+  local route_files="${LOG_DIR}/phase21-test-route-files.log"
+  rg -l --fixed-strings '/v1/test/supervision-handoff' \
+    "${CHROMIUM_DIR}/chrome/browser/prometheus" \
+    --glob '!**/*test*' --glob '!**/*browsertest*' \
+    | LC_ALL=C sort >"${route_files}"
+  local expected_route_files="${LOG_DIR}/phase21-test-route-files.expected"
+  printf '%s\n' "${gateway}" "${gateway_contract}" | LC_ALL=C sort \
+    >"${expected_route_files}"
+  if ! diff -u "${expected_route_files}" "${route_files}" >>"${log}"; then
+    fail 'test-only supervision route escaped its conditional gateway contract'
+  fi
+  note 'closeout security, dependency, loopback, offline-resource, and test-seam guards passed'
+}
+
+verify_closeout_documents() {
+  local verification="${PHASE_DIR}/21-VERIFICATION.md"
+  require_file "${verification}"
+  rg -q '^human_uat: not_run$' "${verification}" \
+    || fail 'verification does not record exact human_uat: not_run'
+  rg -q 'Phase 22.*not_ready|Phase 22 `not_ready`' "${verification}" \
+    || fail 'verification does not preserve Phase 22 not_ready'
+  for requirement in SUP-01 SUP-02 SUP-03 SUP-04 SUP-05; do
+    rg -q "${requirement}" "${verification}" \
+      || fail "verification lacks ${requirement}"
+  done
+  local decision threat
+  for decision in $(seq -w 1 23); do
+    rg -q "D-${decision}" "${verification}" \
+      || fail "verification lacks D-${decision}"
+  done
+  for threat in 01 02 03 04 05 06 07 08; do
+    rg -q "T-21-${threat}" "${verification}" \
+      || fail "verification lacks T-21-${threat}"
+  done
+  [[ "$(
+    find "${PHASE_DIR}" -maxdepth 1 -type f -name '21-*-SUMMARY.md' | wc -l \
+      | tr -d ' '
+  )" -eq 26 ]] || fail 'verification closeout requires all 26 plan summaries'
+  if rg -n --pcre2 \
+      'Bearer [A-Za-z0-9_-]{12,}|BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY|(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{12,}|(?<![A-Z0-9])[A-Z0-9]{4}-[A-Z0-9]{4}(?![A-Z0-9])' \
+      "${verification}" \
+      "${ROOT_DIR}/.planning/design/prometheus-browser/README.md" \
+      "${ROOT_DIR}/.planning/preservation/FALKON-TO-CHROMIUM-PRESERVATION.md" \
+      >"${LOG_DIR}/phase21-document-secret-guard.log"; then
+    fail 'closeout documentation contains secret-like material'
+  fi
+  note 'verification requirement/decision/threat/plan and documentation privacy guards passed'
+}
+
+verify_closeout() {
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE21_NATIVE_FILTER}" \
+    phase21-native "${EXPECTED_PHASE21_NATIVE_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE20_NATIVE_REGRESSION_FILTER}" \
+    phase20-native-regression "${EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE17_19_NATIVE_REGRESSION_FILTER}" \
+    phase17-19-native-regression "${EXPECTED_PHASE17_19_NATIVE_REGRESSION_COUNT}" true
+  verify_gtest_cohort "${CONTENT_FOCUSED_BINARY}" \
+    "${PHASE20_CONTENT_REGRESSION_FILTER}" \
+    phase20-content-regression "${EXPECTED_PHASE20_CONTENT_REGRESSION_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE21_BROWSER_FILTER}" \
+    phase21-browser "${EXPECTED_PHASE21_BROWSER_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE20_BROWSER_REGRESSION_FILTER}" \
+    phase20-browser-regression "${EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE17_19_BROWSER_REGRESSION_FILTER}" \
+    phase17-19-browser-regression "${EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT}" true
+  verify_renderer_closeout
+  verify_node_closeout
+  verify_catalog_closeout
+  verify_closeout_static_boundaries
+
+  run_logged phase21-built-smoke \
+    bash "${ROOT_DIR}/tools/prometheus-mcp/smoke-browser.sh"
+  rg -q --fixed-strings 'Prometheus MCP live smoke passed.' \
+    "${LOG_DIR}/phase21-built-smoke.log" \
+    || fail 'built-app smoke lacks its exact success marker'
+  run_logged phase21-environment \
+    bash "${ROOT_DIR}/.planning/chromium/check-chromium-env.sh"
+  run_logged phase21-gpl-guard \
+    bash "${ROOT_DIR}/.planning/chromium/check-falkon-gpl-guard.sh"
+  run_logged phase21-artifact-isolation \
+    bash "${ROOT_DIR}/.planning/chromium/verify-artifact-isolation.sh"
+  run_logged phase21-webui-resources \
+    bash "${ROOT_DIR}/.planning/chromium/verify-prometheus-webui-resources.sh"
+  run_logged phase21-preservation \
+    bash "${ROOT_DIR}/.planning/preservation/verify-preservation.sh"
+
+  verify_patches_closeout
+  verify_closeout_documents
+  git -C "${ROOT_DIR}" diff --check \
+    >"${LOG_DIR}/phase21-root-diff-check.log" \
+    || fail 'root diff check failed'
+  git -C "${CHROMIUM_DIR}" diff --check \
+    >"${LOG_DIR}/phase21-nested-diff-check.log" \
+    || fail 'nested diff check failed'
+  [[ -z "$(git -C "${CHROMIUM_DIR}" status --porcelain)" ]] \
+    || fail 'nested Chromium worktree is not clean after closeout'
+  note 'built smoke, environment, GPL, artifact, WebUI, preservation, and diff gates passed'
+  note "exact closeout counts: native=${EXPECTED_PHASE21_NATIVE_COUNT}, renderer=${EXPECTED_PHASE21_RENDERER_COUNT}, browser=${EXPECTED_PHASE21_BROWSER_COUNT}, node=${EXPECTED_NODE_COUNT}"
+  note "exact regression counts: phase20-native=${EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT}, phase17-19-native=${EXPECTED_PHASE17_19_NATIVE_REGRESSION_COUNT}, phase20-content=${EXPECTED_PHASE20_CONTENT_REGRESSION_COUNT}, phase19-renderer=${EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT}, phase20-browser=${EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT}, phase17-19-browser=${EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT}"
+  note "exact catalog=54/12/22/0/2; patches=${EXPECTED_PATCH_COUNT}"
+  printf 'Phase 21 verification passed. Logs: %s\n' "${LOG_DIR}"
+}
+
+verify_live_regressions() {
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE21_NATIVE_FILTER}" \
+    phase21-native "${EXPECTED_PHASE21_NATIVE_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE20_NATIVE_REGRESSION_FILTER}" \
+    phase20-native-regression "${EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE17_19_NATIVE_REGRESSION_FILTER}" \
+    phase17-19-native-regression \
+    "${EXPECTED_PHASE17_19_NATIVE_REGRESSION_COUNT}" true
+  verify_gtest_cohort "${CONTENT_FOCUSED_BINARY}" \
+    "${PHASE20_CONTENT_REGRESSION_FILTER}" \
+    phase20-content-regression "${EXPECTED_PHASE20_CONTENT_REGRESSION_COUNT}" \
+    true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE21_BROWSER_FILTER}" \
+    phase21-browser "${EXPECTED_PHASE21_BROWSER_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE20_BROWSER_REGRESSION_FILTER}" \
+    phase20-browser-regression "${EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT}" \
+    true
+  verify_gtest_cohort "${FOCUSED_BINARY}" \
+    "${PHASE17_19_BROWSER_REGRESSION_FILTER}" \
+    phase17-19-browser-regression \
+    "${EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT}" true
+  verify_renderer_closeout
+  verify_node_closeout
+
+  note "live Phase 17-21 regressions passed at $(git -C "${CHROMIUM_DIR}" rev-parse HEAD)"
+  note "exact live counts: phase21-native=${EXPECTED_PHASE21_NATIVE_COUNT}, phase21-renderer=${EXPECTED_PHASE21_RENDERER_COUNT}, phase21-browser=${EXPECTED_PHASE21_BROWSER_COUNT}, node=${EXPECTED_NODE_COUNT}"
+  note "exact live regression counts: phase20-native=${EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT}, phase17-19-native=${EXPECTED_PHASE17_19_NATIVE_REGRESSION_COUNT}, phase20-content=${EXPECTED_PHASE20_CONTENT_REGRESSION_COUNT}, phase19-renderer=${EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT}, phase20-browser=${EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT}, phase17-19-browser=${EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT}"
+  printf 'Phase 21 live regression verification passed. Logs: %s\n' \
+    "${LOG_DIR}"
+}
+
+list_selected_tests() {
+  if ! "${FOCUSED_BINARY}" --gtest_list_tests \
+      --gtest_filter="${FOCUS_FILTER}" >"${LIST_LOG}" 2>&1; then
+    tail -n 80 "${LIST_LOG}" >&2 || true
+    fail 'focused test discovery failed'
+  fi
+  local selected_count
+  selected_count="$(LC_ALL=C awk '/^  [^ ]/ && $0 !~ /DISABLED_/ { count += 1 } END { print count + 0 }' \
+    "${LIST_LOG}")"
+  [[ "${selected_count}" -gt 0 ]] \
+    || fail "filter selected zero runnable tests: ${FOCUS_FILTER}"
+  note "selected ${selected_count} runnable test(s)"
+}
+
+run_selected_tests() {
+  local test_status
+  set +e
+  if [[ "${FOCUS_KIND}" == 'content' ]]; then
+    "${FOCUSED_BINARY}" --gtest_filter="${FOCUS_FILTER}" \
+      --test-launcher-jobs=1 --test-launcher-retry-limit=0 \
+      >"${TEST_LOG}" 2>&1
+  elif [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+    "${FOCUSED_BINARY}" --gtest_filter="${FOCUS_FILTER}" \
+      --test-launcher-jobs=1 --test-launcher-retry-limit=0 \
+      >"${TEST_LOG}" 2>&1
+  elif [[ "${FOCUS_KIND}" == 'blink' ]]; then
+    "${FOCUSED_BINARY}" --gtest_filter="${FOCUS_FILTER}" \
+      --test-launcher-jobs=1 --test-launcher-retry-limit=0 \
+      >"${TEST_LOG}" 2>&1
+  else
+    "${FOCUSED_BINARY}" --gtest_filter="${FOCUS_FILTER}" \
+      >"${TEST_LOG}" 2>&1
+  fi
+  test_status="$?"
+  set -e
+
+  if [[ "${EXPECT_FAILURE}" == true ]]; then
+    [[ "${test_status}" -eq 1 ]] || {
+      tail -n 80 "${TEST_LOG}" >&2 || true
+      fail "--expect-failure requires normal GTest assertion status 1, got ${test_status}"
+    }
+    rg -q '^\[  FAILED  \].*\([0-9]+ ms\)' "${TEST_LOG}" \
+      || fail '--expect-failure did not observe an assertion-failing test'
+    rg -q '[0-9]+ FAILED TEST' "${TEST_LOG}" \
+      || fail '--expect-failure did not observe the GTest failure summary'
+    if rg -qi 'segmentation fault|received signal|check failed|fatal error|addresssanitizer|crash' \
+        "${TEST_LOG}"; then
+      fail '--expect-failure rejected a crash or fatal process failure'
+    fi
+    if [[ "${FOCUS_FILTER}" == "${LIFECYCLE_BROWSER_RED_FILTER}" ||
+          "${FOCUS_FILTER}" == "${CONTROL_SUPERVISION_BROWSER_RED_FILTER}" ||
+          "${FOCUS_FILTER}" == "${SUPERVISION_TEST_COMPOSITION_RED_FILTER}" ]]; then
+      local actual_failures="${LOG_DIR}/phase21-browser-actual-failures.log"
+      local expected_failures="${LOG_DIR}/phase21-browser-expected-failures.log"
+      local red_label='lifecycle'
+      sed -nE \
+        's/^\[  FAILED  \] ([^, ]+)(, where .*)? \([0-9]+ ms\)$/\1/p' \
+        "${TEST_LOG}" | LC_ALL=C sort -u >"${actual_failures}"
+      if [[ "${FOCUS_FILTER}" == "${LIFECYCLE_BROWSER_RED_FILTER}" ]]; then
+        printf '%s\n' "${LIFECYCLE_BROWSER_RED_FAILURES[@]}" |
+          LC_ALL=C sort >"${expected_failures}"
+      elif [[ "${FOCUS_FILTER}" == "${CONTROL_SUPERVISION_BROWSER_RED_FILTER}" ]]; then
+        printf '%s\n' "${CONTROL_SUPERVISION_BROWSER_RED_FAILURES[@]}" |
+          LC_ALL=C sort >"${expected_failures}"
+        red_label='Control Panel supervision'
+      else
+        printf '%s\n' "${SUPERVISION_TEST_COMPOSITION_RED_FAILURES[@]}" |
+          LC_ALL=C sort >"${expected_failures}"
+        red_label='supervision test composition'
+      fi
+      if ! diff -u "${expected_failures}" "${actual_failures}" \
+          >"${BUILD_LOG}.failures"; then
+        cat "${BUILD_LOG}.failures" >&2
+        fail "focused ${red_label} browser RED failures differ from the frozen allowlist"
+      fi
+      note "${red_label} RED failed only through the intended tests"
+    fi
+    note 'selected suite failed only by intended GTest assertion'
+    return
+  fi
+
+  if [[ "${test_status}" -ne 0 ]]; then
+    tail -n 80 "${TEST_LOG}" >&2 || true
+    fail "selected suite failed with status ${test_status}"
+  fi
+  rg -q '^\[  PASSED  \] [1-9][0-9]* test' "${TEST_LOG}" \
+    || fail 'selected suite produced no passing GTest summary'
+  if [[ "${FOCUS_KIND}" == 'content' ]]; then
+    local selected_count
+    selected_count="$(count_listed_gtests "${LIST_LOG}")"
+    rg -q "SUCCESS: all tests passed\\." "${TEST_LOG}" \
+      || fail 'focused content suite lacks the launcher success marker'
+    rg -q "\\[${selected_count}/${selected_count}\\]" "${TEST_LOG}" \
+      || fail "focused content suite did not pass exactly ${selected_count}/${selected_count}"
+  fi
+  note 'selected suite passed'
+}
+
+mkdir -p "${LOG_DIR}"
+if [[ "${FOCUS_KIND}" == 'node' ]]; then
+  : >"${BUILD_LOG}"
+  list_selected_node_tests
+  run_selected_node_tests
+  note "focused Node verification complete; logs: ${LOG_DIR}"
+  exit 0
+fi
+[[ -x "${SISO}" ]] || fail "Siso not found at ${SISO}"
+require_file "${OUT_DIR}/build.ninja"
+capture_build_metadata
+trap verify_build_metadata_on_exit EXIT
+if [[ "${FOCUS_KIND}" == 'blink' ]]; then
+  verify_blink_contract
+  build_blink_focused_binary
+else
+  verify_composition_contract
+  verify_gateway_contract
+  verify_live_supervision_dispatch_contract
+  verify_agent_supervision_transport_contract
+  verify_supervision_action_controller_contract
+  verify_supervision_dialog_contract
+  verify_built_supervision_smoke_contract
+  verify_production_supervision_shutdown_contract
+  verify_supervision_tab_state_contract
+  verify_supervision_tab_badge_contract
+  verify_side_panel_supervision_runtime_contract
+  verify_side_panel_supervision_strip_contract
+  verify_control_panel_supervision_runtime_contract
+  if [[ -e "${CHROMIUM_DIR}/chrome/browser/prometheus/prometheus_supervision_capture_hub.h" ]]; then
+    verify_capture_hub_contract
+  fi
+  build_focused_binary
+  if [[ "${CLOSEOUT_MODE}" == true ||
+        "${LIVE_REGRESSIONS_ONLY}" == true ||
+        "${FOCUS_KIND}" == 'content' ]]; then
+    build_content_focused_binary
+  fi
+  if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
+    build_and_install_focused_resources
+  fi
+fi
+if [[ "${FOCUS_KIND}" == 'content' ]]; then
+  FOCUSED_BINARY="${CONTENT_FOCUSED_BINARY}"
+fi
+if [[ "${LIVE_REGRESSIONS_ONLY}" == true ]]; then
+  verify_live_regressions
+  exit 0
+fi
+if [[ "${CLOSEOUT_MODE}" == true ]]; then
+  verify_closeout
+  exit 0
+fi
+list_selected_tests
+run_selected_tests
+note "focused verification complete; logs: ${LOG_DIR}"

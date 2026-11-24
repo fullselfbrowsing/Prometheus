@@ -1,0 +1,248 @@
+From 26272ff4106533ed9f782aa9e7133b6c7dafee89 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 13:36:21 -0500
+Subject: [PATCH] feat(21-21): erase terminal pairing presentation
+
+---
+ .../prometheus_supervision_profile_service.cc |  33 ++++--
+ .../prometheus_supervision_profile_service.h  |   1 +
+ ...us_supervision_profile_service_unittest.cc | 101 ++++++++++++++++++
+ .../prometheus_web_ui_browsertest.cc          |   1 +
+ 4 files changed, 127 insertions(+), 9 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+index 3953e98988..0a86604ada 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.cc
+@@ -571,8 +571,11 @@ SupervisionRedemptionResult PrometheusSupervisionProfileService::RedeemPairing(
+     return result;
+   }
+ 
+-  SweepExpired();
+   const base::Time now = Now();
++  const std::string normalized = NormalizePairingCode(pairing_code);
++  PendingPairing* pairing = FindPendingPairing(normalized);
++  const bool matched_expired_pairing = pairing && pairing->expires_at <= now;
++  SweepExpired();
+   if (failed_attempts_.size() >= limits_.attempts_per_code) {
+     static_cast<SupervisionServiceResult&>(result) =
+         ServiceFailure(SupervisionErrorCode::kAttemptCapReached,
+@@ -581,8 +584,14 @@ SupervisionRedemptionResult PrometheusSupervisionProfileService::RedeemPairing(
+     return result;
+   }
+ 
+-  const std::string normalized = NormalizePairingCode(pairing_code);
+-  PendingPairing* pairing = FindPendingPairing(normalized);
++  if (matched_expired_pairing) {
++    static_cast<SupervisionServiceResult&>(result) = ServiceFailure(
++        SupervisionErrorCode::kExpiredCode, "The pairing code has expired",
++        "Create a new pairing code");
++    return result;
++  }
++
++  pairing = FindPendingPairing(normalized);
+   if (!pairing) {
+     failed_attempts_.push_back(now);
+     static_cast<SupervisionServiceResult&>(result) = ServiceFailure(
+@@ -1909,9 +1918,6 @@ void PrometheusSupervisionProfileService::Shutdown() {
+     return;
+   }
+   shutdown_ = true;
+-  for (Observer& observer : observers_) {
+-    observer.OnPrometheusSupervisionServiceShuttingDown();
+-  }
+   weak_factory_.InvalidateWeakPtrs();
+   controllers_.clear();
+   std::vector<DashboardDiffWaitCallback> pending_waits;
+@@ -1959,6 +1965,9 @@ void PrometheusSupervisionProfileService::Shutdown() {
+     }
+   }
+   observed_tabs_.clear();
++  for (Observer& observer : observers_) {
++    observer.OnPrometheusSupervisionServiceShuttingDown();
++  }
+   observers_.Clear();
+   for (DashboardDiffWaitCallback& callback : pending_waits) {
+     SupervisionDashboardDiffResult result;
+@@ -1982,6 +1991,12 @@ size_t PrometheusSupervisionProfileService::pending_pairing_count_for_testing()
+                        });
+ }
+ 
++size_t
++PrometheusSupervisionProfileService::retained_pairing_digest_count_for_testing()
++    const {
++  return pending_pairings_.size();
++}
++
+ size_t PrometheusSupervisionProfileService::viewer_count_for_testing(
+     int32_t stable_tab_id) const {
+   return std::count_if(viewers_.begin(), viewers_.end(),
+@@ -2094,15 +2109,15 @@ void PrometheusSupervisionProfileService::SweepExpired() {
+ 
+ void PrometheusSupervisionProfileService::SweepExpiredPairings(base::Time now) {
+   std::vector<int32_t> expired;
+-  for (auto& [stable_tab_id, pairing] : pending_pairings_) {
++  for (const auto& [stable_tab_id, pairing] : pending_pairings_) {
+     if (pairing->state == SupervisionPairingState::kPending &&
+         pairing->expires_at <= now) {
+-      pairing->state = SupervisionPairingState::kExpired;
+-      last_pairing_states_[stable_tab_id] = SupervisionPairingState::kExpired;
+       expired.push_back(stable_tab_id);
+     }
+   }
+   for (int32_t stable_tab_id : expired) {
++    last_pairing_states_[stable_tab_id] = SupervisionPairingState::kExpired;
++    pending_pairings_.erase(stable_tab_id);
+     AddAudit(stable_tab_id, SupervisionAuditEvent::kPairingCodeExpired,
+              std::nullopt, SupervisionErrorCode::kExpiredCode);
+     NotifySnapshotChanged(stable_tab_id);
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service.h b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+index 943ec26d20..e9dd41c58f 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service.h
+@@ -226,6 +226,7 @@ class PrometheusSupervisionProfileService final : public KeyedService {
+   void Shutdown() override;
+ 
+   size_t pending_pairing_count_for_testing() const;
++  size_t retained_pairing_digest_count_for_testing() const;
+   size_t viewer_count_for_testing(int32_t stable_tab_id) const;
+   size_t observed_tab_count_for_testing() const;
+   size_t controller_count_for_testing() const;
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+index 2da6cc320d..00953b6752 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+@@ -47,6 +47,34 @@ class RecordingSupervisionObserver final
+   std::vector<SanitizedSupervisionSnapshot> snapshots;
+ };
+ 
++class ShutdownOrderObserver final
++    : public PrometheusSupervisionProfileService::Observer {
++ public:
++  explicit ShutdownOrderObserver(
++      PrometheusSupervisionProfileService* supervision_service)
++      : supervision_service_(supervision_service) {}
++
++  void OnPrometheusSupervisionSnapshotChanged(
++      int32_t,
++      const SanitizedSupervisionSnapshot&) override {}
++
++  void OnPrometheusSupervisionServiceShuttingDown() override {
++    called = true;
++    authority_and_pairings_were_erased =
++        supervision_service_->controller_count_for_testing() == 0u &&
++        supervision_service_->viewer_count_for_testing(43) == 0u &&
++        supervision_service_->capture_hub_count_for_testing() == 0u &&
++        supervision_service_->observed_tab_count_for_testing() == 0u &&
++        supervision_service_->retained_pairing_digest_count_for_testing() == 0u;
++  }
++
++  bool called = false;
++  bool authority_and_pairings_were_erased = false;
++
++ private:
++  raw_ptr<PrometheusSupervisionProfileService> supervision_service_;
++};
++
+ class VerifyingTabStateProjectionObserver final
+     : public PrometheusSupervisionProfileService::Observer {
+  public:
+@@ -492,6 +520,7 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+ 
+   now_ += base::Minutes(6);
+   EXPECT_EQ(SupervisionErrorCode::kExpiredCode, Redeem(creation).error_code);
++  EXPECT_EQ(0u, service_->retained_pairing_digest_count_for_testing());
+ }
+ 
+ TEST_F(PrometheusSupervisionProfileServiceTest,
+@@ -1037,6 +1066,78 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+   EXPECT_EQ(diff_b.delivery->stamp.sequence, unread_b.delivery->stamp.sequence);
+ }
+ 
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       ControllerRetryBaselineMarksOnlyRequestedDashboardConsumer) {
++  SupervisionPairingCreationResult first = CreatePairing();
++  ASSERT_TRUE(first.ok);
++  SupervisionRedemptionResult viewer_a = Redeem(first, "Retry A");
++  ASSERT_TRUE(viewer_a.ok);
++  SupervisionPairingCreationResult second = CreatePairing();
++  ASSERT_TRUE(second.ok);
++  SupervisionRedemptionResult viewer_b = Redeem(second, "Retry B");
++  ASSERT_TRUE(viewer_b.ok);
++  ASSERT_EQ(1u, capture_source_.pending_count());
++
++  capture_source_.CompleteNext(MakeServiceBaseline("shared baseline"));
++  SupervisionDashboardBaselineResult baseline_a =
++      service_->ReadDashboardBaseline(viewer_a.dashboard_session);
++  SupervisionDashboardBaselineResult baseline_b =
++      service_->ReadDashboardBaseline(viewer_b.dashboard_session);
++  ASSERT_TRUE(baseline_a.delivery.has_value());
++  ASSERT_TRUE(baseline_b.delivery.has_value());
++  ASSERT_TRUE(
++      service_
++          ->AckDashboard(viewer_a.dashboard_session, baseline_a.delivery->stamp)
++          .ok);
++  ASSERT_TRUE(
++      service_
++          ->AckDashboard(viewer_b.dashboard_session, baseline_b.delivery->stamp)
++          .ok);
++
++  EXPECT_TRUE(
++      service_->RequestDashboardBaseline(viewer_a.dashboard_session).ok);
++  EXPECT_TRUE(
++      service_->RequestDashboardBaseline(viewer_a.dashboard_session).ok);
++  SupervisionDashboardDiffResult retrying_a =
++      service_->ReadDashboardDiff(viewer_a.dashboard_session);
++  EXPECT_FALSE(retrying_a.ok);
++  EXPECT_EQ(SupervisionErrorCode::kResyncRequired, retrying_a.error_code);
++  SupervisionDashboardDiffResult unaffected_b =
++      service_->ReadDashboardDiff(viewer_b.dashboard_session);
++  EXPECT_TRUE(unaffected_b.ok);
++  EXPECT_FALSE(unaffected_b.delivery.has_value());
++  EXPECT_TRUE(service_->ReadDashboardBaseline(viewer_a.dashboard_session)
++                  .delivery.has_value());
++  EXPECT_FALSE(service_->ReadDashboardBaseline(viewer_b.dashboard_session)
++                   .delivery.has_value());
++  EXPECT_EQ(2u,
++            service_->capture_consumer_count_for_testing(first.stable_tab_id));
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       ControllerShutdownObserverRunsAfterAuthorityAndPairingErasure) {
++  PrometheusAgentTabObservationLease owner_lease =
++      agent_service_->ObserveOrCreateTabData(&tab_, &observer_tab_data_);
++  ASSERT_NE(nullptr, owner_lease.data());
++  ASSERT_TRUE(owner_lease.data()->ClaimIfUnowned("owner-a", "Agent A").ok);
++  ReadyActionViewer controller = CreateReadyActionViewer();
++  ASSERT_EQ(1u, service_->controller_count_for_testing());
++  SupervisionPairingCreationResult pending = CreatePairing();
++  ASSERT_TRUE(pending.ok);
++  ASSERT_EQ(1u, service_->retained_pairing_digest_count_for_testing());
++  ShutdownOrderObserver shutdown_observer(service_.get());
++  service_->AddObserver(&shutdown_observer);
++
++  service_->Shutdown();
++
++  EXPECT_TRUE(shutdown_observer.called);
++  EXPECT_TRUE(shutdown_observer.authority_and_pairings_were_erased);
++  EXPECT_EQ(0u, service_->controller_count_for_testing());
++  EXPECT_EQ(0u, service_->viewer_count_for_testing(
++                    controller.redemption.stable_tab_id));
++  EXPECT_EQ(0u, service_->retained_pairing_digest_count_for_testing());
++}
++
+ TEST_F(PrometheusSupervisionProfileServiceTest,
+        HubLaggingViewerResyncDoesNotAdvanceCurrentViewer) {
+   SupervisionLimits limits;
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 89f761ae31..3cb8cec128 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -905,6 +905,7 @@ IN_PROC_BROWSER_TEST_F(
+       dialog->widget_delegate()->AsDialogDelegate();
+   ASSERT_TRUE(stale_delegate);
+   ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlLifecycleEventsForTesting = [];
+     chrome.send('prometheusControlRevokeSupervisionSession', [0, true]);
+   )"));
+   ASSERT_TRUE(base::test::RunUntil([&]() {

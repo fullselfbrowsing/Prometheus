@@ -1,0 +1,407 @@
+From 91c6a19c60770a4efb5b3712f9d574a9f9f47881 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 6 Jul 2026 22:03:53 -0500
+Subject: [PATCH 14/15] feat(14-07): add Chrome-owned Prometheus token gallery
+ browsertest
+
+- Add PrometheusTokenGalleryView under chrome/browser/ui/views/prometheus
+- Wire a Chrome-owned browser_tests source_set instead of ui/views/examples
+- Build rows after widget attachment so ColorProvider access is runtime-safe
+---
+ chrome/browser/ui/views/prometheus/BUILD.gn   |  50 +++++++
+ .../prometheus_token_gallery_browsertest.cc   | 105 ++++++++++++++
+ .../prometheus_token_gallery_view.cc          | 131 ++++++++++++++++++
+ .../prometheus_token_gallery_view.h           |  59 ++++++++
+ chrome/test/BUILD.gn                          |   3 +
+ 5 files changed, 348 insertions(+)
+ create mode 100644 chrome/browser/ui/views/prometheus/BUILD.gn
+ create mode 100644 chrome/browser/ui/views/prometheus/prometheus_token_gallery_browsertest.cc
+ create mode 100644 chrome/browser/ui/views/prometheus/prometheus_token_gallery_view.cc
+ create mode 100644 chrome/browser/ui/views/prometheus/prometheus_token_gallery_view.h
+
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+new file mode 100644
+index 0000000000..017e089c31
+--- /dev/null
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -0,0 +1,50 @@
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++# PrometheusTokenGalleryView: a Chrome-owned dev-only Views token gallery
++# (D-13). Lives at chrome/browser/ui/views/prometheus/ and depends DOWNWARD
++# only (chrome -> ui), matching the new_tab_footer/BUILD.gn precedent of a
++# small self-contained feature source_set plus a sibling "browser_tests"
++# source_set in the same file. This is the layering-correct home: adding
++# these sources to //ui/views/examples would be an upward dependency
++# violation (that target must not depend on //chrome/browser) and would not
++# register a visible examples tab, so the OnThemeChanged live-rebuild proof
++# instead comes from prometheus_token_gallery_browsertest.cc below (closes
++# the HIGH review finding: "Views gallery registration likely violates
++# Chromium layering").
++
++source_set("prometheus") {
++  sources = [
++    "prometheus_token_gallery_view.cc",
++    "prometheus_token_gallery_view.h",
++  ]
++
++  deps = [
++    "//base",
++    "//chrome/browser/ui/color:color_headers",
++    "//skia",
++    "//ui/base",
++    "//ui/base/metadata",
++    "//ui/color",
++    "//ui/gfx",
++    "//ui/views",
++  ]
++}
++
++source_set("browser_tests") {
++  testonly = true
++  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
++  sources = [ "prometheus_token_gallery_browsertest.cc" ]
++
++  deps = [
++    ":prometheus",
++    "//base/test:test_support",
++    "//chrome/browser/themes",
++    "//chrome/browser/ui",
++    "//chrome/browser/ui/views/frame",
++    "//chrome/test:test_support",
++    "//content/test:test_support",
++    "//ui/views",
++  ]
++}
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_token_gallery_browsertest.cc b/chrome/browser/ui/views/prometheus/prometheus_token_gallery_browsertest.cc
+new file mode 100644
+index 0000000000..5c71dc8c01
+--- /dev/null
++++ b/chrome/browser/ui/views/prometheus/prometheus_token_gallery_browsertest.cc
+@@ -0,0 +1,105 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/prometheus/prometheus_token_gallery_view.h"
++
++#if DCHECK_IS_ON()
++
++#include <memory>
++
++#include "base/run_loop.h"
++#include "chrome/browser/themes/theme_service.h"
++#include "chrome/browser/themes/theme_service_factory.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/color/chrome_color_id.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "content/public/test/browser_test.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/color/color_provider.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/views/widget/widget.h"
++
++namespace {
++
++using PrometheusTokenGalleryBrowserTest = InProcessBrowserTest;
++
++// Chrome-owned browsertest proving the OnThemeChanged() live-rebuild D-13
++// requires. Constructs the gallery, asserts all 20 kColorPrometheus* rows
++// exist, then toggles BrowserColorScheme kDark <-> kLight via the real
++// ThemeService/profile pref plumbing (the same API chrome/browser/ui/
++// views/toolbar/webui_toolbar_web_view_browsertest.cc uses) and asserts the
++// rebuild happened: the row count is unchanged (still 20 — CreateGallery()
++// ran again, it didn't just leave stale rows) and at least one swatch color
++// resolved differently between the two color schemes (proving
++// GetColorProvider()->GetColor() was re-queried against a fresh
++// ColorProvider, not a cached value).
++//
++// The gallery's Widget is explicitly parented to the browser test window's
++// Widget (views::Widget::InitParams::SetParent) rather than left parentless.
++// Widget::GetColorProviderKey() inherits parent_->GetColorProviderKey() when
++// a parent is set; a parentless widget instead falls through to
++// ui::NativeTheme::GetInstanceForNativeUi() (the OS-level dark-mode
++// singleton), which ThemeService::SetBrowserColorScheme() does NOT update —
++// so a parentless widget would not observe the profile's BrowserColorScheme
++// toggle at all and this test would be asserting against the host machine's
++// OS appearance setting instead of the actual product plumbing.
++IN_PROC_BROWSER_TEST_F(PrometheusTokenGalleryBrowserTest,
++                       OnThemeChangedRebuildsAllRows) {
++  auto* theme_service =
++      ThemeServiceFactory::GetForProfile(browser()->profile());
++
++  // Start from a known color scheme so the test is deterministic regardless
++  // of the host OS's current appearance setting.
++  theme_service->SetBrowserColorScheme(
++      ThemeService::BrowserColorScheme::kDark);
++  base::RunLoop().RunUntilIdle();
++
++  views::Widget::InitParams params(
++      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
++      views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
++  params.bounds = gfx::Rect(0, 0, 400, 600);
++  params.SetParent(
++      BrowserView::GetBrowserViewForBrowser(browser())->GetWidget());
++
++  views::Widget widget;
++  widget.Init(std::move(params));
++
++  auto* gallery =
++      widget.SetContentsView(std::make_unique<PrometheusTokenGalleryView>());
++  widget.Show();
++
++  ASSERT_EQ(20u, gallery->color_row_count());
++
++  // Capture a swatch color under dark mode by reading the resolved color
++  // for kColorPrometheusBgApp directly from the widget's ColorProvider —
++  // the same accessor CreateGallery()'s InsertColorRow() uses internally.
++  const SkColor dark_bg_app =
++      widget.GetColorProvider()->GetColor(kColorPrometheusBgApp);
++
++  // Toggle to light and pump the message loop: ThemeService::
++  // NotifyThemeChanged() fans out through NativeTheme/ColorProvider
++  // observers, which is browser-process-wide plumbing rather than a
++  // guaranteed-synchronous call, so a RunLoop pump makes the test robust
++  // against that being (or becoming) asynchronous.
++  theme_service->SetBrowserColorScheme(
++      ThemeService::BrowserColorScheme::kLight);
++  base::RunLoop().RunUntilIdle();
++
++  // The rebuild proof: row count is still 20 (CreateGallery() re-ran and
++  // rebuilt from scratch, it did not leave 0 or a partial set of rows), and
++  // the resolved color for the same token actually changed — showing
++  // OnThemeChanged() queried a fresh ColorProvider rather than reusing a
++  // stale value.
++  EXPECT_EQ(20u, gallery->color_row_count());
++  const SkColor light_bg_app =
++      widget.GetColorProvider()->GetColor(kColorPrometheusBgApp);
++  EXPECT_NE(dark_bg_app, light_bg_app);
++
++  widget.CloseNow();
++}
++
++}  // namespace
++
++#endif  // DCHECK_IS_ON()
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_token_gallery_view.cc b/chrome/browser/ui/views/prometheus/prometheus_token_gallery_view.cc
+new file mode 100644
+index 0000000000..b1eb74e353
+--- /dev/null
++++ b/chrome/browser/ui/views/prometheus/prometheus_token_gallery_view.cc
+@@ -0,0 +1,131 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/prometheus/prometheus_token_gallery_view.h"
++
++#if DCHECK_IS_ON()
++
++#include <string>
++#include <string_view>
++
++#include "base/strings/stringprintf.h"
++#include "base/strings/utf_string_conversions.h"
++#include "chrome/browser/ui/color/chrome_color_id.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/color/color_id.h"
++#include "ui/color/color_provider.h"
++#include "ui/views/background.h"
++#include "ui/views/controls/label.h"
++#include "ui/views/layout/table_layout.h"
++#include "ui/views/view.h"
++
++namespace {
++
++// Starts a new row and adds two columns: the token name and a swatch
++// showing its resolved color plus hex value. Mirrors
++// ui/views/examples/colors_example.cc's InsertColorRow helper exactly (same
++// shape: parent View*, label, ui::ColorId) so this gallery stays a
++// recognizable analog of the in-tree Views color example.
++void InsertColorRow(views::View* parent,
++                    std::u16string_view label_string,
++                    ui::ColorId color_id) {
++  auto* label_view =
++      parent->AddChildView(std::make_unique<views::Label>(
++          std::u16string(label_string)));
++  label_view->SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_LEFT);
++  label_view->SetSelectable(true);
++
++  auto* color_view = parent->AddChildView(std::make_unique<views::Label>());
++  color_view->SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_LEFT);
++  SkColor background_color =
++      color_view->GetColorProvider()->GetColor(color_id);
++  uint8_t red = SkColorGetR(background_color);
++  uint8_t green = SkColorGetG(background_color);
++  uint8_t blue = SkColorGetB(background_color);
++  uint8_t alpha = SkColorGetA(background_color);
++  std::string color_string =
++      base::StringPrintf("#%02x%02x%02x Alpha: %d", red, green, blue, alpha);
++  color_view->SetText(base::ASCIIToUTF16(color_string));
++  color_view->SetBackground(views::CreateSolidBackground(background_color));
++  color_view->SetSelectable(true);
++}
++
++}  // namespace
++
++PrometheusTokenGalleryView::PrometheusTokenGalleryView() {
++  constexpr int kMaxHeight = 600;
++  ClipHeightTo(0, kMaxHeight);
++}
++
++PrometheusTokenGalleryView::~PrometheusTokenGalleryView() = default;
++
++void PrometheusTokenGalleryView::AddedToWidget() {
++  CreateGallery();
++}
++
++void PrometheusTokenGalleryView::OnThemeChanged() {
++  ScrollView::OnThemeChanged();
++  // Rebuild on every theme change so the gallery always reflects the
++  // current ColorProvider — this is the live dark/light toggle proof D-13
++  // requires (mirrors AllColorsScrollView::OnThemeChanged() in
++  // colors_example.cc).
++  CreateGallery();
++}
++
++void PrometheusTokenGalleryView::CreateGallery() {
++  auto* container = SetContents(std::make_unique<views::View>());
++  container->SetLayoutManager(std::make_unique<views::TableLayout>())
++      ->AddColumn(views::LayoutAlignment::kStretch,
++                  views::LayoutAlignment::kStretch, 1.0,
++                  views::TableLayout::ColumnSize::kUsePreferred, 0, 0)
++      .AddColumn(views::LayoutAlignment::kStretch,
++                 views::LayoutAlignment::kStretch, 1.0,
++                 views::TableLayout::ColumnSize::kUsePreferred, 0, 0)
++      .AddRows(20, views::TableLayout::kFixedSize);
++
++  InsertColorRow(container, u"kColorPrometheusBgApp", kColorPrometheusBgApp);
++  InsertColorRow(container, u"kColorPrometheusChrome", kColorPrometheusChrome);
++  InsertColorRow(container, u"kColorPrometheusChrome2",
++                 kColorPrometheusChrome2);
++  InsertColorRow(container, u"kColorPrometheusSurface",
++                 kColorPrometheusSurface);
++  InsertColorRow(container, u"kColorPrometheusSurface2",
++                 kColorPrometheusSurface2);
++  InsertColorRow(container, u"kColorPrometheusSurface3",
++                 kColorPrometheusSurface3);
++  InsertColorRow(container, u"kColorPrometheusTabActive",
++                 kColorPrometheusTabActive);
++  InsertColorRow(container, u"kColorPrometheusTabIdle",
++                 kColorPrometheusTabIdle);
++  InsertColorRow(container, u"kColorPrometheusTabHover",
++                 kColorPrometheusTabHover);
++  InsertColorRow(container, u"kColorPrometheusText", kColorPrometheusText);
++  InsertColorRow(container, u"kColorPrometheusText2", kColorPrometheusText2);
++  InsertColorRow(container, u"kColorPrometheusText3", kColorPrometheusText3);
++  InsertColorRow(container, u"kColorPrometheusBorder", kColorPrometheusBorder);
++  InsertColorRow(container, u"kColorPrometheusBorder2",
++                 kColorPrometheusBorder2);
++  InsertColorRow(container, u"kColorPrometheusHairline",
++                 kColorPrometheusHairline);
++  InsertColorRow(container, u"kColorPrometheusAccent", kColorPrometheusAccent);
++  InsertColorRow(container, u"kColorPrometheusAccent2",
++                 kColorPrometheusAccent2);
++  InsertColorRow(container, u"kColorPrometheusAccentSoft",
++                 kColorPrometheusAccentSoft);
++  InsertColorRow(container, u"kColorPrometheusAccentSoft2",
++                 kColorPrometheusAccentSoft2);
++  InsertColorRow(container, u"kColorPrometheusAccentGlow",
++                 kColorPrometheusAccentGlow);
++
++  color_row_count_ = 20;
++
++  // Expands the view to allow for scrolling (colors_example.cc parity).
++  container->SizeToPreferredSize();
++}
++
++BEGIN_METADATA(PrometheusTokenGalleryView)
++END_METADATA
++
++#endif  // DCHECK_IS_ON()
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_token_gallery_view.h b/chrome/browser/ui/views/prometheus/prometheus_token_gallery_view.h
+new file mode 100644
+index 0000000000..ed69acc34d
+--- /dev/null
++++ b/chrome/browser/ui/views/prometheus/prometheus_token_gallery_view.h
+@@ -0,0 +1,59 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_PROMETHEUS_PROMETHEUS_TOKEN_GALLERY_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_PROMETHEUS_PROMETHEUS_TOKEN_GALLERY_VIEW_H_
++
++// Native Views counterpart to chrome://prometheus-theme-preview (D-13): a
++// throwaway dev gallery enumerating all 20 kColorPrometheus* color ids and
++// rebuilding on OnThemeChanged() as the live dark/light toggle proof.
++// Explicitly dev-only — Phase 16 deletes or folds this surface. Gated the
++// same way as the WebUI preview (DCHECK_IS_ON()) since both are D-13
++// verification-only surfaces, not product UI.
++#include "base/dcheck_is_on.h"
++
++#if DCHECK_IS_ON()
++
++#include <cstddef>
++
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/views/controls/scroll_view.h"
++
++namespace views {
++class View;
++}  // namespace views
++
++class PrometheusTokenGalleryView : public views::ScrollView {
++  METADATA_HEADER(PrometheusTokenGalleryView, views::ScrollView)
++
++ public:
++  PrometheusTokenGalleryView();
++  PrometheusTokenGalleryView(const PrometheusTokenGalleryView&) = delete;
++  PrometheusTokenGalleryView& operator=(const PrometheusTokenGalleryView&) =
++      delete;
++  ~PrometheusTokenGalleryView() override;
++
++  // views::ScrollView:
++  void AddedToWidget() override;
++  void OnThemeChanged() override;
++
++  // Test accessor (avoids the browsertest reaching into privates): number of
++  // color rows the gallery currently contains. Expected to always be 20 (one
++  // per kColorPrometheus* id) both before and after an OnThemeChanged()
++  // rebuild.
++  size_t color_row_count() const { return color_row_count_; }
++
++ private:
++  // Builds (or rebuilds) the contents view: a two-column table of token name
++  // + resolved color swatch for all 20 kColorPrometheus* ids. Called from
++  // the constructor and from OnThemeChanged() so the gallery always reflects
++  // the current ColorProvider.
++  void CreateGallery();
++
++  size_t color_row_count_ = 0;
++};
++
++#endif  // DCHECK_IS_ON()
++
++#endif  // CHROME_BROWSER_UI_VIEWS_PROMETHEUS_PROMETHEUS_TOKEN_GALLERY_VIEW_H_
+diff --git a/chrome/test/BUILD.gn b/chrome/test/BUILD.gn
+index 064eb90b71..8b5917fb07 100644
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -2684,6 +2684,9 @@ if (!is_android) {
+       "//chrome/browser/ui/views/page_action",
+       "//chrome/browser/ui/views/page_info",
+       "//chrome/browser/ui/views/personal_context:browser_tests",
++      # Pulls prometheus_token_gallery_browsertest.cc from the Chrome-owned
++      # Prometheus gallery target.
++      "//chrome/browser/ui/views/prometheus:browser_tests",
+       "//chrome/browser/ui/views/side_panel",
+       "//chrome/browser/ui/views/tabs/glic",
+       "//chrome/browser/ui/views/tabs/projects",
+-- 
+2.50.1 (Apple Git-155)
+

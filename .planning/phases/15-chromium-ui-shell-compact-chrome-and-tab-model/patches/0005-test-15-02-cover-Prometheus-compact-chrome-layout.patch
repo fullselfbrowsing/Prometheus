@@ -1,0 +1,139 @@
+From 1eb1bf6c9e45fab4402be125a48ab738415ed47d Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 00:46:39 -0500
+Subject: [PATCH 05/11] test(15-02): cover Prometheus compact chrome layout
+
+---
+ chrome/browser/ui/views/prometheus/BUILD.gn   |  8 +-
+ .../prometheus_compact_chrome_browsertest.cc  | 91 +++++++++++++++++++
+ 2 files changed, 98 insertions(+), 1 deletion(-)
+ create mode 100644 chrome/browser/ui/views/prometheus/prometheus_compact_chrome_browsertest.cc
+
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 017e089c31..3ee1f9ca8c 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -35,16 +35,22 @@ source_set("prometheus") {
+ source_set("browser_tests") {
+   testonly = true
+   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+-  sources = [ "prometheus_token_gallery_browsertest.cc" ]
++  sources = [
++    "prometheus_compact_chrome_browsertest.cc",
++    "prometheus_token_gallery_browsertest.cc",
++  ]
+ 
+   deps = [
+     ":prometheus",
+     "//base/test:test_support",
++    "//chrome/browser/prometheus:prometheus_chrome_mode",
+     "//chrome/browser/themes",
+     "//chrome/browser/ui",
+     "//chrome/browser/ui/views/frame",
+     "//chrome/test:test_support",
++    "//components/prefs",
+     "//content/test:test_support",
+     "//ui/views",
++    "//url",
+   ]
+ }
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_compact_chrome_browsertest.cc b/chrome/browser/ui/views/prometheus/prometheus_compact_chrome_browsertest.cc
+new file mode 100644
+index 0000000000..cb73851eab
+--- /dev/null
++++ b/chrome/browser/ui/views/prometheus/prometheus_compact_chrome_browsertest.cc
+@@ -0,0 +1,91 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/frame/prometheus_compact_chrome_layout.h"
++
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/prometheus/prometheus_chrome_mode.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/browser_tabstrip.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/horizontal_tab_strip_region_view.h"
++#include "chrome/browser/ui/views/tabs/tab_strip.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "components/prefs/pref_service.h"
++#include "content/public/test/browser_test.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/controls/button/button.h"
++#include "ui/views/test/views_test_utils.h"
++#include "ui/views/view_utils.h"
++#include "ui/views/widget/widget.h"
++#include "url/gurl.h"
++
++class PrometheusCompactChromeLayoutBrowserTest : public InProcessBrowserTest {
++ public:
++  BrowserView* browser_view() {
++    return BrowserView::GetBrowserViewForBrowser(browser());
++  }
++
++  HorizontalTabStripRegionView* tab_strip_region_view() {
++    return views::AsViewClass<HorizontalTabStripRegionView>(
++        browser_view()->tab_strip_view());
++  }
++
++  TabStrip* tab_strip() { return tab_strip_region_view()->tab_strip(); }
++
++  void SetPrometheusMode(PrometheusChromeMode mode) {
++    SetPrometheusChromeMode(*browser()->profile()->GetPrefs(), mode);
++    RunScheduledLayouts();
++  }
++
++  void ResizeBrowserTo(int width, int height) {
++    browser_view()->GetWidget()->SetBounds(gfx::Rect(0, 0, width, height));
++    browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++    RunScheduledLayouts();
++  }
++
++  void AddBackgroundTabs(int count) {
++    for (int i = 0; i < count; ++i) {
++      chrome::AddTabAt(browser(), GURL("about:blank"), -1,
++                       /*foreground=*/false);
++    }
++    RunScheduledLayouts();
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(PrometheusCompactChromeLayoutBrowserTest,
++                       SeparateModeKeepsDefaultTabStripLayoutReachable) {
++  SetPrometheusMode(PrometheusChromeMode::kSeparate);
++
++  ASSERT_TRUE(tab_strip_region_view());
++  EXPECT_EQ(PrometheusChromeMode::kSeparate,
++            GetPrometheusChromeMode(*browser()->profile()->GetPrefs()));
++  EXPECT_TRUE(tab_strip_region_view()->GetVisible());
++  EXPECT_TRUE(tab_strip()->GetVisible());
++  EXPECT_GT(tab_strip()->width(), 0);
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusCompactChromeLayoutBrowserTest,
++                       CompactModeKeepsTabSearchReachableAt800Pixels) {
++  SetPrometheusMode(PrometheusChromeMode::kCompact);
++  ResizeBrowserTo(800, 900);
++  AddBackgroundTabs(12);
++
++  ASSERT_TRUE(tab_strip_region_view());
++  ASSERT_TRUE(tab_strip_region_view()->GetVisible());
++  EXPECT_GE(tab_strip_region_view()->height(),
++            kPrometheusCompactChromeHeight);
++
++  views::Button* const tab_search_button =
++      tab_strip_region_view()->GetTabSearchButton();
++  ASSERT_TRUE(tab_search_button);
++  EXPECT_TRUE(tab_search_button->GetVisible());
++  EXPECT_FALSE(tab_search_button->GetViewAccessibility()
++                   .GetCachedName()
++                   .empty());
++  EXPECT_TRUE(tab_strip()->GetVisible());
++  EXPECT_GT(tab_strip()->width(), 0);
++  EXPECT_LE(tab_strip()->bounds().right(), tab_strip_region_view()->width());
++}
+-- 
+2.50.1 (Apple Git-155)
+

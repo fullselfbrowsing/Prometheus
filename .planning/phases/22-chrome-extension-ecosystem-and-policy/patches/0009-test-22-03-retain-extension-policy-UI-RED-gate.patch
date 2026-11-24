@@ -1,0 +1,645 @@
+From 96da6e7720e69faeaf5df90298e6ffc36a380b17 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 29 Jul 2026 06:30:55 -0500
+Subject: [PATCH 9/9] test(22-03): retain extension policy UI RED gate
+
+- Freeze the complete local policy state and responsive contract
+
+- Retain safe-default native interaction confirmation evidence
+
+- Keep renderer mutation fixtures ordinal and generation bound
+---
+ .../prometheus/prometheus_runtime_dialogs.cc  |  14 +
+ .../prometheus/prometheus_runtime_dialogs.h   |  15 +
+ .../ui/webui/prometheus/prometheus_web_ui.cc  |   4 +
+ .../ui/webui/prometheus/prometheus_web_ui.h   |   2 +
+ .../prometheus_web_ui_browsertest.cc          | 516 ++++++++++++++++++
+ 5 files changed, 551 insertions(+)
+
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc b/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc
+index 5e00e58e67..87dec6313d 100644
+--- a/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc
++++ b/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.cc
+@@ -631,6 +631,16 @@ bool ShowPrometheusSupervisionDialog(
+   return true;
+ }
+ 
++bool ShowPrometheusExtensionInteractDialog(
++    BrowserWindowInterface* exact_browser,
++    const PrometheusExtensionInteractDialogModel& model,
++    PrometheusExtensionInteractDialogCallback reply_callback) {
++  (void)exact_browser;
++  (void)model;
++  (void)reply_callback;
++  return false;
++}
++
+ void SetPrometheusSupervisionDialogAutomationForTesting(
+     PrometheusSupervisionDialogAutomation automation) {
+   SupervisionDialogAutomation() = std::move(automation);
+@@ -652,4 +662,8 @@ views::Widget* PrometheusRuntimeDialogWidgetForTesting() {
+   return g_last_dialog ? g_last_dialog->GetWidget() : nullptr;
+ }
+ 
++bool ExtensionInteractConfirmationImplementedForTesting() {
++  return false;
++}
++
+ }  // namespace prometheus
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h b/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h
+index e4f470cc19..af9f3d834f 100644
+--- a/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h
++++ b/chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h
+@@ -29,6 +29,7 @@ enum class PrometheusRuntimeDialogKind {
+   kVaultUseConfirmation,
+   kSupervisionEnableControl,
+   kSupervisionConsequentialAction,
++  kExtensionInteractConfirmation,
+ };
+ 
+ enum class PrometheusSupervisionDialogKind {
+@@ -79,6 +80,14 @@ using PrometheusProviderSecretSaveCallback =
+     base::RepeatingCallback<void(std::string,
+                                  PrometheusProviderSecretSaveCompletion)>;
+ 
++struct PrometheusExtensionInteractDialogModel {
++  std::string extension_name;
++  bool private_mode = false;
++};
++
++using PrometheusExtensionInteractDialogCallback =
++    base::OnceCallback<void(bool)>;
++
+ bool ShowPrometheusProviderSecretDialog(
+     BrowserWindowInterface* exact_browser,
+     const PrometheusProviderConfig& provider,
+@@ -106,12 +115,18 @@ bool ShowPrometheusSupervisionDialog(
+     const PrometheusSupervisionDialogModel& model,
+     PrometheusSupervisionDialogCallback reply_callback);
+ 
++bool ShowPrometheusExtensionInteractDialog(
++    BrowserWindowInterface* exact_browser,
++    const PrometheusExtensionInteractDialogModel& model,
++    PrometheusExtensionInteractDialogCallback reply_callback);
++
+ void SetPrometheusSupervisionDialogAutomationForTesting(
+     PrometheusSupervisionDialogAutomation automation);
+ size_t PrometheusRuntimeDialogLaunchCountForTesting();
+ PrometheusRuntimeDialogKind PrometheusRuntimeDialogKindForTesting();
+ BrowserWindowInterface* PrometheusRuntimeDialogBrowserForTesting();
+ views::Widget* PrometheusRuntimeDialogWidgetForTesting();
++bool ExtensionInteractConfirmationImplementedForTesting();
+ 
+ }  // namespace prometheus
+ 
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index 31c5855010..e024d76d41 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -1698,4 +1698,8 @@ void PrometheusControlPanelUI::ClearControlPairingPresentation() {
+       "prometheusControlClearPairingPresentation");
+ }
+ 
++bool ExtensionPolicyWebUIImplementedForTesting() {
++  return false;
++}
++
+ WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusSidePanelUI)
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+index 681e2e8dd6..3ff6cfee42 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+@@ -213,4 +213,6 @@ class PrometheusControlPanelUI : public content::WebUIController {
+   WEB_UI_CONTROLLER_TYPE_DECL();
+ };
+ 
++bool ExtensionPolicyWebUIImplementedForTesting();
++
+ #endif  // CHROME_BROWSER_UI_WEBUI_PROMETHEUS_PROMETHEUS_WEB_UI_H_
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index f5913b0b65..d08e05b840 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -6278,3 +6278,519 @@ IN_PROC_BROWSER_TEST_F(
+   EXPECT_TRUE(zoom_issues.empty()) << "zoom=200% " << zoom_issues;
+   zoom_controller->SetZoomLevel(blink::ZoomFactorToZoomLevel(1.0));
+ }
++
++class PrometheusWebUIExtensionPolicyBrowserTest
++    : public PrometheusControlPanelBrowserTest {};
++
++class PrometheusExtensionConfirmationBrowserTest
++    : public PrometheusWebUIFoundationBrowserTest {};
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIExtensionPolicyBrowserTest,
++    CanonicalStateMatrixPlacementCompatibilityAndClosedMutationMessages) {
++  ASSERT_TRUE(ExtensionPolicyWebUIImplementedForTesting());
++  content::WebContents* const contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(contents);
++  ASSERT_TRUE(content::WaitForLoadStop(contents));
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    window.prometheusInstallExtensionPolicyFixtureForTesting = policy => {
++      window.prometheusControlReceiveSnapshot({
++        status: 'OK',
++        tasks: [],
++        providers: [],
++        memories: [],
++        site_guides: [],
++        guide_applications: [],
++        vault_entries: [],
++        events: [],
++        actions: [],
++        diagnostics: [],
++        permissions: {},
++        extension_policy: policy,
++      });
++    };
++    document.querySelector(
++        '[data-section-target="permissions"]')?.click();
++  )"));
++
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    window.prometheusInstallExtensionPolicyFixtureForTesting({
++      state: 'loading',
++      generation: 7,
++      rows: [],
++    });
++  )"));
++  EXPECT_TRUE(content::EvalJs(contents, R"(
++    document.querySelectorAll('[data-section-target]').length === 9 &&
++        !!document.querySelector(
++            '#section-permissions #control-extension-policy') &&
++        document.querySelector('#control-extension-policy-state')
++            ?.textContent === 'Loading extension policy' &&
++        !document.querySelector(
++            '#control-extension-policy input[type="radio"]');
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    window.prometheusInstallExtensionPolicyFixtureForTesting({
++      state: 'ready',
++      generation: 8,
++      subsystem_status: 'ready',
++      install_path: 'web_store_unverified',
++      rows: [],
++    });
++  )"));
++  EXPECT_TRUE(content::EvalJs(contents, R"(
++    (() => {
++      const policy = document.querySelector('#control-extension-policy');
++      return policy?.querySelector('h2')?.textContent === 'Extension policy' &&
++          policy.textContent.includes(
++              'Choose which visible extension pages Prometheus Agents may ' +
++              'read or interact with. Chrome permissions do not grant Agent ' +
++              'access.') &&
++          policy.textContent.includes('No extensions installed') &&
++          policy.textContent.includes(
++              'Install or load an extension in Chromium’s manager, then ' +
++              'return to set Agent access.') &&
++          policy.textContent.includes('Manage extensions');
++    })();
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    window.prometheusInstallExtensionPolicyFixtureForTesting({
++      state: 'unavailable',
++      generation: 9,
++      subsystem_status: 'unavailable',
++      install_path: 'web_store_unverified',
++      rows: [{
++        name: 'STALE ROW MUST CLEAR',
++        id_suffix: 'aaaaaa',
++        source: 'unpacked',
++        enabled: true,
++        manifest_version: 3,
++        private_eligible: true,
++        requested_regular: 'interact',
++        requested_private: 'interact',
++        effective_regular: 'interact',
++        effective_private: 'interact',
++        ordinal: 0,
++        generation: 9,
++      }],
++    });
++  )"));
++  EXPECT_TRUE(content::EvalJs(contents, R"(
++    (() => {
++      const policy = document.querySelector('#control-extension-policy');
++      return policy.textContent.includes('Extension system unavailable') &&
++          policy.textContent.includes(
++              'This build cannot initialize Chromium’s extension subsystem. ' +
++              'Review diagnostics and the documented build limitations.') &&
++          !policy.textContent.includes('STALE ROW MUST CLEAR') &&
++          !policy.querySelector('input[type="radio"]');
++    })();
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    window.prometheusInstallExtensionPolicyFixtureForTesting({
++      state: 'error',
++      generation: 10,
++      rows: [],
++    });
++  )"));
++  EXPECT_TRUE(content::EvalJs(contents, R"(
++    (() => {
++      const policy = document.querySelector('#control-extension-policy');
++      return policy.textContent.includes(
++                 'Prometheus could not load extension policy') &&
++          policy.textContent.includes('Refresh diagnostics, then try again.') &&
++          !!policy.querySelector('#control-extension-policy-refresh');
++    })();
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    window.prometheusInstallExtensionPolicyFixtureForTesting({
++      state: 'degraded',
++      generation: 11,
++      subsystem_status: 'degraded',
++      install_path: 'web_store_unverified',
++      rows: [{
++        name: 'Fixture Extension',
++        id_suffix: 'mnopab',
++        source: 'unpacked',
++        enabled: true,
++        manifest_version: 3,
++        private_eligible: true,
++        requested_regular: 'read_only',
++        requested_private: 'blocked',
++        effective_regular: 'read_only',
++        effective_private: 'blocked',
++        ordinal: 0,
++        generation: 11,
++      }, {
++        name: 'Disabled Fixture',
++        id_suffix: 'cdefgh',
++        source: 'web_store',
++        enabled: false,
++        manifest_version: 2,
++        private_eligible: false,
++        requested_regular: 'blocked',
++        requested_private: 'blocked',
++        effective_regular: 'blocked',
++        effective_private: 'blocked',
++        ordinal: 1,
++        generation: 11,
++      }],
++    });
++  )"));
++  EXPECT_TRUE(content::EvalJs(contents, R"(
++    (() => {
++      const policy = document.querySelector('#control-extension-policy');
++      const detail = policy.querySelector('#control-extension-policy-detail');
++      const regular = Array.from(
++          detail.querySelectorAll('input[name^="extension-regular"]'));
++      const privateChoices = Array.from(
++          detail.querySelectorAll('input[name^="extension-private"]'));
++      const rowText = Array.from(
++          policy.querySelectorAll('[role="option"]'),
++          row => row.textContent.replace(/\s+/g, ' '));
++      return policy.textContent.includes(
++                 'Chrome Web Store installation is not verified in this ' +
++                 'build. Use developer mode to load an unpacked extension.') &&
++          detail.textContent.includes(
++              'Extensions cannot use Chrome permissions to gain Prometheus ' +
++              'Agent, vault, or internal-page access.') &&
++          rowText[0].includes('Fixture Extension') &&
++          rowText[0].includes('Enabled') &&
++          rowText[0].includes('Manifest V3') &&
++          rowText[0].includes('Developer mode') &&
++          rowText[0].includes('Read only') &&
++          rowText[0].includes('Private Agent blocked') &&
++          rowText[1].includes('Disabled') &&
++          rowText[1].includes('Manifest V2') &&
++          rowText[1].includes('Web Store unverified') &&
++          rowText[1].includes('Private extension off') &&
++          regular.length === 3 && privateChoices.length === 3 &&
++          regular.find(input => input.value === 'read_only')?.checked &&
++          privateChoices.find(input => input.value === 'blocked')?.checked &&
++          ['Blocked', 'Read only', 'Interact'].every(label =>
++            detail.textContent.includes(label)) &&
++          detail.textContent.includes(
++              'Agents cannot read or interact with this extension.') &&
++          detail.textContent.includes(
++              'Agents may read approved visible extension pages but cannot ' +
++              'change them.') &&
++          detail.textContent.includes(
++              'Agents may use approved typed actions on visible extension ' +
++              'pages. Scripts and hidden contexts remain blocked.');
++    })();
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    window.prometheusExtensionPolicyMessagesForTesting = [];
++    const interact = document.querySelector(
++        '#control-extension-policy-detail ' +
++        'input[name^="extension-regular"][value="interact"]');
++    interact.click();
++  )"));
++  EXPECT_TRUE(content::EvalJs(contents, R"(
++    (() => {
++      const messages =
++          window.prometheusExtensionPolicyMessagesForTesting || [];
++      const message = messages.at(-1);
++      const selected = document.querySelector(
++          '#control-extension-policy-detail ' +
++          'input[name^="extension-regular"]:checked');
++      return messages.length === 1 &&
++          message.message === 'prometheusControlSetExtensionPolicy' &&
++          JSON.stringify(message.args) ===
++              JSON.stringify([0, 11, 'interact', false]) &&
++          Object.keys(message).length === 2 &&
++          selected?.value === 'read_only' &&
++          document.querySelector('#control-extension-policy-operation')
++              ?.textContent === 'Updating policy';
++    })();
++  )")
++                  .ExtractBool());
++
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    window.prometheusControlReceiveExtensionPolicyOperation({
++      status: 'STALE_POLICY',
++      accepted: false,
++      recovery:
++          'The extension list changed. Review the current extension and try again.',
++    });
++    document.querySelector('[data-section-target="parity"]').click();
++  )"));
++  EXPECT_TRUE(content::EvalJs(contents, R"(
++    (() => {
++      const rows = Array.from(document.querySelectorAll(
++          '#control-extension-compatibility [role="listitem"]'));
++      return rows.length === 5 &&
++          JSON.stringify(rows.map(row => row.querySelector('h3').textContent)) ===
++              JSON.stringify([
++                'Password manager',
++                'Ad blocker',
++                'Productivity content script',
++                'Side panel and tooling',
++                'Developer extension',
++              ]);
++    })();
++  )")
++                  .ExtractBool());
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusWebUIExtensionPolicyBrowserTest,
++    ResponsiveKeyboardPrivacyContrastAndFailureRecoveryContract) {
++  ASSERT_TRUE(ExtensionPolicyWebUIImplementedForTesting());
++  content::WebContents* const contents =
++      NavigateTo(chrome::kChromeUIPrometheusControlPanelURL);
++  ASSERT_TRUE(contents);
++  ASSERT_TRUE(content::WaitForLoadStop(contents));
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    document.querySelector(
++        '[data-section-target="permissions"]')?.click();
++    window.prometheusControlReceiveSnapshot({
++      status: 'OK',
++      tasks: [],
++      providers: [],
++      memories: [],
++      site_guides: [],
++      guide_applications: [],
++      vault_entries: [],
++      events: [],
++      actions: [],
++      diagnostics: [],
++      permissions: {},
++      extension_policy: {
++        state: 'ready',
++        generation: 41,
++        subsystem_status: 'ready',
++        install_path: 'developer_mode',
++        rows: [{
++          name: 'A long but bounded extension name used for wrapping evidence',
++          id_suffix: 'mnopab',
++          source: 'unpacked',
++          enabled: true,
++          manifest_version: 3,
++          private_eligible: true,
++          requested_regular: 'interact',
++          requested_private: 'read_only',
++          effective_regular: 'interact',
++          effective_private: 'read_only',
++          ordinal: 0,
++          generation: 41,
++          extension_id: 'FULL_EXTENSION_ID_SENTINEL',
++          permissions: ['PERMISSION_SENTINEL'],
++          origin: 'ORIGIN_SENTINEL',
++          profile_path: 'PROFILE_PATH_SENTINEL',
++          authority: 'AUTHORITY_SENTINEL',
++          content: 'CONTENT_SENTINEL',
++        }],
++      },
++    });
++    window.prometheusExtensionPolicyResponsiveIssuesForTesting = () => {
++      const policy = document.querySelector('#control-extension-policy');
++      const layout =
++          document.querySelector('#control-extension-policy-layout');
++      const choices = Array.from(policy.querySelectorAll(
++          '.control-extension-grant-choice'));
++      const controls = Array.from(policy.querySelectorAll(
++          'button, [role="option"], .control-extension-grant-choice'));
++      const fontSizes = new Set(Array.from(policy.querySelectorAll('*'))
++          .map(node => getComputedStyle(node).fontSize)
++          .filter(size => size !== '0px'));
++      const columns =
++          getComputedStyle(layout).gridTemplateColumns.split(' ').length;
++      const expectedColumns = window.innerWidth >= 1024 ? 2 : 1;
++      const issues = [];
++      if (document.documentElement.scrollWidth >
++          document.documentElement.clientWidth) {
++        issues.push('overflow');
++      }
++      if (columns !== expectedColumns) {
++        issues.push('columns');
++      }
++      if (controls.some(control =>
++          control.getBoundingClientRect().height < 48)) {
++        issues.push('target');
++      }
++      if (window.innerWidth <= 479 &&
++          getComputedStyle(policy).padding !== '16px') {
++        issues.push('padding');
++      }
++      if (choices.some(choice => choice.getBoundingClientRect().width >
++          policy.getBoundingClientRect().width + 0.5)) {
++        issues.push('choice-width');
++      }
++      if ([...fontSizes].some(size =>
++          !['12px', '13px', '16px', '20px'].includes(size))) {
++        issues.push('type');
++      }
++      return issues.join('|');
++    };
++  )"));
++
++  const std::string serialized = content::EvalJs(contents, R"(
++    JSON.stringify({
++      policy: window.prometheusControlSnapshotForTesting?.extension_policy,
++      dom: document.querySelector('#control-extension-policy')?.outerHTML,
++    });
++  )")
++                                     .ExtractString();
++  for (const std::string& sentinel : std::vector<std::string>{
++           "FULL_EXTENSION_ID_SENTINEL", "PERMISSION_SENTINEL",
++           "ORIGIN_SENTINEL", "PROFILE_PATH_SENTINEL", "AUTHORITY_SENTINEL",
++           "CONTENT_SENTINEL"}) {
++    EXPECT_EQ(std::string::npos, serialized.find(sentinel)) << sentinel;
++  }
++  EXPECT_TRUE(content::EvalJs(contents, R"(
++    (() => {
++      const policy = document.querySelector('#control-extension-policy');
++      const radios = Array.from(policy.querySelectorAll('[role="radio"]'));
++      const live = policy.querySelector(
++          '#control-extension-policy-operation[aria-live="polite"]');
++      const manage = policy.querySelector('#control-manage-extensions');
++      const firstRow = policy.querySelector('[role="option"]');
++      const detailHeading = policy.querySelector(
++          '#control-extension-policy-detail-heading');
++      return manage && firstRow && detailHeading && live &&
++          radios.length === 6 &&
++          radios.every(radio => radio.closest('label')) &&
++          getComputedStyle(manage).minHeight === '48px' &&
++          document.activeElement !== null;
++    })();
++  )")
++                  .ExtractBool());
++
++  for (const int width : std::array{320, 480, 720, 1024}) {
++    contents->Resize(gfx::Rect(0, 0, width, 1000));
++    ASSERT_TRUE(base::test::RunUntil([&]() {
++      return content::EvalJs(contents, "window.innerWidth").ExtractInt() ==
++             width;
++    })) << width;
++    const std::string issues = content::EvalJs(
++        contents,
++        "window.prometheusExtensionPolicyResponsiveIssuesForTesting()")
++                                   .ExtractString();
++    EXPECT_TRUE(issues.empty()) << "width=" << width << " " << issues;
++  }
++
++  contents->Resize(gfx::Rect(0, 0, 640, 1000));
++  zoom::ZoomController* const zoom_controller =
++      zoom::ZoomController::FromWebContents(contents);
++  ASSERT_TRUE(zoom_controller);
++  zoom_controller->SetZoomLevel(blink::ZoomFactorToZoomLevel(2.0));
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return zoom_controller->GetZoomPercent() == 200; }));
++  EXPECT_TRUE(content::EvalJs(
++                  contents,
++                  "window.prometheusExtensionPolicyResponsiveIssuesForTesting()")
++                  .ExtractString()
++                  .empty());
++  zoom_controller->SetZoomLevel(blink::ZoomFactorToZoomLevel(1.0));
++
++  std::string renderer_source;
++  std::string control_html_source;
++  std::string stylesheet_source;
++  {
++    base::ScopedAllowBlockingForTesting allow_blocking;
++    base::FilePath source_root;
++    ASSERT_TRUE(
++        base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &source_root));
++    ASSERT_TRUE(base::ReadFileToString(
++        source_root.AppendASCII(
++            "chrome/browser/resources/prometheus/prometheus_webui.js"),
++        &renderer_source));
++    ASSERT_TRUE(base::ReadFileToString(
++        source_root.AppendASCII("chrome/browser/resources/prometheus/"
++                                "prometheus_control_panel.html"),
++        &control_html_source));
++    ASSERT_TRUE(base::ReadFileToString(
++        source_root.AppendASCII(
++            "chrome/browser/resources/prometheus/prometheus_webui.css"),
++        &stylesheet_source));
++  }
++  const std::string packaged_sources =
++      renderer_source + control_html_source + stylesheet_source;
++  for (const std::string& forbidden : std::vector<std::string>{
++           ".innerHTML =", "insertAdjacentHTML", "<iframe", "<object",
++           "url(http://", "url(https://", "@import"}) {
++    EXPECT_EQ(std::string::npos, packaged_sources.find(forbidden)) << forbidden;
++  }
++  EXPECT_NE(std::string::npos,
++            stylesheet_source.find("--prometheus-policy-interaction: #7a3215"));
++  EXPECT_NE(std::string::npos,
++            stylesheet_source.find("--prometheus-policy-filled: #ff6b35"));
++  EXPECT_NE(std::string::npos,
++            stylesheet_source.find("--prometheus-policy-filled-text: #1f1a17"));
++}
++
++IN_PROC_BROWSER_TEST_F(
++    PrometheusExtensionConfirmationBrowserTest,
++    SafeDefaultEscapePrivateCopyAndSingleReply) {
++  ASSERT_TRUE(prometheus::ExtensionInteractConfirmationImplementedForTesting());
++  prometheus::PrometheusExtensionInteractDialogModel model;
++  model.extension_name = "Fixture Extension";
++  int replies = 0;
++  bool accepted = true;
++  ASSERT_TRUE(prometheus::ShowPrometheusExtensionInteractDialog(
++      browser(), model,
++      base::BindOnce(
++          [](int* replies, bool* accepted, bool result) {
++            ++*replies;
++            *accepted = result;
++          },
++          &replies, &accepted)));
++  views::Widget* widget =
++      prometheus::PrometheusRuntimeDialogWidgetForTesting();
++  ASSERT_TRUE(widget);
++  views::DialogDelegate* dialog =
++      widget->widget_delegate()->AsDialogDelegate();
++  ASSERT_TRUE(dialog);
++  EXPECT_EQ(prometheus::PrometheusRuntimeDialogKind::
++                kExtensionInteractConfirmation,
++            prometheus::PrometheusRuntimeDialogKindForTesting());
++  EXPECT_EQ(u"Allow Agent interaction with Fixture Extension?",
++            dialog->GetWindowTitle());
++  EXPECT_EQ(u"Allow interaction",
++            dialog->GetDialogButtonLabel(ui::mojom::DialogButton::kOk));
++  EXPECT_EQ(u"Keep current access",
++            dialog->GetDialogButtonLabel(ui::mojom::DialogButton::kCancel));
++  EXPECT_EQ(static_cast<int>(ui::mojom::DialogButton::kCancel),
++            dialog->GetDefaultDialogButton());
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return widget->GetFocusManager()->GetFocusedView() ==
++           dialog->GetCancelButton();
++  }));
++  widget->CloseWithReason(views::Widget::ClosedReason::kEscKeyPressed);
++  ASSERT_TRUE(base::test::RunUntil([&]() { return replies == 1; }));
++  EXPECT_FALSE(accepted);
++
++  model.private_mode = true;
++  replies = 0;
++  accepted = false;
++  ASSERT_TRUE(prometheus::ShowPrometheusExtensionInteractDialog(
++      browser(), model,
++      base::BindOnce(
++          [](int* replies, bool* accepted, bool result) {
++            ++*replies;
++            *accepted = result;
++          },
++          &replies, &accepted)));
++  widget = prometheus::PrometheusRuntimeDialogWidgetForTesting();
++  ASSERT_TRUE(widget);
++  dialog = widget->widget_delegate()->AsDialogDelegate();
++  ASSERT_TRUE(dialog);
++  EXPECT_EQ(
++      u"Allow Agent interaction with Fixture Extension in Private windows?",
++      dialog->GetWindowTitle());
++  dialog->AcceptDialog();
++  ASSERT_TRUE(base::test::RunUntil([&]() { return replies == 1; }));
++  EXPECT_TRUE(accepted);
++}
+-- 
+2.50.1 (Apple Git-155)
+

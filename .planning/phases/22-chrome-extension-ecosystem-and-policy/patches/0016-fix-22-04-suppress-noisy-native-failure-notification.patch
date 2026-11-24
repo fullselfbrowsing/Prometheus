@@ -1,0 +1,38 @@
+From 5c4263e8edccbf7f57b6a5f9c975ee286b362420 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 29 Jul 2026 11:54:08 -0500
+Subject: [PATCH] fix(22-04): suppress noisy native failure notification in MV2
+ observation
+
+The MV2 pinned-policy observation test intermittently hung past a 90s
+test-launcher timeout under repeated consecutive local browser-test
+invocations. UnpackedInstaller defaults be_noisy_on_failure to true,
+which surfaces a native load-error notification on the rejected-install
+path this test exercises; the notification path appears to stall an
+automated harness under load. Setting
+installer->set_be_noisy_on_failure(false) does not change whether the
+extension installs or any registry/prefs disable-reason outcome -- it
+only suppresses the user-facing notification -- and resolves the hang
+(observation test now completes in ~1.3s).
+---
+ .../prometheus_extension_fixtures_browsertest.cc           | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc b/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc
+index e06927dce0..41e23c0675 100644
+--- a/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_extension_fixtures_browsertest.cc
+@@ -322,6 +322,13 @@ IN_PROC_BROWSER_TEST_F(PrometheusExtensionFixturesBrowserTest,
+ 
+   scoped_refptr<extensions::UnpackedInstaller> installer =
+       extensions::UnpackedInstaller::Create(browser()->profile());
++  // Suppresses only the native "noisy" load-error notification surface (not
++  // a verification or MV2-policy bypass: it does not change whether the
++  // extension installs, nor any registry/prefs disable-reason outcome). In
++  // an automated harness an unacknowledged native failure notification can
++  // stall the test process indefinitely waiting for a dismissal that never
++  // comes.
++  installer->set_be_noisy_on_failure(false);
+   base::RunLoop run_loop;
+   scoped_refptr<const extensions::Extension> loaded_extension;
+   std::u16string load_error;

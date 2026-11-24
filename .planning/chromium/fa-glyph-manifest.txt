@@ -1,0 +1,94 @@
+# FA glyph manifest for Prometheus Chromium icon pipeline.
+# This file is the SINGLE SOURCE of which FA Free glyphs ship.
+# convert-fa-icons.sh iterates THIS file (not whatever .svg files exist in FA_SOURCE_DIR).
+#
+# Format: one glyph name per line (FA slug, hyphenated).
+#   - Blank lines and lines whose first non-space character is '#' are ignored.
+#   - Inline trailing tags control special handling:
+#       # SUBSTITUTE=<name>   Convert <name>.svg but write fa_<original_slug>.{icon,svg}
+#       # PLACEHOLDER         Write a hand-authored placeholder (Pro-only glyphs)
+#
+# PARSE ORDER IS LOAD-BEARING (see convert-fa-icons.sh §PARSE ORDER):
+#   1. Skip blank lines and full-line comments.
+#   2. Extract trailing inline tag BEFORE stripping the comment.
+#   3. Strip the '#...' comment to get the bare glyph name.
+#
+# Count: 72 entries (matches 14-ASSET-MANIFEST.md Section 3 table row count).
+# Note: plan prose said "69" based on Phase-09 data; the asset manifest table
+#       and Falkon v1 bundle both enumerate 72 distinct glyphs — 72 is canonical.
+
+# --- Special cases ---
+arrow-down-to-line  # SUBSTITUTE=arrow-down
+sidebar-flip        # PLACEHOLDER
+
+# --- Standard FA Free 6.x solid glyphs (70 direct conversions) ---
+arrow-left
+arrow-right
+arrow-up
+arrow-up-from-bracket
+bars
+bolt
+book-open
+calendar-check
+camera
+cart-shopping
+check-double
+circle-check
+circle-half-stroke
+circle-info
+circle-minus
+circle-nodes
+circle-plus
+circle-question
+circle-xmark
+compass
+copy
+eye
+folder-plus
+heart-pulse
+highlighter
+house
+inbox
+key
+keyboard
+language
+layer-group
+link
+link-slash
+lock
+lock-open
+magnifying-glass
+microchip
+microphone
+moon
+note-sticky
+palette
+paste
+pen
+plug
+plug-circle-xmark
+plus
+puzzle-piece
+rotate-left
+rotate-right
+scissors
+scroll
+server
+shield
+sliders
+star
+star-half-stroke
+stop
+table
+table-cells-large
+tag
+thumbtack
+trash
+triangle-exclamation
+user-secret
+vault
+volume-high
+volume-xmark
+wand-magic-sparkles
+wrench
+xmark

@@ -1,0 +1,529 @@
+From 14586df9677363bed1242afd2598855925f3c7c5 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 06:19:03 -0500
+Subject: [PATCH] feat(21-17): preserve badge geometry under compression
+
+---
+ .../prometheus_compact_chrome_browsertest.cc  |  12 ++
+ ...theus_tab_supervision_badge_browsertest.cc | 184 +++++++++++++++++-
+ .../views/tabs/prometheus_tab_status_badge.cc |  71 +++++--
+ .../views/tabs/prometheus_tab_status_badge.h  |  11 ++
+ chrome/browser/ui/views/tabs/tab.cc           |  31 +--
+ chrome/browser/ui/views/tabs/tab.h            |   1 +
+ 6 files changed, 282 insertions(+), 28 deletions(-)
+
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_compact_chrome_browsertest.cc b/chrome/browser/ui/views/prometheus/prometheus_compact_chrome_browsertest.cc
+index cb73851eab..5e801b89cd 100644
+--- a/chrome/browser/ui/views/prometheus/prometheus_compact_chrome_browsertest.cc
++++ b/chrome/browser/ui/views/prometheus/prometheus_compact_chrome_browsertest.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/ui/views/frame/prometheus_compact_chrome_layout.h"
+ 
++#include "base/test/scoped_feature_list.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/prometheus/prometheus_chrome_mode.h"
+ #include "chrome/browser/ui/browser.h"
+@@ -11,8 +12,10 @@
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/horizontal_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/tabs/tab_strip.h"
++#include "chrome/common/chrome_features.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+ #include "components/prefs/pref_service.h"
++#include "content/public/common/content_features.h"
+ #include "content/public/test/browser_test.h"
+ #include "ui/gfx/geometry/rect.h"
+ #include "ui/views/accessibility/view_accessibility.h"
+@@ -24,6 +27,12 @@
+ 
+ class PrometheusCompactChromeLayoutBrowserTest : public InProcessBrowserTest {
+  public:
++  PrometheusCompactChromeLayoutBrowserTest() {
++    scoped_feature_list_.InitWithFeatures(
++        {}, {features::kInitialWebUI,
++             features::kWebUIToolbarProcessOverheadExperiment});
++  }
++
+   BrowserView* browser_view() {
+     return BrowserView::GetBrowserViewForBrowser(browser());
+   }
+@@ -53,6 +62,9 @@ class PrometheusCompactChromeLayoutBrowserTest : public InProcessBrowserTest {
+     }
+     RunScheduledLayouts();
+   }
++
++ private:
++  base::test::ScopedFeatureList scoped_feature_list_;
+ };
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusCompactChromeLayoutBrowserTest,
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc b/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc
+index 12392fe362..a5924b8689 100644
+--- a/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc
++++ b/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc
+@@ -18,7 +18,9 @@
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/horizontal_tab_strip_region_view.h"
++#include "chrome/browser/ui/views/location_bar/location_bar_view.h"
+ #include "chrome/browser/ui/views/tabs/tab.h"
++#include "chrome/browser/ui/views/tabs/tab/tab_close_button.h"
+ #include "chrome/browser/ui/views/tabs/tab_strip.h"
+ #include "chrome/common/chrome_features.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+@@ -28,6 +30,7 @@
+ #include "testing/gtest/include/gtest/gtest.h"
+ #include "ui/base/models/image_model.h"
+ #include "ui/color/color_id.h"
++#include "ui/gfx/geometry/rect.h"
+ #include "ui/views/accessibility/view_accessibility.h"
+ #include "ui/views/controls/image_view.h"
+ #include "ui/views/test/views_test_utils.h"
+@@ -98,12 +101,22 @@ class PrometheusTabSupervisionBadgeBrowserTest : public InProcessBrowserTest {
+ 
+   Tab* tab_view_at(int index) { return tab_strip()->tab_at(index); }
+ 
+-  void AddBackgroundTab() {
+-    chrome::AddTabAt(browser(), GURL("about:blank"), -1,
+-                     /*foreground=*/false);
++  void AddBackgroundTabs(int count) {
++    for (int i = 0; i < count; ++i) {
++      chrome::AddTabAt(browser(), GURL("about:blank"), -1,
++                       /*foreground=*/false);
++    }
++    tab_strip()->StopAnimating();
+     RunScheduledLayouts();
+   }
+ 
++  void AddBackgroundTab() { AddBackgroundTabs(1); }
++
++  void ResizeBrowserTo(int width, int height) {
++    browser_view()->GetWidget()->SetBounds(gfx::Rect(0, 0, width, height));
++    FlushLayouts();
++  }
++
+   void FlushLayouts() {
+     browser_view()->GetWidget()->LayoutRootViewIfNecessary();
+     RunScheduledLayouts();
+@@ -250,6 +263,66 @@ IN_PROC_BROWSER_TEST_F(PrometheusTabSupervisionBadgeBrowserTest,
+   }
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusTabSupervisionBadgeBrowserTest,
++                       StateCompressionPriorityKeepsCompleteAccessibleName) {
++  PrometheusTabStatusBadge badge;
++  PrometheusTabState state = ViewingState(2);
++  state.owner_label = "Agent A";
++  state.automation_active = true;
++  state.supervision.control_state = ControlState::kControllerReady;
++  state.supervision.controller_label = "Dashboard A";
++  state.supervision.activity_state = ActivityState::kExecuting;
++  state.supervision.action_category = ActionCategory::kClick;
++  state.supervision.severity = Severity::kNeedsAttention;
++  badge.SetState(state);
++  const std::u16string complete_name =
++      badge.GetViewAccessibility().GetCachedName();
++
++  badge.SetAvailableWidth(PrometheusTabStatusBadge::kMaximumWidth);
++  EXPECT_EQ(gfx::Size(44, 12), badge.GetPreferredSize());
++  EXPECT_TRUE(badge.owner_or_automation_badge_for_testing()->GetVisible());
++  EXPECT_TRUE(badge.supervision_badge_for_testing()->GetVisible());
++  EXPECT_TRUE(badge.health_badge_for_testing()->GetVisible());
++
++  badge.SetAvailableWidth(28);
++  EXPECT_EQ(gfx::Size(28, 12), badge.GetPreferredSize());
++  EXPECT_TRUE(badge.owner_or_automation_badge_for_testing()->GetVisible());
++  EXPECT_TRUE(badge.supervision_badge_for_testing()->GetVisible());
++  EXPECT_FALSE(badge.health_badge_for_testing()->GetVisible());
++  EXPECT_EQ(complete_name, badge.GetViewAccessibility().GetCachedName());
++
++  badge.SetAvailableWidth(12);
++  EXPECT_EQ(gfx::Size(12, 12), badge.GetPreferredSize());
++  EXPECT_FALSE(badge.owner_or_automation_badge_for_testing()->GetVisible());
++  EXPECT_TRUE(badge.supervision_badge_for_testing()->GetVisible());
++  EXPECT_FALSE(badge.health_badge_for_testing()->GetVisible());
++  EXPECT_EQ(complete_name, badge.GetTooltipText());
++
++  badge.SetAvailableWidth(0);
++  EXPECT_EQ(gfx::Size(), badge.GetPreferredSize());
++  EXPECT_EQ(gfx::Size(12, 12), badge.GetMinimumSize());
++  EXPECT_TRUE(badge.GetVisible());
++  EXPECT_FALSE(badge.owner_or_automation_badge_for_testing()->GetVisible());
++  EXPECT_FALSE(badge.supervision_badge_for_testing()->GetVisible());
++  EXPECT_FALSE(badge.health_badge_for_testing()->GetVisible());
++  EXPECT_EQ(complete_name, badge.GetViewAccessibility().GetCachedName());
++
++  state.automation_active = false;
++  badge.SetAvailableWidth(28);
++  badge.SetState(state);
++  EXPECT_FALSE(badge.owner_or_automation_badge_for_testing()->GetVisible());
++  EXPECT_TRUE(badge.supervision_badge_for_testing()->GetVisible());
++  EXPECT_TRUE(badge.health_badge_for_testing()->GetVisible());
++
++  state.supervision = PrometheusTabState::Supervision();
++  state.health = PrometheusTabState::Health::kNeedsAttention;
++  badge.SetAvailableWidth(12);
++  badge.SetState(state);
++  EXPECT_FALSE(badge.owner_or_automation_badge_for_testing()->GetVisible());
++  EXPECT_FALSE(badge.supervision_badge_for_testing()->GetVisible());
++  EXPECT_TRUE(badge.health_badge_for_testing()->GetVisible());
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusTabSupervisionBadgeBrowserTest,
+                        RealTabLiveTransitionsAndTerminalClear) {
+   ASSERT_EQ(1, tab_strip()->GetModelCount());
+@@ -377,3 +450,108 @@ IN_PROC_BROWSER_TEST_F(PrometheusTabSupervisionBadgeBrowserTest,
+   EXPECT_TRUE(second_tab->prometheus_tab_status_badge_for_testing()
+                   ->GetVisible());
+ }
++
++IN_PROC_BROWSER_TEST_F(PrometheusTabSupervisionBadgeBrowserTest,
++                       RealTabCompressionPreservesNativeGeometry) {
++  Tab* const tab = tab_view_at(0);
++  ASSERT_TRUE(tab);
++  PrometheusTabStatusBadge* const badge =
++      tab->prometheus_tab_status_badge_for_testing();
++  ASSERT_TRUE(badge);
++  TabCloseButton* const close_button = tab->close_button();
++  ASSERT_TRUE(close_button);
++
++  std::unique_ptr<prometheus::PrometheusAgentTabData> tab_data =
++      prometheus::PrometheusAgentTabData::ForTabForTesting(
++          tab_interface_at(0));
++  ASSERT_TRUE(tab_data);
++
++  PrometheusTabState::Supervision supervision = ViewingState(2).supervision;
++  supervision.control_state = ControlState::kControllerReady;
++  supervision.controller_label = "Dashboard A";
++  supervision.activity_state = ActivityState::kExecuting;
++  supervision.action_category = ActionCategory::kNavigate;
++  supervision.severity = Severity::kNeedsAttention;
++
++  FlushLayouts();
++  ASSERT_TRUE(close_button->GetVisible());
++  const int normal_tab_height = tab->height();
++  const gfx::Rect normal_close_bounds = close_button->bounds();
++  const gfx::Rect normal_location_bounds =
++      browser_view()->GetLocationBarView()->GetBoundsInScreen();
++  const gfx::Rect normal_title_bounds = tab->title_bounds_for_testing();
++
++  EXPECT_TRUE(tab_data->ClaimIfUnowned("owner-a", "Agent A").ok);
++  tab_data->set_automation_active(true);
++  tab_data->UpdateSupervisionState(supervision);
++  FlushLayouts();
++
++  EXPECT_EQ(gfx::Size(44, 12), badge->GetPreferredSize());
++  EXPECT_EQ(normal_tab_height, tab->height());
++  EXPECT_EQ(normal_close_bounds, close_button->bounds());
++  EXPECT_EQ(normal_location_bounds,
++            browser_view()->GetLocationBarView()->GetBoundsInScreen());
++  EXPECT_EQ(normal_title_bounds.x(), tab->title_bounds_for_testing().x());
++  EXPECT_EQ(normal_title_bounds.height(),
++            tab->title_bounds_for_testing().height());
++  EXPECT_LE(tab->title_bounds_for_testing().right(), badge->x());
++  EXPECT_FALSE(badge->bounds().Intersects(close_button->bounds()));
++
++  ResizeBrowserTo(800, 900);
++  bool found_compressed_supervision_slot = false;
++  for (int i = 0; i < 24; ++i) {
++    AddBackgroundTab();
++    tab_strip()->StopAnimating();
++    FlushLayouts();
++    if (badge->GetPreferredSize().width() <
++            PrometheusTabStatusBadge::kMaximumWidth &&
++        badge->supervision_badge_for_testing()->GetVisible()) {
++      found_compressed_supervision_slot = true;
++      break;
++    }
++  }
++  ASSERT_TRUE(found_compressed_supervision_slot);
++  ASSERT_EQ(tab, tab_view_at(0));
++  const gfx::Size compressed_badge_size = badge->GetPreferredSize();
++
++  tab_data->ClearSupervisionState();
++  EXPECT_TRUE(tab_data->ReleaseIfOwned("owner-a").ok);
++  FlushLayouts();
++
++  const int compressed_tab_height = tab->height();
++  const gfx::Rect compressed_close_bounds = close_button->bounds();
++  const bool compressed_close_visible = close_button->GetVisible();
++  const gfx::Rect compressed_location_bounds =
++      browser_view()->GetLocationBarView()->GetBoundsInScreen();
++  const gfx::Rect compressed_title_bounds = tab->title_bounds_for_testing();
++
++  EXPECT_TRUE(tab_data->ClaimIfUnowned("owner-a", "Agent A").ok);
++  tab_data->set_automation_active(true);
++  tab_data->UpdateSupervisionState(supervision);
++  FlushLayouts();
++
++  EXPECT_EQ(compressed_badge_size, badge->GetPreferredSize());
++  EXPECT_LT(compressed_badge_size.width(),
++            PrometheusTabStatusBadge::kMaximumWidth);
++  EXPECT_TRUE(badge->supervision_badge_for_testing()->GetVisible());
++  EXPECT_EQ(
++      u"Owned by Agent A; Agent is working in this tab; Supervised by 2 trusted clients; Remote control enabled for Dashboard A; Remote action active: Navigate; Tab needs attention",
++      badge->GetViewAccessibility().GetCachedName());
++  EXPECT_EQ(compressed_tab_height, tab->height());
++  EXPECT_EQ(compressed_close_bounds, close_button->bounds());
++  EXPECT_EQ(compressed_close_visible, close_button->GetVisible());
++  if (compressed_close_visible) {
++    EXPECT_GT(close_button->width(), 0);
++  }
++  EXPECT_EQ(compressed_location_bounds,
++            browser_view()->GetLocationBarView()->GetBoundsInScreen());
++  EXPECT_EQ(compressed_title_bounds.x(), tab->title_bounds_for_testing().x());
++  EXPECT_EQ(compressed_title_bounds.height(),
++            tab->title_bounds_for_testing().height());
++  EXPECT_LE(tab->title_bounds_for_testing().width(),
++            compressed_title_bounds.width());
++  if (badge->width() > 0) {
++    EXPECT_LE(tab->title_bounds_for_testing().right(), badge->x());
++  }
++  EXPECT_FALSE(badge->bounds().Intersects(close_button->bounds()));
++}
+diff --git a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc
+index d2848ac0c1..54142ed0f7 100644
+--- a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc
++++ b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h"
+ 
++#include <algorithm>
+ #include <memory>
+ #include <string>
+ #include <string_view>
+@@ -165,11 +166,8 @@ void SetBadgeIcon(views::ImageView* icon,
+                   bool visible,
+                   PrometheusAction action,
+                   ui::ColorId color_id) {
+-  icon->SetVisible(visible);
+-  if (!visible) {
+-    return;
+-  }
+   icon->SetImage(GetPrometheusBadgeIcon(action, color_id));
++  icon->SetVisible(visible);
+ }
+ 
+ }  // namespace
+@@ -195,18 +193,19 @@ PrometheusTabStatusBadge::PrometheusTabStatusBadge(tabs::TabInterface* tab) {
+ PrometheusTabStatusBadge::~PrometheusTabStatusBadge() = default;
+ 
+ void PrometheusTabStatusBadge::SetState(const PrometheusTabState& state) {
+-  const bool has_owner_or_automation =
++  has_owner_or_automation_ =
+       !state.owner_label.empty() || state.automation_active;
++  owner_is_active_ = state.automation_active;
+   const bool has_active_action = HasActiveAction(state);
+   const bool has_controller = HasController(state);
+-  const bool has_supervision = HasSupervision(state);
+-  const bool has_health_warning = HasHealthWarning(state);
++  has_supervision_ = HasSupervision(state);
++  has_health_warning_ = HasHealthWarning(state);
+ 
+-  SetBadgeIcon(owner_or_automation_badge_, has_owner_or_automation,
++  SetBadgeIcon(owner_or_automation_badge_, has_owner_or_automation_,
+                PrometheusAction::kBolt,
+                state.automation_active ? kColorPrometheusAccent
+                                        : kColorPrometheusText2);
+-  SetBadgeIcon(supervision_badge_, has_supervision,
++  SetBadgeIcon(supervision_badge_, has_supervision_,
+                has_active_action
+                    ? PrometheusAction::kCircleNodes
+                    : has_controller ? PrometheusAction::kShield
+@@ -216,14 +215,15 @@ void PrometheusTabStatusBadge::SetState(const PrometheusTabState& state) {
+       has_active_action
+           ? views::CreateRoundedRectBackground(kColorPrometheusAccentSoft, 4)
+           : nullptr);
+-  SetBadgeIcon(health_badge_, has_health_warning,
++  SetBadgeIcon(health_badge_, has_health_warning_,
+                PrometheusAction::kTriangleExclamation,
+                state.supervision.severity == Severity::kBlocked
+                    ? ui::kColorAlertHighSeverity
+                    : ui::kColorAlertMediumSeverityIcon);
+ 
+-  SetVisible(has_owner_or_automation || has_supervision ||
+-             has_health_warning);
++  SetVisible(has_owner_or_automation_ || has_supervision_ ||
++             has_health_warning_);
++  ApplyVisualCompression();
+   const std::u16string accessible_name = BuildAccessibleName(state);
+   GetViewAccessibility().SetName(accessible_name);
+   SetTooltipText(accessible_name);
+@@ -231,6 +231,53 @@ void PrometheusTabStatusBadge::SetState(const PrometheusTabState& state) {
+   SchedulePaint();
+ }
+ 
++void PrometheusTabStatusBadge::SetAvailableWidth(int available_width) {
++  const int constrained_width =
++      std::clamp(available_width, 0, kMaximumWidth);
++  if (available_width_ == constrained_width) {
++    return;
++  }
++  available_width_ = constrained_width;
++  ApplyVisualCompression();
++  PreferredSizeChanged();
++  SchedulePaint();
++}
++
++gfx::Size PrometheusTabStatusBadge::GetMinimumSize() const {
++  return GetVisible() ? gfx::Size(kIconSize, kIconSize) : gfx::Size();
++}
++
++void PrometheusTabStatusBadge::ApplyVisualCompression() {
++  int remaining_slots =
++      available_width_ < kIconSize
++          ? 0
++          : std::min(3, 1 + (available_width_ - kIconSize) /
++                                (kIconSize + kIconSpacing));
++  bool show_owner = false;
++  bool show_supervision = false;
++  bool show_health = false;
++
++  if (has_supervision_ && remaining_slots > 0) {
++    show_supervision = true;
++    --remaining_slots;
++  }
++  if (has_owner_or_automation_ && owner_is_active_ && remaining_slots > 0) {
++    show_owner = true;
++    --remaining_slots;
++  }
++  if (has_health_warning_ && remaining_slots > 0) {
++    show_health = true;
++    --remaining_slots;
++  }
++  if (has_owner_or_automation_ && !owner_is_active_ && remaining_slots > 0) {
++    show_owner = true;
++  }
++
++  owner_or_automation_badge_->SetVisible(show_owner);
++  supervision_badge_->SetVisible(show_supervision);
++  health_badge_->SetVisible(show_health);
++}
++
+ void PrometheusTabStatusBadge::OnPrometheusTabStateChanged(
+     const PrometheusTabState& state) {
+   SetState(state);
+diff --git a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h
+index d575141c27..837909ff1c 100644
+--- a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h
++++ b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h
+@@ -27,6 +27,8 @@ class PrometheusTabStatusBadge : public views::View,
+  public:
+   static constexpr int kIconSize = 12;
+   static constexpr int kIconSpacing = 4;
++  static constexpr int kMaximumWidth =
++      3 * kIconSize + 2 * kIconSpacing;
+ 
+   explicit PrometheusTabStatusBadge(tabs::TabInterface* tab = nullptr);
+   PrometheusTabStatusBadge(const PrometheusTabStatusBadge&) = delete;
+@@ -34,6 +36,9 @@ class PrometheusTabStatusBadge : public views::View,
+   ~PrometheusTabStatusBadge() override;
+ 
+   void SetState(const PrometheusTabState& state);
++  void SetAvailableWidth(int available_width);
++
++  gfx::Size GetMinimumSize() const override;
+ 
+   views::ImageView* owner_or_automation_badge_for_testing() const {
+     return owner_or_automation_badge_;
+@@ -49,11 +54,17 @@ class PrometheusTabStatusBadge : public views::View,
+   // PrometheusTabStateObserver:
+   void OnPrometheusTabStateChanged(const PrometheusTabState& state) override;
+   void OnPrometheusTabStateInvalidated() override;
++  void ApplyVisualCompression();
+ 
+   raw_ptr<views::ImageView> owner_or_automation_badge_ = nullptr;
+   raw_ptr<views::ImageView> supervision_badge_ = nullptr;
+   raw_ptr<views::ImageView> health_badge_ = nullptr;
+   std::unique_ptr<PrometheusTabStateObservation> tab_state_observation_;
++  int available_width_ = kMaximumWidth;
++  bool has_owner_or_automation_ = false;
++  bool owner_is_active_ = false;
++  bool has_supervision_ = false;
++  bool has_health_warning_ = false;
+ };
+ 
+ #endif  // CHROME_BROWSER_UI_VIEWS_TABS_PROMETHEUS_TAB_STATUS_BADGE_H_
+diff --git a/chrome/browser/ui/views/tabs/tab.cc b/chrome/browser/ui/views/tabs/tab.cc
+index 83ba279eaf..bb21368121 100644
+--- a/chrome/browser/ui/views/tabs/tab.cc
++++ b/chrome/browser/ui/views/tabs/tab.cc
+@@ -359,6 +359,10 @@ PrometheusTabStatusBadge* Tab::prometheus_tab_status_badge_for_testing()
+   return nullptr;
+ }
+ 
++gfx::Rect Tab::title_bounds_for_testing() const {
++  return title_->bounds();
++}
++
+ bool Tab::IsActive() const {
+   if (split()) {
+     return std::ranges::any_of(controller()->GetTabsInSplit(this),
+@@ -503,16 +507,28 @@ void Tab::Layout(PassKey) {
+   alert_indicator_button_->UpdateAlertIndicatorAnimation();
+   alert_indicator_button_->SetVisible(showing_alert_indicator_);
+ 
++  int title_left = start;
++  if (showing_icon_) {
++    const int after_favicon =
++        favicon_bounds.x() + icon_->GetInsets().left() + gfx::kFaviconSize +
++        GetLayoutConstant(LayoutConstant::kTabPreTitlePadding);
++    title_left = std::max(title_left, after_favicon);
++  }
++
+   int badge_right = contents_rect.right();
+   if (showing_alert_indicator_) {
+     badge_right = alert_indicator_button_->x() - after_title_padding;
+   } else if (showing_close_button_) {
+     badge_right = close_x - after_title_padding;
+   }
++  prometheus_badge->SetAvailableWidth(
++      std::max(badge_right - title_left, 0));
++  int badge_visual_width = 0;
+   if (prometheus_badge->GetVisible()) {
+     const gfx::Size badge_size = prometheus_badge->GetPreferredSize();
++    badge_visual_width = badge_size.width();
+     prometheus_badge->SetBounds(
+-        std::max(contents_rect.x(), badge_right - badge_size.width()),
++        badge_right - badge_size.width(),
+         contents_rect.y() + Center(contents_rect.height(), badge_size.height()),
+         badge_size.width(), badge_size.height());
+   } else {
+@@ -527,19 +543,8 @@ void Tab::Layout(PassKey) {
+   }
+ 
+   if (show_title) {
+-    int title_left = start;
+-    if (showing_icon_) {
+-      // When computing the spacing from the favicon, don't count the actual
+-      // icon view width (which will include extra room for the alert
+-      // indicator), but rather the normal favicon width which is what it will
+-      // look like.
+-      const int after_favicon =
+-          favicon_bounds.x() + icon_->GetInsets().left() + gfx::kFaviconSize +
+-          GetLayoutConstant(LayoutConstant::kTabPreTitlePadding);
+-      title_left = std::max(title_left, after_favicon);
+-    }
+     int title_right = contents_rect.right();
+-    if (prometheus_badge->GetVisible()) {
++    if (badge_visual_width > 0) {
+       title_right = prometheus_badge->x() - after_title_padding;
+     } else if (showing_alert_indicator_) {
+       title_right = alert_indicator_button_->x() - after_title_padding;
+diff --git a/chrome/browser/ui/views/tabs/tab.h b/chrome/browser/ui/views/tabs/tab.h
+index 101ef5f255..dc71514ddd 100644
+--- a/chrome/browser/ui/views/tabs/tab.h
++++ b/chrome/browser/ui/views/tabs/tab.h
+@@ -215,6 +215,7 @@ class Tab : public gfx::AnimationDelegate,
+   }
+ 
+   PrometheusTabStatusBadge* prometheus_tab_status_badge_for_testing() const;
++  gfx::Rect title_bounds_for_testing() const;
+ 
+   void UpdateInsets();
+ 
+-- 
+2.50.1 (Apple Git-155)
+

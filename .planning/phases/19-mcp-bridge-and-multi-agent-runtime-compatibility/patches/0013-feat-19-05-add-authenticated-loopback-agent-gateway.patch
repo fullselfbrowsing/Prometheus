@@ -1,0 +1,1754 @@
+From d08746abcd92c5ceed5fe4f2a253f1a6e5d888e8 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 04:13:57 -0500
+Subject: [PATCH 13/19] feat(19-05): add authenticated loopback agent gateway
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  48 +-
+ .../prometheus/prometheus_agent_gateway.cc    | 864 ++++++++++++++++++
+ .../prometheus/prometheus_agent_gateway.h     | 149 +++
+ .../prometheus_agent_gateway_browsertest.cc   | 142 ++-
+ .../prometheus_agent_gateway_contract.cc      | 118 +++
+ .../prometheus_endpoint_descriptor.cc         | 156 ++++
+ .../prometheus_endpoint_descriptor.h          |  49 +
+ chrome/common/chrome_switches.cc              |   3 +
+ chrome/common/chrome_switches.h               |   6 +
+ 9 files changed, 1516 insertions(+), 19 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_gateway.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_gateway.h
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_endpoint_descriptor.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_endpoint_descriptor.h
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index f55a0a4cff..2fb7f881d1 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -238,6 +238,52 @@ source_set("prometheus_agent_profile_service") {
+   ]
+ }
+ 
++source_set("prometheus_endpoint_descriptor") {
++  sources = [
++    "prometheus_endpoint_descriptor.cc",
++    "prometheus_endpoint_descriptor.h",
++  ]
++
++  deps = [
++    "//base",
++    "//chrome/common",
++    "//crypto",
++  ]
++}
++
++source_set("prometheus_agent_gateway_contract") {
++  sources = [
++    "prometheus_agent_gateway.h",
++    "prometheus_agent_gateway_contract.cc",
++  ]
++
++  deps = [
++    ":prometheus_agent_route",
++    "//base",
++    "//crypto",
++    "//net",
++  ]
++}
++
++source_set("prometheus_agent_gateway") {
++  sources = [
++    "prometheus_agent_gateway.cc",
++    "prometheus_agent_gateway.h",
++  ]
++
++  deps = [
++    ":prometheus_agent_gateway_contract",
++    ":prometheus_agent_profile_service",
++    ":prometheus_agent_route",
++    ":prometheus_agent_transport_codec",
++    ":prometheus_endpoint_descriptor",
++    "//base",
++    "//chrome/browser/profiles",
++    "//chrome/browser/ui/browser_window",
++    "//net",
++  ]
++}
++
+ test("prometheus_unittests") {
+   sources = [
+     "prometheus_action_unittest.cc",
+@@ -269,7 +315,7 @@ test("prometheus_unittests") {
+   deps = [
+     ":prometheus_action",
+     ":prometheus_agent_audit",
+-    ":prometheus_agent_gateway",
++    ":prometheus_agent_gateway_contract",
+     ":prometheus_agent_route",
+     ":prometheus_agent_session",
+     ":prometheus_agent_tab_data",
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.cc b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+new file mode 100644
+index 0000000000..0f7ff9d6cf
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.cc
+@@ -0,0 +1,864 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_gateway.h"
++
++#include <algorithm>
++#include <cstdint>
++#include <initializer_list>
++#include <optional>
++#include <utility>
++#include <vector>
++
++#include "base/functional/bind.h"
++#include "base/functional/callback_helpers.h"
++#include "base/json/json_reader.h"
++#include "base/json/json_writer.h"
++#include "base/location.h"
++#include "base/memory/raw_ptr.h"
++#include "base/process/process_handle.h"
++#include "base/strings/string_util.h"
++#include "base/task/sequenced_task_runner.h"
++#include "base/task/task_traits.h"
++#include "base/task/thread_pool.h"
++#include "base/timer/timer.h"
++#include "base/values.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/profiles/profile_manager.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
++#include "chrome/browser/prometheus/prometheus_agent_transport_codec.h"
++#include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "net/base/ip_address.h"
++#include "net/base/net_errors.h"
++#include "net/http/http_status_code.h"
++#include "net/log/net_log_source.h"
++#include "net/server/http_server.h"
++#include "net/server/http_server_request_info.h"
++#include "net/server/http_server_response_info.h"
++#include "net/socket/tcp_server_socket.h"
++#include "net/traffic_annotation/network_traffic_annotation.h"
++
++namespace prometheus {
++namespace {
++
++constexpr int kListenBacklog = 16;
++constexpr int32_t kSocketBufferBytes = 1'114'112;
++
++const net::NetworkTrafficAnnotationTag kGatewayTrafficAnnotation =
++    net::DefineNetworkTrafficAnnotation("prometheus_agent_gateway", R"(
++      semantics {
++        sender: "Prometheus Agent Gateway"
++        description:
++          "Carries authenticated browser-control messages between Prometheus "
++          "and an external MCP bridge on the local machine."
++        trigger:
++          "An external MCP client invokes a Prometheus browser tool."
++        data: "Bounded agent route requests and structured route results."
++        destination: LOCAL
++      }
++      policy {
++        cookies_allowed: NO
++        setting:
++          "The gateway is a local Prometheus integration and accepts only a "
++          "fresh credential published in an owner-only descriptor."
++        policy_exception_justification:
++          "This is not an Internet request and binds only IPv4 loopback."
++      })");
++
++int RejectionStatus(PrometheusAgentRequestRejection rejection) {
++  switch (rejection) {
++    case PrometheusAgentRequestRejection::kNone:
++      return net::HTTP_OK;
++    case PrometheusAgentRequestRejection::kUnauthorized:
++      return net::HTTP_UNAUTHORIZED;
++    case PrometheusAgentRequestRejection::kNonLoopbackPeer:
++    case PrometheusAgentRequestRejection::kInvalidHost:
++    case PrometheusAgentRequestRejection::kOriginForbidden:
++      return net::HTTP_FORBIDDEN;
++    case PrometheusAgentRequestRejection::kNotFound:
++      return net::HTTP_NOT_FOUND;
++    case PrometheusAgentRequestRejection::kMethodNotAllowed:
++      return net::HTTP_METHOD_NOT_ALLOWED;
++    case PrometheusAgentRequestRejection::kUnsupportedMediaType:
++      return net::HTTP_UNSUPPORTED_MEDIA_TYPE;
++    case PrometheusAgentRequestRejection::kRequestTooLarge:
++      return net::HTTP_REQUEST_ENTITY_TOO_LARGE;
++    case PrometheusAgentRequestRejection::kTooManyRequests:
++      return net::HTTP_TOO_MANY_REQUESTS;
++  }
++}
++
++std::string RejectionBody(PrometheusAgentRequestRejection rejection) {
++  std::string_view code = "REQUEST_REJECTED";
++  switch (rejection) {
++    case PrometheusAgentRequestRejection::kUnauthorized:
++      code = "UNAUTHORIZED";
++      break;
++    case PrometheusAgentRequestRejection::kRequestTooLarge:
++      code = "REQUEST_TOO_LARGE";
++      break;
++    case PrometheusAgentRequestRejection::kTooManyRequests:
++      code = "TOO_MANY_REQUESTS";
++      break;
++    default:
++      break;
++  }
++  return "{\"ok\":false,\"error\":\"" + std::string(code) + "\"}";
++}
++
++bool HasOnlyKeys(const base::DictValue& value,
++                 std::initializer_list<std::string_view> allowed) {
++  for (const auto [key, ignored] : value) {
++    static_cast<void>(ignored);
++    if (std::find(allowed.begin(), allowed.end(), key) == allowed.end()) {
++      return false;
++    }
++  }
++  return true;
++}
++
++std::string WriteJsonOrFallback(base::DictValue value) {
++  return base::WriteJson(value).value_or(
++      R"({"ok":false,"error_code":"INVALID_REQUEST"})");
++}
++
++bool WriteGatewayDescriptor(base::FilePath path,
++                            net::IPEndPoint endpoint,
++                            std::string instance_nonce,
++                            std::string bearer) {
++  PrometheusEndpointDescriptorData descriptor;
++  descriptor.endpoint = "http://127.0.0.1:" + std::to_string(endpoint.port());
++  descriptor.process_id = static_cast<int>(base::GetCurrentProcId());
++  descriptor.instance_nonce = std::move(instance_nonce);
++  descriptor.bearer = std::move(bearer);
++  return WritePrometheusEndpointDescriptor(path, descriptor);
++}
++
++}  // namespace
++
++class PrometheusAgentGateway::IOThreadData : public net::HttpServer::Delegate {
++ public:
++  using StartedCallback = base::OnceCallback<void(bool, net::IPEndPoint)>;
++
++  IOThreadData(base::WeakPtr<PrometheusAgentGateway> owner,
++               scoped_refptr<base::SequencedTaskRunner> ui_task_runner,
++               std::string bearer,
++               base::TimeDelta timeout,
++               std::atomic_size_t* pending_count,
++               std::atomic_size_t* terminal_count)
++      : owner_(std::move(owner)),
++        ui_task_runner_(std::move(ui_task_runner)),
++        bearer_(std::move(bearer)),
++        timeout_(timeout),
++        pending_count_(pending_count),
++        terminal_count_(terminal_count) {
++    DETACH_FROM_SEQUENCE(sequence_checker_);
++  }
++
++  IOThreadData(const IOThreadData&) = delete;
++  IOThreadData& operator=(const IOThreadData&) = delete;
++  ~IOThreadData() override = default;
++
++  void Start(StartedCallback callback) {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    auto socket =
++        std::make_unique<net::TCPServerSocket>(nullptr, net::NetLogSource());
++    net::IPEndPoint requested(net::IPAddress::IPv4Localhost(), 0);
++    if (socket->Listen(requested, kListenBacklog,
++                       /*ipv6_only=*/std::nullopt) != net::OK) {
++      ui_task_runner_->PostTask(
++          FROM_HERE,
++          base::BindOnce(std::move(callback), false, net::IPEndPoint()));
++      return;
++    }
++    server_ = std::make_unique<net::HttpServer>(std::move(socket), this);
++    net::IPEndPoint endpoint;
++    const bool success =
++        server_->GetLocalAddress(&endpoint) == net::OK &&
++        endpoint.address() == net::IPAddress::IPv4Localhost() &&
++        endpoint.port() > 0;
++    if (!success) {
++      server_.reset();
++    } else {
++      port_ = endpoint.port();
++    }
++    ui_task_runner_->PostTask(
++        FROM_HERE,
++        base::BindOnce(std::move(callback), success, std::move(endpoint)));
++  }
++
++  void SetTimeout(base::TimeDelta timeout) {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    timeout_ = timeout;
++  }
++
++  void CompleteRequest(uint64_t request_id, int status, std::string body) {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    auto it = pending_.find(request_id);
++    if (it == pending_.end()) {
++      return;
++    }
++    const int connection_id = it->second->connection_id;
++    pending_.erase(it);
++    connection_to_request_.erase(connection_id);
++    UpdatePendingCount();
++    terminal_count_->fetch_add(1);
++    SendJson(connection_id, status, body);
++  }
++
++  void Stop(base::OnceClosure callback) {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    if (server_) {
++      std::vector<uint64_t> request_ids;
++      request_ids.reserve(pending_.size());
++      for (const auto& [request_id, ignored] : pending_) {
++        static_cast<void>(ignored);
++        request_ids.push_back(request_id);
++      }
++      for (uint64_t request_id : request_ids) {
++        CompleteRequest(request_id, net::HTTP_SERVICE_UNAVAILABLE,
++                        R"({"ok":false,"error_code":"BROWSER_SHUTTING_DOWN"})");
++      }
++      server_.reset();
++    }
++    pending_.clear();
++    connection_to_request_.clear();
++    UpdatePendingCount();
++    ui_task_runner_->PostTask(FROM_HERE, std::move(callback));
++  }
++
++ private:
++  struct PendingRequest {
++    explicit PendingRequest(int connection_id) : connection_id(connection_id) {}
++    int connection_id;
++    base::OneShotTimer timeout;
++  };
++
++  void OnConnect(int connection_id) override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    server_->SetReceiveBufferSize(connection_id, kSocketBufferBytes);
++    server_->SetSendBufferSize(connection_id, kSocketBufferBytes);
++  }
++
++  void OnHttpRequest(int connection_id,
++                     const net::HttpServerRequestInfo& request) override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    if (connection_to_request_.contains(connection_id)) {
++      server_->Close(connection_id);
++      return;
++    }
++    const PrometheusAgentRequestRejection rejection =
++        ValidatePrometheusAgentGatewayRequestForTesting(request, port_, bearer_,
++                                                        pending_.size());
++    if (rejection != PrometheusAgentRequestRejection::kNone) {
++      SendJson(connection_id, RejectionStatus(rejection),
++               RejectionBody(rejection));
++      return;
++    }
++
++    const uint64_t request_id = next_request_id_++;
++    auto pending = std::make_unique<PendingRequest>(connection_id);
++    pending->timeout.Start(FROM_HERE, timeout_,
++                           base::BindOnce(&IOThreadData::OnTimeout,
++                                          base::Unretained(this), request_id));
++    pending_.emplace(request_id, std::move(pending));
++    connection_to_request_[connection_id] = request_id;
++    UpdatePendingCount();
++    ui_task_runner_->PostTask(
++        FROM_HERE,
++        base::BindOnce(&PrometheusAgentGateway::HandleRequest, owner_,
++                       request_id, request.path, request.data));
++  }
++
++  void OnWebSocketRequest(int connection_id,
++                          const net::HttpServerRequestInfo& request) override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    const PrometheusAgentRequestRejection rejection =
++        ValidatePrometheusAgentGatewayRequestForTesting(request, port_, bearer_,
++                                                        pending_.size());
++    const PrometheusAgentRequestRejection response =
++        rejection == PrometheusAgentRequestRejection::kNone
++            ? PrometheusAgentRequestRejection::kMethodNotAllowed
++            : rejection;
++    SendJson(connection_id, RejectionStatus(response), RejectionBody(response));
++  }
++
++  void OnWebSocketMessage(int connection_id, std::string data) override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    static_cast<void>(data);
++    if (server_) {
++      server_->Close(connection_id);
++    }
++  }
++
++  void OnClose(int connection_id) override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    auto connection = connection_to_request_.find(connection_id);
++    if (connection == connection_to_request_.end()) {
++      return;
++    }
++    pending_.erase(connection->second);
++    connection_to_request_.erase(connection);
++    UpdatePendingCount();
++    terminal_count_->fetch_add(1);
++  }
++
++  void OnTimeout(uint64_t request_id) {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    CompleteRequest(request_id, net::HTTP_GATEWAY_TIMEOUT,
++                    R"({"ok":false,"error_code":"TIMEOUT"})");
++  }
++
++  void SendJson(int connection_id, int status, std::string_view body) {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    if (!server_) {
++      return;
++    }
++    net::HttpServerResponseInfo response(
++        static_cast<net::HttpStatusCode>(status));
++    response.AddHeader("Cache-Control", "no-store");
++    response.SetBody(body, "application/json; charset=utf-8");
++    server_->SendResponse(connection_id, response, kGatewayTrafficAnnotation);
++  }
++
++  void UpdatePendingCount() { pending_count_->store(pending_.size()); }
++
++  base::WeakPtr<PrometheusAgentGateway> owner_;
++  const scoped_refptr<base::SequencedTaskRunner> ui_task_runner_;
++  const std::string bearer_;
++  base::TimeDelta timeout_;
++  const raw_ptr<std::atomic_size_t> pending_count_;
++  const raw_ptr<std::atomic_size_t> terminal_count_;
++  std::unique_ptr<net::HttpServer> server_;
++  int port_ = 0;
++  uint64_t next_request_id_ = 1;
++  std::map<uint64_t, std::unique_ptr<PendingRequest>> pending_;
++  std::map<int, uint64_t> connection_to_request_;
++  SEQUENCE_CHECKER(sequence_checker_);
++};
++
++PrometheusAgentGateway::PrometheusAgentGateway(Options options)
++    : options_(std::move(options)) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  PrometheusAgentProfileServiceFactory::GetInstance();
++  if (options_.descriptor_path.empty()) {
++    options_.descriptor_path = GetDefaultPrometheusEndpointDescriptorPath();
++  }
++}
++
++PrometheusAgentGateway::~PrometheusAgentGateway() {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  weak_ptr_factory_.InvalidateWeakPtrs();
++  if (io_data_ && io_thread_.IsRunning()) {
++    io_thread_.task_runner()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&IOThreadData::Stop, base::Unretained(io_data_.get()),
++                       base::DoNothing()));
++    io_thread_.Stop();
++  }
++  io_data_.reset();
++  if (!options_.descriptor_path.empty() && !instance_nonce_.empty()) {
++    base::ThreadPool::PostTask(
++        FROM_HERE,
++        {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
++        base::BindOnce(
++            [](base::FilePath path, std::string instance_nonce) {
++              DeletePrometheusEndpointDescriptorIfOwned(path, instance_nonce);
++            },
++            options_.descriptor_path, instance_nonce_));
++  }
++}
++
++void PrometheusAgentGateway::Start(base::OnceCallback<void(bool)> callback) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  if (started_ || shutting_down_ || io_data_ ||
++      options_.descriptor_path.empty() ||
++      !options_.descriptor_path.IsAbsolute()) {
++    std::move(callback).Run(false);
++    return;
++  }
++
++  PrometheusEndpointSecrets secrets = CreatePrometheusEndpointSecrets();
++  bearer_ = std::move(secrets.bearer);
++  instance_nonce_ = std::move(secrets.instance_nonce);
++  if (!io_thread_.StartWithOptions(
++          base::Thread::Options(base::MessagePumpType::IO, 0))) {
++    std::move(callback).Run(false);
++    return;
++  }
++
++  io_data_ = std::make_unique<IOThreadData>(
++      weak_ptr_factory_.GetWeakPtr(),
++      base::SequencedTaskRunner::GetCurrentDefault(), bearer_, request_timeout_,
++      &pending_request_count_, &terminal_request_count_);
++  io_thread_.task_runner()->PostTask(
++      FROM_HERE,
++      base::BindOnce(
++          &IOThreadData::Start, base::Unretained(io_data_.get()),
++          base::BindOnce(&PrometheusAgentGateway::OnIoStarted,
++                         weak_ptr_factory_.GetWeakPtr(), std::move(callback))));
++}
++
++void PrometheusAgentGateway::OnIoStarted(
++    base::OnceCallback<void(bool)> callback,
++    bool success,
++    net::IPEndPoint endpoint) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  if (success) {
++    base::ThreadPool::PostTaskAndReplyWithResult(
++        FROM_HERE,
++        {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
++        base::BindOnce(&WriteGatewayDescriptor, options_.descriptor_path,
++                       endpoint, instance_nonce_, bearer_),
++        base::BindOnce(&PrometheusAgentGateway::OnDescriptorWritten,
++                       weak_ptr_factory_.GetWeakPtr(), std::move(callback),
++                       std::move(endpoint)));
++    return;
++  }
++
++  io_thread_.task_runner()->PostTask(
++      FROM_HERE,
++      base::BindOnce(
++          &IOThreadData::Stop, base::Unretained(io_data_.get()),
++          base::BindOnce(&PrometheusAgentGateway::OnIoStopped,
++                         weak_ptr_factory_.GetWeakPtr(),
++                         base::BindOnce(std::move(callback), false))));
++}
++
++void PrometheusAgentGateway::OnDescriptorWritten(
++    base::OnceCallback<void(bool)> callback,
++    net::IPEndPoint endpoint,
++    bool success) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  if (success) {
++    endpoint_ = std::move(endpoint);
++    started_ = true;
++    std::move(callback).Run(true);
++    return;
++  }
++  io_thread_.task_runner()->PostTask(
++      FROM_HERE,
++      base::BindOnce(
++          &IOThreadData::Stop, base::Unretained(io_data_.get()),
++          base::BindOnce(&PrometheusAgentGateway::OnIoStopped,
++                         weak_ptr_factory_.GetWeakPtr(),
++                         base::BindOnce(std::move(callback), false))));
++}
++
++void PrometheusAgentGateway::Shutdown(base::OnceClosure callback) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  if (!io_data_) {
++    std::move(callback).Run();
++    return;
++  }
++  if (shutting_down_) {
++    std::move(callback).Run();
++    return;
++  }
++  shutting_down_ = true;
++
++  for (const auto& [session_id, binding] : session_bindings_) {
++    if (!binding.profile) {
++      continue;
++    }
++    if (PrometheusAgentProfileService* service =
++            PrometheusAgentProfileServiceFactory::GetForProfile(
++                binding.profile.get())) {
++      service->CloseSession(session_id);
++    }
++  }
++  session_bindings_.clear();
++  weak_ptr_factory_.InvalidateWeakPtrs();
++  io_thread_.task_runner()->PostTask(
++      FROM_HERE,
++      base::BindOnce(
++          &IOThreadData::Stop, base::Unretained(io_data_.get()),
++          base::BindOnce(&PrometheusAgentGateway::OnIoStopped,
++                         weak_ptr_factory_.GetWeakPtr(), std::move(callback))));
++}
++
++void PrometheusAgentGateway::OnIoStopped(base::OnceClosure callback) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  io_thread_.Stop();
++  io_data_.reset();
++  endpoint_ = net::IPEndPoint();
++  started_ = false;
++  shutting_down_ = false;
++  if (options_.descriptor_path.empty() || instance_nonce_.empty()) {
++    std::move(callback).Run();
++    return;
++  }
++  base::ThreadPool::PostTaskAndReplyWithResult(
++      FROM_HERE, {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
++      base::BindOnce(&DeletePrometheusEndpointDescriptorIfOwned,
++                     options_.descriptor_path, instance_nonce_),
++      base::BindOnce(&PrometheusAgentGateway::OnDescriptorDeleted,
++                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
++}
++
++void PrometheusAgentGateway::OnDescriptorDeleted(base::OnceClosure callback,
++                                                 bool deleted) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  static_cast<void>(deleted);
++  instance_nonce_.clear();
++  bearer_.clear();
++  std::move(callback).Run();
++}
++
++void PrometheusAgentGateway::SetRequestHandlerForTesting(
++    RequestHandler handler) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  request_handler_for_testing_ = std::move(handler);
++}
++
++void PrometheusAgentGateway::SetRequestTimeoutForTesting(
++    base::TimeDelta timeout) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  request_timeout_ = timeout;
++  if (io_data_) {
++    io_thread_.task_runner()->PostTask(
++        FROM_HERE, base::BindOnce(&IOThreadData::SetTimeout,
++                                  base::Unretained(io_data_.get()), timeout));
++  }
++}
++
++void PrometheusAgentGateway::SetProfileSelectorForTesting(
++    ProfileSelector selector) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  profile_selector_for_testing_ = std::move(selector);
++}
++
++void PrometheusAgentGateway::HandleRequest(uint64_t request_id,
++                                           std::string path,
++                                           std::string body) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  ResponseCallback callback =
++      base::BindOnce(&PrometheusAgentGateway::OnRequestHandled,
++                     weak_ptr_factory_.GetWeakPtr(), request_id);
++  if (request_handler_for_testing_) {
++    request_handler_for_testing_.Run(path, body, std::move(callback));
++    return;
++  }
++  HandleNativeRequest(path, body, std::move(callback));
++}
++
++void PrometheusAgentGateway::OnRequestHandled(uint64_t request_id,
++                                              int status,
++                                              std::string body) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  if (!io_data_ || shutting_down_) {
++    return;
++  }
++  io_thread_.task_runner()->PostTask(
++      FROM_HERE, base::BindOnce(&IOThreadData::CompleteRequest,
++                                base::Unretained(io_data_.get()), request_id,
++                                status, std::move(body)));
++}
++
++Profile* PrometheusAgentGateway::SelectProfileForNewSession() {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  Profile* profile = nullptr;
++  if (profile_selector_for_testing_) {
++    profile = profile_selector_for_testing_.Run();
++  } else if (BrowserWindowInterface* active =
++                 GlobalBrowserCollection::GetInstance()->GetActiveBrowser()) {
++    if (active->GetType() == BrowserWindowInterface::TYPE_NORMAL) {
++      profile = active->GetProfile();
++    }
++  }
++  if (!profile) {
++    profile = ProfileManager::GetLastUsedProfileIfLoaded();
++  }
++  return profile && profile->IsRegularProfile() ? profile : nullptr;
++}
++
++std::string PrometheusAgentGateway::SerializeSessionResult(
++    const std::string& session_id) const {
++  base::DictValue result;
++  result.Set("ok", true);
++  result.Set("session_id", session_id);
++  result.Set("reconnect_grace_ms", 10000);
++  return WriteJsonOrFallback(std::move(result));
++}
++
++std::string PrometheusAgentGateway::SerializeRouteFailure(
++    AgentErrorCode error_code,
++    std::string message,
++    std::string recovery) const {
++  AgentRouteResult result = AgentRouteResult::Failure(
++      error_code, std::move(message), std::move(recovery));
++  auto serialized = SerializeAgentTransportResult(result);
++  return serialized.has_value()
++             ? std::move(serialized.value())
++             : R"({"ok":false,"error_code":"INVALID_REQUEST"})";
++}
++
++void PrometheusAgentGateway::HandleNativeRequest(std::string_view path,
++                                                 std::string_view body,
++                                                 ResponseCallback callback) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++
++  if (path == "/v1/health") {
++    AgentRouteResult health = AgentRouteResult::Success({});
++    auto add = [&health](std::string key, AgentDiagnosticStatus status,
++                         std::string reason, std::string next_action) {
++      AgentDiagnosticComponent component;
++      component.key = std::move(key);
++      component.status = status;
++      component.reason = std::move(reason);
++      component.next_action = std::move(next_action);
++      health.diagnostics.push_back(std::move(component));
++    };
++    BrowserWindowInterface* const active =
++        GlobalBrowserCollection::GetInstance()->GetActiveBrowser();
++    const bool active_regular = active && active->GetProfile() &&
++                                active->GetProfile()->IsRegularProfile();
++    add("browser", AgentDiagnosticStatus::kReady,
++        "Prometheus browser process is running",
++        "No browser recovery action is required");
++    add("bridge", AgentDiagnosticStatus::kReady,
++        "Authenticated local route bridge is accepting requests",
++        "Keep the external MCP client connected");
++    add("active_tab",
++        active_regular ? AgentDiagnosticStatus::kReady
++                       : AgentDiagnosticStatus::kUnavailable,
++        active_regular ? "A regular-profile browser tab is available"
++                       : "No active regular-profile browser tab is available",
++        active_regular ? "Use a pinned session target"
++                       : "Open a regular Prometheus browser window");
++    add("content_adapter", AgentDiagnosticStatus::kReady,
++        "Normal-page content adapter is available",
++        "Use bounded page read and action routes");
++    add("internal_adapter", AgentDiagnosticStatus::kReady,
++        "Closed internal-surface adapter is available",
++        "Use one of the documented Prometheus surfaces");
++    add("webui_adapter", AgentDiagnosticStatus::kReady,
++        "Prometheus WebUI adapter is available",
++        "Use browser-owned WebUI routes");
++    add("vault", AgentDiagnosticStatus::kNotReady,
++        "Vault capability is owned by Phase 20",
++        "Retry after native vault diagnostics reports ready");
++    add("provider", AgentDiagnosticStatus::kNotReady,
++        "Provider runtime is owned by Phase 20",
++        "Configure providers after Phase 20 is available");
++    add("supervision", AgentDiagnosticStatus::kNotReady,
++        "Supervision and pairing are owned by Phase 21",
++        "Retry after supervision diagnostics reports ready");
++    add("extensions", AgentDiagnosticStatus::kNotReady,
++        "Agent extension policy is owned by Phase 22",
++        "Retry after extension diagnostics reports ready");
++    auto serialized = SerializeAgentTransportResult(health);
++    std::move(callback).Run(
++        net::HTTP_OK, serialized.has_value()
++                          ? std::move(serialized.value())
++                          : SerializeRouteFailure(
++                                AgentErrorCode::kInvalidRequest,
++                                "Health document could not be serialized",
++                                "Restart Prometheus and retry diagnostics"));
++    return;
++  }
++
++  if (path == "/v1/agent/command") {
++    auto request = ParseAgentTransportRequest(body);
++    if (!request.has_value()) {
++      auto serialized = SerializeAgentTransportResult(request.error());
++      std::move(callback).Run(
++          net::HTTP_BAD_REQUEST,
++          serialized.has_value()
++              ? std::move(serialized.value())
++              : SerializeRouteFailure(
++                    AgentErrorCode::kInvalidRequest,
++                    "Agent command body is invalid",
++                    "Send a bounded canonical native route request"));
++      return;
++    }
++    auto binding = session_bindings_.find(request->session_id);
++    if (binding == session_bindings_.end() || !binding->second.profile) {
++      std::move(callback).Run(
++          net::HTTP_OK, SerializeRouteFailure(
++                            AgentErrorCode::kUnauthorized,
++                            "Unknown or unavailable gateway session",
++                            "Create a new browser-issued session and retry"));
++      return;
++    }
++    PrometheusAgentProfileService* const service =
++        PrometheusAgentProfileServiceFactory::GetForProfile(
++            binding->second.profile.get());
++    if (!service) {
++      session_bindings_.erase(binding);
++      std::move(callback).Run(
++          net::HTTP_OK, SerializeRouteFailure(
++                            AgentErrorCode::kUnauthorized,
++                            "Pinned regular profile is no longer available",
++                            "Create a new browser-issued session and retry"));
++      return;
++    }
++    service->ExecuteRoute(
++        *request,
++        base::BindOnce(
++            [](ResponseCallback callback, AgentRouteResult result) {
++              auto serialized = SerializeAgentTransportResult(result);
++              if (serialized.has_value()) {
++                std::move(callback).Run(net::HTTP_OK,
++                                        std::move(serialized.value()));
++                return;
++              }
++              AgentRouteResult failure = AgentRouteResult::Failure(
++                  AgentErrorCode::kRequestTooLarge,
++                  "Native route result exceeded transport bounds",
++                  "Reduce requested output bounds and retry");
++              auto failure_json = SerializeAgentTransportResult(failure);
++              std::move(callback).Run(
++                  net::HTTP_OK,
++                  failure_json.has_value()
++                      ? std::move(failure_json.value())
++                      : R"({"ok":false,"error_code":"REQUEST_TOO_LARGE"})");
++            },
++            std::move(callback)));
++    return;
++  }
++
++  std::optional<base::DictValue> request =
++      base::JSONReader::ReadDict(body, base::JSON_PARSE_RFC);
++  if (!request.has_value()) {
++    std::move(callback).Run(
++        net::HTTP_BAD_REQUEST,
++        SerializeRouteFailure(AgentErrorCode::kInvalidRequest,
++                              "Session request body must be a JSON object",
++                              "Send only documented session fields"));
++    return;
++  }
++
++  if (path == "/v1/session/create") {
++    if (!HasOnlyKeys(*request, {"display_label"})) {
++      std::move(callback).Run(
++          net::HTTP_BAD_REQUEST,
++          SerializeRouteFailure(AgentErrorCode::kInvalidRequest,
++                                "Unknown session create field",
++                                "Send only optional display_label"));
++      return;
++    }
++    std::string display_label = "External MCP client";
++    if (const base::Value* label = request->Find("display_label")) {
++      if (!label->is_string() || label->GetString().size() > 80u ||
++          !base::IsStringUTF8(label->GetString())) {
++        std::move(callback).Run(
++            net::HTTP_BAD_REQUEST,
++            SerializeRouteFailure(
++                AgentErrorCode::kInvalidRequest,
++                "display_label must be bounded UTF-8",
++                "Use at most 80 UTF-8 bytes of display metadata"));
++        return;
++      }
++      display_label = label->GetString();
++    }
++    Profile* const profile = SelectProfileForNewSession();
++    PrometheusAgentProfileService* const service =
++        PrometheusAgentProfileServiceFactory::GetForProfile(profile);
++    if (!profile || !service) {
++      std::move(callback).Run(
++          net::HTTP_FORBIDDEN,
++          SerializeRouteFailure(
++              AgentErrorCode::kUnauthorized,
++              "No loaded regular profile is available for session creation",
++              "Open a regular Prometheus browser window and retry"));
++      return;
++    }
++    AgentSessionResult result = service->CreateSession(display_label);
++    if (!result.route_result.ok || !result.session.has_value()) {
++      auto serialized = SerializeAgentTransportResult(result.route_result);
++      std::move(callback).Run(
++          net::HTTP_OK,
++          serialized.has_value()
++              ? std::move(serialized.value())
++              : SerializeRouteFailure(AgentErrorCode::kInvalidRequest,
++                                      "Session could not be created",
++                                      "Close another session or retry"));
++      return;
++    }
++    session_bindings_.emplace(result.session->id,
++                              SessionBinding{.profile = profile->GetWeakPtr()});
++    std::move(callback).Run(net::HTTP_OK,
++                            SerializeSessionResult(result.session->id));
++    return;
++  }
++
++  if (!HasOnlyKeys(*request, {"session_id"})) {
++    std::move(callback).Run(
++        net::HTTP_BAD_REQUEST,
++        SerializeRouteFailure(AgentErrorCode::kInvalidRequest,
++                              "Unknown session operation field",
++                              "Send only the browser-issued session_id"));
++    return;
++  }
++  const std::string* const session_id = request->FindString("session_id");
++  if (!session_id || session_id->empty() || session_id->size() > 128u ||
++      !base::IsStringUTF8(*session_id)) {
++    std::move(callback).Run(
++        net::HTTP_BAD_REQUEST,
++        SerializeRouteFailure(AgentErrorCode::kInvalidRequest,
++                              "A bounded session_id is required",
++                              "Use the opaque browser-issued session id"));
++    return;
++  }
++  auto binding = session_bindings_.find(*session_id);
++  if (binding == session_bindings_.end() || !binding->second.profile) {
++    std::move(callback).Run(
++        net::HTTP_OK,
++        SerializeRouteFailure(AgentErrorCode::kUnauthorized,
++                              "Unknown or unavailable gateway session",
++                              "Create a new browser-issued session and retry"));
++    return;
++  }
++  PrometheusAgentProfileService* const service =
++      PrometheusAgentProfileServiceFactory::GetForProfile(
++          binding->second.profile.get());
++  if (!service) {
++    session_bindings_.erase(binding);
++    std::move(callback).Run(
++        net::HTTP_OK,
++        SerializeRouteFailure(AgentErrorCode::kUnauthorized,
++                              "Pinned regular profile is unavailable",
++                              "Create a new browser-issued session and retry"));
++    return;
++  }
++
++  if (path == "/v1/session/resume") {
++    AgentSessionResult result = service->ResumeSession(*session_id);
++    if (result.route_result.ok && result.session.has_value()) {
++      std::move(callback).Run(net::HTTP_OK,
++                              SerializeSessionResult(result.session->id));
++    } else {
++      auto serialized = SerializeAgentTransportResult(result.route_result);
++      std::move(callback).Run(
++          net::HTTP_OK,
++          serialized.has_value()
++              ? std::move(serialized.value())
++              : SerializeRouteFailure(
++                    AgentErrorCode::kUnauthorized, "Session cannot be resumed",
++                    "Create a new browser-issued session and retry"));
++    }
++    return;
++  }
++
++  AgentRouteResult result = path == "/v1/session/touch"
++                                ? service->TouchSession(*session_id)
++                                : service->CloseSession(*session_id);
++  if (path == "/v1/session/close" && result.ok) {
++    session_bindings_.erase(*session_id);
++  }
++  auto serialized = SerializeAgentTransportResult(result);
++  std::move(callback).Run(
++      net::HTTP_OK,
++      serialized.has_value()
++          ? std::move(serialized.value())
++          : SerializeRouteFailure(AgentErrorCode::kInvalidRequest,
++                                  "Session result could not be serialized",
++                                  "Create a new session and retry"));
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway.h b/chrome/browser/prometheus/prometheus_agent_gateway.h
+new file mode 100644
+index 0000000000..f227024f30
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_gateway.h
+@@ -0,0 +1,149 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_GATEWAY_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_GATEWAY_H_
++
++#include <atomic>
++#include <map>
++#include <memory>
++#include <string>
++#include <string_view>
++
++#include "base/files/file_path.h"
++#include "base/functional/callback.h"
++#include "base/memory/weak_ptr.h"
++#include "base/sequence_checker.h"
++#include "base/threading/thread.h"
++#include "base/time/time.h"
++#include "chrome/browser/prometheus/prometheus_agent_route.h"
++#include "net/base/ip_endpoint.h"
++
++class Profile;
++
++namespace net {
++class HttpServerRequestInfo;
++}
++
++namespace prometheus {
++
++enum class PrometheusAgentRequestRejection {
++  kNone,
++  kUnauthorized,
++  kNonLoopbackPeer,
++  kInvalidHost,
++  kOriginForbidden,
++  kNotFound,
++  kMethodNotAllowed,
++  kUnsupportedMediaType,
++  kRequestTooLarge,
++  kTooManyRequests,
++};
++
++PrometheusAgentRequestRejection ValidatePrometheusAgentGatewayRequestForTesting(
++    const net::HttpServerRequestInfo& request,
++    int port,
++    std::string_view bearer,
++    size_t in_flight);
++
++class PrometheusAgentOneShotCompletion {
++ public:
++  explicit PrometheusAgentOneShotCompletion(base::OnceClosure completion);
++  PrometheusAgentOneShotCompletion(const PrometheusAgentOneShotCompletion&) =
++      delete;
++  PrometheusAgentOneShotCompletion& operator=(
++      const PrometheusAgentOneShotCompletion&) = delete;
++  ~PrometheusAgentOneShotCompletion();
++
++  bool TryComplete();
++
++ private:
++  base::OnceClosure completion_;
++};
++
++class PrometheusAgentGateway {
++ public:
++  using ResponseCallback = base::OnceCallback<void(int, std::string)>;
++  using RequestHandler = base::RepeatingCallback<
++      void(std::string_view, std::string_view, ResponseCallback)>;
++  using ProfileSelector = base::RepeatingCallback<Profile*()>;
++
++  struct Options {
++    base::FilePath descriptor_path;
++  };
++
++  explicit PrometheusAgentGateway(Options options);
++  PrometheusAgentGateway(const PrometheusAgentGateway&) = delete;
++  PrometheusAgentGateway& operator=(const PrometheusAgentGateway&) = delete;
++  ~PrometheusAgentGateway();
++
++  void Start(base::OnceCallback<void(bool)> callback);
++  void Shutdown(base::OnceClosure callback);
++
++  void SetRequestHandlerForTesting(RequestHandler handler);
++  void SetRequestTimeoutForTesting(base::TimeDelta timeout);
++  void SetProfileSelectorForTesting(ProfileSelector selector);
++
++  const net::IPEndPoint& endpoint_for_testing() const { return endpoint_; }
++  int port_for_testing() const { return endpoint_.port(); }
++  const std::string& bearer_for_testing() const { return bearer_; }
++  const std::string& instance_nonce_for_testing() const {
++    return instance_nonce_;
++  }
++  size_t pending_request_count_for_testing() const {
++    return pending_request_count_.load();
++  }
++  size_t terminal_request_count_for_testing() const {
++    return terminal_request_count_.load();
++  }
++
++ private:
++  class IOThreadData;
++
++  struct SessionBinding {
++    base::WeakPtr<Profile> profile;
++  };
++
++  void OnIoStarted(base::OnceCallback<void(bool)> callback,
++                   bool success,
++                   net::IPEndPoint endpoint);
++  void OnDescriptorWritten(base::OnceCallback<void(bool)> callback,
++                           net::IPEndPoint endpoint,
++                           bool success);
++  void HandleRequest(uint64_t request_id, std::string path, std::string body);
++  void HandleNativeRequest(std::string_view path,
++                           std::string_view body,
++                           ResponseCallback callback);
++  void OnRequestHandled(uint64_t request_id, int status, std::string body);
++  void OnIoStopped(base::OnceClosure callback);
++  void OnDescriptorDeleted(base::OnceClosure callback, bool deleted);
++
++  Profile* SelectProfileForNewSession();
++  std::string SerializeSessionResult(const std::string& session_id) const;
++  std::string SerializeRouteFailure(AgentErrorCode error_code,
++                                    std::string message,
++                                    std::string recovery) const;
++
++  Options options_;
++  base::Thread io_thread_{"PrometheusAgentGatewayIO"};
++  std::unique_ptr<IOThreadData> io_data_;
++  net::IPEndPoint endpoint_;
++  std::string bearer_;
++  std::string instance_nonce_;
++  base::TimeDelta request_timeout_ = base::Seconds(30);
++  RequestHandler request_handler_for_testing_;
++  ProfileSelector profile_selector_for_testing_;
++  std::map<std::string, SessionBinding, std::less<>> session_bindings_;
++  std::atomic_size_t pending_request_count_{0};
++  std::atomic_size_t terminal_request_count_{0};
++  bool started_ = false;
++  bool shutting_down_ = false;
++
++  SEQUENCE_CHECKER(sequence_checker_);
++  base::WeakPtrFactory<PrometheusAgentGateway> weak_ptr_factory_{this};
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_GATEWAY_H_
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+index 1899f6d373..c18b248a63 100644
+--- a/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_browsertest.cc
+@@ -14,18 +14,25 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "base/check.h"
+ #include "base/files/file_path.h"
+ #include "base/files/file_util.h"
+ #include "base/files/scoped_temp_dir.h"
++#include "base/functional/bind.h"
+ #include "base/json/json_reader.h"
++#include "base/message_loop/message_pump_type.h"
++#include "base/numerics/safe_conversions.h"
+ #include "base/run_loop.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/test/test_future.h"
++#include "base/threading/thread.h"
++#include "base/threading/thread_restrictions.h"
+ #include "base/time/time.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/profiles/profile_manager.h"
+ #include "chrome/browser/profiles/profile_test_util.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+@@ -52,25 +59,83 @@ struct HttpResult {
+ };
+ 
+ void ExpectSecureResponseHeaders(const HttpResult& result) {
+-  EXPECT_NE(std::string::npos, result.raw.find("Cache-Control: no-store"));
++  EXPECT_TRUE(result.raw.find("Cache-Control:no-store") != std::string::npos ||
++              result.raw.find("Cache-Control: no-store") != std::string::npos);
+   EXPECT_EQ(std::string::npos, result.raw.find("Access-Control-Allow-Origin"));
+ }
+ 
+ class RawHttpClient {
+  public:
+-  explicit RawHttpClient(const net::IPEndPoint& endpoint) {
+-    socket_ = std::make_unique<net::TCPClientSocket>(net::AddressList(endpoint),
+-                                                     nullptr, nullptr, nullptr,
+-                                                     net::NetLogSource());
+-    net::TestCompletionCallback callback;
+-    ASSERT_EQ(net::OK,
+-              callback.GetResult(socket_->Connect(callback.callback())));
++  explicit RawHttpClient(const net::IPEndPoint& endpoint)
++      : io_thread_("PrometheusGatewayTestClient") {
++    base::Thread::Options options(base::MessagePumpType::IO, 0);
++    {
++      base::ScopedAllowBaseSyncPrimitivesForTesting allow_sync;
++      CHECK(io_thread_.StartWithOptions(std::move(options)));
++    }
++
++    base::test::TestFuture<int> connected;
++    CHECK(io_thread_.task_runner()->PostTask(
++        FROM_HERE, base::BindOnce(&RawHttpClient::ConnectOnIoThread,
++                                  base::Unretained(this), endpoint,
++                                  connected.GetSequenceBoundCallback())));
++    CHECK_EQ(net::OK, connected.Get());
++  }
++
++  ~RawHttpClient() {
++    base::test::TestFuture<void> destroyed;
++    CHECK(io_thread_.task_runner()->PostTask(
++        FROM_HERE, base::BindOnce(&RawHttpClient::DestroyOnIoThread,
++                                  base::Unretained(this),
++                                  destroyed.GetSequenceBoundCallback())));
++    CHECK(destroyed.Wait());
++    base::ScopedAllowBaseSyncPrimitivesForTesting allow_sync;
++    io_thread_.Stop();
+   }
+ 
+   RawHttpClient(const RawHttpClient&) = delete;
+   RawHttpClient& operator=(const RawHttpClient&) = delete;
+ 
+   void Send(std::string request) {
++    base::test::TestFuture<bool> sent;
++    CHECK(io_thread_.task_runner()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&RawHttpClient::SendOnIoThread, base::Unretained(this),
++                       std::move(request), sent.GetSequenceBoundCallback())));
++    CHECK(sent.Get());
++  }
++
++  HttpResult ReadResponse() {
++    base::test::TestFuture<HttpResult> response;
++    CHECK(io_thread_.task_runner()->PostTask(
++        FROM_HERE, base::BindOnce(&RawHttpClient::ReadResponseOnIoThread,
++                                  base::Unretained(this),
++                                  response.GetSequenceBoundCallback())));
++    return response.Take();
++  }
++
++  void Disconnect() {
++    base::test::TestFuture<void> disconnected;
++    CHECK(io_thread_.task_runner()->PostTask(
++        FROM_HERE, base::BindOnce(&RawHttpClient::DisconnectOnIoThread,
++                                  base::Unretained(this),
++                                  disconnected.GetSequenceBoundCallback())));
++    CHECK(disconnected.Wait());
++  }
++
++ private:
++  void ConnectOnIoThread(const net::IPEndPoint& endpoint,
++                         base::OnceCallback<void(int)> done) {
++    socket_ = std::make_unique<net::TCPClientSocket>(net::AddressList(endpoint),
++                                                     nullptr, nullptr, nullptr,
++                                                     net::NetLogSource());
++    net::TestCompletionCallback callback;
++    std::move(done).Run(
++        callback.GetResult(socket_->Connect(callback.callback())));
++  }
++
++  void SendOnIoThread(std::string request,
++                      base::OnceCallback<void(bool)> done) {
+     auto string_buffer =
+         base::MakeRefCounted<net::StringIOBuffer>(std::move(request));
+     auto write_buffer = base::MakeRefCounted<net::DrainableIOBuffer>(
+@@ -80,12 +145,16 @@ class RawHttpClient {
+       const int result = callback.GetResult(
+           socket_->Write(write_buffer.get(), write_buffer->BytesRemaining(),
+                          callback.callback(), TRAFFIC_ANNOTATION_FOR_TESTS));
+-      ASSERT_GT(result, 0);
++      if (result <= 0) {
++        std::move(done).Run(false);
++        return;
++      }
+       write_buffer->DidConsume(result);
+     }
++    std::move(done).Run(true);
+   }
+ 
+-  HttpResult ReadResponse() {
++  void ReadResponseOnIoThread(base::OnceCallback<void(HttpResult)> done) {
+     std::string response;
+     size_t end_of_headers = std::string::npos;
+     std::optional<base::ByteCount> content_length;
+@@ -109,7 +178,8 @@ class RawHttpClient {
+         }
+       }
+       if (end_of_headers != std::string::npos && content_length.has_value() &&
+-          response.size() - end_of_headers >= content_length->InBytes()) {
++          response.size() - end_of_headers >=
++              base::checked_cast<size_t>(content_length->InBytes())) {
+         break;
+       }
+     }
+@@ -122,15 +192,34 @@ class RawHttpClient {
+     if (end_of_headers != std::string::npos) {
+       result.body = response.substr(end_of_headers);
+     }
+-    return result;
++    std::move(done).Run(std::move(result));
+   }
+ 
+-  void Disconnect() { socket_->Disconnect(); }
++  void DisconnectOnIoThread(base::OnceClosure done) {
++    socket_->Disconnect();
++    std::move(done).Run();
++  }
+ 
+- private:
++  void DestroyOnIoThread(base::OnceClosure done) {
++    socket_.reset();
++    std::move(done).Run();
++  }
++
++  base::Thread io_thread_;
+   std::unique_ptr<net::TCPClientSocket> socket_;
+ };
+ 
++bool DescriptorExistsForTesting(const base::FilePath& path) {
++  base::ScopedAllowBlockingForTesting allow_blocking;
++  return base::PathExists(path);
++}
++
++std::optional<PrometheusEndpointDescriptorData> ReadDescriptorForTesting(
++    const base::FilePath& path) {
++  base::ScopedAllowBlockingForTesting allow_blocking;
++  return ReadPrometheusEndpointDescriptor(path);
++}
++
+ std::string MakeRequest(std::string_view method,
+                         std::string_view path,
+                         int port,
+@@ -155,6 +244,10 @@ std::string MakeRequest(std::string_view method,
+ 
+ class PrometheusAgentGatewayBrowserTest : public InProcessBrowserTest {
+  public:
++  PrometheusAgentGatewayBrowserTest() {
++    PrometheusAgentProfileServiceFactory::GetInstance();
++  }
++
+   void SetUpOnMainThread() override {
+     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
+     descriptor_path_ = temp_dir_.GetPath()
+@@ -166,7 +259,7 @@ class PrometheusAgentGatewayBrowserTest : public InProcessBrowserTest {
+     base::test::TestFuture<bool> started;
+     gateway_->Start(started.GetCallback());
+     ASSERT_TRUE(started.Get());
+-    ASSERT_TRUE(base::PathExists(descriptor_path_));
++    ASSERT_TRUE(DescriptorExistsForTesting(descriptor_path_));
+   }
+ 
+   void TearDownOnMainThread() override {
+@@ -174,7 +267,7 @@ class PrometheusAgentGatewayBrowserTest : public InProcessBrowserTest {
+       base::test::TestFuture<void> stopped;
+       gateway_->Shutdown(stopped.GetCallback());
+       ASSERT_TRUE(stopped.Wait());
+-      EXPECT_FALSE(base::PathExists(descriptor_path_));
++      EXPECT_FALSE(DescriptorExistsForTesting(descriptor_path_));
+       gateway_.reset();
+     }
+   }
+@@ -222,7 +315,7 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+   EXPECT_EQ(net::IPAddress::IPv4Localhost(), endpoint.address());
+   EXPECT_GT(endpoint.port(), 0);
+ 
+-  auto descriptor = ReadPrometheusEndpointDescriptor(descriptor_path_);
++  auto descriptor = ReadDescriptorForTesting(descriptor_path_);
+   ASSERT_TRUE(descriptor.has_value());
+   EXPECT_EQ("http://127.0.0.1:" + std::to_string(endpoint.port()),
+             descriptor->endpoint);
+@@ -320,16 +413,29 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+       "supervision",      "extensions"};
+   const std::set<std::string> allowed_statuses = {"ready", "degraded",
+                                                   "not_ready", "unavailable"};
++  const std::set<std::string> later_phase_keys = {"vault", "provider",
++                                                  "supervision", "extensions"};
+   std::set<std::string> actual_keys;
+   for (const base::Value& value : *diagnostics) {
+     const base::DictValue* component = value.GetIfDict();
+     ASSERT_TRUE(component);
+     const std::string* key = component->FindString("key");
+     const std::string* status = component->FindString("status");
++    const std::string* reason = component->FindString("reason");
++    const std::string* next_action = component->FindString("next_action");
+     ASSERT_TRUE(key);
+     ASSERT_TRUE(status);
++    ASSERT_TRUE(reason);
++    ASSERT_TRUE(next_action);
+     actual_keys.insert(*key);
+     EXPECT_TRUE(allowed_statuses.contains(*status)) << *status;
++    if (later_phase_keys.contains(*key)) {
++      EXPECT_EQ("not_ready", *status) << *key;
++      EXPECT_FALSE(reason->empty()) << *key;
++      EXPECT_LE(reason->size(), 256u) << *key;
++      EXPECT_FALSE(next_action->empty()) << *key;
++      EXPECT_LE(next_action->size(), 256u) << *key;
++    }
+   }
+   EXPECT_EQ(expected_keys, actual_keys);
+ 
+@@ -453,7 +559,7 @@ IN_PROC_BROWSER_TEST_F(PrometheusAgentGatewayBrowserTest,
+   base::test::TestFuture<void> stopped;
+   gateway_->Shutdown(stopped.GetCallback());
+   ASSERT_TRUE(stopped.Wait());
+-  EXPECT_FALSE(base::PathExists(descriptor_path_));
++  EXPECT_FALSE(DescriptorExistsForTesting(descriptor_path_));
+   EXPECT_GE(gateway_->terminal_request_count_for_testing(), 3u);
+   gateway_.reset();
+ }
+diff --git a/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc b/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
+new file mode 100644
+index 0000000000..a128f284fa
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_gateway_contract.cc
+@@ -0,0 +1,118 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <algorithm>
++#include <array>
++#include <utility>
++
++#include "base/containers/span.h"
++#include "base/strings/string_util.h"
++#include "chrome/browser/prometheus/prometheus_agent_gateway.h"
++#include "crypto/secure_util.h"
++#include "net/base/ip_address.h"
++#include "net/server/http_server_request_info.h"
++
++namespace prometheus {
++namespace {
++
++constexpr size_t kMaxRequestBytes = 1'048'576;
++constexpr size_t kMaxInflightRequests = 16;
++constexpr std::array<std::string_view, 6> kClosedPaths = {
++    "/v1/session/create", "/v1/session/resume", "/v1/session/touch",
++    "/v1/session/close",  "/v1/agent/command",  "/v1/health"};
++
++bool IsJsonContentType(std::string_view content_type) {
++  const size_t separator = content_type.find(';');
++  const std::string_view media_type = base::TrimWhitespaceASCII(
++      content_type.substr(0, separator), base::TrimPositions::TRIM_ALL);
++  if (!base::EqualsCaseInsensitiveASCII(media_type, "application/json")) {
++    return false;
++  }
++  if (separator == std::string_view::npos) {
++    return true;
++  }
++  std::string_view parameter = base::TrimWhitespaceASCII(
++      content_type.substr(separator + 1), base::TrimPositions::TRIM_ALL);
++  if (parameter.empty() || parameter.find(';') != std::string_view::npos) {
++    return false;
++  }
++  const size_t equals = parameter.find('=');
++  if (equals == std::string_view::npos) {
++    return false;
++  }
++  const std::string_view name = base::TrimWhitespaceASCII(
++      parameter.substr(0, equals), base::TrimPositions::TRIM_ALL);
++  const std::string_view value = base::TrimWhitespaceASCII(
++      parameter.substr(equals + 1), base::TrimPositions::TRIM_ALL);
++  return base::EqualsCaseInsensitiveASCII(name, "charset") &&
++         (base::EqualsCaseInsensitiveASCII(value, "utf-8") ||
++          base::EqualsCaseInsensitiveASCII(value, "utf8"));
++}
++
++bool HasValidBearer(std::string_view authorization, std::string_view bearer) {
++  constexpr std::string_view kPrefix = "Bearer ";
++  if (!authorization.starts_with(kPrefix)) {
++    return false;
++  }
++  return crypto::SecureMemEqual(
++      base::as_byte_span(authorization.substr(kPrefix.size())),
++      base::as_byte_span(bearer));
++}
++
++}  // namespace
++
++PrometheusAgentRequestRejection ValidatePrometheusAgentGatewayRequestForTesting(
++    const net::HttpServerRequestInfo& request,
++    int port,
++    std::string_view bearer,
++    size_t in_flight) {
++  if (request.peer.address() != net::IPAddress::IPv4Localhost()) {
++    return PrometheusAgentRequestRejection::kNonLoopbackPeer;
++  }
++  if (request.GetHeaderValue("host") != "127.0.0.1:" + std::to_string(port)) {
++    return PrometheusAgentRequestRejection::kInvalidHost;
++  }
++  if (request.headers.contains("origin")) {
++    return PrometheusAgentRequestRejection::kOriginForbidden;
++  }
++  if (!HasValidBearer(request.GetHeaderValue("authorization"), bearer)) {
++    return PrometheusAgentRequestRejection::kUnauthorized;
++  }
++  if (std::find(kClosedPaths.begin(), kClosedPaths.end(), request.path) ==
++      kClosedPaths.end()) {
++    return PrometheusAgentRequestRejection::kNotFound;
++  }
++  if (request.headers.contains("upgrade") ||
++      (request.path == "/v1/health" && request.method != "GET") ||
++      (request.path != "/v1/health" && request.method != "POST")) {
++    return PrometheusAgentRequestRejection::kMethodNotAllowed;
++  }
++  if (request.method == "POST" &&
++      !IsJsonContentType(request.GetHeaderValue("content-type"))) {
++    return PrometheusAgentRequestRejection::kUnsupportedMediaType;
++  }
++  if (request.data.size() > kMaxRequestBytes) {
++    return PrometheusAgentRequestRejection::kRequestTooLarge;
++  }
++  if (in_flight >= kMaxInflightRequests) {
++    return PrometheusAgentRequestRejection::kTooManyRequests;
++  }
++  return PrometheusAgentRequestRejection::kNone;
++}
++
++PrometheusAgentOneShotCompletion::PrometheusAgentOneShotCompletion(
++    base::OnceClosure completion)
++    : completion_(std::move(completion)) {}
++
++PrometheusAgentOneShotCompletion::~PrometheusAgentOneShotCompletion() = default;
++
++bool PrometheusAgentOneShotCompletion::TryComplete() {
++  if (!completion_) {
++    return false;
++  }
++  std::move(completion_).Run();
++  return true;
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_endpoint_descriptor.cc b/chrome/browser/prometheus/prometheus_endpoint_descriptor.cc
+new file mode 100644
+index 0000000000..1643a94f22
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_endpoint_descriptor.cc
+@@ -0,0 +1,156 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
++
++#include <utility>
++
++#include "base/command_line.h"
++#include "base/containers/span.h"
++#include "base/files/file.h"
++#include "base/files/file_util.h"
++#include "base/json/json_reader.h"
++#include "base/json/json_writer.h"
++#include "base/process/process_handle.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/values.h"
++#include "chrome/common/chrome_switches.h"
++#include "crypto/random.h"
++
++namespace prometheus {
++namespace {
++
++constexpr size_t kSecretBytes = 32;
++constexpr size_t kMaxDescriptorBytes = 4096;
++
++bool EnsurePrivateParent(const base::FilePath& parent) {
++  if (base::PathExists(parent)) {
++    if (!base::DirectoryExists(parent) || base::IsLink(parent)) {
++      return false;
++    }
++    int mode = 0;
++    return base::GetPosixFilePermissions(parent, &mode) && (mode & 0077) == 0;
++  }
++  if (!base::CreateDirectory(parent)) {
++    return false;
++  }
++  return base::SetPosixFilePermissions(parent, 0700);
++}
++
++std::optional<std::string> SerializeDescriptor(
++    const PrometheusEndpointDescriptorData& descriptor) {
++  if (descriptor.endpoint.empty() || descriptor.process_id <= 0 ||
++      descriptor.instance_nonce.empty() || descriptor.bearer.empty()) {
++    return std::nullopt;
++  }
++  base::DictValue value;
++  value.Set("protocol", kPrometheusAgentProtocol);
++  value.Set("endpoint", descriptor.endpoint);
++  value.Set("pid", descriptor.process_id);
++  value.Set("instance_nonce", descriptor.instance_nonce);
++  value.Set("bearer", descriptor.bearer);
++  return base::WriteJson(value);
++}
++
++}  // namespace
++
++PrometheusEndpointSecrets CreatePrometheusEndpointSecrets() {
++  PrometheusEndpointSecrets secrets;
++  secrets.bearer =
++      base::HexEncodeLower(crypto::RandBytesAsVector(kSecretBytes));
++  secrets.instance_nonce =
++      base::HexEncodeLower(crypto::RandBytesAsVector(kSecretBytes));
++  return secrets;
++}
++
++base::FilePath GetDefaultPrometheusEndpointDescriptorPath() {
++  base::FilePath temp_dir;
++  if (!base::GetTempDir(&temp_dir)) {
++    return {};
++  }
++  return temp_dir.AppendASCII("prometheus-mcp").AppendASCII("endpoint.json");
++}
++
++base::FilePath ResolvePrometheusEndpointDescriptorPath(
++    const base::CommandLine& command_line) {
++  if (!command_line.HasSwitch(switches::kPrometheusAgentEndpointDescriptor)) {
++    return GetDefaultPrometheusEndpointDescriptorPath();
++  }
++  base::FilePath path = command_line.GetSwitchValuePath(
++      switches::kPrometheusAgentEndpointDescriptor);
++  return path.IsAbsolute() ? path : base::FilePath();
++}
++
++bool WritePrometheusEndpointDescriptor(
++    const base::FilePath& path,
++    const PrometheusEndpointDescriptorData& descriptor) {
++  if (path.empty() || !path.IsAbsolute() || base::IsLink(path)) {
++    return false;
++  }
++  std::optional<std::string> json = SerializeDescriptor(descriptor);
++  if (!json.has_value() || json->size() > kMaxDescriptorBytes ||
++      !EnsurePrivateParent(path.DirName())) {
++    return false;
++  }
++
++  base::FilePath temporary_path;
++  base::File temporary =
++      base::CreateAndOpenTemporaryFileInDir(path.DirName(), &temporary_path);
++  if (!temporary.IsValid()) {
++    return false;
++  }
++  const bool wrote =
++      base::SetPosixFilePermissions(temporary_path, 0600) &&
++      temporary.WriteAtCurrentPosAndCheck(base::as_byte_span(*json)) &&
++      temporary.Flush();
++  temporary.Close();
++  if (!wrote || !base::ReplaceFile(temporary_path, path, nullptr) ||
++      !base::SetPosixFilePermissions(path, 0600)) {
++    base::DeleteFile(temporary_path);
++    return false;
++  }
++  return true;
++}
++
++std::optional<PrometheusEndpointDescriptorData>
++ReadPrometheusEndpointDescriptor(const base::FilePath& path) {
++  std::string raw;
++  if (!base::ReadFileToStringWithMaxSize(path, &raw, kMaxDescriptorBytes)) {
++    return std::nullopt;
++  }
++  std::optional<base::DictValue> value =
++      base::JSONReader::ReadDict(raw, base::JSON_PARSE_RFC);
++  if (!value.has_value() || value->size() != 5u) {
++    return std::nullopt;
++  }
++  const std::string* protocol = value->FindString("protocol");
++  const std::string* endpoint = value->FindString("endpoint");
++  const std::optional<int> process_id = value->FindInt("pid");
++  const std::string* nonce = value->FindString("instance_nonce");
++  const std::string* bearer = value->FindString("bearer");
++  if (!protocol || *protocol != kPrometheusAgentProtocol || !endpoint ||
++      endpoint->empty() || !process_id.has_value() || *process_id <= 0 ||
++      !nonce || nonce->empty() || !bearer || bearer->empty()) {
++    return std::nullopt;
++  }
++  PrometheusEndpointDescriptorData descriptor;
++  descriptor.endpoint = *endpoint;
++  descriptor.process_id = *process_id;
++  descriptor.instance_nonce = *nonce;
++  descriptor.bearer = *bearer;
++  return descriptor;
++}
++
++bool DeletePrometheusEndpointDescriptorIfOwned(
++    const base::FilePath& path,
++    const std::string& instance_nonce) {
++  std::optional<PrometheusEndpointDescriptorData> current =
++      ReadPrometheusEndpointDescriptor(path);
++  if (!current.has_value() || current->instance_nonce != instance_nonce) {
++    return false;
++  }
++  return base::DeleteFile(path);
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_endpoint_descriptor.h b/chrome/browser/prometheus/prometheus_endpoint_descriptor.h
+new file mode 100644
+index 0000000000..0551a30540
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_endpoint_descriptor.h
+@@ -0,0 +1,49 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_ENDPOINT_DESCRIPTOR_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_ENDPOINT_DESCRIPTOR_H_
++
++#include <optional>
++#include <string>
++
++#include "base/files/file_path.h"
++
++namespace base {
++class CommandLine;
++}
++
++namespace prometheus {
++
++inline constexpr char kPrometheusAgentProtocol[] = "prometheus-agent-v1";
++
++struct PrometheusEndpointSecrets {
++  std::string bearer;
++  std::string instance_nonce;
++};
++
++struct PrometheusEndpointDescriptorData {
++  std::string endpoint;
++  int process_id = 0;
++  std::string instance_nonce;
++  std::string bearer;
++};
++
++PrometheusEndpointSecrets CreatePrometheusEndpointSecrets();
++base::FilePath GetDefaultPrometheusEndpointDescriptorPath();
++base::FilePath ResolvePrometheusEndpointDescriptorPath(
++    const base::CommandLine& command_line);
++
++bool WritePrometheusEndpointDescriptor(
++    const base::FilePath& path,
++    const PrometheusEndpointDescriptorData& descriptor);
++std::optional<PrometheusEndpointDescriptorData>
++ReadPrometheusEndpointDescriptor(const base::FilePath& path);
++bool DeletePrometheusEndpointDescriptorIfOwned(
++    const base::FilePath& path,
++    const std::string& instance_nonce);
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_ENDPOINT_DESCRIPTOR_H_
+diff --git a/chrome/common/chrome_switches.cc b/chrome/common/chrome_switches.cc
+index ac5ef99d0e..1556c6034f 100644
+--- a/chrome/common/chrome_switches.cc
++++ b/chrome/common/chrome_switches.cc
+@@ -551,6 +551,9 @@ const char kProfileEmail[] = "profile-email";
+ const char kCreateProfileEmailIfNotExists[] =
+     "create-profile-email-if-not-exists";
+ 
++const char kPrometheusAgentEndpointDescriptor[] =
++    "prometheus-agent-endpoint-descriptor";
++
+ // Forces proxy auto-detection.
+ const char kProxyAutoDetect[] = "proxy-auto-detect";
+ 
+diff --git a/chrome/common/chrome_switches.h b/chrome/common/chrome_switches.h
+index 06b8c12cb3..e913a1e53e 100644
+--- a/chrome/common/chrome_switches.h
++++ b/chrome/common/chrome_switches.h
+@@ -168,6 +168,12 @@ extern const char kProfileDirectory[];
+ extern const char kIgnoreProfileDirectoryIfNotExists[];
+ extern const char kProfileEmail[];
+ extern const char kCreateProfileEmailIfNotExists[];
++
++// Overrides the owner-only endpoint descriptor used by the Prometheus local
++// agent gateway. The switch carries a path only; credentials are never placed
++// on the command line.
++extern const char kPrometheusAgentEndpointDescriptor[];
++
+ extern const char kProxyAutoDetect[];
+ extern const char kProxyBypassList[];
+ extern const char kProxyPacUrl[];
+-- 
+2.50.1 (Apple Git-155)
+

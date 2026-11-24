@@ -1,0 +1,215 @@
+From 3d6d00b3b6b371e429b261268a177bde0d0ed169 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 01:12:28 -0500
+Subject: [PATCH 09/11] feat(15-04): add Prometheus tab status badge
+
+---
+ chrome/browser/ui/BUILD.gn                    |   4 +
+ .../views/tabs/prometheus_tab_status_badge.cc | 128 ++++++++++++++++++
+ .../views/tabs/prometheus_tab_status_badge.h  |  36 +++++
+ 3 files changed, 168 insertions(+)
+ create mode 100644 chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc
+ create mode 100644 chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h
+
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+index 305ff2a695..002a84a4b5 100644
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -567,7 +567,9 @@ static_library("ui") {
+     "//chrome/browser/preloading/prefetch/no_state_prefetch",
+     "//chrome/browser/privacy_sandbox:headers",
+     "//chrome/browser/private_ai",
++    "//chrome/browser/prometheus:prometheus_action",
+     "//chrome/browser/prometheus:prometheus_chrome_mode",
++    "//chrome/browser/prometheus:prometheus_tab_state",
+     "//chrome/browser/profiles",
+     "//chrome/browser/profiles:misc",
+     "//chrome/browser/profiles:profile",
+@@ -4633,6 +4635,8 @@ static_library("ui") {
+       "views/tabs/tab_group_views.h",
+       "views/tabs/tab_layout_state.cc",
+       "views/tabs/tab_layout_state.h",
++      "views/tabs/prometheus_tab_status_badge.cc",
++      "views/tabs/prometheus_tab_status_badge.h",
+       "views/tabs/tab_search_button.cc",
+       "views/tabs/tab_search_button.h",
+       "views/tabs/tab_slot_animation_delegate.cc",
+diff --git a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc
+new file mode 100644
+index 0000000000..cca8295802
+--- /dev/null
++++ b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc
+@@ -0,0 +1,128 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h"
++
++#include <memory>
++#include <string>
++#include <vector>
++
++#include "base/strings/string_util.h"
++#include "base/strings/utf_string_conversions.h"
++#include "chrome/browser/prometheus/prometheus_action.h"
++#include "chrome/browser/ui/color/chrome_color_id.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/base/models/image_model.h"
++#include "ui/color/color_id.h"
++#include "ui/gfx/geometry/insets.h"
++#include "ui/gfx/geometry/size.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/controls/image_view.h"
++#include "ui/views/layout/box_layout.h"
++
++namespace {
++
++constexpr int kBadgeSpacing = 2;
++
++bool IsSafeDefault(const PrometheusTabState& state) {
++  return state.owner_label.empty() && !state.automation_active &&
++         !state.supervision_active &&
++         state.health == PrometheusTabState::Health::kOk;
++}
++
++std::u16string BuildAccessibleName(const PrometheusTabState& state) {
++  if (IsSafeDefault(state)) {
++    return u"No agent owns this tab";
++  }
++
++  std::vector<std::u16string> parts;
++  if (state.owner_label.empty()) {
++    parts.push_back(u"No agent owns this tab");
++  } else {
++    std::u16string owner = u"Owned by ";
++    owner += base::UTF8ToUTF16(state.owner_label);
++    parts.push_back(std::move(owner));
++  }
++
++  if (state.automation_active) {
++    parts.push_back(u"Agent is working in this tab");
++  }
++  if (state.supervision_active) {
++    parts.push_back(u"Supervision active");
++  }
++
++  parts.push_back(state.health == PrometheusTabState::Health::kOk
++                      ? u"Tab health OK"
++                      : u"Tab needs attention");
++
++  return base::JoinString(parts, u", ");
++}
++
++ui::ImageModel GetPrometheusBadgeIcon(PrometheusAction action,
++                                      ui::ColorId color_id) {
++  return ui::ImageModel::FromVectorIcon(
++      *GetPrometheusActionIconMap().at(action), color_id,
++      PrometheusTabStatusBadge::kIconSize);
++}
++
++views::ImageView* AddBadgeIcon(views::View* parent) {
++  auto* icon = parent->AddChildView(std::make_unique<views::ImageView>());
++  icon->SetImageSize(gfx::Size(PrometheusTabStatusBadge::kIconSize,
++                               PrometheusTabStatusBadge::kIconSize));
++  icon->SetCanProcessEventsWithinSubtree(false);
++  icon->SetVisible(false);
++  return icon;
++}
++
++void SetBadgeIcon(views::ImageView* icon,
++                  bool visible,
++                  PrometheusAction action,
++                  ui::ColorId color_id) {
++  icon->SetVisible(visible);
++  if (!visible) {
++    return;
++  }
++  icon->SetImage(GetPrometheusBadgeIcon(action, color_id));
++}
++
++}  // namespace
++
++PrometheusTabStatusBadge::PrometheusTabStatusBadge() {
++  SetCanProcessEventsWithinSubtree(false);
++  SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(),
++      kBadgeSpacing));
++
++  owner_or_automation_badge_ = AddBadgeIcon(this);
++  supervision_badge_ = AddBadgeIcon(this);
++  health_badge_ = AddBadgeIcon(this);
++
++  SetState(PrometheusTabState::SafeDefault());
++}
++
++PrometheusTabStatusBadge::~PrometheusTabStatusBadge() = default;
++
++void PrometheusTabStatusBadge::SetState(const PrometheusTabState& state) {
++  const bool has_owner_or_automation =
++      !state.owner_label.empty() || state.automation_active;
++  const bool has_health_warning =
++      state.health == PrometheusTabState::Health::kNeedsAttention;
++
++  SetBadgeIcon(owner_or_automation_badge_, has_owner_or_automation,
++               PrometheusAction::kBolt, kColorPrometheusAccent);
++  SetBadgeIcon(supervision_badge_, state.supervision_active,
++               PrometheusAction::kShield, kColorPrometheusAccent);
++  SetBadgeIcon(health_badge_, has_health_warning,
++               PrometheusAction::kTriangleExclamation,
++               kColorPrometheusAccent);
++
++  SetVisible(has_owner_or_automation || state.supervision_active ||
++             has_health_warning);
++  GetViewAccessibility().SetName(BuildAccessibleName(state));
++  PreferredSizeChanged();
++  SchedulePaint();
++}
++
++BEGIN_METADATA(PrometheusTabStatusBadge)
++END_METADATA
+diff --git a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h
+new file mode 100644
+index 0000000000..463de283a1
+--- /dev/null
++++ b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h
+@@ -0,0 +1,36 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_TABS_PROMETHEUS_TAB_STATUS_BADGE_H_
++#define CHROME_BROWSER_UI_VIEWS_TABS_PROMETHEUS_TAB_STATUS_BADGE_H_
++
++#include "base/memory/raw_ptr.h"
++#include "chrome/browser/prometheus/prometheus_tab_state.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/views/view.h"
++
++namespace views {
++class ImageView;
++}  // namespace views
++
++class PrometheusTabStatusBadge : public views::View {
++  METADATA_HEADER(PrometheusTabStatusBadge, views::View)
++
++ public:
++  static constexpr int kIconSize = 12;
++
++  PrometheusTabStatusBadge();
++  PrometheusTabStatusBadge(const PrometheusTabStatusBadge&) = delete;
++  PrometheusTabStatusBadge& operator=(const PrometheusTabStatusBadge&) = delete;
++  ~PrometheusTabStatusBadge() override;
++
++  void SetState(const PrometheusTabState& state);
++
++ private:
++  raw_ptr<views::ImageView> owner_or_automation_badge_ = nullptr;
++  raw_ptr<views::ImageView> supervision_badge_ = nullptr;
++  raw_ptr<views::ImageView> health_badge_ = nullptr;
++};
++
++#endif  // CHROME_BROWSER_UI_VIEWS_TABS_PROMETHEUS_TAB_STATUS_BADGE_H_
+-- 
+2.50.1 (Apple Git-155)
+

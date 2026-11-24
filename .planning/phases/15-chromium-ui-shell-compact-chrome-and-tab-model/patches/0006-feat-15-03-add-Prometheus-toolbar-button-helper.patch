@@ -1,0 +1,171 @@
+From c3f7c677f3d01e1508197c9e25674087b455cb7a Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 00:53:41 -0500
+Subject: [PATCH 06/11] feat(15-03): add Prometheus toolbar button helper
+
+---
+ chrome/browser/ui/views/toolbar/BUILD.gn      |  3 +
+ .../toolbar/prometheus_toolbar_button.cc      | 72 +++++++++++++++++++
+ .../views/toolbar/prometheus_toolbar_button.h | 43 +++++++++++
+ 3 files changed, 118 insertions(+)
+ create mode 100644 chrome/browser/ui/views/toolbar/prometheus_toolbar_button.cc
+ create mode 100644 chrome/browser/ui/views/toolbar/prometheus_toolbar_button.h
+
+diff --git a/chrome/browser/ui/views/toolbar/BUILD.gn b/chrome/browser/ui/views/toolbar/BUILD.gn
+index 36a2e951c4..fb66862782 100644
+--- a/chrome/browser/ui/views/toolbar/BUILD.gn
++++ b/chrome/browser/ui/views/toolbar/BUILD.gn
+@@ -26,6 +26,7 @@ source_set("toolbar") {
+     "pinned_toolbar_actions_container.h",
+     "pinned_toolbar_actions_container_layout.h",
+     "pinned_toolbar_button_status_indicator.h",
++    "prometheus_toolbar_button.h",
+     "reload_button.h",
+     "reload_control.h",
+     "split_tabs_button.h",
+@@ -63,6 +64,7 @@ source_set("toolbar") {
+     "//chrome/browser/glic",
+     "//chrome/browser/glic/browser_ui",
+     "//chrome/browser/lifetime",
++    "//chrome/browser/prometheus:prometheus_action",
+     "//chrome/browser/ui:browser_element_identifiers",
+     "//chrome/browser/ui/browser_window",
+     "//chrome/browser/ui/color:color_headers",
+@@ -123,6 +125,7 @@ source_set("impl") {
+     "pinned_toolbar_actions_container.cc",
+     "pinned_toolbar_actions_container_layout.cc",
+     "pinned_toolbar_button_status_indicator.cc",
++    "prometheus_toolbar_button.cc",
+     "reload_button.cc",
+     "split_tabs_button.cc",
+     "toolbar_action_hover_card_bubble_view.cc",
+diff --git a/chrome/browser/ui/views/toolbar/prometheus_toolbar_button.cc b/chrome/browser/ui/views/toolbar/prometheus_toolbar_button.cc
+new file mode 100644
+index 0000000000..69c930613a
+--- /dev/null
++++ b/chrome/browser/ui/views/toolbar/prometheus_toolbar_button.cc
+@@ -0,0 +1,72 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/toolbar/prometheus_toolbar_button.h"
++
++#include <utility>
++
++#include "chrome/browser/ui/color/chrome_color_id.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/base/models/image_model.h"
++#include "ui/color/color_id.h"
++#include "ui/views/accessibility/view_accessibility.h"
++
++namespace {
++
++constexpr int kPrometheusToolbarIconSize = 16;
++
++}  // namespace
++
++PrometheusToolbarButton::PrometheusToolbarButton(
++    PrometheusAction action,
++    const std::u16string& accessible_name,
++    PressedCallback callback)
++    : ToolbarButton(std::move(callback)), action_(action) {
++  SetTooltipText(accessible_name);
++  GetViewAccessibility().SetName(accessible_name);
++  UpdatePrometheusIcon();
++}
++
++PrometheusToolbarButton::~PrometheusToolbarButton() = default;
++
++void PrometheusToolbarButton::SetPrometheusActive(bool active) {
++  if (active_ == active) {
++    return;
++  }
++  active_ = active;
++  UpdatePrometheusIcon();
++}
++
++gfx::Size PrometheusToolbarButton::CalculatePreferredSize(
++    const views::SizeBounds& available_size) const {
++  return gfx::Size(kVisualSize, kVisualSize);
++}
++
++gfx::Size PrometheusToolbarButton::GetMinimumSize() const {
++  return gfx::Size(kVisualSize, kVisualSize);
++}
++
++void PrometheusToolbarButton::OnThemeChanged() {
++  ToolbarButton::OnThemeChanged();
++  UpdatePrometheusIcon();
++}
++
++void PrometheusToolbarButton::UpdatePrometheusIcon() {
++  const gfx::VectorIcon* const icon = GetPrometheusActionIconMap().at(action_);
++  const ui::ImageModel normal_icon = ui::ImageModel::FromVectorIcon(
++      *icon, active_ ? kColorPrometheusAccent : kColorPrometheusText2,
++      kPrometheusToolbarIconSize);
++  const ui::ImageModel active_icon = ui::ImageModel::FromVectorIcon(
++      *icon, kColorPrometheusAccent, kPrometheusToolbarIconSize);
++  const ui::ImageModel disabled_icon = ui::ImageModel::FromVectorIcon(
++      *icon, kColorPrometheusText2, kPrometheusToolbarIconSize);
++
++  SetImageModel(ButtonState::STATE_NORMAL, normal_icon);
++  SetImageModel(ButtonState::STATE_HOVERED, active_icon);
++  SetImageModel(ButtonState::STATE_PRESSED, active_icon);
++  SetImageModel(ButtonState::STATE_DISABLED, disabled_icon);
++}
++
++BEGIN_METADATA(PrometheusToolbarButton)
++END_METADATA
+diff --git a/chrome/browser/ui/views/toolbar/prometheus_toolbar_button.h b/chrome/browser/ui/views/toolbar/prometheus_toolbar_button.h
+new file mode 100644
+index 0000000000..35046730e6
+--- /dev/null
++++ b/chrome/browser/ui/views/toolbar/prometheus_toolbar_button.h
+@@ -0,0 +1,43 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_TOOLBAR_PROMETHEUS_TOOLBAR_BUTTON_H_
++#define CHROME_BROWSER_UI_VIEWS_TOOLBAR_PROMETHEUS_TOOLBAR_BUTTON_H_
++
++#include <string>
++
++#include "chrome/browser/prometheus/prometheus_action.h"
++#include "chrome/browser/ui/views/toolbar/toolbar_button.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/gfx/geometry/size.h"
++
++class PrometheusToolbarButton : public ToolbarButton {
++  METADATA_HEADER(PrometheusToolbarButton, ToolbarButton)
++
++ public:
++  static constexpr int kVisualSize = 32;
++
++  PrometheusToolbarButton(PrometheusAction action,
++                          const std::u16string& accessible_name,
++                          PressedCallback callback);
++  PrometheusToolbarButton(const PrometheusToolbarButton&) = delete;
++  PrometheusToolbarButton& operator=(const PrometheusToolbarButton&) = delete;
++  ~PrometheusToolbarButton() override;
++
++  void SetPrometheusActive(bool active);
++
++  // views::View:
++  gfx::Size CalculatePreferredSize(
++      const views::SizeBounds& available_size) const override;
++  gfx::Size GetMinimumSize() const override;
++  void OnThemeChanged() override;
++
++ private:
++  void UpdatePrometheusIcon();
++
++  const PrometheusAction action_;
++  bool active_ = false;
++};
++
++#endif  // CHROME_BROWSER_UI_VIEWS_TOOLBAR_PROMETHEUS_TOOLBAR_BUTTON_H_
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,476 @@
+From e8baf3785227531d528603de88e580d502423273 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 18:24:31 -0500
+Subject: [PATCH] feat(21-03): implement strict bounded APC baseline
+
+- preserve deterministic document-scoped structure and safe semantics
+- omit sensitive and restricted content before serialization
+- fail closed on malformed identity and node or byte overflow
+---
+ .../prometheus_supervision_projection.cc      | 443 +++++++++++++++++-
+ 1 file changed, 438 insertions(+), 5 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_supervision_projection.cc b/chrome/browser/prometheus/prometheus_supervision_projection.cc
+index 51d3dc75b8..6768d6be24 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_projection.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_projection.cc
+@@ -4,18 +4,451 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_supervision_projection.h"
+ 
++#include <cstddef>
++#include <map>
++#include <string>
++#include <string_view>
++#include <utility>
++#include <vector>
++
++#include "base/json/json_writer.h"
++#include "base/strings/strcat.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
++#include "base/values.h"
+ #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
+ 
+ namespace prometheus {
+ 
++namespace {
++
++using optimization_guide::proto::AnnotatedPageContent;
++using optimization_guide::proto::AnnotatedRole;
++using optimization_guide::proto::ContentAttributes;
++using optimization_guide::proto::ContentAttributeType;
++using optimization_guide::proto::ContentNode;
++using optimization_guide::proto::FormControlData;
++
++constexpr size_t kMaxDocumentTokenBytes = 128;
++constexpr size_t kMaxNameBytes = 80;
++constexpr size_t kMaxTextSnippetBytes = 200;
++constexpr size_t kMaxInputValueBytes = 200;
++constexpr size_t kMaximumTraversalNodes = 10000;
++
++std::string BoundUtf8(std::string_view value, size_t max_bytes) {
++  return std::string(base::TruncateUTF8ToByteSize(value, max_bytes));
++}
++
++bool IsValidDocumentToken(std::string_view token) {
++  return !token.empty() && token.size() <= kMaxDocumentTokenBytes &&
++         base::IsStringUTF8(token);
++}
++
++std::string NormalizeEnumName(std::string value, std::string_view prefix) {
++  if (base::StartsWith(value, prefix)) {
++    value.erase(0, prefix.size());
++  }
++  return base::ToLowerASCII(value);
++}
++
++std::string TagForType(ContentAttributeType type) {
++  switch (type) {
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_UNKNOWN:
++      return "unknown";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_ROOT:
++      return "root";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_CONTAINER:
++      return "container";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_IFRAME:
++      return "iframe";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_PARAGRAPH:
++      return "paragraph";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_HEADING:
++      return "heading";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT:
++      return "text";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_ANCHOR:
++      return "anchor";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_IMAGE:
++      return "image";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_SVG_ROOT:
++      return "svg";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_CANVAS:
++      return "canvas";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_VIDEO:
++      return "video";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_ORDERED_LIST:
++      return "ordered_list";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_UNORDERED_LIST:
++      return "unordered_list";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_LIST_ITEM:
++      return "list_item";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_FORM:
++      return "form";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_FORM_CONTROL:
++      return "form_control";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_TABLE:
++      return "table";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_TABLE_ROW:
++      return "table_row";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_TABLE_CELL:
++      return "table_cell";
++    default:
++      return "unknown";
++  }
++}
++
++std::string LandmarkRole(const ContentAttributes& attributes) {
++  for (int role_value : attributes.annotated_roles()) {
++    switch (static_cast<AnnotatedRole>(role_value)) {
++      case optimization_guide::proto::ANNOTATED_ROLE_HEADER:
++        return "header";
++      case optimization_guide::proto::ANNOTATED_ROLE_NAV:
++        return "navigation";
++      case optimization_guide::proto::ANNOTATED_ROLE_SEARCH:
++        return "search";
++      case optimization_guide::proto::ANNOTATED_ROLE_MAIN:
++        return "main";
++      case optimization_guide::proto::ANNOTATED_ROLE_ARTICLE:
++        return "article";
++      case optimization_guide::proto::ANNOTATED_ROLE_SECTION:
++        return "section";
++      case optimization_guide::proto::ANNOTATED_ROLE_ASIDE:
++        return "complementary";
++      case optimization_guide::proto::ANNOTATED_ROLE_FOOTER:
++        return "footer";
++      case optimization_guide::proto::ANNOTATED_ROLE_UNKNOWN:
++      case optimization_guide::proto::ANNOTATED_ROLE_CONTENT_HIDDEN:
++      case optimization_guide::proto::ANNOTATED_ROLE_PAID_CONTENT:
++        break;
++      default:
++        break;
++    }
++  }
++  return std::string();
++}
++
++std::string RoleForNode(const ContentAttributes& attributes) {
++  if (attributes.has_aria_role() &&
++      attributes.aria_role() != optimization_guide::proto::AX_ROLE_NONE) {
++    return NormalizeEnumName(
++        optimization_guide::proto::AXRole_Name(attributes.aria_role()),
++        "AX_ROLE_");
++  }
++  std::string landmark = LandmarkRole(attributes);
++  if (!landmark.empty()) {
++    return landmark;
++  }
++  switch (attributes.attribute_type()) {
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_HEADING:
++      return "heading";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_ANCHOR:
++      return "link";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_FORM:
++      return "form";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_FORM_CONTROL:
++      return "form_control";
++    case optimization_guide::proto::CONTENT_ATTRIBUTE_IFRAME:
++      return "iframe";
++    default:
++      return std::string();
++  }
++}
++
++bool IsCheckboxOrRadio(
++    optimization_guide::proto::FormControlType control_type) {
++  return control_type ==
++             optimization_guide::proto::FORM_CONTROL_TYPE_INPUT_CHECKBOX ||
++         control_type ==
++             optimization_guide::proto::FORM_CONTROL_TYPE_INPUT_RADIO;
++}
++
++bool HasSensitiveAutofillType(const FormControlData& form_control) {
++  for (auto type : form_control.coarse_autofill_field_type()) {
++    if (type ==
++            optimization_guide::proto::COARSE_AUTOFILL_FIELD_TYPE_CREDIT_CARD ||
++        type == optimization_guide::proto::COARSE_AUTOFILL_FIELD_TYPE_OTP) {
++      return true;
++    }
++  }
++  return false;
++}
++
++bool MayProjectInputValue(const ContentAttributes& attributes,
++                          const FormControlData& form_control) {
++  // The converter normally supplies this decision, but the renderer-backed
++  // proto is still untrusted. Absence, a future enum, and every sensitive or
++  // empty-sensitive decision all fail closed here.
++  if (!attributes.has_redaction_decision() ||
++      attributes.redaction_decision() !=
++          optimization_guide::proto::
++              REDACTION_DECISION_NO_REDACTION_NECESSARY) {
++    return false;
++  }
++  if (form_control.form_control_type() ==
++          optimization_guide::proto::FORM_CONTROL_TYPE_INPUT_PASSWORD ||
++      HasSensitiveAutofillType(form_control)) {
++    return false;
++  }
++  return form_control.has_field_value();
++}
++
++SupervisionNormalizedNode BuildNode(const ContentAttributes& attributes,
++                                    std::string ref,
++                                    std::string parent_ref) {
++  SupervisionNormalizedNode node;
++  node.ref = std::move(ref);
++  node.parent_ref = std::move(parent_ref);
++  node.tag = TagForType(attributes.attribute_type());
++  node.role = RoleForNode(attributes);
++
++  if (!attributes.label().empty()) {
++    node.name = BoundUtf8(attributes.label(), kMaxNameBytes);
++  } else if (attributes.has_text_data() &&
++             !attributes.text_data().text_content().empty()) {
++    node.name = BoundUtf8(attributes.text_data().text_content(), kMaxNameBytes);
++  } else if (attributes.has_form_control_data()) {
++    node.name =
++        BoundUtf8(attributes.form_control_data().field_name(), kMaxNameBytes);
++  }
++  if (attributes.has_text_data()) {
++    node.text_snippet =
++        BoundUtf8(attributes.text_data().text_content(), kMaxTextSnippetBytes);
++  }
++
++  if (attributes.has_interaction_info()) {
++    const auto& interaction = attributes.interaction_info();
++    node.disabled = interaction.is_disabled();
++    node.focusable = interaction.is_focusable();
++    node.clickable = !interaction.clickability_reasons().empty();
++  }
++
++  if (attributes.attribute_type() ==
++          optimization_guide::proto::CONTENT_ATTRIBUTE_FORM_CONTROL &&
++      attributes.has_form_control_data()) {
++    const FormControlData& form_control = attributes.form_control_data();
++    if (MayProjectInputValue(attributes, form_control)) {
++      node.input_value =
++          BoundUtf8(form_control.field_value(), kMaxInputValueBytes);
++    }
++    if (form_control.form_control_type() !=
++        optimization_guide::proto::FORM_CONTROL_TYPE_UNSPECIFIED) {
++      node.input_type =
++          NormalizeEnumName(optimization_guide::proto::FormControlType_Name(
++                                form_control.form_control_type()),
++                            "FORM_CONTROL_TYPE_");
++    }
++    if (IsCheckboxOrRadio(form_control.form_control_type())) {
++      node.checked = form_control.is_checked();
++    }
++    node.required = form_control.is_required();
++    node.readonly = form_control.is_readonly();
++  }
++
++  if (attributes.attribute_type() ==
++          optimization_guide::proto::CONTENT_ATTRIBUTE_IFRAME &&
++      attributes.has_iframe_data() &&
++      attributes.iframe_data().has_redacted_frame_metadata()) {
++    node.frame_restricted = true;
++    node.frame_restricted_reason =
++        optimization_guide::proto::IframeData_RedactedFrameMetadata_Reason_Name(
++            attributes.iframe_data().redacted_frame_metadata().reason());
++  }
++  return node;
++}
++
++base::DictValue NodeToValue(const SupervisionNormalizedNode& node) {
++  base::DictValue value;
++  value.Set("ref", node.ref);
++  if (!node.parent_ref.empty()) {
++    value.Set("parent_ref", node.parent_ref);
++  }
++  base::ListValue children;
++  children.reserve(node.child_refs.size());
++  for (const std::string& child_ref : node.child_refs) {
++    children.Append(child_ref);
++  }
++  value.Set("children", std::move(children));
++  value.Set("tag", node.tag);
++  if (!node.role.empty()) {
++    value.Set("role", node.role);
++  }
++  if (!node.name.empty()) {
++    value.Set("name", node.name);
++  }
++  if (!node.text_snippet.empty()) {
++    value.Set("text_snippet", node.text_snippet);
++  }
++  if (node.disabled) {
++    value.Set("disabled", true);
++  }
++  if (node.focusable) {
++    value.Set("focusable", true);
++  }
++  if (node.clickable) {
++    value.Set("clickable", true);
++  }
++  if (node.input_value.has_value()) {
++    value.Set("input_value", *node.input_value);
++  }
++  if (node.input_type.has_value()) {
++    value.Set("input_type", *node.input_type);
++  }
++  if (node.checked.has_value()) {
++    value.Set("checked", *node.checked);
++  }
++  if (node.required) {
++    value.Set("required", true);
++  }
++  if (node.readonly) {
++    value.Set("readonly", true);
++  }
++  if (node.frame_restricted) {
++    value.Set("frame_restricted", true);
++    if (!node.frame_restricted_reason.empty()) {
++      value.Set("frame_restricted_reason", node.frame_restricted_reason);
++    }
++  }
++  return value;
++}
++
++class SupervisionProjector {
++ public:
++  explicit SupervisionProjector(size_t max_nodes) : max_nodes_(max_nodes) {}
++
++  bool Walk(const ContentNode& content_node,
++            std::string_view document_token,
++            std::string_view parent_ref) {
++    if (visited_nodes_ >= kMaximumTraversalNodes ||
++        !IsValidDocumentToken(document_token)) {
++      return false;
++    }
++    ++visited_nodes_;
++
++    if (!content_node.has_content_attributes()) {
++      return WalkChildren(content_node, document_token, parent_ref);
++    }
++
++    const ContentAttributes& attributes = content_node.content_attributes();
++    std::string emitted_ref;
++    std::string next_parent(parent_ref);
++    if (attributes.has_common_ancestor_dom_node_id() &&
++        attributes.common_ancestor_dom_node_id() > 0) {
++      emitted_ref = base::StrCat(
++          {document_token, ":",
++           base::NumberToString(attributes.common_ancestor_dom_node_id())});
++      if (indices_.contains(emitted_ref) || nodes_.size() >= max_nodes_) {
++        return false;
++      }
++      const size_t index = nodes_.size();
++      nodes_.push_back(BuildNode(attributes, emitted_ref, next_parent));
++      indices_.emplace(emitted_ref, index);
++      if (!next_parent.empty()) {
++        auto parent = indices_.find(next_parent);
++        if (parent == indices_.end()) {
++          return false;
++        }
++        nodes_[parent->second].child_refs.push_back(emitted_ref);
++      }
++      next_parent = emitted_ref;
++    }
++
++    if (attributes.attribute_type() ==
++            optimization_guide::proto::CONTENT_ATTRIBUTE_IFRAME &&
++        attributes.has_iframe_data() &&
++        attributes.iframe_data().has_redacted_frame_metadata()) {
++      return true;
++    }
++
++    std::string_view child_document_token = document_token;
++    if (attributes.attribute_type() ==
++            optimization_guide::proto::CONTENT_ATTRIBUTE_IFRAME &&
++        attributes.has_iframe_data() &&
++        attributes.iframe_data().has_frame_data()) {
++      if (!attributes.iframe_data().frame_data().has_document_identifier()) {
++        return content_node.children_nodes().empty();
++      }
++      child_document_token = attributes.iframe_data()
++                                 .frame_data()
++                                 .document_identifier()
++                                 .serialized_token();
++      if (!IsValidDocumentToken(child_document_token)) {
++        return content_node.children_nodes().empty();
++      }
++    }
++    return WalkChildren(content_node, child_document_token, next_parent);
++  }
++
++  std::vector<SupervisionNormalizedNode> TakeNodes() {
++    return std::move(nodes_);
++  }
++
++ private:
++  bool WalkChildren(const ContentNode& content_node,
++                    std::string_view document_token,
++                    std::string_view parent_ref) {
++    for (const ContentNode& child : content_node.children_nodes()) {
++      if (!Walk(child, document_token, parent_ref)) {
++        return false;
++      }
++    }
++    return true;
++  }
++
++  const size_t max_nodes_;
++  size_t visited_nodes_ = 0;
++  std::vector<SupervisionNormalizedNode> nodes_;
++  std::map<std::string, size_t> indices_;
++};
++
++}  // namespace
++
+ SupervisionBaseline BuildSupervisionBaseline(
+-    const optimization_guide::proto::AnnotatedPageContent& page_content,
++    const AnnotatedPageContent& page_content,
+     const std::string& primary_document_token,
+     const SupervisionLimits& limits) {
+-  static_cast<void>(page_content);
+-  static_cast<void>(primary_document_token);
+-  static_cast<void>(limits);
+-  return {};
++  if (!page_content.has_root_node()) {
++    return {};
++  }
++
++  std::string document_token = primary_document_token;
++  if (document_token.empty() && page_content.has_main_frame_data() &&
++      page_content.main_frame_data().has_document_identifier()) {
++    document_token =
++        page_content.main_frame_data().document_identifier().serialized_token();
++  }
++  if (!IsValidDocumentToken(document_token)) {
++    return {};
++  }
++
++  const SupervisionLimits clamped = ClampSupervisionLimits(limits);
++  SupervisionProjector projector(static_cast<size_t>(clamped.baseline_nodes));
++  if (!projector.Walk(page_content.root_node(), document_token,
++                      std::string_view())) {
++    return {};
++  }
++
++  std::vector<SupervisionNormalizedNode> nodes = projector.TakeNodes();
++  if (nodes.empty()) {
++    return {};
++  }
++  base::ListValue serialized_nodes;
++  serialized_nodes.reserve(nodes.size());
++  for (const SupervisionNormalizedNode& node : nodes) {
++    serialized_nodes.Append(NodeToValue(node));
++  }
++  base::DictValue envelope;
++  envelope.Set("nodes", std::move(serialized_nodes));
++  std::optional<std::string> serialized = base::WriteJson(envelope);
++  if (!serialized.has_value() || serialized->size() > clamped.baseline_bytes) {
++    return {};
++  }
++
++  SupervisionBaseline baseline;
++  baseline.state = SupervisionProjectionState::kAuthoritative;
++  baseline.nodes = std::move(nodes);
++  baseline.serialized_json = std::move(*serialized);
++  return baseline;
+ }
+ 
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,442 @@
+From 2c320b88f64924d33c7fcfb2e926c931c105110e Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Mon, 13 Jul 2026 02:50:10 -0500
+Subject: [PATCH 10/19] test(19-04): specify exact-frame element reads
+
+---
+ .../prometheus_page_adapter_browsertest.cc    | 267 ++++++++++++++++++
+ chrome/renderer/BUILD.gn                      |   1 +
+ .../prometheus_action_dispatcher_unittest.cc  |  99 +++++++
+ 3 files changed, 367 insertions(+)
+
+diff --git a/chrome/browser/prometheus/prometheus_page_adapter_browsertest.cc b/chrome/browser/prometheus/prometheus_page_adapter_browsertest.cc
+index e348641c30..8238028529 100644
+--- a/chrome/browser/prometheus/prometheus_page_adapter_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_page_adapter_browsertest.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include <optional>
+ #include <string>
+ #include <string_view>
+ #include <vector>
+@@ -115,6 +116,24 @@ class PrometheusPageAdapterBrowserTest : public InProcessBrowserTest {
+     return request;
+   }
+ 
++  AgentRouteRequest ElementReadRequest(
++      AgentRouteName route_name,
++      std::string_view session_id,
++      tabs::TabInterface* tab,
++      std::string element_ref,
++      std::optional<AgentFrameTarget> frame = std::nullopt,
++      std::optional<std::string> attribute_name = std::nullopt) {
++    AgentRouteRequest request = Request(route_name, session_id);
++    request.target = TargetFor(tab);
++    request.page_request.emplace();
++    request.page_request->action.element.element_ref = std::move(element_ref);
++    if (frame.has_value()) {
++      request.page_request->action.frame = std::move(*frame);
++    }
++    request.page_request->attribute_name = std::move(attribute_name);
++    return request;
++  }
++
+   GURL FixtureUrl(std::string_view file) {
+     return embedded_test_server()->GetURL("/prometheus/page_adapter/" +
+                                           std::string(file));
+@@ -174,6 +193,19 @@ class PrometheusPageAdapterBrowserTest : public InProcessBrowserTest {
+     EXPECT_TRUE(audit.changed_state.empty());
+   }
+ 
++  void ExpectElementReadDenied(const AgentRouteResult& result,
++                               AgentRouteName route_name,
++                               AgentErrorCode error_code,
++                               std::string_view forbidden_content) {
++    EXPECT_FALSE(result.ok);
++    EXPECT_EQ(error_code, result.error_code);
++    EXPECT_FALSE(result.element_read_result.has_value());
++    EXPECT_FALSE(result.page_result.has_value());
++    EXPECT_TRUE(result.changed_state.empty());
++    EXPECT_EQ(std::string::npos, result.message.find(forbidden_content));
++    ExpectLastAuditError(route_name, error_code);
++  }
++
+  protected:
+   AgentSessionRegistry registry_{4, base::Minutes(5)};
+   PrometheusAgentService service_{&registry_};
+@@ -721,6 +753,241 @@ IN_PROC_BROWSER_TEST_F(PrometheusFencedFrameBrowserTest,
+                        AgentErrorCode::kFrameRestricted);
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusPageActionBrowserTest,
++                       ElementReadGetTextUsesFreshExactFrameRef) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const std::string session_id = CreateSession("Exact-frame element text");
++  ASSERT_FALSE(session_id.empty());
++  tabs::TabInterface* target_tab =
++      OpenFixture("same_origin_frame.html", session_id);
++  ASSERT_TRUE(target_tab);
++  content::RenderFrameHost* child = content::ChildFrameAt(
++      target_tab->GetContents()->GetPrimaryMainFrame(), 0);
++  ASSERT_TRUE(child);
++  const std::string ref =
++      SnapshotRef(target_tab, session_id, "Child button", "button");
++  ASSERT_FALSE(ref.empty());
++
++  AgentRouteResult wrong_frame = Execute(ElementReadRequest(
++      AgentRouteName::kGetText, session_id, target_tab, ref));
++  ExpectElementReadDenied(wrong_frame, AgentRouteName::kGetText,
++                          AgentErrorCode::kStaleTarget, "Child button");
++
++  AgentFrameTarget exact_frame;
++  const size_t separator = ref.rfind(':');
++  ASSERT_NE(std::string::npos, separator);
++  exact_frame.document_token = ref.substr(0, separator);
++  AgentRouteResult result = Execute(ElementReadRequest(
++      AgentRouteName::kGetText, session_id, target_tab, ref, exact_frame));
++  ASSERT_TRUE(result.ok) << result.message;
++  ASSERT_TRUE(result.element_read_result.has_value());
++  EXPECT_EQ("Child button", result.element_read_result->value);
++  EXPECT_TRUE(result.element_read_result->attribute_present);
++  EXPECT_TRUE(result.changed_state.empty());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusPageActionBrowserTest,
++                       ElementReadGetAttributeDistinguishesMissingAndEmpty) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const std::string session_id = CreateSession("Element attributes");
++  ASSERT_FALSE(session_id.empty());
++  tabs::TabInterface* target_tab = OpenFixture("forms.html", session_id);
++  ASSERT_TRUE(target_tab);
++  const std::string ref =
++      SnapshotRef(target_tab, session_id, "prometheus-name-input");
++  ASSERT_FALSE(ref.empty());
++
++  AgentRouteResult present = Execute(ElementReadRequest(
++      AgentRouteName::kGetAttribute, session_id, target_tab, ref, std::nullopt,
++      "value"));
++  ASSERT_TRUE(present.ok) << present.message;
++  ASSERT_TRUE(present.element_read_result.has_value());
++  EXPECT_TRUE(present.element_read_result->attribute_present);
++  EXPECT_TRUE(present.element_read_result->value.empty());
++  EXPECT_TRUE(present.changed_state.empty());
++
++  AgentRouteResult absent = Execute(ElementReadRequest(
++      AgentRouteName::kGetAttribute, session_id, target_tab, ref, std::nullopt,
++      "data-prometheus-missing"));
++  ASSERT_TRUE(absent.ok) << absent.message;
++  ASSERT_TRUE(absent.element_read_result.has_value());
++  EXPECT_FALSE(absent.element_read_result->attribute_present);
++  EXPECT_TRUE(absent.element_read_result->value.empty());
++  EXPECT_TRUE(absent.changed_state.empty());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusPageActionBrowserTest,
++                       ElementReadTargetsOwnedBackgroundTab) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const std::string session_id = CreateSession("Background element read");
++  ASSERT_FALSE(session_id.empty());
++  tabs::TabInterface* foreground = active_tab();
++  ASSERT_TRUE(foreground);
++  tabs::TabInterface* target_tab = OpenFixture("forms.html", session_id);
++  ASSERT_TRUE(target_tab);
++  ASSERT_NE(foreground, target_tab);
++  ASSERT_EQ(foreground, active_tab());
++  const std::string ref =
++      SnapshotRef(target_tab, session_id, "Prometheus hover target");
++  ASSERT_FALSE(ref.empty());
++
++  AgentRouteResult result = Execute(ElementReadRequest(
++      AgentRouteName::kGetText, session_id, target_tab, ref));
++  ASSERT_TRUE(result.ok) << result.message;
++  ASSERT_TRUE(result.element_read_result.has_value());
++  EXPECT_NE(std::string::npos,
++            result.element_read_result->value.find("Hover target"));
++  EXPECT_EQ(foreground, active_tab());
++  EXPECT_TRUE(result.changed_state.empty());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusPageActionBrowserTest,
++                       ElementReadRejectsStaleNavigation) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const std::string session_id = CreateSession("Stale element ref");
++  ASSERT_FALSE(session_id.empty());
++  tabs::TabInterface* target_tab = OpenFixture("forms.html", session_id);
++  ASSERT_TRUE(target_tab);
++  const std::string ref =
++      SnapshotRef(target_tab, session_id, "Prometheus hover target");
++  ASSERT_FALSE(ref.empty());
++  ASSERT_TRUE(content::NavigateToURL(target_tab->GetContents(),
++                                     FixtureUrl("read_page.html")));
++
++  AgentRouteResult result = Execute(ElementReadRequest(
++      AgentRouteName::kGetText, session_id, target_tab, ref));
++  ExpectElementReadDenied(result, AgentRouteName::kGetText,
++                          AgentErrorCode::kStaleTarget, "Hover target");
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusPageActionBrowserTest,
++                       ElementReadRejectsDetachedFrame) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const std::string session_id = CreateSession("Detached element frame");
++  ASSERT_FALSE(session_id.empty());
++  tabs::TabInterface* target_tab =
++      OpenFixture("same_origin_frame.html", session_id);
++  ASSERT_TRUE(target_tab);
++  content::RenderFrameHost* child = content::ChildFrameAt(
++      target_tab->GetContents()->GetPrimaryMainFrame(), 0);
++  ASSERT_TRUE(child);
++  const std::string ref =
++      SnapshotRef(target_tab, session_id, "Child button", "button");
++  ASSERT_FALSE(ref.empty());
++  const AgentFrameTarget detached_target = FrameTargetFor(child);
++  content::RenderFrameDeletedObserver deleted_observer(child);
++  ASSERT_TRUE(content::ExecJs(
++      target_tab->GetContents(),
++      "document.querySelector('#prometheus-child-frame').remove()"));
++  deleted_observer.WaitUntilDeleted();
++
++  AgentRouteResult result = Execute(ElementReadRequest(
++      AgentRouteName::kGetText, session_id, target_tab, ref, detached_target));
++  ExpectElementReadDenied(result, AgentRouteName::kGetText,
++                          AgentErrorCode::kStaleTarget, "Child button");
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusPageActionBrowserTest,
++                       ElementReadRejectsCrashedFrame) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const std::string session_id = CreateSession("Crashed element frame");
++  ASSERT_FALSE(session_id.empty());
++  tabs::TabInterface* target_tab = OpenFixture("forms.html", session_id);
++  ASSERT_TRUE(target_tab);
++  const std::string ref =
++      SnapshotRef(target_tab, session_id, "Prometheus hover target");
++  ASSERT_FALSE(ref.empty());
++  content::RenderProcessHost* process =
++      target_tab->GetContents()->GetPrimaryMainFrame()->GetProcess();
++  content::ScopedAllowRendererCrashes allow_renderer_crash(process);
++  content::RenderProcessHostWatcher process_exit(
++      process, content::RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
++  ASSERT_TRUE(process->Shutdown(content::RESULT_CODE_KILLED));
++  process_exit.Wait();
++
++  AgentRouteResult result = Execute(ElementReadRequest(
++      AgentRouteName::kGetText, session_id, target_tab, ref));
++  ExpectElementReadDenied(result, AgentRouteName::kGetText,
++                          AgentErrorCode::kStaleTarget, "Hover target");
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusPageAdapterBrowserTest,
++                       ElementReadRejectsCrossOriginAndSandboxedFrames) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const std::string session_id = CreateSession("Restricted element frames");
++  ASSERT_FALSE(session_id.empty());
++  tabs::TabInterface* cross_origin_tab =
++      OpenFixture("same_origin_frame.html", session_id);
++  ASSERT_TRUE(cross_origin_tab);
++  const GURL cross_origin_url = embedded_test_server()->GetURL(
++      "cross-origin.test", "/prometheus/page_adapter/child_frame.html");
++  ASSERT_TRUE(content::NavigateIframeToURL(cross_origin_tab->GetContents(),
++                                           "prometheus-child-frame",
++                                           cross_origin_url));
++  content::RenderFrameHost* cross_origin = content::ChildFrameAt(
++      cross_origin_tab->GetContents()->GetPrimaryMainFrame(), 0);
++  ASSERT_TRUE(cross_origin);
++  AgentRouteResult cross_origin_result = Execute(ElementReadRequest(
++      AgentRouteName::kGetText, session_id, cross_origin_tab,
++      "untrusted-document:1", FrameTargetFor(cross_origin)));
++  ExpectElementReadDenied(cross_origin_result, AgentRouteName::kGetText,
++                          AgentErrorCode::kFrameRestricted, "Child input");
++
++  tabs::TabInterface* sandbox_tab =
++      OpenFixture("sandbox_frame.html", session_id);
++  ASSERT_TRUE(sandbox_tab);
++  content::RenderFrameHost* sandbox = content::ChildFrameAt(
++      sandbox_tab->GetContents()->GetPrimaryMainFrame(), 0);
++  ASSERT_TRUE(sandbox);
++  AgentRouteResult sandbox_result = Execute(ElementReadRequest(
++      AgentRouteName::kGetText, session_id, sandbox_tab,
++      "untrusted-document:1", FrameTargetFor(sandbox)));
++  ExpectElementReadDenied(sandbox_result, AgentRouteName::kGetText,
++                          AgentErrorCode::kFrameRestricted,
++                          "sandboxed content");
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusPrerenderedFrameBrowserTest,
++                       ElementReadRejectsPrerenderTarget) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const std::string session_id = CreateSession("Prerender element frame");
++  ASSERT_FALSE(session_id.empty());
++  tabs::TabInterface* target_tab = OpenFixture("read_page.html", session_id);
++  ASSERT_TRUE(target_tab);
++  const content::PrerenderHostId host_id =
++      prerender_helper_.AddPrerender(FixtureUrl("forms.html"));
++  content::RenderFrameHost* prerender =
++      prerender_helper_.GetPrerenderedMainFrameHost(host_id);
++  ASSERT_TRUE(prerender);
++
++  AgentRouteResult result = Execute(ElementReadRequest(
++      AgentRouteName::kGetText, session_id, target_tab,
++      "untrusted-document:1", FrameTargetFor(prerender)));
++  ExpectElementReadDenied(result, AgentRouteName::kGetText,
++                          AgentErrorCode::kFrameRestricted, "private");
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusFencedFrameBrowserTest,
++                       ElementReadRejectsFencedTarget) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const std::string session_id = CreateSession("Fenced element frame");
++  ASSERT_FALSE(session_id.empty());
++  tabs::TabInterface* target_tab = OpenFixture("read_page.html", session_id);
++  ASSERT_TRUE(target_tab);
++  content::RenderFrameHost* fenced = fenced_frame_helper_.CreateFencedFrame(
++      target_tab->GetContents()->GetPrimaryMainFrame(),
++      embedded_test_server()->GetURL(
++          "/set-header-with-file/chrome/test/data/prometheus/"
++          "page_adapter/child_frame.html?Supports-Loading-Mode: fenced-frame"));
++  ASSERT_TRUE(fenced);
++
++  AgentRouteResult result = Execute(ElementReadRequest(
++      AgentRouteName::kGetText, session_id, target_tab,
++      "untrusted-document:1", FrameTargetFor(fenced)));
++  ExpectElementReadDenied(result, AgentRouteName::kGetText,
++                          AgentErrorCode::kFrameRestricted, "Child input");
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusPageAdapterBrowserTest,
+                        ExecuteJsReturnsSerializedValue) {
+   ASSERT_TRUE(embedded_test_server()->Start());
+diff --git a/chrome/renderer/BUILD.gn b/chrome/renderer/BUILD.gn
+index ace675f2a4..dbdca06c2a 100644
+--- a/chrome/renderer/BUILD.gn
++++ b/chrome/renderer/BUILD.gn
+@@ -428,6 +428,7 @@ test("prometheus_action_dispatcher_unittests") {
+     "//chrome/common:mojo_bindings",
+     "//content/public/renderer",
+     "//content/test:run_all_unittests",
++    "//content/test:test_support",
+     "//testing/gtest",
+     "//third_party/blink/public:blink",
+     "//ui/events:dom_keycode_converter",
+diff --git a/chrome/renderer/prometheus_action_dispatcher_unittest.cc b/chrome/renderer/prometheus_action_dispatcher_unittest.cc
+index a040efb943..2ffe5e55f9 100644
+--- a/chrome/renderer/prometheus_action_dispatcher_unittest.cc
++++ b/chrome/renderer/prometheus_action_dispatcher_unittest.cc
+@@ -5,8 +5,16 @@
+ #include "chrome/renderer/prometheus_action_dispatcher.h"
+ 
+ #include <optional>
++#include <string>
+ 
++#include "chrome/common/prometheus_render_frame.mojom.h"
++#include "content/public/renderer/render_frame.h"
++#include "content/public/test/render_view_test.h"
+ #include "testing/gtest/include/gtest/gtest.h"
++#include "third_party/blink/public/platform/web_string.h"
++#include "third_party/blink/public/web/web_document.h"
++#include "third_party/blink/public/web/web_element.h"
++#include "third_party/blink/public/web/web_local_frame.h"
+ 
+ namespace prometheus {
+ 
+@@ -33,4 +41,95 @@ TEST(PrometheusActionDispatcherTest, RejectsMalformedElementRef) {
+             PrometheusActionDispatcher::ParseDomNodeIdForTesting("token:-1"));
+ }
+ 
++class PrometheusElementReadTest : public content::RenderViewTest {
++ public:
++  chrome::mojom::PrometheusElementReadResultPtr Read(
++      std::string_view element_id,
++      std::string attribute_name) {
++    blink::WebElement element = GetMainFrame()->GetDocument().GetElementById(
++        blink::WebString::FromUtf8(element_id));
++    EXPECT_FALSE(element.IsNull());
++    if (element.IsNull()) {
++      return nullptr;
++    }
++    const std::string ref =
++        "test-document:" + std::to_string(element.GetDomNodeId());
++    PrometheusActionDispatcher dispatcher(
++        content::RenderFrame::FromWebFrame(GetMainFrame()));
++    return dispatcher.ReadElement(ref, attribute_name);
++  }
++};
++
++TEST_F(PrometheusElementReadTest, ElementReadReturnsTextContent) {
++  LoadHTML("<div id='target'>bounded <span>text</span></div>");
++  chrome::mojom::PrometheusElementReadResultPtr result = Read("target", "");
++  ASSERT_TRUE(result);
++  EXPECT_TRUE(result->ok);
++  EXPECT_TRUE(result->attribute_present);
++  EXPECT_EQ("bounded text", result->value);
++  EXPECT_TRUE(result->error_message.empty());
++}
++
++TEST_F(PrometheusElementReadTest, ElementReadDistinguishesEmptyAndAbsent) {
++  LoadHTML("<input id='target' value='' aria-label='present'>");
++
++  chrome::mojom::PrometheusElementReadResultPtr present =
++      Read("target", "value");
++  ASSERT_TRUE(present);
++  EXPECT_TRUE(present->ok);
++  EXPECT_TRUE(present->attribute_present);
++  EXPECT_TRUE(present->value.empty());
++
++  chrome::mojom::PrometheusElementReadResultPtr absent =
++      Read("target", "data-missing");
++  ASSERT_TRUE(absent);
++  EXPECT_TRUE(absent->ok);
++  EXPECT_FALSE(absent->attribute_present);
++  EXPECT_TRUE(absent->value.empty());
++}
++
++TEST_F(PrometheusElementReadTest,
++       ElementReadRejectsInvalidOrDisconnectedReference) {
++  LoadHTML("<div id='target'>private old document text</div>");
++  blink::WebElement element = GetMainFrame()->GetDocument().GetElementById(
++      blink::WebString::FromUtf8("target"));
++  ASSERT_FALSE(element.IsNull());
++  const std::string stale_ref =
++      "old-document:" + std::to_string(element.GetDomNodeId());
++
++  PrometheusActionDispatcher dispatcher(
++      content::RenderFrame::FromWebFrame(GetMainFrame()));
++  chrome::mojom::PrometheusElementReadResultPtr invalid =
++      dispatcher.ReadElement("not-a-ref", "");
++  ASSERT_TRUE(invalid);
++  EXPECT_FALSE(invalid->ok);
++  EXPECT_TRUE(invalid->value.empty());
++
++  LoadHTML("<div id='replacement'>replacement document</div>");
++  chrome::mojom::PrometheusElementReadResultPtr stale =
++      dispatcher.ReadElement(stale_ref, "");
++  ASSERT_TRUE(stale);
++  EXPECT_FALSE(stale->ok);
++  EXPECT_TRUE(stale->value.empty());
++}
++
++TEST_F(PrometheusElementReadTest, ElementReadRejectsInvalidAttributeName) {
++  LoadHTML("<div id='target' data-ok='value'>text</div>");
++  chrome::mojom::PrometheusElementReadResultPtr result =
++      Read("target", "data bad");
++  ASSERT_TRUE(result);
++  EXPECT_FALSE(result->ok);
++  EXPECT_TRUE(result->value.empty());
++  EXPECT_FALSE(result->attribute_present);
++}
++
++TEST_F(PrometheusElementReadTest, ElementReadRejectsOversizedValue) {
++  LoadHTML("<div id='target'>" + std::string(65537, 'x') + "</div>");
++  chrome::mojom::PrometheusElementReadResultPtr result = Read("target", "");
++  ASSERT_TRUE(result);
++  EXPECT_FALSE(result->ok);
++  EXPECT_TRUE(result->value.empty());
++  EXPECT_FALSE(result->attribute_present);
++}
++
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

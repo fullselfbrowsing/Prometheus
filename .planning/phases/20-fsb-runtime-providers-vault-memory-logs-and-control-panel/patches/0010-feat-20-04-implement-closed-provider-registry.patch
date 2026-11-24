@@ -1,0 +1,938 @@
+From b5d95179426e96b574a9cee362b3830ef4440c1d Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 15 Jul 2026 15:58:21 -0500
+Subject: [PATCH] feat(20-04): implement closed provider registry
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   2 +
+ .../prometheus_provider_registry.cc           | 710 +++++++++++++++++-
+ .../prometheus/prometheus_provider_registry.h |   3 +
+ .../prometheus_provider_registry_unittest.cc  |  42 ++
+ 4 files changed, 743 insertions(+), 14 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 90da48084d..30421c7a5a 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -328,6 +328,8 @@ source_set("prometheus_provider_registry") {
+   ]
+ 
+   deps = [
++    ":prometheus_runtime_prefs",
++    ":prometheus_secret_store",
+     "//base",
+     "//components/prefs",
+     "//net",
+diff --git a/chrome/browser/prometheus/prometheus_provider_registry.cc b/chrome/browser/prometheus/prometheus_provider_registry.cc
+index 3e1b7a0726..d574cbbd40 100644
+--- a/chrome/browser/prometheus/prometheus_provider_registry.cc
++++ b/chrome/browser/prometheus/prometheus_provider_registry.cc
+@@ -4,12 +4,344 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_provider_registry.h"
+ 
++#include <algorithm>
++#include <set>
+ #include <utility>
+ 
++#include "base/strings/string_util.h"
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
+ #include "components/prefs/pref_service.h"
++#include "net/base/url_util.h"
+ 
+ namespace prometheus {
+ 
++namespace {
++
++constexpr int kProviderRecordSchemaVersion = 1;
++constexpr size_t kMaxPrometheusProviderEndpointBytes =
++    kMaxPrometheusSecretBindingUrlBytes;
++constexpr char kDataKey[] = "data";
++constexpr char kProvidersKey[] = "providers";
++constexpr char kSchemaVersionKey[] = "schema_version";
++constexpr char kProviderIdKey[] = "provider_id";
++constexpr char kLabelKey[] = "label";
++constexpr char kKindKey[] = "kind";
++constexpr char kFamilyKey[] = "family";
++constexpr char kRouteClassKey[] = "route_class";
++constexpr char kCanonicalEndpointKey[] = "canonical_endpoint";
++constexpr char kModelIdKey[] = "model_id";
++constexpr char kEnabledKey[] = "enabled";
++constexpr char kHealthKey[] = "health";
++constexpr char kDiscoveryStateKey[] = "discovery_state";
++constexpr char kCapabilitiesKey[] = "capabilities";
++constexpr char kToolCallingKey[] = "tool_calling";
++constexpr char kModelDiscoveryKey[] = "model_discovery";
++constexpr char kResponsesApiKey[] = "responses_api";
++constexpr char kSecretConfiguredKey[] = "secret_configured";
++constexpr char kFallbackRankKey[] = "fallback_rank";
++constexpr char kDiscoveredModelsKey[] = "discovered_models";
++
++bool IsKnownProviderKind(PrometheusProviderKind kind) {
++  switch (kind) {
++    case PrometheusProviderKind::kOpenAI:
++    case PrometheusProviderKind::kAnthropic:
++    case PrometheusProviderKind::kGemini:
++    case PrometheusProviderKind::kXAI:
++    case PrometheusProviderKind::kOpenRouter:
++    case PrometheusProviderKind::kLMStudio:
++    case PrometheusProviderKind::kHosted:
++    case PrometheusProviderKind::kRouted:
++    case PrometheusProviderKind::kLocal:
++    case PrometheusProviderKind::kCustom:
++      return true;
++  }
++  return false;
++}
++
++bool IsKnownProviderFamily(PrometheusProviderFamily family) {
++  switch (family) {
++    case PrometheusProviderFamily::kOpenAICompatible:
++    case PrometheusProviderFamily::kAnthropicMessages:
++    case PrometheusProviderFamily::kGeminiGenerateContent:
++      return true;
++  }
++  return false;
++}
++
++bool IsKnownRouteClass(PrometheusProviderRouteClass route_class) {
++  switch (route_class) {
++    case PrometheusProviderRouteClass::kHosted:
++    case PrometheusProviderRouteClass::kRouted:
++    case PrometheusProviderRouteClass::kLocal:
++    case PrometheusProviderRouteClass::kCustom:
++      return true;
++  }
++  return false;
++}
++
++bool IsKnownHealth(PrometheusProviderHealth health) {
++  switch (health) {
++    case PrometheusProviderHealth::kUnknown:
++    case PrometheusProviderHealth::kHealthy:
++    case PrometheusProviderHealth::kDegraded:
++    case PrometheusProviderHealth::kUnavailable:
++      return true;
++  }
++  return false;
++}
++
++bool IsKnownDiscoveryState(PrometheusProviderDiscoveryState state) {
++  switch (state) {
++    case PrometheusProviderDiscoveryState::kNotSupported:
++    case PrometheusProviderDiscoveryState::kNotStarted:
++    case PrometheusProviderDiscoveryState::kDiscovering:
++    case PrometheusProviderDiscoveryState::kReady:
++    case PrometheusProviderDiscoveryState::kFailed:
++      return true;
++  }
++  return false;
++}
++
++bool IsValidProviderId(std::string_view provider_id) {
++  if (provider_id.empty() ||
++      provider_id.size() > kMaxPrometheusProviderIdBytes ||
++      !base::IsStringASCII(provider_id)) {
++    return false;
++  }
++  return std::ranges::all_of(provider_id, [](char value) {
++    return base::IsAsciiAlphaNumeric(value) || value == '-' || value == '_' ||
++           value == '.';
++  });
++}
++
++bool IsValidLabel(std::string_view label) {
++  if (label.empty() || label.size() > kMaxPrometheusProviderLabelBytes ||
++      !base::IsStringUTF8(label)) {
++    return false;
++  }
++  return std::ranges::any_of(label,
++                             [](char value) {
++                               return static_cast<unsigned char>(value) >=
++                                          0x80 ||
++                                      (!base::IsAsciiWhitespace(value) &&
++                                       !base::IsAsciiControl(value));
++                             }) &&
++         std::ranges::none_of(
++             label, [](char value) { return base::IsAsciiControl(value); });
++}
++
++bool IsValidModelId(std::string_view model_id) {
++  if (model_id.empty() ||
++      model_id.size() > kMaxPrometheusProviderModelIdBytes ||
++      !base::IsStringASCII(model_id)) {
++    return false;
++  }
++  if (!std::ranges::all_of(model_id,
++                           [](char value) {
++                             return base::IsAsciiAlphaNumeric(value) ||
++                                    value == '-' || value == '_' ||
++                                    value == '.' || value == ':' ||
++                                    value == '/';
++                           }) ||
++      model_id.front() == '/' || model_id.back() == '/') {
++    return false;
++  }
++  size_t segment_start = 0;
++  while (segment_start < model_id.size()) {
++    const size_t segment_end = model_id.find('/', segment_start);
++    const std::string_view segment =
++        model_id.substr(segment_start, segment_end == std::string_view::npos
++                                           ? std::string_view::npos
++                                           : segment_end - segment_start);
++    if (segment.empty() || segment == "." || segment == "..") {
++      return false;
++    }
++    if (segment_end == std::string_view::npos) {
++      break;
++    }
++    segment_start = segment_end + 1;
++  }
++  return true;
++}
++
++bool ContainsAmbiguousUrlSyntax(std::string_view endpoint) {
++  if (endpoint.find('\\') != std::string_view::npos) {
++    return true;
++  }
++  const std::string lower = base::ToLowerASCII(endpoint);
++  if (lower.find("%2e") != std::string::npos ||
++      lower.find("/../") != std::string::npos ||
++      lower.find("/./") != std::string::npos || lower.ends_with("/..") ||
++      lower.ends_with("/.")) {
++    return true;
++  }
++
++  const size_t scheme_end = endpoint.find("://");
++  if (scheme_end == std::string_view::npos) {
++    return true;
++  }
++  const size_t authority_start = scheme_end + 3;
++  const size_t authority_end = endpoint.find_first_of("/?#", authority_start);
++  const std::string_view authority =
++      endpoint.substr(authority_start, authority_end == std::string_view::npos
++                                           ? std::string_view::npos
++                                           : authority_end - authority_start);
++  return authority.empty() || authority.find('%') != std::string_view::npos;
++}
++
++bool IsLessByFallbackRank(const PrometheusProviderConfig& left,
++                          const PrometheusProviderConfig& right) {
++  if (left.fallback_rank != right.fallback_rank) {
++    return left.fallback_rank < right.fallback_rank;
++  }
++  return left.provider_id < right.provider_id;
++}
++
++PrometheusProviderError ValidateProviderCollection(
++    const std::vector<PrometheusProviderConfig>& providers) {
++  if (providers.size() > kMaxPrometheusProviders) {
++    return PrometheusProviderError::kTooManyProviders;
++  }
++  std::set<std::string> provider_ids;
++  std::set<int> fallback_ranks;
++  for (const PrometheusProviderConfig& provider : providers) {
++    const PrometheusProviderError error =
++        ValidatePrometheusProviderConfig(provider);
++    if (error != PrometheusProviderError::kNone) {
++      return error;
++    }
++    if (!provider_ids.insert(provider.provider_id).second) {
++      return PrometheusProviderError::kDuplicateId;
++    }
++    if (!fallback_ranks.insert(provider.fallback_rank).second) {
++      return PrometheusProviderError::kDuplicateFallbackRank;
++    }
++  }
++  return PrometheusProviderError::kNone;
++}
++
++base::DictValue ProviderToValue(const PrometheusProviderConfig& provider) {
++  base::DictValue capabilities;
++  capabilities.Set(kToolCallingKey, provider.capabilities.tool_calling);
++  capabilities.Set(kModelDiscoveryKey, provider.capabilities.model_discovery);
++  capabilities.Set(kResponsesApiKey, provider.capabilities.responses_api);
++
++  base::ListValue discovered_models;
++  for (const std::string& model : provider.discovered_models) {
++    discovered_models.Append(model);
++  }
++
++  base::DictValue value;
++  value.Set(kSchemaVersionKey, kProviderRecordSchemaVersion);
++  value.Set(kProviderIdKey, provider.provider_id);
++  value.Set(kLabelKey, provider.label);
++  value.Set(kKindKey, PrometheusProviderKindToString(provider.kind));
++  value.Set(kFamilyKey, PrometheusProviderFamilyToString(provider.family));
++  value.Set(kRouteClassKey,
++            PrometheusProviderRouteClassToString(provider.route_class));
++  value.Set(kCanonicalEndpointKey, provider.canonical_endpoint);
++  value.Set(kModelIdKey, provider.model_id);
++  value.Set(kEnabledKey, provider.enabled);
++  value.Set(kHealthKey, PrometheusProviderHealthToString(provider.health));
++  value.Set(kDiscoveryStateKey,
++            PrometheusProviderDiscoveryStateToString(provider.discovery_state));
++  value.Set(kCapabilitiesKey, std::move(capabilities));
++  value.Set(kSecretConfiguredKey, provider.secret_configured);
++  value.Set(kFallbackRankKey, provider.fallback_rank);
++  value.Set(kDiscoveredModelsKey, std::move(discovered_models));
++  return value;
++}
++
++std::optional<PrometheusProviderConfig> ProviderFromValue(
++    const base::DictValue& value) {
++  if (value.size() != 15u ||
++      value.FindInt(kSchemaVersionKey) != kProviderRecordSchemaVersion) {
++    return std::nullopt;
++  }
++  const std::string* provider_id = value.FindString(kProviderIdKey);
++  const std::string* label = value.FindString(kLabelKey);
++  const std::string* kind_string = value.FindString(kKindKey);
++  const std::string* family_string = value.FindString(kFamilyKey);
++  const std::string* route_class_string = value.FindString(kRouteClassKey);
++  const std::string* canonical_endpoint =
++      value.FindString(kCanonicalEndpointKey);
++  const std::string* model_id = value.FindString(kModelIdKey);
++  const std::string* health_string = value.FindString(kHealthKey);
++  const std::string* discovery_state_string =
++      value.FindString(kDiscoveryStateKey);
++  const base::DictValue* capabilities = value.FindDict(kCapabilitiesKey);
++  const base::ListValue* discovered_models =
++      value.FindList(kDiscoveredModelsKey);
++  std::optional<bool> enabled = value.FindBool(kEnabledKey);
++  std::optional<bool> secret_configured = value.FindBool(kSecretConfiguredKey);
++  std::optional<int> fallback_rank = value.FindInt(kFallbackRankKey);
++  if (!provider_id || !label || !kind_string || !family_string ||
++      !route_class_string || !canonical_endpoint || !model_id ||
++      !health_string || !discovery_state_string || !capabilities ||
++      capabilities->size() != 3u || !discovered_models || !enabled ||
++      !secret_configured || !fallback_rank ||
++      !IsValidProviderId(*provider_id) || !IsValidLabel(*label) ||
++      !IsValidModelId(*model_id) ||
++      canonical_endpoint->size() > kMaxPrometheusProviderEndpointBytes ||
++      discovered_models->size() > kMaxPrometheusDiscoveredModels) {
++    return std::nullopt;
++  }
++
++  std::optional<PrometheusProviderKind> kind =
++      PrometheusProviderKindFromString(*kind_string);
++  std::optional<PrometheusProviderFamily> family =
++      PrometheusProviderFamilyFromString(*family_string);
++  std::optional<PrometheusProviderRouteClass> route_class =
++      PrometheusProviderRouteClassFromString(*route_class_string);
++  std::optional<PrometheusProviderHealth> health =
++      PrometheusProviderHealthFromString(*health_string);
++  std::optional<PrometheusProviderDiscoveryState> discovery_state =
++      PrometheusProviderDiscoveryStateFromString(*discovery_state_string);
++  std::optional<bool> tool_calling = capabilities->FindBool(kToolCallingKey);
++  std::optional<bool> model_discovery =
++      capabilities->FindBool(kModelDiscoveryKey);
++  std::optional<bool> responses_api = capabilities->FindBool(kResponsesApiKey);
++  if (!kind || !family || !route_class || !health || !discovery_state ||
++      !tool_calling || !model_discovery || !responses_api) {
++    return std::nullopt;
++  }
++
++  PrometheusProviderConfig provider{
++      .provider_id = *provider_id,
++      .label = *label,
++      .kind = *kind,
++      .family = *family,
++      .route_class = *route_class,
++      .canonical_endpoint = *canonical_endpoint,
++      .model_id = *model_id,
++      .enabled = *enabled,
++      .health = *health,
++      .discovery_state = *discovery_state,
++      .capabilities = {.tool_calling = *tool_calling,
++                       .model_discovery = *model_discovery,
++                       .responses_api = *responses_api},
++      .secret_configured = *secret_configured,
++      .fallback_rank = *fallback_rank,
++  };
++  for (const base::Value& model : *discovered_models) {
++    if (!model.is_string() || !IsValidModelId(model.GetString())) {
++      return std::nullopt;
++    }
++    provider.discovered_models.push_back(model.GetString());
++  }
++  if (ValidatePrometheusProviderConfig(provider) !=
++      PrometheusProviderError::kNone) {
++    return std::nullopt;
++  }
++  return provider;
++}
++
++bool ProviderRequiresSecret(const PrometheusProviderConfig& provider) {
++  return provider.route_class != PrometheusProviderRouteClass::kLocal;
++}
++
++}  // namespace
++
+ std::string_view PrometheusProviderKindToString(PrometheusProviderKind kind) {
+   switch (kind) {
+     case PrometheusProviderKind::kOpenAI:
+@@ -230,16 +562,67 @@ std::string_view PrometheusProviderErrorToString(
+ 
+ PrometheusProviderFamily ExpectedPrometheusProviderFamily(
+     PrometheusProviderKind kind) {
++  switch (kind) {
++    case PrometheusProviderKind::kAnthropic:
++      return PrometheusProviderFamily::kAnthropicMessages;
++    case PrometheusProviderKind::kGemini:
++      return PrometheusProviderFamily::kGeminiGenerateContent;
++    case PrometheusProviderKind::kOpenAI:
++    case PrometheusProviderKind::kXAI:
++    case PrometheusProviderKind::kOpenRouter:
++    case PrometheusProviderKind::kLMStudio:
++    case PrometheusProviderKind::kHosted:
++    case PrometheusProviderKind::kRouted:
++    case PrometheusProviderKind::kLocal:
++    case PrometheusProviderKind::kCustom:
++      return PrometheusProviderFamily::kOpenAICompatible;
++  }
+   return PrometheusProviderFamily::kOpenAICompatible;
+ }
+ 
+ PrometheusProviderRouteClass ExpectedPrometheusProviderRouteClass(
+     PrometheusProviderKind kind) {
++  switch (kind) {
++    case PrometheusProviderKind::kOpenAI:
++    case PrometheusProviderKind::kAnthropic:
++    case PrometheusProviderKind::kGemini:
++    case PrometheusProviderKind::kXAI:
++    case PrometheusProviderKind::kHosted:
++      return PrometheusProviderRouteClass::kHosted;
++    case PrometheusProviderKind::kOpenRouter:
++    case PrometheusProviderKind::kRouted:
++      return PrometheusProviderRouteClass::kRouted;
++    case PrometheusProviderKind::kLMStudio:
++    case PrometheusProviderKind::kLocal:
++      return PrometheusProviderRouteClass::kLocal;
++    case PrometheusProviderKind::kCustom:
++      return PrometheusProviderRouteClass::kCustom;
++  }
+   return PrometheusProviderRouteClass::kCustom;
+ }
+ 
+ std::optional<std::string> FixedPrometheusProviderEndpoint(
+     PrometheusProviderKind kind) {
++  switch (kind) {
++    case PrometheusProviderKind::kOpenAI:
++      return "https://api.openai.com/v1/";
++    case PrometheusProviderKind::kAnthropic:
++      return "https://api.anthropic.com/v1/";
++    case PrometheusProviderKind::kGemini:
++      return "https://generativelanguage.googleapis.com/v1beta/";
++    case PrometheusProviderKind::kXAI:
++      return "https://api.x.ai/v1/";
++    case PrometheusProviderKind::kOpenRouter:
++      return "https://openrouter.ai/api/v1/";
++    case PrometheusProviderKind::kHosted:
++      return "https://api.full-selfbrowsing.com/v1/";
++    case PrometheusProviderKind::kRouted:
++      return "https://router.full-selfbrowsing.com/v1/";
++    case PrometheusProviderKind::kLMStudio:
++    case PrometheusProviderKind::kLocal:
++    case PrometheusProviderKind::kCustom:
++      return std::nullopt;
++  }
+   return std::nullopt;
+ }
+ 
+@@ -247,12 +630,118 @@ std::optional<std::string> CanonicalizePrometheusProviderEndpoint(
+     PrometheusProviderKind kind,
+     PrometheusProviderRouteClass route_class,
+     std::string_view endpoint) {
+-  return std::nullopt;
++  if (!IsKnownProviderKind(kind) || !IsKnownRouteClass(route_class) ||
++      route_class != ExpectedPrometheusProviderRouteClass(kind)) {
++    return std::nullopt;
++  }
++  if (std::optional<std::string> fixed =
++          FixedPrometheusProviderEndpoint(kind)) {
++    if (endpoint.empty() || endpoint == *fixed) {
++      return fixed;
++    }
++    return std::nullopt;
++  }
++  if (endpoint.empty() ||
++      endpoint.size() > kMaxPrometheusProviderEndpointBytes ||
++      ContainsAmbiguousUrlSyntax(endpoint)) {
++    return std::nullopt;
++  }
++
++  const GURL url{std::string(endpoint)};
++  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS() || url.host().empty() ||
++      url.has_username() || url.has_password() || url.has_query() ||
++      url.has_ref() || url.host().ends_with('.') ||
++      !url.path().ends_with('/') || url.spec() != endpoint) {
++    return std::nullopt;
++  }
++
++  if (route_class == PrometheusProviderRouteClass::kLocal) {
++    if ((kind != PrometheusProviderKind::kLocal &&
++         kind != PrometheusProviderKind::kLMStudio) ||
++        !net::IsLocalhost(url)) {
++      return std::nullopt;
++    }
++  } else if (route_class == PrometheusProviderRouteClass::kCustom) {
++    if (kind != PrometheusProviderKind::kCustom || !url.SchemeIs("https") ||
++        net::IsLocalhost(url)) {
++      return std::nullopt;
++    }
++  } else {
++    return std::nullopt;
++  }
++  return url.spec();
+ }
+ 
+ PrometheusProviderError ValidatePrometheusProviderConfig(
+     const PrometheusProviderConfig& config) {
+-  return PrometheusProviderError::kInvalidArgument;
++  if (!IsKnownProviderKind(config.kind) ||
++      !IsKnownProviderFamily(config.family) ||
++      !IsKnownRouteClass(config.route_class) || !IsKnownHealth(config.health) ||
++      !IsKnownDiscoveryState(config.discovery_state) ||
++      !IsValidProviderId(config.provider_id) || !IsValidLabel(config.label) ||
++      !IsValidModelId(config.model_id) || config.fallback_rank < 0 ||
++      config.fallback_rank >= static_cast<int>(kMaxPrometheusProviders) ||
++      config.family != ExpectedPrometheusProviderFamily(config.kind) ||
++      config.route_class != ExpectedPrometheusProviderRouteClass(config.kind)) {
++    return PrometheusProviderError::kInvalidArgument;
++  }
++
++  const std::optional<std::string> canonical =
++      CanonicalizePrometheusProviderEndpoint(config.kind, config.route_class,
++                                             config.canonical_endpoint);
++  if (!canonical || *canonical != config.canonical_endpoint) {
++    return PrometheusProviderError::kEndpointPolicy;
++  }
++
++  if ((!config.capabilities.model_discovery &&
++       (config.discovery_state !=
++            PrometheusProviderDiscoveryState::kNotSupported ||
++        !config.discovered_models.empty())) ||
++      (config.capabilities.model_discovery &&
++       config.discovery_state ==
++           PrometheusProviderDiscoveryState::kNotSupported) ||
++      (config.discovery_state != PrometheusProviderDiscoveryState::kReady &&
++       !config.discovered_models.empty()) ||
++      (config.capabilities.responses_api &&
++       config.family != PrometheusProviderFamily::kOpenAICompatible) ||
++      config.discovered_models.size() > kMaxPrometheusDiscoveredModels) {
++    return PrometheusProviderError::kInvalidArgument;
++  }
++
++  std::set<std::string> models;
++  for (const std::string& model : config.discovered_models) {
++    if (!IsValidModelId(model) || !models.insert(model).second) {
++      return PrometheusProviderError::kInvalidArgument;
++    }
++  }
++  const std::optional<PrometheusSecretBinding> binding =
++      MakePrometheusProviderSecretBinding(config);
++  return binding && IsValidPrometheusSecretBinding(*binding)
++             ? PrometheusProviderError::kNone
++             : PrometheusProviderError::kEndpointPolicy;
++}
++
++std::optional<PrometheusSecretBinding> MakePrometheusProviderSecretBinding(
++    const PrometheusProviderConfig& config) {
++  if (!IsKnownProviderKind(config.kind) ||
++      !IsValidProviderId(config.provider_id)) {
++    return std::nullopt;
++  }
++  const std::optional<std::string> canonical =
++      CanonicalizePrometheusProviderEndpoint(config.kind, config.route_class,
++                                             config.canonical_endpoint);
++  if (!canonical || *canonical != config.canonical_endpoint) {
++    return std::nullopt;
++  }
++  PrometheusSecretBinding binding{
++      .record_id = "provider:" + config.provider_id,
++      .secret_kind = PrometheusSecretKind::kProviderApiKey,
++      .owner_kind = std::string(PrometheusProviderKindToString(config.kind)),
++      .canonical_origin = *canonical,
++  };
++  return IsValidPrometheusSecretBinding(binding)
++             ? std::optional(std::move(binding))
++             : std::nullopt;
+ }
+ 
+ PrometheusProviderRegistry::PrometheusProviderRegistry(PrefService* prefs)
+@@ -264,58 +753,251 @@ PrometheusProviderRegistry::~PrometheusProviderRegistry() = default;
+ 
+ PrometheusProviderError PrometheusProviderRegistry::SetProviders(
+     std::vector<PrometheusProviderConfig> providers) {
+-  return PrometheusProviderError::kInvalidArgument;
++  const PrometheusProviderError error = ValidateProviderCollection(providers);
++  if (error != PrometheusProviderError::kNone) {
++    return error;
++  }
++  for (PrometheusProviderConfig& provider : providers) {
++    const std::optional<PrometheusProviderConfig> existing =
++        FindProvider(provider.provider_id);
++    if (existing &&
++        (existing->kind != provider.kind ||
++         existing->canonical_endpoint != provider.canonical_endpoint)) {
++      provider.secret_configured = false;
++    }
++  }
++  std::ranges::sort(providers, IsLessByFallbackRank);
++  providers_ = std::move(providers);
++  Persist();
++  return PrometheusProviderError::kNone;
+ }
+ 
+ PrometheusProviderError PrometheusProviderRegistry::UpsertProvider(
+     PrometheusProviderConfig provider) {
+-  return PrometheusProviderError::kInvalidArgument;
++  const PrometheusProviderError error =
++      ValidatePrometheusProviderConfig(provider);
++  if (error != PrometheusProviderError::kNone) {
++    return error;
++  }
++  std::vector<PrometheusProviderConfig> updated = providers_;
++  auto existing = std::ranges::find_if(
++      updated, [&provider](const PrometheusProviderConfig& candidate) {
++        return candidate.provider_id == provider.provider_id;
++      });
++  if (existing != updated.end()) {
++    if (existing->kind != provider.kind ||
++        existing->canonical_endpoint != provider.canonical_endpoint) {
++      provider.secret_configured = false;
++    }
++    *existing = std::move(provider);
++  } else {
++    updated.push_back(std::move(provider));
++  }
++  return SetProviders(std::move(updated));
+ }
+ 
+ PrometheusProviderError PrometheusProviderRegistry::RemoveProvider(
+     std::string_view provider_id) {
+-  return PrometheusProviderError::kNotFound;
++  if (!IsValidProviderId(provider_id)) {
++    return PrometheusProviderError::kInvalidArgument;
++  }
++  const size_t old_size = providers_.size();
++  std::erase_if(providers_,
++                [provider_id](const PrometheusProviderConfig& item) {
++                  return item.provider_id == provider_id;
++                });
++  if (providers_.size() == old_size) {
++    return PrometheusProviderError::kNotFound;
++  }
++  Persist();
++  return PrometheusProviderError::kNone;
+ }
+ 
+ PrometheusProviderError PrometheusProviderRegistry::UpdateDiscovery(
+     std::string_view provider_id,
+     PrometheusProviderDiscoveryState state,
+     std::vector<std::string> discovered_models) {
+-  return PrometheusProviderError::kNotFound;
++  if (!IsValidProviderId(provider_id) || !IsKnownDiscoveryState(state)) {
++    return PrometheusProviderError::kInvalidArgument;
++  }
++  auto provider = std::ranges::find_if(
++      providers_, [provider_id](const PrometheusProviderConfig& candidate) {
++        return candidate.provider_id == provider_id;
++      });
++  if (provider == providers_.end()) {
++    return PrometheusProviderError::kNotFound;
++  }
++  PrometheusProviderConfig updated = *provider;
++  updated.discovery_state = state;
++  updated.discovered_models = std::move(discovered_models);
++  const PrometheusProviderError error =
++      ValidatePrometheusProviderConfig(updated);
++  if (error != PrometheusProviderError::kNone) {
++    return error;
++  }
++  *provider = std::move(updated);
++  Persist();
++  return PrometheusProviderError::kNone;
+ }
+ 
+ std::vector<PrometheusProviderConfig>
+ PrometheusProviderRegistry::ListProviders() const {
+-  return {};
++  return providers_;
+ }
+ 
+ std::optional<PrometheusProviderConfig>
+ PrometheusProviderRegistry::FindProvider(std::string_view provider_id) const {
+-  return std::nullopt;
++  const auto provider = std::ranges::find_if(
++      providers_, [provider_id](const PrometheusProviderConfig& candidate) {
++        return candidate.provider_id == provider_id;
++      });
++  return provider == providers_.end() ? std::nullopt : std::optional(*provider);
+ }
+ 
+ PrometheusProviderResolution PrometheusProviderRegistry::ResolveProvider(
+     std::string_view provider_id) const {
+-  return {.error = PrometheusProviderError::kNotFound};
++  const std::optional<PrometheusProviderConfig> provider =
++      FindProvider(provider_id);
++  if (!provider) {
++    return {.error = PrometheusProviderError::kNotFound};
++  }
++  if (!provider->enabled) {
++    return {.error = PrometheusProviderError::kDisabled};
++  }
++  if (provider->health != PrometheusProviderHealth::kHealthy) {
++    return {.error = PrometheusProviderError::kUnhealthy};
++  }
++  if (ProviderRequiresSecret(*provider) && !provider->secret_configured) {
++    return {.error = PrometheusProviderError::kSecretUnavailable};
++  }
++  return {.error = PrometheusProviderError::kNone, .provider = provider};
+ }
+ 
+ std::vector<PrometheusProviderConfig>
+ PrometheusProviderRegistry::GetFallbackOrder() const {
+-  return {};
++  std::vector<PrometheusProviderConfig> fallback;
++  for (const PrometheusProviderConfig& provider : providers_) {
++    PrometheusProviderResolution resolution =
++        ResolveProvider(provider.provider_id);
++    if (resolution.provider) {
++      fallback.push_back(std::move(*resolution.provider));
++    }
++  }
++  std::ranges::sort(fallback, IsLessByFallbackRank);
++  return fallback;
+ }
+ 
+ std::optional<GURL> PrometheusProviderRegistry::BuildRequestUrl(
+     std::string_view provider_id,
+     PrometheusProviderRequestRoute route) const {
+-  return std::nullopt;
++  if (route != PrometheusProviderRequestRoute::kInference &&
++      route != PrometheusProviderRequestRoute::kModels) {
++    return std::nullopt;
++  }
++  const PrometheusProviderResolution resolution = ResolveProvider(provider_id);
++  if (!resolution.provider) {
++    return std::nullopt;
++  }
++  const PrometheusProviderConfig& provider = *resolution.provider;
++  std::string relative_path;
++  switch (route) {
++    case PrometheusProviderRequestRoute::kInference:
++      switch (provider.family) {
++        case PrometheusProviderFamily::kOpenAICompatible:
++          relative_path = provider.capabilities.responses_api
++                              ? "responses"
++                              : "chat/completions";
++          break;
++        case PrometheusProviderFamily::kAnthropicMessages:
++          relative_path = "messages";
++          break;
++        case PrometheusProviderFamily::kGeminiGenerateContent:
++          relative_path = "models/" + provider.model_id + ":generateContent";
++          break;
++      }
++      break;
++    case PrometheusProviderRequestRoute::kModels:
++      if (!provider.capabilities.model_discovery ||
++          provider.family == PrometheusProviderFamily::kAnthropicMessages) {
++        return std::nullopt;
++      }
++      relative_path = "models";
++      break;
++  }
++
++  const GURL endpoint(provider.canonical_endpoint);
++  const GURL request_url = endpoint.Resolve(relative_path);
++  if (!request_url.is_valid() || !request_url.SchemeIsHTTPOrHTTPS() ||
++      request_url.DeprecatedGetOriginAsURL() !=
++          endpoint.DeprecatedGetOriginAsURL() ||
++      request_url.has_username() || request_url.has_password() ||
++      request_url.has_query() || request_url.has_ref()) {
++    return std::nullopt;
++  }
++  return request_url;
+ }
+ 
+ base::ListValue PrometheusProviderRegistry::GetSanitizedSnapshot() const {
+-  return base::ListValue();
++  base::ListValue snapshot;
++  for (const PrometheusProviderConfig& provider : providers_) {
++    snapshot.Append(ProviderToValue(provider));
++  }
++  return snapshot;
+ }
+ 
+-void PrometheusProviderRegistry::Load() {}
++void PrometheusProviderRegistry::Load() {
++  providers_.clear();
++  if (!prefs_) {
++    return;
++  }
++  const base::DictValue& root = prefs_->GetDict(kPrometheusRuntimeProfileData);
++  if (root.FindInt(kSchemaVersionKey) != kPrometheusRuntimeSchemaVersion) {
++    return;
++  }
++  const base::DictValue* data = root.FindDict(kDataKey);
++  const base::ListValue* providers =
++      data ? data->FindList(kProvidersKey) : nullptr;
++  if (!providers || providers->size() > kMaxPrometheusProviders) {
++    return;
++  }
++
++  std::set<std::string> provider_ids;
++  std::set<int> fallback_ranks;
++  for (const base::Value& value : *providers) {
++    if (!value.is_dict()) {
++      continue;
++    }
++    std::optional<PrometheusProviderConfig> provider =
++        ProviderFromValue(value.GetDict());
++    if (!provider || !provider_ids.insert(provider->provider_id).second ||
++        !fallback_ranks.insert(provider->fallback_rank).second) {
++      continue;
++    }
++    providers_.push_back(std::move(*provider));
++  }
++  std::ranges::sort(providers_, IsLessByFallbackRank);
++}
+ 
+-void PrometheusProviderRegistry::Persist() {}
++void PrometheusProviderRegistry::Persist() {
++  if (!prefs_) {
++    return;
++  }
++  base::ListValue providers;
++  for (const PrometheusProviderConfig& provider : providers_) {
++    providers.Append(ProviderToValue(provider));
++  }
++
++  base::DictValue root = prefs_->GetDict(kPrometheusRuntimeProfileData).Clone();
++  if (root.FindInt(kSchemaVersionKey) != kPrometheusRuntimeSchemaVersion) {
++    root = base::DictValue();
++    root.Set(kSchemaVersionKey, kPrometheusRuntimeSchemaVersion);
++  }
++  base::DictValue data = root.FindDict(kDataKey)
++                             ? root.FindDict(kDataKey)->Clone()
++                             : base::DictValue();
++  data.Set(kProvidersKey, std::move(providers));
++  root.Set(kDataKey, std::move(data));
++  prefs_->SetDict(kPrometheusRuntimeProfileData, std::move(root));
++}
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_provider_registry.h b/chrome/browser/prometheus/prometheus_provider_registry.h
+index 2e60c7e990..da17be5d57 100644
+--- a/chrome/browser/prometheus/prometheus_provider_registry.h
++++ b/chrome/browser/prometheus/prometheus_provider_registry.h
+@@ -12,6 +12,7 @@
+ 
+ #include "base/memory/raw_ptr.h"
+ #include "base/values.h"
++#include "chrome/browser/prometheus/prometheus_secret_store.h"
+ #include "url/gurl.h"
+ 
+ class PrefService;
+@@ -151,6 +152,8 @@ std::optional<std::string> CanonicalizePrometheusProviderEndpoint(
+     std::string_view endpoint);
+ PrometheusProviderError ValidatePrometheusProviderConfig(
+     const PrometheusProviderConfig& config);
++std::optional<PrometheusSecretBinding> MakePrometheusProviderSecretBinding(
++    const PrometheusProviderConfig& config);
+ 
+ class PrometheusProviderRegistry {
+  public:
+diff --git a/chrome/browser/prometheus/prometheus_provider_registry_unittest.cc b/chrome/browser/prometheus/prometheus_provider_registry_unittest.cc
+index 7d6b56aac7..15c3aacbb6 100644
+--- a/chrome/browser/prometheus/prometheus_provider_registry_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_provider_registry_unittest.cc
+@@ -175,6 +175,9 @@ TEST_F(PrometheusProviderRegistryTest,
+ 
+   PrometheusProviderConfig invalid_model = one;
+   invalid_model.model_id = "model id?api_key=sentinel";
++  EXPECT_EQ(ValidatePrometheusProviderConfig(invalid_model),
++            PrometheusProviderError::kInvalidArgument);
++  invalid_model.model_id = "publisher/../admin";
+   EXPECT_EQ(ValidatePrometheusProviderConfig(invalid_model),
+             PrometheusProviderError::kInvalidArgument);
+ 
+@@ -213,6 +216,32 @@ TEST_F(PrometheusProviderRegistryTest,
+   EXPECT_FALSE(registry.FindProvider("custom")->secret_configured);
+ }
+ 
++TEST_F(PrometheusProviderRegistryTest,
++       SecretBindingUsesStableIdentityKindAndExactEndpoint) {
++  PrometheusProviderConfig provider =
++      MakeProvider(PrometheusProviderKind::kCustom, "custom", 0);
++  std::optional<PrometheusSecretBinding> binding =
++      MakePrometheusProviderSecretBinding(provider);
++  ASSERT_TRUE(binding.has_value());
++  EXPECT_EQ(binding->record_id, "provider:custom");
++  EXPECT_EQ(binding->secret_kind, PrometheusSecretKind::kProviderApiKey);
++  EXPECT_EQ(binding->owner_kind, "custom");
++  EXPECT_EQ(binding->canonical_origin, "https://models.example.test/v1/");
++
++  provider.canonical_endpoint = "https://models.example.test/v2/";
++  std::optional<PrometheusSecretBinding> changed_endpoint =
++      MakePrometheusProviderSecretBinding(provider);
++  ASSERT_TRUE(changed_endpoint.has_value());
++  EXPECT_NE(*binding, *changed_endpoint);
++
++  PrometheusProviderConfig fixed =
++      MakeProvider(PrometheusProviderKind::kOpenAI, "openai", 1);
++  fixed.canonical_endpoint = "https://attacker.example/v1/";
++  EXPECT_EQ(ValidatePrometheusProviderConfig(fixed),
++            PrometheusProviderError::kEndpointPolicy);
++  EXPECT_FALSE(MakePrometheusProviderSecretBinding(fixed));
++}
++
+ TEST_F(PrometheusProviderRegistryTest,
+        ResolutionAndFallbackAreClosedAndDeterministic) {
+   PrometheusProviderRegistry registry(&prefs_);
+@@ -239,6 +268,10 @@ TEST_F(PrometheusProviderRegistryTest,
+             PrometheusProviderError::kDisabled);
+   EXPECT_EQ(registry.ResolveProvider("unhealthy").error,
+             PrometheusProviderError::kUnhealthy);
++  unhealthy.health = PrometheusProviderHealth::kUnknown;
++  ASSERT_EQ(registry.UpsertProvider(unhealthy), PrometheusProviderError::kNone);
++  EXPECT_EQ(registry.ResolveProvider("unhealthy").error,
++            PrometheusProviderError::kUnhealthy);
+ }
+ 
+ TEST_F(PrometheusProviderRegistryTest,
+@@ -261,12 +294,16 @@ TEST_F(PrometheusProviderRegistryTest,
+       "openai", PrometheusProviderRequestRoute::kModels);
+   ASSERT_TRUE(inference.has_value());
+   ASSERT_TRUE(models.has_value());
++  EXPECT_EQ(inference->spec(), "https://api.openai.com/v1/responses");
++  EXPECT_EQ(models->spec(), "https://api.openai.com/v1/models");
+   EXPECT_EQ(inference->DeprecatedGetOriginAsURL(),
+             GURL("https://api.openai.com/"));
+   EXPECT_EQ(models->DeprecatedGetOriginAsURL(),
+             GURL("https://api.openai.com/"));
+   EXPECT_FALSE(inference->has_query());
+   EXPECT_FALSE(models->has_query());
++  EXPECT_FALSE(registry.BuildRequestUrl(
++      "openai", static_cast<PrometheusProviderRequestRoute>(999)));
+ }
+ 
+ TEST_F(PrometheusProviderRegistryTest,
+@@ -296,6 +333,11 @@ TEST_F(PrometheusProviderRegistryTest,
+   EXPECT_EQ(snapshot.find("api_key"), std::string::npos);
+   EXPECT_EQ(snapshot.find("authorization"), std::string::npos);
+   EXPECT_EQ(snapshot.find("ciphertext"), std::string::npos);
++
++  PrometheusProviderRegistry restored(&prefs_);
++  ASSERT_EQ(restored.ListProviders().size(), 1u);
++  EXPECT_EQ(restored.FindProvider("openai"), provider);
++  EXPECT_EQ(restored.GetSanitizedSnapshot(), registry.GetSanitizedSnapshot());
+ }
+ 
+ }  // namespace
+-- 
+2.50.1 (Apple Git-155)
+

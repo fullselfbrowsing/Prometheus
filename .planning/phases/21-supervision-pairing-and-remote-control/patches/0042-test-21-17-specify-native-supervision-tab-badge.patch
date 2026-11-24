@@ -1,0 +1,279 @@
+From c6c9e3913e286c124247b54e9188580cf4184412 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 13:05:50 -0500
+Subject: [PATCH] test(21-17): specify native supervision tab badge
+
+---
+ chrome/browser/ui/views/prometheus/BUILD.gn   |   1 +
+ ...theus_tab_supervision_badge_browsertest.cc | 196 ++++++++++++++++++
+ .../views/tabs/prometheus_tab_status_badge.cc |   2 +
+ .../views/tabs/prometheus_tab_status_badge.h  |  11 +
+ 4 files changed, 210 insertions(+)
+ create mode 100644 chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc
+
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 283e67c8fd..aa1b380089 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -95,6 +95,7 @@ source_set("browser_tests") {
+     "../../../prometheus/prometheus_vault_confirmation_browsertest.cc",
+     "../../webui/prometheus/prometheus_web_ui_browsertest.cc",
+     "prometheus_compact_chrome_browsertest.cc",
++    "prometheus_tab_supervision_badge_browsertest.cc",
+     "prometheus_token_gallery_browsertest.cc",
+     "prometheus_toolbar_entrypoint_browsertest.cc",
+   ]
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc b/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc
+new file mode 100644
+index 0000000000..ecc79af7fa
+--- /dev/null
++++ b/chrome/browser/ui/views/prometheus/prometheus_tab_supervision_badge_browsertest.cc
+@@ -0,0 +1,196 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h"
++
++#include <array>
++#include <optional>
++#include <string_view>
++
++#include "chrome/browser/prometheus/prometheus_action.h"
++#include "chrome/browser/ui/color/chrome_color_id.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "content/public/test/browser_test.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "ui/base/models/image_model.h"
++#include "ui/color/color_id.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/controls/image_view.h"
++
++namespace {
++
++using ActionCategory = PrometheusTabState::Supervision::ActionCategory;
++using ActivityState = PrometheusTabState::Supervision::ActivityState;
++using ControlState = PrometheusTabState::Supervision::ControlState;
++using Severity = PrometheusTabState::Supervision::Severity;
++using ViewState = PrometheusTabState::Supervision::ViewState;
++
++ui::ImageModel ExpectedIcon(PrometheusAction action, ui::ColorId color_id) {
++  return ui::ImageModel::FromVectorIcon(
++      *GetPrometheusActionIconMap().at(action), color_id,
++      PrometheusTabStatusBadge::kIconSize);
++}
++
++PrometheusTabState ViewingState(size_t viewers) {
++  PrometheusTabState state;
++  state.supervision.available = true;
++  state.supervision.viewer_count = viewers;
++  state.supervision.view_state = ViewState::kViewing;
++  state.supervision.control_state = ControlState::kViewOnly;
++  return state;
++}
++
++void ExpectSafeText(const PrometheusTabStatusBadge& badge) {
++  const std::u16string accessible_name =
++      badge.GetViewAccessibility().GetCachedName();
++  EXPECT_EQ(accessible_name, badge.GetTooltipText());
++  for (std::u16string_view forbidden :
++       {u"8J7K-2MNP", u"SESSION-AUTHORITY", u"LEASE-AUTHORITY",
++        u"https://private.example/path", u"/Users/private/profile",
++        u"#checkout-selector", u"RAW-TYPED-VALUE"}) {
++    EXPECT_EQ(std::u16string::npos, accessible_name.find(forbidden));
++    EXPECT_EQ(std::u16string::npos, badge.GetTooltipText().find(forbidden));
++  }
++}
++
++}  // namespace
++
++class PrometheusTabSupervisionBadgeBrowserTest : public InProcessBrowserTest {};
++
++IN_PROC_BROWSER_TEST_F(PrometheusTabSupervisionBadgeBrowserTest,
++                       StateSafeDefaultOwnerAgentAndSlotContract) {
++  PrometheusTabStatusBadge badge;
++  ASSERT_EQ(3u, badge.children().size());
++  EXPECT_EQ(12, PrometheusTabStatusBadge::kIconSize);
++  EXPECT_EQ(4, PrometheusTabStatusBadge::kIconSpacing);
++  for (views::View* child : badge.children()) {
++    EXPECT_EQ(gfx::Size(12, 12), child->GetPreferredSize());
++    EXPECT_FALSE(child->GetCanProcessEventsWithinSubtree());
++  }
++  EXPECT_FALSE(badge.GetCanProcessEventsWithinSubtree());
++  EXPECT_FALSE(badge.GetVisible());
++  EXPECT_EQ(u"No agent owns this tab",
++            badge.GetViewAccessibility().GetCachedName());
++
++  PrometheusTabState state;
++  state.owner_label = "Agent A";
++  badge.SetState(state);
++  EXPECT_TRUE(badge.GetVisible());
++  EXPECT_TRUE(badge.owner_or_automation_badge_for_testing()->GetVisible());
++  EXPECT_EQ(ExpectedIcon(PrometheusAction::kBolt, kColorPrometheusText2),
++            badge.owner_or_automation_badge_for_testing()->GetImageModel());
++  EXPECT_EQ(u"Owned by Agent A; Tab health OK",
++            badge.GetViewAccessibility().GetCachedName());
++
++  state.automation_active = true;
++  badge.SetState(state);
++  EXPECT_EQ(ExpectedIcon(PrometheusAction::kBolt, kColorPrometheusAccent),
++            badge.owner_or_automation_badge_for_testing()->GetImageModel());
++  EXPECT_EQ(
++      u"Owned by Agent A; Agent is working in this tab; Tab health OK",
++      badge.GetViewAccessibility().GetCachedName());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusTabSupervisionBadgeBrowserTest,
++                       StateViewerControllerAndActionPriority) {
++  PrometheusTabStatusBadge badge;
++  PrometheusTabState state = ViewingState(1);
++  badge.SetState(state);
++  EXPECT_TRUE(badge.supervision_badge_for_testing()->GetVisible());
++  EXPECT_EQ(ExpectedIcon(PrometheusAction::kEye, kColorPrometheusAccent),
++            badge.supervision_badge_for_testing()->GetImageModel());
++  EXPECT_EQ(
++      u"No agent owns this tab; Supervised by 1 trusted client; Tab health OK",
++      badge.GetViewAccessibility().GetCachedName());
++
++  state.supervision.viewer_count = 3;
++  state.supervision.control_state = ControlState::kControllerReady;
++  state.supervision.controller_label = "Local dashboard";
++  badge.SetState(state);
++  EXPECT_EQ(ExpectedIcon(PrometheusAction::kShield, kColorPrometheusAccent),
++            badge.supervision_badge_for_testing()->GetImageModel());
++  EXPECT_EQ(
++      u"No agent owns this tab; Supervised by 3 trusted clients; Remote control enabled for Local dashboard; Tab health OK",
++      badge.GetViewAccessibility().GetCachedName());
++
++  constexpr std::array categories = {
++      std::pair{ActionCategory::kClick, u"Click"},
++      std::pair{ActionCategory::kType, u"Type"},
++      std::pair{ActionCategory::kKeyPress, u"Key press"},
++      std::pair{ActionCategory::kScroll, u"Scroll"},
++      std::pair{ActionCategory::kHover, u"Hover"},
++      std::pair{ActionCategory::kSelect, u"Select"},
++      std::pair{ActionCategory::kClear, u"Clear"},
++      std::pair{ActionCategory::kDrag, u"Drag"},
++      std::pair{ActionCategory::kDrop, u"Drop"},
++      std::pair{ActionCategory::kNavigate, u"Navigate"},
++  };
++  state.supervision.activity_state = ActivityState::kExecuting;
++  for (const auto& [category, phrase] : categories) {
++    state.supervision.action_category = category;
++    badge.SetState(state);
++    EXPECT_EQ(
++        ExpectedIcon(PrometheusAction::kCircleNodes, kColorPrometheusAccent),
++        badge.supervision_badge_for_testing()->GetImageModel());
++    EXPECT_NE(nullptr,
++              badge.supervision_badge_for_testing()->background());
++    EXPECT_NE(std::u16string::npos,
++              badge.GetViewAccessibility().GetCachedName().find(
++                  std::u16string(u"Remote action active: ") + phrase));
++  }
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusTabSupervisionBadgeBrowserTest,
++                       StateCompleteOrderedNameAndHealthSeverity) {
++  PrometheusTabStatusBadge badge;
++  PrometheusTabState state = ViewingState(2);
++  state.owner_label = "Agent A";
++  state.automation_active = true;
++  state.supervision.control_state = ControlState::kControllerReady;
++  state.supervision.controller_label = "Dashboard A";
++  state.supervision.activity_state = ActivityState::kValidating;
++  state.supervision.action_category = ActionCategory::kNavigate;
++  state.supervision.severity = Severity::kBlocked;
++  badge.SetState(state);
++
++  EXPECT_TRUE(badge.health_badge_for_testing()->GetVisible());
++  EXPECT_EQ(ExpectedIcon(PrometheusAction::kTriangleExclamation,
++                         ui::kColorAlertHighSeverity),
++            badge.health_badge_for_testing()->GetImageModel());
++  EXPECT_EQ(
++      u"Owned by Agent A; Agent is working in this tab; Supervised by 2 trusted clients; Remote control enabled for Dashboard A; Remote action active: Navigate; Tab needs attention",
++      badge.GetViewAccessibility().GetCachedName());
++
++  state.supervision.severity = Severity::kNormal;
++  state.health = PrometheusTabState::Health::kNeedsAttention;
++  state.supervision.activity_state = ActivityState::kCompleted;
++  state.supervision.action_category.reset();
++  badge.SetState(state);
++  EXPECT_TRUE(badge.health_badge_for_testing()->GetVisible());
++  EXPECT_EQ(std::u16string::npos,
++            badge.GetViewAccessibility().GetCachedName().find(
++                u"Remote action active"));
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusTabSupervisionBadgeBrowserTest,
++                       StateTextIsContentFreeAndEventTransparent) {
++  PrometheusTabStatusBadge badge;
++  PrometheusTabState state = ViewingState(2);
++  state.owner_label =
++      "Bearer SESSION-AUTHORITY 8J7K-2MNP /Users/private/profile";
++  state.supervision.control_state = ControlState::kControllerReady;
++  state.supervision.controller_label =
++      "LEASE-AUTHORITY https://private.example/path #checkout-selector";
++  state.supervision.activity_state = ActivityState::kExecuting;
++  state.supervision.action_category = ActionCategory::kType;
++  state.supervision.severity = Severity::kNeedsAttention;
++  badge.SetState(state);
++
++  ExpectSafeText(badge);
++  EXPECT_FALSE(badge.GetCanProcessEventsWithinSubtree());
++  for (views::View* child : badge.children()) {
++    EXPECT_FALSE(child->GetCanProcessEventsWithinSubtree());
++    EXPECT_EQ(views::View::FocusBehavior::NEVER, child->GetFocusBehavior());
++  }
++}
+diff --git a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc
+index cca8295802..37c4bc008d 100644
+--- a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc
++++ b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.cc
+@@ -12,6 +12,7 @@
+ #include "base/strings/utf_string_conversions.h"
+ #include "chrome/browser/prometheus/prometheus_action.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
++#include "ui/accessibility/ax_enums.mojom.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+ #include "ui/base/models/image_model.h"
+ #include "ui/color/color_id.h"
+@@ -90,6 +91,7 @@ void SetBadgeIcon(views::ImageView* icon,
+ 
+ PrometheusTabStatusBadge::PrometheusTabStatusBadge() {
+   SetCanProcessEventsWithinSubtree(false);
++  GetViewAccessibility().SetRole(ax::mojom::Role::kStatus);
+   SetLayoutManager(std::make_unique<views::BoxLayout>(
+       views::BoxLayout::Orientation::kHorizontal, gfx::Insets(),
+       kBadgeSpacing));
+diff --git a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h
+index 463de283a1..1e3afa3970 100644
+--- a/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h
++++ b/chrome/browser/ui/views/tabs/prometheus_tab_status_badge.h
+@@ -19,6 +19,7 @@ class PrometheusTabStatusBadge : public views::View {
+ 
+  public:
+   static constexpr int kIconSize = 12;
++  static constexpr int kIconSpacing = 4;
+ 
+   PrometheusTabStatusBadge();
+   PrometheusTabStatusBadge(const PrometheusTabStatusBadge&) = delete;
+@@ -27,6 +28,16 @@ class PrometheusTabStatusBadge : public views::View {
+ 
+   void SetState(const PrometheusTabState& state);
+ 
++  views::ImageView* owner_or_automation_badge_for_testing() const {
++    return owner_or_automation_badge_;
++  }
++  views::ImageView* supervision_badge_for_testing() const {
++    return supervision_badge_;
++  }
++  views::ImageView* health_badge_for_testing() const {
++    return health_badge_;
++  }
++
+  private:
+   raw_ptr<views::ImageView> owner_or_automation_badge_ = nullptr;
+   raw_ptr<views::ImageView> supervision_badge_ = nullptr;
+-- 
+2.50.1 (Apple Git-155)
+

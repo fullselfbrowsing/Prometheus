@@ -1,0 +1,641 @@
+From 51a7295a5b0a1ad168acc1bf6821eab2278cb0b6 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 20:48:10 -0500
+Subject: [PATCH 11/11] test(21-05): specify Agent supervision composition
+ boundary
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   6 +
+ .../prometheus_agent_profile_service.cc       |  36 ++++-
+ .../prometheus_agent_profile_service.h        |  16 ++
+ ...ometheus_agent_profile_service_unittest.cc | 146 ++++++++++++++++++
+ ...eus_supervision_profile_service_factory.cc |  81 ++++++++++
+ ...heus_supervision_profile_service_factory.h |  61 ++++++++
+ ...us_supervision_profile_service_unittest.cc | 102 ++++++++++++
+ 7 files changed, 444 insertions(+), 4 deletions(-)
+ create mode 100644 chrome/browser/prometheus/prometheus_agent_profile_service_unittest.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index f400cc7e78..9e475d8f8c 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -321,15 +321,20 @@ source_set("prometheus_supervision_profile_service") {
+   sources = [
+     "prometheus_supervision_profile_service.cc",
+     "prometheus_supervision_profile_service.h",
++    "prometheus_supervision_profile_service_factory.cc",
++    "prometheus_supervision_profile_service_factory.h",
+   ]
+ 
+   deps = [
++    ":prometheus_agent_profile_service",
+     ":prometheus_agent_service",
+     ":prometheus_supervision_types",
+     "//base",
++    "//chrome/browser/profiles",
+     "//chrome/browser/ui/browser_window",
+     "//components/keyed_service/core",
+     "//components/tabs:public",
++    "//content/public/browser",
+     "//crypto",
+     "//url",
+   ]
+@@ -573,6 +578,7 @@ test("prometheus_unittests") {
+     "prometheus_action_unittest.cc",
+     "prometheus_agent_audit_unittest.cc",
+     "prometheus_agent_gateway_unittest.cc",
++    "prometheus_agent_profile_service_unittest.cc",
+     "prometheus_agent_route_unittest.cc",
+     "prometheus_agent_service_unittest.cc",
+     "prometheus_agent_session_unittest.cc",
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.cc b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+index 88a7e01a4a..7e05f55325 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.cc
+@@ -24,9 +24,23 @@ AgentRouteResult MissingBrowserResult() {
+       "Open a browser window for this profile and retry");
+ }
+ 
++size_t MaxActiveAgentsForProfile(Profile* profile) {
++  CHECK(profile);
++  CHECK(!profile->IsOffTheRecord());
++  return static_cast<size_t>(
++      GetEffectivePrometheusRuntimePolicy(*profile->GetPrefs())
++          .max_active_agents);
++}
++
+ }  // namespace
+ 
+ PrometheusAgentProfileService::PrometheusAgentProfileService(Profile* profile)
++    : PrometheusAgentProfileService(profile,
++                                    MaxActiveAgentsForProfile(profile)) {}
++
++PrometheusAgentProfileService::PrometheusAgentProfileService(
++    Profile* profile,
++    size_t max_active_agents)
+     : profile_(profile),
+       sessions_(kDefaultMaxAgentSessions, kAgentReconnectGrace),
+       agent_service_(&sessions_,
+@@ -34,10 +48,15 @@ PrometheusAgentProfileService::PrometheusAgentProfileService(Profile* profile)
+                                          base::Unretained(this))),
+       now_callback_(base::BindRepeating(&base::Time::Now)) {
+   CHECK(profile_);
+-  CHECK(!profile_->IsOffTheRecord());
+-  SetMaxActiveAgents(static_cast<size_t>(
+-      GetEffectivePrometheusRuntimePolicy(*profile_->GetPrefs())
+-          .max_active_agents));
++  SetMaxActiveAgents(max_active_agents);
++}
++
++// static
++std::unique_ptr<PrometheusAgentProfileService>
++PrometheusAgentProfileService::CreateForTesting(Profile* profile,
++                                                size_t max_active_agents) {
++  return std::unique_ptr<PrometheusAgentProfileService>(
++      new PrometheusAgentProfileService(profile, max_active_agents));
+ }
+ 
+ PrometheusAgentProfileService::~PrometheusAgentProfileService() {
+@@ -98,6 +117,14 @@ void PrometheusAgentProfileService::ReleaseSessionOwnership(
+   agent_service_.ReleaseSessionOwnership(session_id);
+ }
+ 
++PrometheusAgentTabObservationLease
++PrometheusAgentProfileService::ObserveOrCreateTabData(
++    tabs::TabInterface* tab,
++    PrometheusAgentTabData::Observer* observer) {
++  // Retained RED contract: Task 2 binds this narrow seam to Agent-owned data.
++  return {};
++}
++
+ void PrometheusAgentProfileService::ExecuteRoute(
+     const AgentRouteRequest& request,
+     PrometheusAgentService::RouteCallback callback) {
+@@ -183,6 +210,7 @@ void PrometheusAgentProfileService::Shutdown() {
+     return;
+   }
+   shutdown_ = true;
++  weak_factory_.InvalidateWeakPtrs();
+   for (const std::string& session_id : sessions_.CloseAllSessions()) {
+     agent_service_.ReleaseSessionOwnership(session_id);
+     NotifySessionLost(session_id);
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service.h b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+index b0ebd165be..9d8ec39cbd 100644
+--- a/chrome/browser/prometheus/prometheus_agent_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service.h
+@@ -5,11 +5,13 @@
+ #ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_PROFILE_SERVICE_H_
+ #define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_AGENT_PROFILE_SERVICE_H_
+ 
++#include <memory>
+ #include <string>
+ #include <string_view>
+ 
+ #include "base/functional/callback.h"
+ #include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
+ #include "base/observer_list.h"
+ #include "base/observer_list_types.h"
+ #include "base/time/time.h"
+@@ -20,6 +22,10 @@
+ class Profile;
+ class BrowserWindowInterface;
+ 
++namespace tabs {
++class TabInterface;
++}
++
+ namespace prometheus {
+ 
+ // Owns the browser-process agent authority for exactly one regular profile.
+@@ -33,6 +39,9 @@ class PrometheusAgentProfileService : public KeyedService {
+   };
+ 
+   explicit PrometheusAgentProfileService(Profile* profile);
++  static std::unique_ptr<PrometheusAgentProfileService> CreateForTesting(
++      Profile* profile,
++      size_t max_active_agents = kDefaultMaxAgentSessions);
+   PrometheusAgentProfileService(const PrometheusAgentProfileService&) = delete;
+   PrometheusAgentProfileService& operator=(
+       const PrometheusAgentProfileService&) = delete;
+@@ -49,6 +58,9 @@ class PrometheusAgentProfileService : public KeyedService {
+   size_t ActiveSessionCount();
+   void SetMaxActiveAgents(size_t max_active_agents);
+   void ReleaseSessionOwnership(std::string_view session_id);
++  PrometheusAgentTabObservationLease ObserveOrCreateTabData(
++      tabs::TabInterface* tab,
++      PrometheusAgentTabData::Observer* observer);
+   void ExecuteRoute(const AgentRouteRequest& request,
+                     PrometheusAgentService::RouteCallback callback);
+   void ExecuteBrowserLocalRoute(BrowserWindowInterface* exact_browser,
+@@ -70,6 +82,9 @@ class PrometheusAgentProfileService : public KeyedService {
+   void Shutdown() override;
+ 
+  private:
++  friend class PrometheusSupervisionProfileServiceFactory;
++
++  PrometheusAgentProfileService(Profile* profile, size_t max_active_agents);
+   base::Time Now() const;
+   void SweepExpiredSessions();
+   void NotifySessionLost(std::string_view session_id);
+@@ -80,6 +95,7 @@ class PrometheusAgentProfileService : public KeyedService {
+   NowCallback now_callback_;
+   base::ObserverList<Observer> observers_;
+   bool shutdown_ = false;
++  base::WeakPtrFactory<PrometheusAgentProfileService> weak_factory_{this};
+ };
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_agent_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_agent_profile_service_unittest.cc
+new file mode 100644
+index 0000000000..3c6c136736
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_agent_profile_service_unittest.cc
+@@ -0,0 +1,146 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
++
++#include <memory>
++#include <string>
++#include <string_view>
++#include <utility>
++#include <vector>
++
++#include "base/test/task_environment.h"
++#include "components/tabs/public/mock_tab_interface.h"
++#include "testing/gmock/include/gmock/gmock.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "ui/base/unowned_user_data/unowned_user_data_host.h"
++
++namespace prometheus {
++namespace {
++
++using testing::_;
++using testing::Return;
++using testing::ReturnRef;
++
++class RecordingAgentTabObserver final
++    : public PrometheusAgentTabData::Observer {
++ public:
++  void OnPrometheusAgentTabOwnerChanged(
++      std::string_view old_owner_session_id,
++      std::string_view new_owner_session_id) override {
++    owner_changes.emplace_back(old_owner_session_id, new_owner_session_id);
++  }
++
++  void OnPrometheusAgentTabDataDestroying() override { ++destroying_count; }
++
++  std::vector<std::pair<std::string, std::string>> owner_changes;
++  size_t destroying_count = 0;
++};
++
++class PrometheusAgentProfileServiceTest : public testing::Test {
++ public:
++  PrometheusAgentProfileServiceTest()
++      : profile_(reinterpret_cast<Profile*>(&profile_storage_)) {
++    ON_CALL(tab_, GetUnownedUserDataHost()).WillByDefault(ReturnRef(tab_host_));
++    ON_CALL(tab_, GetProfile()).WillByDefault(Return(profile_.get()));
++    ON_CALL(tab_, GetTabHandle()).WillByDefault(Return(41u));
++    ON_CALL(tab_, RegisterWillDetach(_))
++        .WillByDefault([this](tabs::TabInterface::WillDetach callback) {
++          will_detach_ = std::move(callback);
++          return base::CallbackListSubscription();
++        });
++    service_ = PrometheusAgentProfileService::CreateForTesting(profile_.get());
++  }
++
++ protected:
++  base::test::TaskEnvironment task_environment_;
++  int profile_storage_ = 0;
++  raw_ptr<Profile> profile_;
++  ui::UnownedUserDataHost tab_host_;
++  tabs::MockTabInterface tab_;
++  tabs::TabInterface::WillDetach will_detach_;
++  RecordingAgentTabObserver observer_;
++  std::unique_ptr<PrometheusAgentProfileService> service_;
++};
++
++TEST_F(PrometheusAgentProfileServiceTest,
++       SupervisionObservationForwardsFreshUnownedAndOwnerTransitions) {
++  PrometheusAgentTabObservationLease lease =
++      service_->ObserveOrCreateTabData(&tab_, &observer_);
++  ASSERT_NE(nullptr, lease.data());
++  EXPECT_EQ(lease.data(), PrometheusAgentTabData::From(&tab_));
++  EXPECT_TRUE(lease.data()->owner_session_id().empty());
++
++  AgentSessionResult owner_a = service_->CreateSession("Agent A");
++  AgentSessionResult owner_b = service_->CreateSession("Agent B");
++  ASSERT_TRUE(owner_a.route_result.ok);
++  ASSERT_TRUE(owner_b.route_result.ok);
++  ASSERT_TRUE(owner_a.session.has_value());
++  ASSERT_TRUE(owner_b.session.has_value());
++  ASSERT_TRUE(
++      lease.data()
++          ->ClaimIfUnowned(owner_a.session->id, owner_a.session->display_label)
++          .ok);
++  ASSERT_TRUE(service_->CloseSession(owner_a.session->id).ok);
++  ASSERT_TRUE(
++      lease.data()
++          ->ClaimIfUnowned(owner_b.session->id, owner_b.session->display_label)
++          .ok);
++
++  ASSERT_EQ(3u, observer_.owner_changes.size());
++  EXPECT_EQ(std::make_pair(std::string(), owner_a.session->id),
++            observer_.owner_changes[0]);
++  EXPECT_EQ(std::make_pair(owner_a.session->id, std::string()),
++            observer_.owner_changes[1]);
++  EXPECT_EQ(std::make_pair(std::string(), owner_b.session->id),
++            observer_.owner_changes[2]);
++}
++
++TEST_F(PrometheusAgentProfileServiceTest,
++       SupervisionObservationLastReleasePrunesTheAgentOwnedObject) {
++  PrometheusAgentTabObservationLease lease =
++      service_->ObserveOrCreateTabData(&tab_, &observer_);
++  ASSERT_NE(nullptr, lease.data());
++  EXPECT_NE(nullptr, PrometheusAgentTabData::From(&tab_));
++
++  lease.Reset();
++  task_environment_.RunUntilIdle();
++
++  EXPECT_EQ(nullptr, PrometheusAgentTabData::From(&tab_));
++  EXPECT_EQ(1u, observer_.destroying_count);
++}
++
++TEST_F(PrometheusAgentProfileServiceTest,
++       SupervisionObservationDetachInvalidatesLateLeaseDestruction) {
++  PrometheusAgentTabObservationLease lease =
++      service_->ObserveOrCreateTabData(&tab_, &observer_);
++  ASSERT_NE(nullptr, lease.data());
++  ASSERT_FALSE(will_detach_.is_null());
++
++  will_detach_.Run(&tab_, tabs::TabInterface::DetachReason::kDelete);
++
++  EXPECT_EQ(nullptr, lease.data());
++  EXPECT_EQ(nullptr, PrometheusAgentTabData::From(&tab_));
++  EXPECT_EQ(1u, observer_.destroying_count);
++  lease.Reset();
++  task_environment_.RunUntilIdle();
++}
++
++TEST_F(PrometheusAgentProfileServiceTest,
++       SupervisionObservationAgentDestructionInvalidatesLateLease) {
++  PrometheusAgentTabObservationLease lease =
++      service_->ObserveOrCreateTabData(&tab_, &observer_);
++  ASSERT_NE(nullptr, lease.data());
++
++  service_.reset();
++
++  EXPECT_EQ(nullptr, lease.data());
++  EXPECT_EQ(nullptr, PrometheusAgentTabData::From(&tab_));
++  EXPECT_EQ(1u, observer_.destroying_count);
++  lease.Reset();
++  task_environment_.RunUntilIdle();
++}
++
++}  // namespace
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc
+new file mode 100644
+index 0000000000..f7cbf8b300
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.cc
+@@ -0,0 +1,81 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h"
++
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
++#include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"
++#include "content/public/browser/browser_context.h"
++
++namespace prometheus {
++
++// static
++PrometheusSupervisionProfileService*
++PrometheusSupervisionProfileServiceFactory::GetForProfile(Profile* profile) {
++  // Retained RED contract: Task 2 enables regular-profile construction.
++  return nullptr;
++}
++
++// static
++PrometheusSupervisionProfileServiceFactory*
++PrometheusSupervisionProfileServiceFactory::GetInstance() {
++  static base::NoDestructor<PrometheusSupervisionProfileServiceFactory> factory{
++      base::PassKey<PrometheusSupervisionProfileServiceFactory>()};
++  return factory.get();
++}
++
++PrometheusSupervisionProfileServiceFactory::
++    PrometheusSupervisionProfileServiceFactory(
++        base::PassKey<PrometheusSupervisionProfileServiceFactory>)
++    : ProfileKeyedServiceFactory("PrometheusSupervisionProfileService",
++                                 ProfileSelections::BuildForRegularProfile()) {}
++
++PrometheusSupervisionProfileServiceFactory::
++    ~PrometheusSupervisionProfileServiceFactory() = default;
++
++// static
++bool PrometheusSupervisionProfileServiceFactory::
++    IsRegularProfileEligibleForTesting(bool is_off_the_record) {
++  return !is_off_the_record;
++}
++
++// static
++bool PrometheusSupervisionProfileServiceFactory::
++    HasAgentProfileServiceDependencyForTesting() {
++  return false;
++}
++
++// static
++std::unique_ptr<PrometheusSupervisionProfileService>
++PrometheusSupervisionProfileServiceFactory::BuildForRegularProfileForTesting(
++    Profile* profile,
++    bool is_off_the_record,
++    PrometheusAgentProfileService* agent_profile_service) {
++  // Retained RED contract: Task 2 composes the weak Agent observation callback.
++  return nullptr;
++}
++
++// static
++std::unique_ptr<PrometheusSupervisionProfileService>
++PrometheusSupervisionProfileServiceFactory::BuildForRegularProfile(
++    Profile* profile,
++    PrometheusAgentProfileService* agent_profile_service) {
++  // Retained RED contract: Task 2 composes the weak Agent observation callback.
++  return nullptr;
++}
++
++bool PrometheusSupervisionProfileServiceFactory::
++    ServiceIsCreatedWithBrowserContext() const {
++  return true;
++}
++
++std::unique_ptr<KeyedService> PrometheusSupervisionProfileServiceFactory::
++    BuildServiceInstanceForBrowserContext(
++        content::BrowserContext* context) const {
++  // Retained RED contract: Task 2 resolves the exact regular-profile service.
++  return nullptr;
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h b/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h
+new file mode 100644
+index 0000000000..deebc065dc
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h
+@@ -0,0 +1,61 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_PROFILE_SERVICE_FACTORY_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_PROFILE_SERVICE_FACTORY_H_
++
++#include <memory>
++
++#include "base/no_destructor.h"
++#include "base/types/pass_key.h"
++#include "chrome/browser/profiles/profile_keyed_service_factory.h"
++
++class Profile;
++
++namespace content {
++class BrowserContext;
++}
++
++namespace prometheus {
++
++class PrometheusAgentProfileService;
++class PrometheusSupervisionProfileService;
++
++class PrometheusSupervisionProfileServiceFactory
++    : public ProfileKeyedServiceFactory {
++ public:
++  explicit PrometheusSupervisionProfileServiceFactory(
++      base::PassKey<PrometheusSupervisionProfileServiceFactory>);
++
++  static PrometheusSupervisionProfileServiceFactory* GetInstance();
++  static PrometheusSupervisionProfileService* GetForProfile(Profile* profile);
++
++  PrometheusSupervisionProfileServiceFactory(
++      const PrometheusSupervisionProfileServiceFactory&) = delete;
++  PrometheusSupervisionProfileServiceFactory& operator=(
++      const PrometheusSupervisionProfileServiceFactory&) = delete;
++
++  static bool IsRegularProfileEligibleForTesting(bool is_off_the_record);
++  static bool HasAgentProfileServiceDependencyForTesting();
++  static std::unique_ptr<PrometheusSupervisionProfileService>
++  BuildForRegularProfileForTesting(
++      Profile* profile,
++      bool is_off_the_record,
++      PrometheusAgentProfileService* agent_profile_service);
++
++  bool ServiceIsCreatedWithBrowserContext() const override;
++  std::unique_ptr<KeyedService> BuildServiceInstanceForBrowserContext(
++      content::BrowserContext* context) const override;
++
++ private:
++  static std::unique_ptr<PrometheusSupervisionProfileService>
++  BuildForRegularProfile(Profile* profile,
++                         PrometheusAgentProfileService* agent_profile_service);
++
++  ~PrometheusSupervisionProfileServiceFactory() override;
++};
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_SUPERVISION_PROFILE_SERVICE_FACTORY_H_
+diff --git a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+index c75f5bba25..1c3a6c06fb 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_profile_service_unittest.cc
+@@ -13,6 +13,8 @@
+ #include "base/functional/bind.h"
+ #include "base/json/json_writer.h"
+ #include "base/test/task_environment.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h"
+ #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
+ #include "components/tabs/public/mock_tab_interface.h"
+ #include "testing/gmock/include/gmock/gmock.h"
+@@ -53,6 +55,7 @@ class PrometheusSupervisionProfileServiceTest : public testing::Test {
+   PrometheusSupervisionProfileServiceTest()
+       : now_(base::Time::FromMillisecondsSinceUnixEpoch(100'000)),
+         profile_(reinterpret_cast<Profile*>(&profile_storage_)),
++        other_profile_(reinterpret_cast<Profile*>(&other_profile_storage_)),
+         browser_weak_factory_(&browser_),
+         registry_(kDefaultMaxAgentSessions, base::Hours(1)),
+         agent_service_(std::make_unique<PrometheusAgentService>(&registry_)) {
+@@ -63,6 +66,7 @@ class PrometheusSupervisionProfileServiceTest : public testing::Test {
+     ON_CALL(browser_, IsDeleteScheduled()).WillByDefault(Return(false));
+     ON_CALL(tab_, GetUnownedUserDataHost()).WillByDefault(ReturnRef(tab_host_));
+     ON_CALL(tab_, GetProfile()).WillByDefault(Return(profile_.get()));
++    ON_CALL(tab_, GetTabHandle()).WillByDefault(Return(43u));
+     ON_CALL(tab_, GetBrowserWindowInterface()).WillByDefault(Return(&browser_));
+     ON_CALL(tab_, GetTitle()).WillByDefault(Return(u"Release notes"));
+     ON_CALL(tab_, GetURL())
+@@ -130,7 +134,9 @@ class PrometheusSupervisionProfileServiceTest : public testing::Test {
+   base::test::TaskEnvironment task_environment_;
+   base::Time now_;
+   int profile_storage_ = 0;
++  int other_profile_storage_ = 0;
+   raw_ptr<Profile> profile_;
++  raw_ptr<Profile> other_profile_;
+   MockBrowserWindowInterface browser_;
+   base::WeakPtrFactory<MockBrowserWindowInterface> browser_weak_factory_;
+   ui::UnownedUserDataHost tab_host_;
+@@ -157,6 +163,102 @@ TEST_F(PrometheusSupervisionProfileServiceTest,
+   EXPECT_EQ(0u, service_->pending_pairing_count_for_testing());
+ }
+ 
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       FactoryCreatesOneRegularServiceAndRejectsNullAndOtrProfiles) {
++  PrometheusSupervisionProfileServiceFactory* const factory =
++      PrometheusSupervisionProfileServiceFactory::GetInstance();
++  EXPECT_EQ(factory, PrometheusSupervisionProfileServiceFactory::GetInstance());
++  EXPECT_EQ(nullptr,
++            PrometheusSupervisionProfileServiceFactory::GetForProfile(nullptr));
++  EXPECT_TRUE(PrometheusSupervisionProfileServiceFactory::
++                  IsRegularProfileEligibleForTesting(false));
++  EXPECT_FALSE(PrometheusSupervisionProfileServiceFactory::
++                   IsRegularProfileEligibleForTesting(true));
++
++  std::unique_ptr<PrometheusAgentProfileService> agent_profile_service =
++      PrometheusAgentProfileService::CreateForTesting(profile_.get());
++  ASSERT_TRUE(agent_profile_service);
++  EXPECT_EQ(nullptr, PrometheusSupervisionProfileServiceFactory::
++                         BuildForRegularProfileForTesting(
++                             profile_.get(), /*is_off_the_record=*/true,
++                             agent_profile_service.get()));
++  EXPECT_NE(nullptr, PrometheusSupervisionProfileServiceFactory::
++                         BuildForRegularProfileForTesting(
++                             profile_.get(), /*is_off_the_record=*/false,
++                             agent_profile_service.get()));
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       FactoryDeclaresExactAgentDependencyAndRejectsMissingAgentService) {
++  PrometheusSupervisionProfileServiceFactory::GetInstance();
++  EXPECT_TRUE(PrometheusSupervisionProfileServiceFactory::
++                  HasAgentProfileServiceDependencyForTesting());
++  EXPECT_EQ(nullptr,
++            PrometheusSupervisionProfileServiceFactory::
++                BuildForRegularProfileForTesting(
++                    profile_.get(), /*is_off_the_record=*/false, nullptr));
++
++  std::unique_ptr<PrometheusAgentProfileService> wrong_profile_agent =
++      PrometheusAgentProfileService::CreateForTesting(other_profile_.get());
++  EXPECT_EQ(nullptr, PrometheusSupervisionProfileServiceFactory::
++                         BuildForRegularProfileForTesting(
++                             profile_.get(), /*is_off_the_record=*/false,
++                             wrong_profile_agent.get()));
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       FactoryInjectsExactProfileObservationAndReleasesItBeforeAgent) {
++  PrometheusSupervisionProfileServiceFactory::GetInstance();
++  std::unique_ptr<PrometheusAgentProfileService> agent_profile_service =
++      PrometheusAgentProfileService::CreateForTesting(profile_.get());
++  std::unique_ptr<PrometheusSupervisionProfileService> supervision =
++      PrometheusSupervisionProfileServiceFactory::
++          BuildForRegularProfileForTesting(profile_.get(),
++                                           /*is_off_the_record=*/false,
++                                           agent_profile_service.get());
++  ASSERT_TRUE(supervision);
++
++  ON_CALL(browser_, GetProfile()).WillByDefault(Return(other_profile_.get()));
++  ON_CALL(tab_, GetProfile()).WillByDefault(Return(other_profile_.get()));
++  EXPECT_FALSE(supervision->CreatePairing(&browser_, &tab_).ok);
++  EXPECT_EQ(nullptr, PrometheusAgentTabData::From(&tab_));
++
++  ON_CALL(browser_, GetProfile()).WillByDefault(Return(profile_.get()));
++  ON_CALL(tab_, GetProfile()).WillByDefault(Return(profile_.get()));
++  SupervisionPairingCreationResult creation =
++      supervision->CreatePairing(&browser_, &tab_);
++  ASSERT_TRUE(creation.ok);
++  EXPECT_NE(nullptr, PrometheusAgentTabData::From(&tab_));
++
++  supervision->Shutdown();
++  supervision->Shutdown();
++  task_environment_.RunUntilIdle();
++  EXPECT_EQ(nullptr, PrometheusAgentTabData::From(&tab_));
++  agent_profile_service.reset();
++}
++
++TEST_F(PrometheusSupervisionProfileServiceTest,
++       FactoryAgentDestructionBeforeSupervisionInvalidatesLateLease) {
++  std::unique_ptr<PrometheusAgentProfileService> agent_profile_service =
++      PrometheusAgentProfileService::CreateForTesting(profile_.get());
++  std::unique_ptr<PrometheusSupervisionProfileService> supervision =
++      PrometheusSupervisionProfileServiceFactory::
++          BuildForRegularProfileForTesting(profile_.get(),
++                                           /*is_off_the_record=*/false,
++                                           agent_profile_service.get());
++  ASSERT_TRUE(supervision);
++  ASSERT_TRUE(supervision->CreatePairing(&browser_, &tab_).ok);
++  ASSERT_NE(nullptr, PrometheusAgentTabData::From(&tab_));
++
++  agent_profile_service.reset();
++
++  EXPECT_EQ(nullptr, PrometheusAgentTabData::From(&tab_));
++  EXPECT_EQ(0u, supervision->observed_tab_count_for_testing());
++  supervision->Shutdown();
++  supervision->Shutdown();
++  task_environment_.RunUntilIdle();
++}
++
+ TEST_F(PrometheusSupervisionProfileServiceTest,
+        PairingOneUseConsumesAtomicallyAndCapturesOwnerAtRedemption) {
+   SupervisionPairingCreationResult creation = CreatePairing();
+-- 
+2.50.1 (Apple Git-155)
+

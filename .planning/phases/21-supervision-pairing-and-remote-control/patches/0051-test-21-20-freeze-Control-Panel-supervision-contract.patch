@@ -1,0 +1,649 @@
+From 6be8e7512ec7b09b6764ce61283d0d600bd5f386 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 10:38:41 -0500
+Subject: [PATCH] test(21-20): freeze Control Panel supervision contract
+
+---
+ .../prometheus_side_panel_runtime.cc          | 134 ++++++++++++++++
+ .../prometheus_side_panel_runtime.h           |  93 ++++++++++++
+ .../ui/webui/prometheus/prometheus_web_ui.cc  | 143 ++++++++++++++++++
+ .../ui/webui/prometheus/prometheus_web_ui.h   |   8 +
+ .../prometheus_web_ui_browsertest.cc          | 125 +++++++++++++++
+ 5 files changed, 503 insertions(+)
+
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+index 56961cabea..a070fb269d 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+@@ -98,6 +98,13 @@ base::DictValue UnavailableSupervisionOperation() {
+   return value;
+ }
+ 
++PrometheusControlSupervisionOperationResult
++UnavailableControlSupervisionOperation() {
++  return {.status = "NOT_READY",
++          .accepted = false,
++          .recovery = "Choose a live supported page in this window"};
++}
++
+ }  // namespace
+ 
+ std::string SanitizeSidePanelSupervisionTargetTitle(
+@@ -144,6 +151,108 @@ base::DictValue SidePanelSupervisionSnapshotValue(
+   return value;
+ }
+ 
++base::DictValue ControlSupervisionSnapshotValue(
++    const PrometheusControlSupervisionSnapshot& snapshot) {
++  base::DictValue value;
++  value.Set("available", snapshot.available);
++  value.Set("pairing_state", snapshot.pairing_state);
++  value.Set("safe_target_title", snapshot.safe_target_title);
++  value.Set("safe_origin", snapshot.safe_origin);
++  value.Set("agent_active", snapshot.agent_active);
++  value.Set("viewer_count", static_cast<int>(snapshot.viewer_count));
++  if (snapshot.controller_label.has_value()) {
++    value.Set("controller_label", *snapshot.controller_label);
++  }
++
++  base::ListValue targets;
++  for (const auto& row : snapshot.targets) {
++    base::DictValue item;
++    item.Set("ordinal", static_cast<int>(row.ordinal));
++    item.Set("safe_title", row.safe_title);
++    item.Set("safe_origin", row.safe_origin);
++    item.Set("selected", row.selected);
++    item.Set("agent_active", row.agent_active);
++    targets.Append(std::move(item));
++  }
++  value.Set("targets", std::move(targets));
++
++  base::ListValue connected;
++  for (const auto& row : snapshot.connected) {
++    base::DictValue item;
++    item.Set("display_label", row.display_label);
++    item.Set("access", row.access);
++    item.Set("stream_state", row.stream_state);
++    item.Set("action_state", row.action_state);
++    if (row.action_category.has_value()) {
++      item.Set("action_category", *row.action_category);
++    }
++    item.Set("connected_at_ms", static_cast<double>(row.connected_at_ms));
++    item.Set("last_seen_at_ms", static_cast<double>(row.last_seen_at_ms));
++    item.Set("expires_at_ms", static_cast<double>(row.expires_at_ms));
++    connected.Append(std::move(item));
++  }
++  value.Set("connected", std::move(connected));
++
++  base::ListValue recent;
++  for (const auto& row : snapshot.recent) {
++    base::DictValue item;
++    item.Set("display_label", row.display_label);
++    item.Set("state", row.state);
++    item.Set("reason", row.reason);
++    item.Set("last_seen_at_ms", static_cast<double>(row.last_seen_at_ms));
++    recent.Append(std::move(item));
++  }
++  value.Set("recent", std::move(recent));
++
++  base::ListValue audit;
++  for (const auto& row : snapshot.audit) {
++    base::DictValue item;
++    item.Set("event", row.event);
++    item.Set("timestamp_ms", static_cast<double>(row.timestamp_ms));
++    if (row.client_label.has_value()) {
++      item.Set("client_label", *row.client_label);
++    }
++    item.Set("safe_target_title", row.safe_target_title);
++    item.Set("safe_origin", row.safe_origin);
++    if (row.action_category.has_value()) {
++      item.Set("action_category", *row.action_category);
++    }
++    item.Set("error", row.error);
++    item.Set("duration_ms", static_cast<double>(row.duration_ms));
++    audit.Append(std::move(item));
++  }
++  value.Set("audit", std::move(audit));
++  return value;
++}
++
++base::DictValue ControlSupervisionOperationValue(
++    PrometheusControlSupervisionOperationResult result) {
++  base::DictValue value;
++  value.Set("status", std::move(result.status));
++  value.Set("accepted", result.accepted);
++  value.Set("replacement_required", result.replacement_required);
++  if (!result.recovery.empty()) {
++    value.Set("recovery", std::move(result.recovery));
++  }
++  return value;
++}
++
++base::DictValue ControlSupervisionCreateResultValue(
++    PrometheusControlSupervisionCreateResult result) {
++  base::DictValue value;
++  value.Set("status", std::move(result.status));
++  value.Set("accepted", result.accepted);
++  value.Set("replacement_required", result.replacement_required);
++  if (!result.recovery.empty()) {
++    value.Set("recovery", std::move(result.recovery));
++  }
++  if (result.accepted && !result.formatted_code.empty()) {
++    value.Set("formatted_code", std::move(result.formatted_code));
++    value.Set("expires_at_ms", static_cast<double>(result.expires_at_ms));
++  }
++  return value;
++}
++
+ base::DictValue PrometheusSidePanelRuntime::StopSupervisionControl() {
+   return UnavailableSupervisionOperation();
+ }
+@@ -156,6 +265,31 @@ base::DictValue PrometheusSidePanelRuntime::OpenSupervisionManagement() {
+   return UnavailableSupervisionOperation();
+ }
+ 
++PrometheusControlSupervisionOperationResult
++PrometheusControlPanelRuntime::SelectSupervisionTarget(size_t ordinal) {
++  (void)ordinal;
++  return UnavailableControlSupervisionOperation();
++}
++
++PrometheusControlSupervisionCreateResult
++PrometheusControlPanelRuntime::CreateSupervisionPairing(size_t ordinal) {
++  (void)ordinal;
++  return {.status = "NOT_READY",
++          .accepted = false,
++          .recovery = "Choose a live supported page in this window"};
++}
++
++PrometheusControlSupervisionCreateResult
++PrometheusControlPanelRuntime::ReplaceSupervisionPairing(size_t ordinal) {
++  return CreateSupervisionPairing(ordinal);
++}
++
++PrometheusControlSupervisionOperationResult
++PrometheusControlPanelRuntime::CancelSupervisionPairingPresentation(
++    size_t ordinal) {
++  return UnavailableControlSupervisionOperation();
++}
++
+ void SetPrometheusSidePanelRuntimeFactory(
+     PrometheusSidePanelRuntimeFactory factory) {
+   RuntimeFactory() = std::move(factory);
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+index daaf839653..fd70525c23 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+@@ -25,6 +25,10 @@ class WebContents;
+ namespace prometheus {
+ 
+ inline constexpr size_t kMaxSidePanelSafeTargetTitleCharacters = 80;
++inline constexpr size_t kMaxControlSupervisionTargets = 32;
++inline constexpr size_t kMaxControlSupervisionConnectedRows = 16;
++inline constexpr size_t kMaxControlSupervisionRecentRows = 16;
++inline constexpr size_t kMaxControlSupervisionAuditRows = 64;
+ 
+ // Closed browser-owned activity vocabulary for the selected-tab supervision
+ // strip. WebUI maps these values to copy and never receives free-form activity
+@@ -158,6 +162,87 @@ struct PrometheusControlPolicyMutation {
+   int max_active_agents = 0;
+ };
+ 
++// Closed display-only DTOs for the Control Panel's supervision section. Their
++// names and members are intentionally free of native identity and bearer
++// vocabulary so ordinary snapshot delivery cannot grow an authority field by
++// accident.
++struct PrometheusControlSupervisionTargetRow {
++  size_t ordinal = 0;
++  std::string safe_title;
++  std::string safe_origin;
++  bool selected = false;
++  bool agent_active = false;
++};
++
++struct PrometheusControlSupervisionConnectedRow {
++  std::string display_label;
++  std::string access;
++  std::string stream_state;
++  std::string action_state;
++  std::optional<std::string> action_category;
++  int64_t connected_at_ms = 0;
++  int64_t last_seen_at_ms = 0;
++  int64_t expires_at_ms = 0;
++};
++
++struct PrometheusControlSupervisionRecentRow {
++  std::string display_label;
++  std::string state;
++  std::string reason;
++  int64_t last_seen_at_ms = 0;
++};
++
++struct PrometheusControlSupervisionAuditRow {
++  std::string event;
++  int64_t timestamp_ms = 0;
++  std::optional<std::string> client_label;
++  std::string safe_target_title;
++  std::string safe_origin;
++  std::optional<std::string> action_category;
++  std::string error;
++  int64_t duration_ms = 0;
++};
++
++struct PrometheusControlSupervisionSnapshot {
++  bool available = false;
++  std::string pairing_state;
++  std::string safe_target_title;
++  std::string safe_origin;
++  bool agent_active = false;
++  size_t viewer_count = 0;
++  std::optional<std::string> controller_label;
++  std::vector<PrometheusControlSupervisionTargetRow> targets;
++  std::vector<PrometheusControlSupervisionConnectedRow> connected;
++  std::vector<PrometheusControlSupervisionRecentRow> recent;
++  std::vector<PrometheusControlSupervisionAuditRow> audit;
++};
++
++struct PrometheusControlSupervisionOperationResult {
++  std::string status;
++  bool accepted = false;
++  bool replacement_required = false;
++  std::string recovery;
++};
++
++// This is the sole WebUI-capable type that can carry pairing characters. It is
++// returned directly to the intentional create/replace callback and is never
++// admitted to snapshot observers or routine operation delivery.
++struct PrometheusControlSupervisionCreateResult {
++  std::string status;
++  bool accepted = false;
++  bool replacement_required = false;
++  std::string recovery;
++  std::string formatted_code;
++  int64_t expires_at_ms = 0;
++};
++
++base::DictValue ControlSupervisionSnapshotValue(
++    const PrometheusControlSupervisionSnapshot& snapshot);
++base::DictValue ControlSupervisionOperationValue(
++    PrometheusControlSupervisionOperationResult result);
++base::DictValue ControlSupervisionCreateResultValue(
++    PrometheusControlSupervisionCreateResult result);
++
+ // Browser-process-only authority for one regular-profile control WebUI. It
+ // exposes sanitized DTOs rather than profile, caller, session, or secret data.
+ class PrometheusControlPanelRuntime {
+@@ -201,6 +286,14 @@ class PrometheusControlPanelRuntime {
+                                           bool replace) = 0;
+   virtual base::DictValue SavePolicy(
+       PrometheusControlPolicyMutation mutation) = 0;
++  virtual PrometheusControlSupervisionOperationResult SelectSupervisionTarget(
++      size_t ordinal);
++  virtual PrometheusControlSupervisionCreateResult CreateSupervisionPairing(
++      size_t ordinal);
++  virtual PrometheusControlSupervisionCreateResult ReplaceSupervisionPairing(
++      size_t ordinal);
++  virtual PrometheusControlSupervisionOperationResult
++  CancelSupervisionPairingPresentation(size_t ordinal);
+ };
+ 
+ using PrometheusControlPanelRuntimeFactory =
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index b52e5e6f28..cd5ef83b98 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -241,6 +241,27 @@ class PrometheusControlMessageHandler : public content::WebUIMessageHandler {
+         "prometheusControlSavePolicy",
+         base::BindRepeating(&PrometheusControlMessageHandler::HandleSavePolicy,
+                             base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlSelectSupervisionTarget",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleSelectSupervisionTarget,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlCreatePairing",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleCreateSupervisionPairing,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlReplacePairing",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::HandleReplaceSupervisionPairing,
++            base::Unretained(this)));
++    web_ui()->RegisterMessageCallback(
++        "prometheusControlCancelPairingPresentation",
++        base::BindRepeating(
++            &PrometheusControlMessageHandler::
++                HandleCancelSupervisionPairingPresentation,
++            base::Unretained(this)));
+   }
+ 
+   void Reject(std::string recovery) {
+@@ -666,6 +687,71 @@ class PrometheusControlMessageHandler : public content::WebUIMessageHandler {
+     });
+   }
+ 
++  std::optional<size_t> ParseSupervisionOrdinal(
++      const base::ListValue& args) const {
++    const std::optional<int> ordinal =
++        args.size() == 1u ? args[0].GetIfInt() : std::nullopt;
++    if (!ordinal || *ordinal < 0 ||
++        *ordinal >=
++            static_cast<int>(prometheus::kMaxControlSupervisionTargets)) {
++      return std::nullopt;
++    }
++    return static_cast<size_t>(*ordinal);
++  }
++
++  void HandleSelectSupervisionTarget(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    const std::optional<size_t> ordinal = ParseSupervisionOrdinal(args);
++    if (!ordinal) {
++      Reject("Refresh the target list and choose a supported page");
++      return;
++    }
++    owner_->HandleControlSelectSupervisionTargetForWebUI(*ordinal);
++  }
++
++  void HandleCreateSupervisionPairing(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    const std::optional<size_t> ordinal = ParseSupervisionOrdinal(args);
++    if (!ordinal) {
++      Reject("Refresh the target list before creating a pairing code");
++      return;
++    }
++    owner_->HandleControlCreateSupervisionPairingForWebUI(*ordinal);
++  }
++
++  void HandleReplaceSupervisionPairing(const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    const std::optional<size_t> ordinal = ParseSupervisionOrdinal(args);
++    if (!ordinal) {
++      Reject("Refresh the target list before replacing the pairing code");
++      return;
++    }
++    owner_->HandleControlReplaceSupervisionPairingForWebUI(*ordinal);
++  }
++
++  void HandleCancelSupervisionPairingPresentation(
++      const base::ListValue& args) {
++    AllowJavascript();
++    if (!owner_) {
++      return;
++    }
++    const std::optional<size_t> ordinal = ParseSupervisionOrdinal(args);
++    if (!ordinal) {
++      Reject("Refresh the target list before cancelling the pairing code");
++      return;
++    }
++    owner_->HandleControlCancelSupervisionPairingPresentationForWebUI(*ordinal);
++  }
++
+   base::WeakPtr<PrometheusControlPanelUI> owner_;
+ };
+ 
+@@ -1284,6 +1370,55 @@ void PrometheusControlPanelUI::HandleControlSavePolicyForWebUI(
+   SendFreshControlSnapshot();
+ }
+ 
++void PrometheusControlPanelUI::HandleControlSelectSupervisionTargetForWebUI(
++    size_t ordinal) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? prometheus::ControlSupervisionOperationValue(
++                control_runtime_->SelectSupervisionTarget(ordinal))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlCreateSupervisionPairingForWebUI(
++    size_t ordinal) {
++  SendControlPairingCreateResult(
++      HasExactControlBinding()
++          ? control_runtime_->CreateSupervisionPairing(ordinal)
++          : prometheus::PrometheusControlSupervisionCreateResult{
++                .status = "TARGET_LOST",
++                .accepted = false,
++                .recovery =
++                    "Reload the exact regular-profile control panel"});
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::HandleControlReplaceSupervisionPairingForWebUI(
++    size_t ordinal) {
++  SendControlPairingCreateResult(
++      HasExactControlBinding()
++          ? control_runtime_->ReplaceSupervisionPairing(ordinal)
++          : prometheus::PrometheusControlSupervisionCreateResult{
++                .status = "TARGET_LOST",
++                .accepted = false,
++                .recovery =
++                    "Reload the exact regular-profile control panel"});
++  SendFreshControlSnapshot();
++}
++
++void PrometheusControlPanelUI::
++    HandleControlCancelSupervisionPairingPresentationForWebUI(size_t ordinal) {
++  SendControlOperation(
++      HasExactControlBinding()
++          ? prometheus::ControlSupervisionOperationValue(
++                control_runtime_->CancelSupervisionPairingPresentation(
++                    ordinal))
++          : ControlErrorValue("Reload the exact regular-profile control panel",
++                              "TARGET_LOST"));
++  SendFreshControlSnapshot();
++}
++
+ void PrometheusControlPanelUI::HandleInvalidControlMessageForWebUI(
+     std::string recovery) {
+   SendControlOperation(ControlErrorValue(std::move(recovery)));
+@@ -1330,4 +1465,12 @@ void PrometheusControlPanelUI::SendControlOperation(base::DictValue operation) {
+                                          base::Value(std::move(operation)));
+ }
+ 
++void PrometheusControlPanelUI::SendControlPairingCreateResult(
++    prometheus::PrometheusControlSupervisionCreateResult result) {
++  web_ui()->CallJavascriptFunctionUnsafe(
++      "prometheusControlReceivePairingCreateResult",
++      base::Value(
++          prometheus::ControlSupervisionCreateResultValue(std::move(result))));
++}
++
+ WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusSidePanelUI)
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+index 2ec67957b2..3a1cb33597 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+@@ -39,6 +39,7 @@ struct PrometheusControlMemoryMutation;
+ struct PrometheusControlGuideMutation;
+ struct PrometheusControlVaultMetadataMutation;
+ struct PrometheusControlPolicyMutation;
++struct PrometheusControlSupervisionCreateResult;
+ class PrometheusControlPanelRuntime;
+ class PrometheusSidePanelRuntime;
+ }  // namespace prometheus
+@@ -160,6 +161,11 @@ class PrometheusControlPanelUI : public content::WebUIController {
+   void HandleControlOpenVaultSecretForWebUI(std::string entry_id, bool replace);
+   void HandleControlSavePolicyForWebUI(
+       prometheus::PrometheusControlPolicyMutation mutation);
++  void HandleControlSelectSupervisionTargetForWebUI(size_t ordinal);
++  void HandleControlCreateSupervisionPairingForWebUI(size_t ordinal);
++  void HandleControlReplaceSupervisionPairingForWebUI(size_t ordinal);
++  void HandleControlCancelSupervisionPairingPresentationForWebUI(
++      size_t ordinal);
+   void HandleInvalidControlMessageForWebUI(std::string recovery);
+ 
+   Profile* profile_for_testing() const { return profile_; }
+@@ -181,6 +187,8 @@ class PrometheusControlPanelUI : public content::WebUIController {
+   void SendControlSnapshot(base::DictValue snapshot);
+   void SendFreshControlSnapshot();
+   void SendControlOperation(base::DictValue operation);
++  void SendControlPairingCreateResult(
++      prometheus::PrometheusControlSupervisionCreateResult result);
+ 
+   raw_ptr<Profile> profile_ = nullptr;
+   raw_ptr<content::WebContents> bound_web_contents_ = nullptr;
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index 3bf9c977c8..f6d635c08f 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -34,6 +34,7 @@
+ #include "chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h"
+ #include "chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.h"
+ #include "chrome/browser/ui/views/side_panel/side_panel.h"
++#include "chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+ #include "chrome/common/chrome_features.h"
+ #include "chrome/common/webui_url_constants.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+@@ -68,6 +69,33 @@
+ 
+ namespace {
+ 
++template <typename T>
++concept HasFormattedPairingCode = requires(T value) {
++  value.formatted_code;
++};
++
++static_assert(
++    HasFormattedPairingCode<
++        prometheus::PrometheusControlSupervisionCreateResult>);
++static_assert(
++    !HasFormattedPairingCode<
++        prometheus::PrometheusControlSupervisionSnapshot>);
++static_assert(
++    !HasFormattedPairingCode<
++        prometheus::PrometheusControlSupervisionOperationResult>);
++static_assert(
++    !HasFormattedPairingCode<
++        prometheus::PrometheusControlSupervisionTargetRow>);
++static_assert(
++    !HasFormattedPairingCode<
++        prometheus::PrometheusControlSupervisionConnectedRow>);
++static_assert(
++    !HasFormattedPairingCode<
++        prometheus::PrometheusControlSupervisionRecentRow>);
++static_assert(
++    !HasFormattedPairingCode<
++        prometheus::PrometheusControlSupervisionAuditRow>);
++
+ views::WebView* FindWebView(views::View* view) {
+   if (!view) {
+     return nullptr;
+@@ -301,6 +329,103 @@ class PrometheusWebUIBrowserTest
+   }
+ };
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusWebUIBrowserTest,
++                       SupervisionRuntimeSnapshotContractIsClosedAndCodeFree) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("/title1.html")));
++  ASSERT_TRUE(AddTabAtIndexToBrowser(
++      browser(), 1, GURL(chrome::kChromeUIPrometheusControlPanelURL),
++      ui::PAGE_TRANSITION_TYPED));
++  content::WebContents* const control_contents =
++      browser()->tab_strip_model()->GetActiveWebContents();
++  ASSERT_TRUE(control_contents);
++  ASSERT_TRUE(content::WaitForLoadStop(control_contents));
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlReceiveSnapshot = snapshot => {
++      window.prometheusControlSnapshotForTesting = snapshot;
++    };
++    chrome.send('prometheusControlInitialize');
++  )"));
++
++  EXPECT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      (() => {
++        const supervision =
++            window.prometheusControlSnapshotForTesting?.supervision;
++        return supervision?.available === true &&
++            supervision.targets?.length === 1 &&
++            supervision.targets[0].ordinal === 0 &&
++            supervision.targets[0].safe_origin.includes('127.0.0.1');
++      })()
++    )")
++        .ExtractBool();
++  }));
++
++  const std::string serialized = content::EvalJs(control_contents, R"(
++    JSON.stringify(window.prometheusControlSnapshotForTesting || {});
++  )")
++                                     .ExtractString();
++  for (const std::string& forbidden : std::vector<std::string>{
++           "formatted_code", "pairing_code", "session_id", "lease_id",
++           "owner_id", "profile_path", "browser_id", "tab_id", "document_",
++           "epoch", "sequence", "bearer", "address", "content",
++           "raw_value"}) {
++    EXPECT_EQ(std::string::npos, serialized.find(forbidden)) << forbidden;
++  }
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusWebUIBrowserTest,
++                       SupervisionRuntimeCreateContractIsOneShotAndStrict) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("/title1.html")));
++  auto* const service = supervision_service();
++  ASSERT_TRUE(service);
++  ASSERT_TRUE(AddTabAtIndexToBrowser(
++      browser(), 1, GURL(chrome::kChromeUIPrometheusControlPanelURL),
++      ui::PAGE_TRANSITION_TYPED));
++  content::WebContents* const control_contents =
++      browser()->tab_strip_model()->GetActiveWebContents();
++  ASSERT_TRUE(control_contents);
++  ASSERT_TRUE(content::WaitForLoadStop(control_contents));
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    window.prometheusControlReceiveOperation = operation => {
++      window.prometheusControlOperationForTesting = operation;
++    };
++    window.prometheusControlReceivePairingCreateResult = result => {
++      window.prometheusControlPairingCreateResultForTesting = result;
++    };
++    chrome.send('prometheusControlCreatePairing', [0, 'forged']);
++  )"));
++  EXPECT_EQ(0u, service->pending_pairing_count_for_testing());
++  ASSERT_TRUE(content::ExecJs(control_contents, R"(
++    chrome.send('prometheusControlCreatePairing', [0]);
++  )"));
++
++  EXPECT_TRUE(base::test::RunUntil([&]() {
++    return content::EvalJs(control_contents, R"(
++      (() => {
++        const result =
++            window.prometheusControlPairingCreateResultForTesting;
++        return result?.accepted === true &&
++            /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/.test(
++                result.formatted_code || '') &&
++            Object.keys(result).sort().join(',') ===
++                'accepted,expires_at_ms,formatted_code,replacement_required,status';
++      })()
++    )")
++        .ExtractBool();
++  }));
++  EXPECT_EQ(1u, service->pending_pairing_count_for_testing());
++  EXPECT_FALSE(content::EvalJs(control_contents, R"(
++    JSON.stringify(
++        window.prometheusControlSnapshotForTesting || {}).includes(
++            'formatted_code');
++  )")
++                   .ExtractBool());
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+                        NewTabCreatesControllerAndRendersRequiredCopy) {
+   content::WebContents* const web_contents =
+-- 
+2.50.1 (Apple Git-155)
+

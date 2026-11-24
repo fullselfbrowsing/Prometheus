@@ -1,0 +1,1327 @@
+From 2a5b34a4102299f412d481dd2639dbddd2fa6ec6 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 20:09:30 -0500
+Subject: [PATCH] feat(20-11): bind side panel to exact window
+
+---
+ chrome/browser/prometheus/BUILD.gn            |   1 +
+ .../prometheus_browser_main_extra_parts.cc    |  72 +++++++
+ .../prometheus_runtime_profile_service.cc     | 123 +++++++++---
+ .../prometheus_runtime_profile_service.h      |  57 +++---
+ chrome/browser/ui/views/prometheus/BUILD.gn   |  12 +-
+ .../prometheus_side_panel_helper.cc           |  26 ++-
+ chrome/browser/ui/webui/prometheus/BUILD.gn   |  29 ++-
+ .../prometheus_side_panel_runtime.cc          |  35 ++++
+ .../prometheus_side_panel_runtime.h           |  43 +++++
+ .../prometheus_tab_control_web_ui.cc          | 126 +++++++++++++
+ .../ui/webui/prometheus/prometheus_web_ui.cc  | 176 ++++++++----------
+ .../ui/webui/prometheus/prometheus_web_ui.h   |  52 +++++-
+ .../prometheus_web_ui_browsertest.cc          | 110 ++++++++++-
+ .../histograms/metadata/page/histograms.xml   |   1 +
+ .../histograms/metadata/ui/histograms.xml     |   1 +
+ 15 files changed, 706 insertions(+), 158 deletions(-)
+ create mode 100644 chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+ create mode 100644 chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+ create mode 100644 chrome/browser/ui/webui/prometheus/prometheus_tab_control_web_ui.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index 0bb4cd6c13..9bfcd3e5e4 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -484,6 +484,7 @@ source_set("prometheus_agent_gateway") {
+     "//chrome/browser:main_extra_parts",
+     "//chrome/browser/profiles",
+     "//chrome/browser/ui/browser_window",
++    "//chrome/browser/ui/webui/prometheus:side_panel_ui",
+     "//chrome/common",
+     "//components/tabs:public",
+     "//net",
+diff --git a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+index a9af369671..a7417872e4 100644
+--- a/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
++++ b/chrome/browser/prometheus/prometheus_browser_main_extra_parts.cc
+@@ -12,14 +12,86 @@
+ #include "chrome/browser/prometheus/prometheus_agent_gateway.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_endpoint_descriptor.h"
++#include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+ #include "chrome/common/chrome_switches.h"
+ 
+ namespace prometheus {
++namespace {
++
++class NativePrometheusSidePanelRuntime final
++    : public PrometheusSidePanelRuntime {
++ public:
++  NativePrometheusSidePanelRuntime(
++      PrometheusRuntimeProfileService* service,
++      BrowserWindowInterface* exact_browser,
++      int32_t stable_tab_id,
++      std::unique_ptr<LocalRuntimePrincipal> principal)
++      : service_(service->GetWeakPtr()),
++        exact_browser_(exact_browser),
++        stable_tab_id_(stable_tab_id),
++        principal_(std::move(principal)) {}
++
++  ~NativePrometheusSidePanelRuntime() override = default;
++
++  bool IsValid() const override {
++    return service_ && principal_ && principal_->is_valid();
++  }
++
++  bool SeedPrompt(std::string_view prompt) override {
++    return IsValid() && service_->SeedSidePanelPrompt(*principal_, prompt) ==
++                            RuntimeProfileStatus::kOk;
++  }
++
++  void HandleTargetLost() override {
++    if (!principal_) {
++      return;
++    }
++    if (service_) {
++      service_->HandleTabDetached(exact_browser_, stable_tab_id_);
++    }
++    principal_.reset();
++  }
++
++ private:
++  base::WeakPtr<PrometheusRuntimeProfileService> service_;
++  raw_ptr<BrowserWindowInterface> exact_browser_;
++  const int32_t stable_tab_id_;
++  std::unique_ptr<LocalRuntimePrincipal> principal_;
++};
++
++std::unique_ptr<PrometheusSidePanelRuntime> CreateSidePanelRuntime(
++    BrowserWindowInterface* exact_browser,
++    int32_t stable_tab_id) {
++  if (!exact_browser || stable_tab_id <= 0) {
++    return nullptr;
++  }
++  PrometheusRuntimeProfileService* const service =
++      PrometheusRuntimeProfileServiceFactory::GetForProfile(
++          exact_browser->GetProfile());
++  if (!service) {
++    return nullptr;
++  }
++  RuntimePrincipalResult result =
++      service->CreateSidePanelPrincipal(exact_browser, stable_tab_id);
++  if (result.status != RuntimeProfileStatus::kOk || !result.principal) {
++    return nullptr;
++  }
++  return std::make_unique<NativePrometheusSidePanelRuntime>(
++      service, exact_browser, stable_tab_id, std::move(result.principal));
++}
++
++}  // namespace
+ 
+ PrometheusBrowserMainExtraParts::PrometheusBrowserMainExtraParts(
+     bool is_integration_test)
+     : is_integration_test_(is_integration_test) {
+   PrometheusAgentProfileServiceFactory::GetInstance();
++  PrometheusRuntimeProfileServiceFactory::GetInstance();
++  SetPrometheusSidePanelRuntimeFactory(
++      base::BindRepeating(&CreateSidePanelRuntime));
+ }
+ 
+ PrometheusBrowserMainExtraParts::~PrometheusBrowserMainExtraParts() = default;
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+index 5b96abee38..e12cc63178 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.cc
+@@ -509,12 +509,10 @@ PrometheusRuntimeProfileService::CreateSidePanelPrincipal(
+ RuntimeProfileStatus PrometheusRuntimeProfileService::SeedSidePanelPrompt(
+     LocalRuntimePrincipal& principal,
+     std::string_view prompt) {
+-  if (principal.owner_ != this || !principal.is_valid()) {
+-    return RuntimeProfileStatus::kUnauthorized;
+-  }
+-  if (!hooks_.has_session ||
+-      !hooks_.has_session.Run(principal.agent_session_id_)) {
+-    return RuntimeProfileStatus::kUnauthorized;
++  const RuntimeProfileStatus authority_status =
++      ValidateLocalPrincipal(principal);
++  if (authority_status != RuntimeProfileStatus::kOk) {
++    return authority_status;
+   }
+   const std::string_view trimmed =
+       base::TrimWhitespaceASCII(prompt, base::TrimPositions::TRIM_ALL);
+@@ -527,6 +525,18 @@ RuntimeProfileStatus PrometheusRuntimeProfileService::SeedSidePanelPrompt(
+   return RuntimeProfileStatus::kOk;
+ }
+ 
++RuntimeSidePanelSnapshotResult
++PrometheusRuntimeProfileService::GetSidePanelSnapshot(
++    LocalRuntimePrincipal& principal) const {
++  const RuntimeProfileStatus authority_status =
++      ValidateLocalPrincipal(principal);
++  if (authority_status != RuntimeProfileStatus::kOk) {
++    return {.status = authority_status, .recovery = kAuthorityRecovery};
++  }
++  return {.status = RuntimeProfileStatus::kOk,
++          .snapshot = GetRuntimeSnapshotForTransport()};
++}
++
+ RuntimeSubmitResult PrometheusRuntimeProfileService::SubmitTask(
+     RuntimeSubmitRequest request) {
+   if (shutdown_) {
+@@ -577,9 +587,8 @@ RuntimeSubmitResult PrometheusRuntimeProfileService::SubmitTask(
+       hooks_.get_fallback_order ? hooks_.get_fallback_order.Run() : providers;
+   std::optional<PrometheusProviderConfig> provider;
+   if (request.provider_id) {
+-    auto selected = std::ranges::find(
+-        providers, *request.provider_id,
+-        &PrometheusProviderConfig::provider_id);
++    auto selected = std::ranges::find(providers, *request.provider_id,
++                                      &PrometheusProviderConfig::provider_id);
+     if (selected != providers.end() &&
+         ProviderMatchesRequestedExecution(*selected,
+                                           request.requested_execution)) {
+@@ -645,14 +654,17 @@ RuntimeSubmitResult PrometheusRuntimeProfileService::SubmitTask(
+ RuntimeSubmitResult PrometheusRuntimeProfileService::SubmitTask(
+     LocalRuntimePrincipal& principal,
+     std::string prompt,
+-    RequestedExecution requested_execution) {
+-  if (principal.owner_ != this || !principal.is_valid()) {
+-    return {.status = RuntimeProfileStatus::kUnauthorized,
+-            .recovery = kAuthorityRecovery};
++    RequestedExecution requested_execution,
++    std::optional<std::string> provider_id) {
++  const RuntimeProfileStatus authority_status =
++      ValidateLocalPrincipal(principal);
++  if (authority_status != RuntimeProfileStatus::kOk) {
++    return {.status = authority_status, .recovery = kAuthorityRecovery};
+   }
+   RuntimeSubmitRequest request;
+   request.prompt = std::move(prompt);
+   request.requested_execution = requested_execution;
++  request.provider_id = std::move(provider_id);
+   request.authority.origin = RuntimeTaskOrigin::kSidePanel;
+   request.authority.caller_id = hooks_.expected_caller_id.empty()
+                                     ? "side_panel"
+@@ -1187,20 +1199,17 @@ PrometheusRuntimeProfileService::GetRuntimeSnapshotForTransport() const {
+ 
+ std::vector<PrometheusProviderConfig>
+ PrometheusRuntimeProfileService::ListProvidersForTransport() const {
+-  return hooks_.list_providers
+-             ? hooks_.list_providers.Run()
+-             : std::vector<PrometheusProviderConfig>();
++  return hooks_.list_providers ? hooks_.list_providers.Run()
++                               : std::vector<PrometheusProviderConfig>();
+ }
+ 
+ std::optional<PrometheusProviderConfig>
+ PrometheusRuntimeProfileService::GetProviderForTransport(
+     std::string_view provider_id) const {
+-  std::vector<PrometheusProviderConfig> providers =
+-      ListProvidersForTransport();
++  std::vector<PrometheusProviderConfig> providers = ListProvidersForTransport();
+   auto provider = std::ranges::find(providers, provider_id,
+                                     &PrometheusProviderConfig::provider_id);
+-  return provider == providers.end() ? std::nullopt
+-                                     : std::optional(*provider);
++  return provider == providers.end() ? std::nullopt : std::optional(*provider);
+ }
+ 
+ MemoryStoreMutation PrometheusRuntimeProfileService::SaveMemoryForTransport(
+@@ -1231,14 +1240,12 @@ PrometheusRuntimeProfileService::SearchMemoryForTransport(
+     std::string_view caller_id,
+     std::string_view query,
+     size_t limit) {
+-  return owned_memory_store_
+-             ? owned_memory_store_->SearchMemoryForCaller(caller_id, query,
+-                                                           limit)
+-             : std::vector<MemoryRecord>();
++  return owned_memory_store_ ? owned_memory_store_->SearchMemoryForCaller(
++                                   caller_id, query, limit)
++                             : std::vector<MemoryRecord>();
+ }
+ 
+-MemoryStoreMutation
+-PrometheusRuntimeProfileService::SaveSiteGuideForTransport(
++MemoryStoreMutation PrometheusRuntimeProfileService::SaveSiteGuideForTransport(
+     std::string caller_id,
+     MemoryVisibility visibility,
+     std::string title,
+@@ -1275,8 +1282,8 @@ PrometheusRuntimeProfileService::CreateVaultMetadataForTransport(
+   if (!IsVaultAvailableForTransport()) {
+     return {};
+   }
+-  return owned_vault_service_->CreateMetadata(
+-      std::move(label), kind, std::move(canonical_site_origin));
++  return owned_vault_service_->CreateMetadata(std::move(label), kind,
++                                              std::move(canonical_site_origin));
+ }
+ 
+ std::vector<PrometheusVaultMetadata>
+@@ -1318,6 +1325,27 @@ RuntimeProfileStatus PrometheusRuntimeProfileService::CancelTask(
+                                              : status;
+ }
+ 
++RuntimeProfileStatus PrometheusRuntimeProfileService::CancelTask(
++    LocalRuntimePrincipal& principal,
++    std::string_view task_id) {
++  const RuntimeProfileStatus authority_status =
++      ValidateLocalPrincipal(principal);
++  if (authority_status != RuntimeProfileStatus::kOk) {
++    return authority_status;
++  }
++  const auto task = tasks_.find(task_id);
++  if (task == tasks_.end()) {
++    return RuntimeProfileStatus::kInvalidRequest;
++  }
++  const RuntimeAuthorityContext& authority = task->second.authority;
++  if (authority.exact_browser != principal.exact_browser_ ||
++      authority.stable_tab_id != principal.stable_tab_id_ ||
++      authority.agent_session_id != principal.agent_session_id_) {
++    return RuntimeProfileStatus::kUnauthorized;
++  }
++  return CancelTask(task_id);
++}
++
+ RuntimeProfileStatus PrometheusRuntimeProfileService::CompleteTaskForTesting(
+     std::string_view task_id,
+     uint64_t generation,
+@@ -1354,14 +1382,38 @@ void PrometheusRuntimeProfileService::HandleTabDetached(
+     BrowserWindowInterface* exact_browser,
+     int32_t stable_tab_id) {
+   CancelMatchingTasks(exact_browser, stable_tab_id, std::string_view());
++  std::vector<LocalRuntimePrincipal*> retired_principals;
++  for (LocalRuntimePrincipal* principal : principals_) {
++    if (principal->exact_browser_ == exact_browser &&
++        principal->stable_tab_id_ == stable_tab_id) {
++      retired_principals.push_back(principal);
++    }
++  }
++  for (LocalRuntimePrincipal* principal : retired_principals) {
++    ReleasePrincipal(principal);
++  }
+ }
+ 
+ void PrometheusRuntimeProfileService::HandleAgentSessionLost(
+     std::string_view agent_session_id) {
+   CancelMatchingTasks(nullptr, 0, agent_session_id);
++  std::vector<LocalRuntimePrincipal*> retired_principals;
++  for (LocalRuntimePrincipal* principal : principals_) {
++    if (principal->agent_session_id_ == agent_session_id) {
++      retired_principals.push_back(principal);
++    }
++  }
++  for (LocalRuntimePrincipal* principal : retired_principals) {
++    ReleasePrincipal(principal);
++  }
+   ReleaseSessionOnce(agent_session_id);
+ }
+ 
++base::WeakPtr<PrometheusRuntimeProfileService>
++PrometheusRuntimeProfileService::GetWeakPtr() {
++  return weak_factory_.GetWeakPtr();
++}
++
+ void PrometheusRuntimeProfileService::Shutdown() {
+   if (shutdown_) {
+     return;
+@@ -1454,6 +1506,19 @@ RuntimeProfileStatus PrometheusRuntimeProfileService::ValidateAuthority(
+   return RuntimeProfileStatus::kOk;
+ }
+ 
++RuntimeProfileStatus PrometheusRuntimeProfileService::ValidateLocalPrincipal(
++    const LocalRuntimePrincipal& principal) const {
++  if (shutdown_ || principal.owner_ != this || !principal.is_valid() ||
++      !hooks_.has_session ||
++      !hooks_.has_session.Run(principal.agent_session_id_)) {
++    return RuntimeProfileStatus::kUnauthorized;
++  }
++  if (profile_ && principal.exact_browser_->GetProfile() != profile_) {
++    return RuntimeProfileStatus::kTargetLost;
++  }
++  return RuntimeProfileStatus::kOk;
++}
++
+ RuntimeProfileStatus PrometheusRuntimeProfileService::PolicyDenial(
+     RuntimePolicyDecision decision,
+     std::string* recovery) const {
+@@ -1595,6 +1660,8 @@ void PrometheusRuntimeProfileService::ReleasePrincipal(
+   if (!principal || principal->owner_ != this || principal->released_) {
+     return;
+   }
++  CancelMatchingTasks(principal->exact_browser_, principal->stable_tab_id_,
++                      principal->agent_session_id_);
+   ReleaseSessionOnce(principal->agent_session_id_);
+   principals_.erase(principal);
+   principal->released_ = true;
+diff --git a/chrome/browser/prometheus/prometheus_runtime_profile_service.h b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+index 276fcd3205..be13bc7dec 100644
+--- a/chrome/browser/prometheus/prometheus_runtime_profile_service.h
++++ b/chrome/browser/prometheus/prometheus_runtime_profile_service.h
+@@ -217,6 +217,12 @@ struct RuntimePrincipalResult {
+   std::string recovery;
+ };
+ 
++struct RuntimeSidePanelSnapshotResult {
++  RuntimeProfileStatus status = RuntimeProfileStatus::kNotImplemented;
++  RuntimeStoreSnapshot snapshot;
++  std::string recovery;
++};
++
+ class PrometheusRuntimeProfileService : public KeyedService {
+  public:
+   PrometheusRuntimeProfileService(
+@@ -234,10 +240,14 @@ class PrometheusRuntimeProfileService : public KeyedService {
+       int32_t stable_tab_id);
+   RuntimeProfileStatus SeedSidePanelPrompt(LocalRuntimePrincipal& principal,
+                                            std::string_view prompt);
++  RuntimeSidePanelSnapshotResult GetSidePanelSnapshot(
++      LocalRuntimePrincipal& principal) const;
+   RuntimeSubmitResult SubmitTask(RuntimeSubmitRequest request);
+-  RuntimeSubmitResult SubmitTask(LocalRuntimePrincipal& principal,
+-                                 std::string prompt,
+-                                 RequestedExecution requested_execution);
++  RuntimeSubmitResult SubmitTask(
++      LocalRuntimePrincipal& principal,
++      std::string prompt,
++      RequestedExecution requested_execution,
++      std::optional<std::string> provider_id = std::nullopt);
+   RuntimeOperationResult DispatchTool(RuntimeToolRequest request);
+   RuntimeDiscoveryResult DiscoverModels(std::string provider_id);
+   RuntimeProfileStatus CancelDiscovery(uint64_t operation_id);
+@@ -249,26 +259,22 @@ class PrometheusRuntimeProfileService : public KeyedService {
+   std::vector<PrometheusProviderConfig> ListProvidersForTransport() const;
+   std::optional<PrometheusProviderConfig> GetProviderForTransport(
+       std::string_view provider_id) const;
+-  MemoryStoreMutation SaveMemoryForTransport(
+-      std::string caller_id,
+-      MemoryVisibility visibility,
+-      std::string title,
+-      std::string text,
+-      std::vector<std::string> tags);
+-  std::optional<MemoryRecord> GetMemoryForTransport(
+-      std::string_view caller_id,
+-      std::string_view memory_id);
+-  std::vector<MemoryRecord> SearchMemoryForTransport(
+-      std::string_view caller_id,
+-      std::string_view query,
+-      size_t limit);
+-  MemoryStoreMutation SaveSiteGuideForTransport(
+-      std::string caller_id,
+-      MemoryVisibility visibility,
+-      std::string title,
+-      std::string instructions,
+-      std::vector<std::string> tags,
+-      const GURL& canonical_origin);
++  MemoryStoreMutation SaveMemoryForTransport(std::string caller_id,
++                                             MemoryVisibility visibility,
++                                             std::string title,
++                                             std::string text,
++                                             std::vector<std::string> tags);
++  std::optional<MemoryRecord> GetMemoryForTransport(std::string_view caller_id,
++                                                    std::string_view memory_id);
++  std::vector<MemoryRecord> SearchMemoryForTransport(std::string_view caller_id,
++                                                     std::string_view query,
++                                                     size_t limit);
++  MemoryStoreMutation SaveSiteGuideForTransport(std::string caller_id,
++                                                MemoryVisibility visibility,
++                                                std::string title,
++                                                std::string instructions,
++                                                std::vector<std::string> tags,
++                                                const GURL& canonical_origin);
+   std::optional<SiteGuideRecord> GetSiteGuideForTransport(
+       std::string_view caller_id,
+       std::string_view guide_id);
+@@ -283,6 +289,8 @@ class PrometheusRuntimeProfileService : public KeyedService {
+       RuntimeProviderMutationCaller caller,
+       std::vector<PrometheusProviderConfig> providers);
+   RuntimeProfileStatus CancelTask(std::string_view task_id);
++  RuntimeProfileStatus CancelTask(LocalRuntimePrincipal& principal,
++                                  std::string_view task_id);
+   RuntimeProfileStatus CompleteTaskForTesting(std::string_view task_id,
+                                               uint64_t generation,
+                                               RuntimeCompletionSource source,
+@@ -297,6 +305,7 @@ class PrometheusRuntimeProfileService : public KeyedService {
+   void HandleTabDetached(BrowserWindowInterface* exact_browser,
+                          int32_t stable_tab_id);
+   void HandleAgentSessionLost(std::string_view agent_session_id);
++  base::WeakPtr<PrometheusRuntimeProfileService> GetWeakPtr();
+   void Shutdown() override;
+ 
+  private:
+@@ -327,6 +336,8 @@ class PrometheusRuntimeProfileService : public KeyedService {
+   RuntimeProfileStatus ValidateAuthority(
+       const RuntimeAuthorityContext& authority,
+       const RuntimePolicy& policy) const;
++  RuntimeProfileStatus ValidateLocalPrincipal(
++      const LocalRuntimePrincipal& principal) const;
+   RuntimeProfileStatus PolicyDenial(RuntimePolicyDecision decision,
+                                     std::string* recovery) const;
+   RuntimeProfileStatus FinishTaskOnce(
+diff --git a/chrome/browser/ui/views/prometheus/BUILD.gn b/chrome/browser/ui/views/prometheus/BUILD.gn
+index 3fe90c5dfc..c70beb9d7a 100644
+--- a/chrome/browser/ui/views/prometheus/BUILD.gn
++++ b/chrome/browser/ui/views/prometheus/BUILD.gn
+@@ -40,10 +40,16 @@ source_set("side_panel") {
+ 
+   deps = [
+     "//base",
++    "//chrome/app:branded_strings",
+     "//chrome/browser/profiles:profile",
+     "//chrome/browser/ui/browser_window",
+     "//chrome/browser/ui/side_panel",
++    "//chrome/browser/ui/views/side_panel",
++    "//chrome/browser/ui/webui/prometheus:side_panel_ui",
++    "//chrome/browser/ui/webui/top_chrome",
+     "//chrome/common",
++    "//chrome/common:constants",
++    "//ui/base/metadata",
+     "//ui/views",
+     "//url",
+   ]
+@@ -70,16 +76,16 @@ source_set("browser_tests") {
+     ":prometheus",
+     ":side_panel",
+     "//base/test:test_support",
+-    "//chrome/browser/prometheus:prometheus_agent_route",
++    "//chrome/browser/profiles:test_support",
+     "//chrome/browser/prometheus:prometheus_agent_gateway",
+     "//chrome/browser/prometheus:prometheus_agent_profile_service",
++    "//chrome/browser/prometheus:prometheus_agent_route",
+     "//chrome/browser/prometheus:prometheus_agent_service",
+     "//chrome/browser/prometheus:prometheus_agent_session",
+     "//chrome/browser/prometheus:prometheus_agent_tab_data",
+     "//chrome/browser/prometheus:prometheus_chrome_mode",
+     "//chrome/browser/prometheus:prometheus_tab_commands",
+     "//chrome/browser/prometheus:prometheus_vault_service",
+-    "//chrome/browser/profiles:test_support",
+     "//chrome/browser/themes",
+     "//chrome/browser/ui",
+     "//chrome/browser/ui/browser_window",
+@@ -89,8 +95,8 @@ source_set("browser_tests") {
+     "//chrome/browser/ui/views/toolbar",
+     "//chrome/browser/ui/webui/prometheus",
+     "//chrome/test:test_support",
+-    "//components/prefs",
+     "//components/optimization_guide/content/browser",
++    "//components/prefs",
+     "//content/public/browser",
+     "//content/test:test_support",
+     "//net",
+diff --git a/chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.cc b/chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.cc
+index f80854bb12..67d3a040c3 100644
+--- a/chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.cc
++++ b/chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.cc
+@@ -14,11 +14,21 @@
+ #include "chrome/browser/ui/side_panel/side_panel_entry_scope.h"
+ #include "chrome/browser/ui/side_panel/side_panel_registry.h"
+ #include "chrome/browser/ui/side_panel/side_panel_ui.h"
++#include "chrome/browser/ui/views/side_panel/side_panel_web_ui_view.h"
++#include "chrome/browser/ui/webui/prometheus/prometheus_web_ui.h"
++#include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
+ #include "chrome/common/webui_url_constants.h"
++#include "chrome/grit/branded_strings.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
+ #include "ui/views/accessibility/view_accessibility.h"
+-#include "ui/views/controls/webview/webview.h"
+ #include "url/gurl.h"
+ 
++using SidePanelWebUIViewT_PrometheusSidePanelUI =
++    SidePanelWebUIViewT<PrometheusSidePanelUI>;
++BEGIN_TEMPLATE_METADATA(SidePanelWebUIViewT_PrometheusSidePanelUI,
++                        SidePanelWebUIViewT)
++END_METADATA
++
+ namespace prometheus {
+ namespace {
+ 
+@@ -28,10 +38,18 @@ SidePanelEntry::Key GetPrometheusSidePanelEntryKey() {
+ 
+ SidePanelNativeView CreatePrometheusSidePanelWebView(
+     SidePanelEntryScope& scope) {
+-  auto web_view = std::make_unique<views::WebView>(
+-      scope.GetBrowserWindowInterface().GetProfile());
++  BrowserWindowInterface& browser = scope.GetBrowserWindowInterface();
++  auto contents_wrapper =
++      std::make_unique<WebUIContentsWrapperT<PrometheusSidePanelUI>>(
++          GURL(chrome::kChromeUIPrometheusSidePanelURL), browser.GetProfile(),
++          IDS_PRODUCT_NAME, /*esc_closes_ui=*/false,
++          /*supports_draggable_regions=*/false);
++  contents_wrapper->GetWebUIController()->SetBrowserWindowInterface(&browser);
++  auto web_view = std::make_unique<SidePanelWebUIViewT<PrometheusSidePanelUI>>(
++      scope, base::RepeatingClosure(), base::RepeatingClosure(),
++      std::move(contents_wrapper));
++  web_view->ShowUI();
+   web_view->GetViewAccessibility().SetName(u"Prometheus side panel");
+-  web_view->LoadInitialURL(GURL(chrome::kChromeUIPrometheusSidePanelURL));
+   return web_view;
+ }
+ 
+diff --git a/chrome/browser/ui/webui/prometheus/BUILD.gn b/chrome/browser/ui/webui/prometheus/BUILD.gn
+index 18be81d816..98b02d6570 100644
+--- a/chrome/browser/ui/webui/prometheus/BUILD.gn
++++ b/chrome/browser/ui/webui/prometheus/BUILD.gn
+@@ -10,15 +10,40 @@
+ # source list, so this controller compiles as its own linked unit (closes
+ # the HIGH review finding: "WebUI .cc not wired into a GN target").
+ 
++source_set("side_panel_ui") {
++  sources = [
++    "prometheus_side_panel_runtime.cc",
++    "prometheus_side_panel_runtime.h",
++    "prometheus_web_ui.cc",
++    "prometheus_web_ui.h",
++  ]
++
++  public_deps = [
++    "//chrome/common",
++    "//content/public/browser",
++  ]
++
++  deps = [
++    "//base",
++    "//chrome/browser/profiles:profile",
++    "//chrome/browser/resources/prometheus:prometheus_resources",
++    "//chrome/browser/ui/browser_window",
++    "//chrome/browser/ui/webui/top_chrome",
++    "//components/tabs:public",
++    "//content/public/common",
++    "//ui/webui",
++  ]
++}
++
+ source_set("prometheus") {
+   sources = [
++    "prometheus_tab_control_web_ui.cc",
+     "prometheus_theme_preview_ui.cc",
+     "prometheus_theme_preview_ui.h",
+-    "prometheus_web_ui.cc",
+-    "prometheus_web_ui.h",
+   ]
+ 
+   public_deps = [
++    ":side_panel_ui",
+     "//chrome/common",
+     "//content/public/browser",
+   ]
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+new file mode 100644
+index 0000000000..f2e61c9c06
+--- /dev/null
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.cc
+@@ -0,0 +1,35 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
++
++#include <utility>
++
++#include "base/no_destructor.h"
++
++namespace prometheus {
++namespace {
++
++PrometheusSidePanelRuntimeFactory& RuntimeFactory() {
++  static base::NoDestructor<PrometheusSidePanelRuntimeFactory> factory;
++  return *factory;
++}
++
++}  // namespace
++
++void SetPrometheusSidePanelRuntimeFactory(
++    PrometheusSidePanelRuntimeFactory factory) {
++  RuntimeFactory() = std::move(factory);
++}
++
++std::unique_ptr<PrometheusSidePanelRuntime> CreatePrometheusSidePanelRuntime(
++    BrowserWindowInterface* exact_browser,
++    int32_t stable_tab_id) {
++  if (!RuntimeFactory()) {
++    return nullptr;
++  }
++  return RuntimeFactory().Run(exact_browser, stable_tab_id);
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+new file mode 100644
+index 0000000000..12a3daaa7b
+--- /dev/null
++++ b/chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h
+@@ -0,0 +1,43 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_WEBUI_PROMETHEUS_PROMETHEUS_SIDE_PANEL_RUNTIME_H_
++#define CHROME_BROWSER_UI_WEBUI_PROMETHEUS_PROMETHEUS_SIDE_PANEL_RUNTIME_H_
++
++#include <cstdint>
++#include <memory>
++#include <string_view>
++
++#include "base/functional/callback.h"
++
++class BrowserWindowInterface;
++
++namespace prometheus {
++
++// Browser-process-only authority used by one side-panel controller. Concrete
++// implementations retain the move-only runtime principal; this narrow UI-layer
++// interface deliberately has no identity getters or serialization methods.
++class PrometheusSidePanelRuntime {
++ public:
++  virtual ~PrometheusSidePanelRuntime() = default;
++
++  virtual bool IsValid() const = 0;
++  virtual bool SeedPrompt(std::string_view prompt) = 0;
++  virtual void HandleTargetLost() = 0;
++};
++
++using PrometheusSidePanelRuntimeFactory =
++    base::RepeatingCallback<std::unique_ptr<PrometheusSidePanelRuntime>(
++        BrowserWindowInterface*,
++        int32_t)>;
++
++void SetPrometheusSidePanelRuntimeFactory(
++    PrometheusSidePanelRuntimeFactory factory);
++std::unique_ptr<PrometheusSidePanelRuntime> CreatePrometheusSidePanelRuntime(
++    BrowserWindowInterface* exact_browser,
++    int32_t stable_tab_id);
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_UI_WEBUI_PROMETHEUS_PROMETHEUS_SIDE_PANEL_RUNTIME_H_
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_tab_control_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_tab_control_web_ui.cc
+new file mode 100644
+index 0000000000..83efc866e5
+--- /dev/null
++++ b/chrome/browser/ui/webui/prometheus/prometheus_tab_control_web_ui.cc
+@@ -0,0 +1,126 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <memory>
++#include <string>
++
++#include "base/functional/bind.h"
++#include "base/values.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/prometheus/prometheus_ask_fsb_handoff.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.h"
++#include "chrome/browser/ui/webui/prometheus/prometheus_web_ui.h"
++#include "chrome/common/webui_url_constants.h"
++#include "chrome/grit/prometheus_resources.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/browser/web_ui.h"
++#include "content/public/browser/web_ui_data_source.h"
++#include "content/public/browser/web_ui_message_handler.h"
++#include "content/public/common/url_constants.h"
++
++namespace {
++
++class PrometheusNewTabMessageHandler : public content::WebUIMessageHandler {
++ public:
++  PrometheusNewTabMessageHandler() = default;
++  PrometheusNewTabMessageHandler(const PrometheusNewTabMessageHandler&) =
++      delete;
++  PrometheusNewTabMessageHandler& operator=(
++      const PrometheusNewTabMessageHandler&) = delete;
++  ~PrometheusNewTabMessageHandler() override = default;
++
++ private:
++  void RegisterMessages() override {
++    web_ui()->RegisterMessageCallback(
++        "prometheusAskFsb",
++        base::BindRepeating(&PrometheusNewTabMessageHandler::HandleAskFsb,
++                            base::Unretained(this)));
++  }
++
++  void HandleAskFsb(const base::ListValue& args) {
++    AllowJavascript();
++    if (args.size() != 1 || !args[0].is_string()) {
++      web_ui()->CallJavascriptFunctionUnsafe(
++          "prometheusAskFsbHandoffRejectedForTesting");
++      return;
++    }
++
++    Profile* const profile = Profile::FromWebUI(web_ui());
++    const std::string prompt =
++        prometheus::SanitizeAskFsbPrompt(args[0].GetString());
++    if (prompt.empty()) {
++      prometheus::ClearPendingAskFsbPrompt(profile);
++      web_ui()->CallJavascriptFunctionUnsafe(
++          "prometheusAskFsbHandoffRejectedForTesting");
++      return;
++    }
++
++    prometheus::SetPendingAskFsbPrompt(profile, prompt);
++    if (BrowserWindowInterface* browser =
++            GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
++                web_ui()->GetWebContents())) {
++      prometheus::ShowPrometheusSidePanel(browser,
++                                          SidePanelOpenTrigger::kToolbarButton);
++    }
++    web_ui()->CallJavascriptFunctionUnsafe("prometheusAskFsbHandoffComplete",
++                                           base::Value(prompt));
++  }
++};
++
++void AddPrometheusCommonResourcePaths(content::WebUIDataSource* source) {
++  source->AddResourcePath("prometheus_webui.css", IDR_PROMETHEUS_WEBUI_CSS);
++  source->AddResourcePath("prometheus_webui.js", IDR_PROMETHEUS_WEBUI_JS);
++  source->AddResourcePath("images/pm_mark_dark.png",
++                          IDR_PROMETHEUS_ASSET_PM_MARK_DARK);
++  source->AddResourcePath("images/pm_wordmark_dark.png",
++                          IDR_PROMETHEUS_ASSET_PM_WORDMARK_DARK);
++  source->AddResourcePath("svg/fa_compass.svg", IDR_PROMETHEUS_ICON_FA_COMPASS);
++  source->AddResourcePath("svg/fa_table_cells_large.svg",
++                          IDR_PROMETHEUS_ICON_FA_TABLE_CELLS_LARGE);
++  source->AddResourcePath("svg/fa_wand_magic_sparkles.svg",
++                          IDR_PROMETHEUS_ICON_FA_WAND_MAGIC_SPARKLES);
++  source->AddResourcePath("svg/fa_wrench.svg", IDR_PROMETHEUS_ICON_FA_WRENCH);
++}
++
++void ConfigurePrometheusDataSource(content::WebUI* web_ui,
++                                   const char* host,
++                                   int default_resource) {
++  auto* source =
++      content::WebUIDataSource::CreateAndAdd(Profile::FromWebUI(web_ui), host);
++  source->SetDefaultResource(default_resource);
++  AddPrometheusCommonResourcePaths(source);
++}
++
++}  // namespace
++
++PrometheusNewTabUIConfig::PrometheusNewTabUIConfig()
++    : DefaultWebUIConfig(content::kChromeUIScheme,
++                         chrome::kChromeUIPrometheusNewTabHost) {}
++
++PrometheusControlPanelUIConfig::PrometheusControlPanelUIConfig()
++    : DefaultWebUIConfig(content::kChromeUIScheme,
++                         chrome::kChromeUIPrometheusControlPanelHost) {}
++
++PrometheusNewTabUI::PrometheusNewTabUI(content::WebUI* web_ui)
++    : content::WebUIController(web_ui) {
++  ConfigurePrometheusDataSource(web_ui, chrome::kChromeUIPrometheusNewTabHost,
++                                IDR_PROMETHEUS_NEWTAB_HTML);
++  web_ui->AddMessageHandler(std::make_unique<PrometheusNewTabMessageHandler>());
++}
++
++PrometheusNewTabUI::~PrometheusNewTabUI() = default;
++
++PrometheusControlPanelUI::PrometheusControlPanelUI(content::WebUI* web_ui)
++    : content::WebUIController(web_ui) {
++  ConfigurePrometheusDataSource(web_ui,
++                                chrome::kChromeUIPrometheusControlPanelHost,
++                                IDR_PROMETHEUS_CONTROL_PANEL_HTML);
++}
++
++PrometheusControlPanelUI::~PrometheusControlPanelUI() = default;
++
++WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusNewTabUI)
++WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusControlPanelUI)
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+index ae3b3ad366..ee9860af1a 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.cc
+@@ -6,17 +6,17 @@
+ 
+ #include <memory>
+ #include <string>
++#include <utility>
+ 
+ #include "base/functional/bind.h"
++#include "base/memory/raw_ptr.h"
+ #include "base/values.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/prometheus/prometheus_ask_fsb_handoff.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+-#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+-#include "chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.h"
++#include "chrome/browser/ui/webui/prometheus/prometheus_side_panel_runtime.h"
+ #include "chrome/common/webui_url_constants.h"
+ #include "chrome/grit/prometheus_resources.h"
+-#include "content/public/browser/web_contents.h"
+ #include "content/public/browser/web_ui.h"
+ #include "content/public/browser/web_ui_data_source.h"
+ #include "content/public/browser/web_ui_message_handler.h"
+@@ -24,56 +24,10 @@
+ 
+ namespace {
+ 
+-class PrometheusNewTabMessageHandler : public content::WebUIMessageHandler {
+- public:
+-  PrometheusNewTabMessageHandler() = default;
+-  PrometheusNewTabMessageHandler(const PrometheusNewTabMessageHandler&) =
+-      delete;
+-  PrometheusNewTabMessageHandler& operator=(
+-      const PrometheusNewTabMessageHandler&) = delete;
+-  ~PrometheusNewTabMessageHandler() override = default;
+-
+- private:
+-  void RegisterMessages() override {
+-    web_ui()->RegisterMessageCallback(
+-        "prometheusAskFsb",
+-        base::BindRepeating(&PrometheusNewTabMessageHandler::HandleAskFsb,
+-                            base::Unretained(this)));
+-  }
+-
+-  void HandleAskFsb(const base::ListValue& args) {
+-    AllowJavascript();
+-    if (args.size() != 1 || !args[0].is_string()) {
+-      web_ui()->CallJavascriptFunctionUnsafe(
+-          "prometheusAskFsbHandoffRejectedForTesting");
+-      return;
+-    }
+-
+-    Profile* const profile = Profile::FromWebUI(web_ui());
+-    const std::string prompt =
+-        prometheus::SanitizeAskFsbPrompt(args[0].GetString());
+-    if (prompt.empty()) {
+-      prometheus::ClearPendingAskFsbPrompt(profile);
+-      web_ui()->CallJavascriptFunctionUnsafe(
+-          "prometheusAskFsbHandoffRejectedForTesting");
+-      return;
+-    }
+-
+-    prometheus::SetPendingAskFsbPrompt(profile, prompt);
+-    if (BrowserWindowInterface* browser =
+-            GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+-                web_ui()->GetWebContents())) {
+-      prometheus::ShowPrometheusSidePanel(browser,
+-                                          SidePanelOpenTrigger::kToolbarButton);
+-    }
+-    web_ui()->CallJavascriptFunctionUnsafe("prometheusAskFsbHandoffComplete",
+-                                           base::Value(prompt));
+-  }
+-};
+-
+ class PrometheusSidePanelMessageHandler : public content::WebUIMessageHandler {
+  public:
+-  PrometheusSidePanelMessageHandler() = default;
++  explicit PrometheusSidePanelMessageHandler(PrometheusSidePanelUI* owner)
++      : owner_(owner) {}
+   PrometheusSidePanelMessageHandler(const PrometheusSidePanelMessageHandler&) =
+       delete;
+   PrometheusSidePanelMessageHandler& operator=(
+@@ -91,12 +45,15 @@ class PrometheusSidePanelMessageHandler : public content::WebUIMessageHandler {
+ 
+   void HandleRequestAskFsbSeed(const base::ListValue& args) {
+     AllowJavascript();
+-    Profile* const profile = Profile::FromWebUI(web_ui());
+-    const std::string prompt =
+-        prometheus::GetPendingAskFsbPrompt(profile).value_or(std::string());
+-    web_ui()->CallJavascriptFunctionUnsafe("prometheusReceiveAskFsbSeed",
+-                                           base::Value(prompt));
++    if (!args.empty()) {
++      web_ui()->CallJavascriptFunctionUnsafe("prometheusReceiveAskFsbSeed",
++                                             base::Value(std::string()));
++      return;
++    }
++    owner_->HandleRequestAskFsbSeedForWebUI();
+   }
++
++  const raw_ptr<PrometheusSidePanelUI> owner_;
+ };
+ 
+ void AddPrometheusCommonResourcePaths(content::WebUIDataSource* source) {
+@@ -114,58 +71,87 @@ void AddPrometheusCommonResourcePaths(content::WebUIDataSource* source) {
+   source->AddResourcePath("svg/fa_wrench.svg", IDR_PROMETHEUS_ICON_FA_WRENCH);
+ }
+ 
+-void ConfigurePrometheusDataSource(content::WebUI* web_ui,
+-                                   const char* host,
+-                                   int default_resource) {
+-  auto* profile = Profile::FromWebUI(web_ui);
+-  auto* source = content::WebUIDataSource::CreateAndAdd(profile, host);
+-  source->SetDefaultResource(default_resource);
++void ConfigurePrometheusSidePanelDataSource(content::WebUI* web_ui) {
++  auto* source = content::WebUIDataSource::CreateAndAdd(
++      Profile::FromWebUI(web_ui), chrome::kChromeUIPrometheusSidePanelHost);
++  source->SetDefaultResource(IDR_PROMETHEUS_SIDE_PANEL_HTML);
+   AddPrometheusCommonResourcePaths(source);
+ }
+ 
+ }  // namespace
+ 
+-PrometheusNewTabUIConfig::PrometheusNewTabUIConfig()
+-    : DefaultWebUIConfig(content::kChromeUIScheme,
+-                         chrome::kChromeUIPrometheusNewTabHost) {}
+-
+ PrometheusSidePanelUIConfig::PrometheusSidePanelUIConfig()
+-    : DefaultWebUIConfig(content::kChromeUIScheme,
+-                         chrome::kChromeUIPrometheusSidePanelHost) {}
+-
+-PrometheusControlPanelUIConfig::PrometheusControlPanelUIConfig()
+-    : DefaultWebUIConfig(content::kChromeUIScheme,
+-                         chrome::kChromeUIPrometheusControlPanelHost) {}
+-
+-PrometheusNewTabUI::PrometheusNewTabUI(content::WebUI* web_ui)
+-    : content::WebUIController(web_ui) {
+-  ConfigurePrometheusDataSource(web_ui, chrome::kChromeUIPrometheusNewTabHost,
+-                                IDR_PROMETHEUS_NEWTAB_HTML);
+-  web_ui->AddMessageHandler(std::make_unique<PrometheusNewTabMessageHandler>());
+-}
+-
+-PrometheusNewTabUI::~PrometheusNewTabUI() = default;
++    : DefaultTopChromeWebUIConfig(content::kChromeUIScheme,
++                                  chrome::kChromeUIPrometheusSidePanelHost) {}
+ 
+ PrometheusSidePanelUI::PrometheusSidePanelUI(content::WebUI* web_ui)
+-    : content::WebUIController(web_ui) {
+-  ConfigurePrometheusDataSource(web_ui,
+-                                chrome::kChromeUIPrometheusSidePanelHost,
+-                                IDR_PROMETHEUS_SIDE_PANEL_HTML);
++    : TopChromeWebUIController(web_ui, /*enable_chrome_send=*/true) {
++  ConfigurePrometheusSidePanelDataSource(web_ui);
+   web_ui->AddMessageHandler(
+-      std::make_unique<PrometheusSidePanelMessageHandler>());
++      std::make_unique<PrometheusSidePanelMessageHandler>(this));
+ }
+ 
+-PrometheusSidePanelUI::~PrometheusSidePanelUI() = default;
++PrometheusSidePanelUI::~PrometheusSidePanelUI() {
++  weak_factory_.InvalidateWeakPtrs();
++  RetireLocalPrincipal(/*target_lost=*/false);
++}
+ 
+-PrometheusControlPanelUI::PrometheusControlPanelUI(content::WebUI* web_ui)
+-    : content::WebUIController(web_ui) {
+-  ConfigurePrometheusDataSource(web_ui,
+-                                chrome::kChromeUIPrometheusControlPanelHost,
+-                                IDR_PROMETHEUS_CONTROL_PANEL_HTML);
++void PrometheusSidePanelUI::SetBrowserWindowInterface(
++    BrowserWindowInterface* browser) {
++  if (browser_window_interface_ || !browser) {
++    return;
++  }
++  browser_window_interface_ = browser;
++  profile_ = browser->GetProfile();
++  if (!profile_ || !profile_->IsRegularProfile()) {
++    return;
++  }
++
++  tab_interface_ = browser->GetActiveTabInterface();
++  if (!tab_interface_) {
++    return;
++  }
++  stable_tab_id_ = tab_interface_->GetHandle().raw_value();
++  tab_will_detach_subscription_ =
++      tab_interface_->RegisterWillDetach(base::BindRepeating(
++          &PrometheusSidePanelUI::OnTabWillDetach, weak_factory_.GetWeakPtr()));
++
++  ++principal_acquisition_count_;
++  runtime_ = prometheus::CreatePrometheusSidePanelRuntime(
++      browser_window_interface_, stable_tab_id_);
+ }
+ 
+-PrometheusControlPanelUI::~PrometheusControlPanelUI() = default;
++void PrometheusSidePanelUI::HandleRequestAskFsbSeedForWebUI() {
++  const std::string prompt =
++      prometheus::GetPendingAskFsbPrompt(profile_).value_or(std::string());
++  if (prompt.empty() || !runtime_ || !runtime_->SeedPrompt(prompt)) {
++    web_ui()->CallJavascriptFunctionUnsafe("prometheusReceiveAskFsbSeed",
++                                           base::Value(std::string()));
++    return;
++  }
++  web_ui()->CallJavascriptFunctionUnsafe("prometheusReceiveAskFsbSeed",
++                                         base::Value(prompt));
++}
++
++bool PrometheusSidePanelUI::has_local_principal_for_testing() const {
++  return runtime_ && runtime_->IsValid();
++}
++
++void PrometheusSidePanelUI::OnTabWillDetach(
++    tabs::TabInterface* tab,
++    tabs::TabInterface::DetachReason reason) {
++  if (tab == tab_interface_) {
++    RetireLocalPrincipal(/*target_lost=*/true);
++  }
++}
++
++void PrometheusSidePanelUI::RetireLocalPrincipal(bool target_lost) {
++  tab_will_detach_subscription_ = {};
++  tab_interface_ = nullptr;
++  if (target_lost && runtime_) {
++    runtime_->HandleTargetLost();
++  }
++  runtime_.reset();
++}
+ 
+-WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusNewTabUI)
+ WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusSidePanelUI)
+-WEB_UI_CONTROLLER_TYPE_IMPL(PrometheusControlPanelUI)
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+index be0cc9555b..fd5e1c973c 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui.h
+@@ -5,6 +5,17 @@
+ #ifndef CHROME_BROWSER_UI_WEBUI_PROMETHEUS_PROMETHEUS_WEB_UI_H_
+ #define CHROME_BROWSER_UI_WEBUI_PROMETHEUS_PROMETHEUS_WEB_UI_H_
+ 
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++#include <string_view>
++
++#include "base/callback_list.h"
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
++#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_config.h"
++#include "components/tabs/public/tab_interface.h"
+ #include "content/public/browser/web_ui_controller.h"
+ #include "content/public/browser/webui_config.h"
+ 
+@@ -12,10 +23,16 @@ namespace content {
+ class WebUI;
+ }  // namespace content
+ 
++class BrowserWindowInterface;
++class Profile;
+ class PrometheusNewTabUI;
+ class PrometheusSidePanelUI;
+ class PrometheusControlPanelUI;
+ 
++namespace prometheus {
++class PrometheusSidePanelRuntime;
++}  // namespace prometheus
++
+ class PrometheusNewTabUIConfig
+     : public content::DefaultWebUIConfig<PrometheusNewTabUI> {
+  public:
+@@ -23,7 +40,7 @@ class PrometheusNewTabUIConfig
+ };
+ 
+ class PrometheusSidePanelUIConfig
+-    : public content::DefaultWebUIConfig<PrometheusSidePanelUI> {
++    : public DefaultTopChromeWebUIConfig<PrometheusSidePanelUI> {
+  public:
+   PrometheusSidePanelUIConfig();
+ };
+@@ -43,12 +60,43 @@ class PrometheusNewTabUI : public content::WebUIController {
+   WEB_UI_CONTROLLER_TYPE_DECL();
+ };
+ 
+-class PrometheusSidePanelUI : public content::WebUIController {
++class PrometheusSidePanelUI : public TopChromeWebUIController {
+  public:
+   explicit PrometheusSidePanelUI(content::WebUI* web_ui);
+   ~PrometheusSidePanelUI() override;
+ 
++  static constexpr std::string_view GetWebUIName() {
++    return "PrometheusSidePanel";
++  }
++
++  // Called immediately after WebUIContentsWrapperT constructs this controller.
++  void SetBrowserWindowInterface(BrowserWindowInterface* browser);
++  void HandleRequestAskFsbSeedForWebUI();
++
++  BrowserWindowInterface* browser_window_interface_for_testing() const {
++    return browser_window_interface_;
++  }
++  Profile* profile_for_testing() const { return profile_; }
++  int32_t stable_tab_id_for_testing() const { return stable_tab_id_; }
++  size_t principal_acquisition_count_for_testing() const {
++    return principal_acquisition_count_;
++  }
++  bool has_local_principal_for_testing() const;
++
+  private:
++  void OnTabWillDetach(tabs::TabInterface* tab,
++                       tabs::TabInterface::DetachReason reason);
++  void RetireLocalPrincipal(bool target_lost);
++
++  raw_ptr<BrowserWindowInterface> browser_window_interface_ = nullptr;
++  raw_ptr<Profile> profile_ = nullptr;
++  raw_ptr<tabs::TabInterface> tab_interface_ = nullptr;
++  int32_t stable_tab_id_ = 0;
++  size_t principal_acquisition_count_ = 0;
++  std::unique_ptr<prometheus::PrometheusSidePanelRuntime> runtime_;
++  base::CallbackListSubscription tab_will_detach_subscription_;
++  base::WeakPtrFactory<PrometheusSidePanelUI> weak_factory_{this};
++
+   WEB_UI_CONTROLLER_TYPE_DECL();
+ };
+ 
+diff --git a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+index fb1da0645f..57d8adf1d1 100644
+--- a/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
++++ b/chrome/browser/ui/webui/prometheus/prometheus_web_ui_browsertest.cc
+@@ -6,14 +6,19 @@
+ 
+ #include "base/test/run_until.h"
+ #include "base/test/scoped_feature_list.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
+ #include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/browser_window.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/prometheus/prometheus_side_panel_helper.h"
+ #include "chrome/browser/ui/views/side_panel/side_panel.h"
+ #include "chrome/common/chrome_features.h"
+ #include "chrome/common/webui_url_constants.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+ #include "chrome/test/base/ui_test_utils.h"
++#include "components/tabs/public/tab_interface.h"
+ #include "content/public/browser/navigation_entry.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/browser/web_ui.h"
+@@ -93,13 +98,35 @@ class PrometheusWebUIFoundationBrowserTest : public InProcessBrowserTest {
+   }
+ 
+   content::WebContents* visible_side_panel_web_contents() {
++    return visible_side_panel_web_contents(browser());
++  }
++
++  content::WebContents* visible_side_panel_web_contents(
++      Browser* target_browser) {
+     SidePanel* const side_panel =
+-        BrowserView::GetBrowserViewForBrowser(browser())->side_panel();
++        BrowserView::GetBrowserViewForBrowser(target_browser)->side_panel();
+     views::WebView* const web_view =
+         side_panel ? FindWebView(side_panel->GetContentParentView()) : nullptr;
+     return web_view ? web_view->web_contents() : nullptr;
+   }
+ 
++  PrometheusSidePanelUI* ShowSidePanel(Browser* target_browser) {
++    prometheus::ShowPrometheusSidePanel(target_browser,
++                                        SidePanelOpenTrigger::kToolbarButton);
++    EXPECT_TRUE(base::test::RunUntil(
++        [&]() { return visible_side_panel_web_contents(target_browser); }));
++    content::WebContents* const web_contents =
++        visible_side_panel_web_contents(target_browser);
++    EXPECT_TRUE(web_contents);
++    if (!web_contents || !content::WaitForLoadStop(web_contents) ||
++        !web_contents->GetWebUI()) {
++      return nullptr;
++    }
++    return web_contents->GetWebUI()
++        ->GetController()
++        ->GetAs<PrometheusSidePanelUI>();
++  }
++
+  private:
+   base::test::ScopedFeatureList scoped_feature_list_;
+ };
+@@ -149,6 +176,87 @@ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+       ModeButtonHasLabelAndTooltip(web_contents, "#mode-tools", "Tools"));
+ }
+ 
++IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
++                       SidePanelsRetainExactWindowIdentityAcrossFocusChanges) {
++  Browser* const second_browser = CreateBrowser(browser()->profile());
++  ASSERT_TRUE(second_browser);
++  tabs::TabInterface* const first_tab = browser()->GetActiveTabInterface();
++  tabs::TabInterface* const second_tab =
++      second_browser->GetActiveTabInterface();
++  ASSERT_TRUE(first_tab);
++  ASSERT_TRUE(second_tab);
++  ASSERT_NE(first_tab->GetHandle(), second_tab->GetHandle());
++
++  PrometheusSidePanelUI* const first_controller = ShowSidePanel(browser());
++  PrometheusSidePanelUI* const second_controller =
++      ShowSidePanel(second_browser);
++  ASSERT_TRUE(first_controller);
++  ASSERT_TRUE(second_controller);
++  EXPECT_EQ(browser(),
++            first_controller->browser_window_interface_for_testing());
++  EXPECT_EQ(second_browser,
++            second_controller->browser_window_interface_for_testing());
++  EXPECT_EQ(browser()->profile(), first_controller->profile_for_testing());
++  EXPECT_EQ(second_browser->profile(),
++            second_controller->profile_for_testing());
++  EXPECT_EQ(first_tab->GetHandle().raw_value(),
++            first_controller->stable_tab_id_for_testing());
++  EXPECT_EQ(second_tab->GetHandle().raw_value(),
++            second_controller->stable_tab_id_for_testing());
++  EXPECT_EQ(1u, first_controller->principal_acquisition_count_for_testing());
++  EXPECT_EQ(1u, second_controller->principal_acquisition_count_for_testing());
++  EXPECT_TRUE(first_controller->has_local_principal_for_testing());
++  EXPECT_TRUE(second_controller->has_local_principal_for_testing());
++
++  second_browser->window()->Activate();
++  browser()->window()->Activate();
++  EXPECT_EQ(browser(),
++            first_controller->browser_window_interface_for_testing());
++  EXPECT_EQ(second_browser,
++            second_controller->browser_window_interface_for_testing());
++  EXPECT_EQ(first_tab->GetHandle().raw_value(),
++            first_controller->stable_tab_id_for_testing());
++  EXPECT_EQ(second_tab->GetHandle().raw_value(),
++            second_controller->stable_tab_id_for_testing());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
++                       SidePanelWindowOwnsOnePrincipalAndRetiresOnDetach) {
++  auto* const agent_service =
++      prometheus::PrometheusAgentProfileServiceFactory::GetForProfile(
++          browser()->profile());
++  ASSERT_TRUE(agent_service);
++  const size_t initial_session_count = agent_service->ActiveSessionCount();
++
++  tabs::TabInterface* const bound_tab = browser()->GetActiveTabInterface();
++  ASSERT_TRUE(bound_tab);
++  PrometheusSidePanelUI* const controller = ShowSidePanel(browser());
++  ASSERT_TRUE(controller);
++  EXPECT_EQ(initial_session_count + 1, agent_service->ActiveSessionCount());
++  EXPECT_EQ(1u, controller->principal_acquisition_count_for_testing());
++  EXPECT_TRUE(controller->has_local_principal_for_testing());
++
++  controller->SetBrowserWindowInterface(browser());
++  EXPECT_EQ(1u, controller->principal_acquisition_count_for_testing());
++  EXPECT_EQ(initial_session_count + 1, agent_service->ActiveSessionCount());
++
++  ASSERT_TRUE(AddTabAtIndexToBrowser(browser(), 1, GURL(url::kAboutBlankURL),
++                                     ui::PAGE_TRANSITION_TYPED));
++  browser()->tab_strip_model()->ActivateTabAt(1);
++  browser()->tab_strip_model()->CloseWebContentsAt(
++      0, TabCloseTypes::CLOSE_USER_GESTURE);
++  EXPECT_FALSE(controller->has_local_principal_for_testing());
++  EXPECT_EQ(initial_session_count, agent_service->ActiveSessionCount());
++
++  Browser* const otr_browser = CreateIncognitoBrowser(browser()->profile());
++  ASSERT_TRUE(otr_browser);
++  PrometheusSidePanelUI* const otr_controller = ShowSidePanel(otr_browser);
++  ASSERT_TRUE(otr_controller);
++  EXPECT_EQ(0u, otr_controller->principal_acquisition_count_for_testing());
++  EXPECT_FALSE(otr_controller->has_local_principal_for_testing());
++  EXPECT_EQ(initial_session_count, agent_service->ActiveSessionCount());
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusWebUIFoundationBrowserTest,
+                        ControlPanelCreatesControllerAndRendersRequiredCopy) {
+   content::WebContents* const web_contents =
+diff --git a/tools/metrics/histograms/metadata/page/histograms.xml b/tools/metrics/histograms/metadata/page/histograms.xml
+index 3f35fc6be6..2903c001f5 100644
+--- a/tools/metrics/histograms/metadata/page/histograms.xml
++++ b/tools/metrics/histograms/metadata/page/histograms.xml
+@@ -614,6 +614,7 @@ chromium-metrics-reviews@google.com.
+   <variant name=".OmniboxPopup"/>
+   <variant name=".PerformanceSidePanel"/>
+   <variant name=".PersonalContextNotice"/>
++  <variant name=".PrometheusSidePanel"/>
+   <variant name=".ReadAnythingUntrusted"/>
+   <variant name=".ReadingList"/>
+   <variant name=".ReloadButtonUI"/>
+diff --git a/tools/metrics/histograms/metadata/ui/histograms.xml b/tools/metrics/histograms/metadata/ui/histograms.xml
+index 1988bda96c..b0cefff5ad 100644
+--- a/tools/metrics/histograms/metadata/ui/histograms.xml
++++ b/tools/metrics/histograms/metadata/ui/histograms.xml
+@@ -151,6 +151,7 @@ chromium-metrics-reviews@google.com.
+   <variant name=".OmniboxPopup"/>
+   <variant name=".PerformanceSidePanel"/>
+   <variant name=".PersonalContextNotice"/>
++  <variant name=".PrometheusSidePanel"/>
+   <variant name=".ReadAnythingUntrusted"/>
+   <variant name=".ReadingList"/>
+   <variant name=".ReloadButtonUI"/>
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,16 @@
+{
+  "name": "@prometheus-browser/mcp",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "prometheus-mcp": "bin/prometheus-mcp.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:catalog": "node --test test/catalog.test.mjs"
+  }
+}

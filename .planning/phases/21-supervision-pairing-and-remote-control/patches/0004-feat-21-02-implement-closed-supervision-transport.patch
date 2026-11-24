@@ -1,0 +1,828 @@
+From 4f2a57cdca19c390d5ea67fa71a9e31891680ea2 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 21 Jul 2026 17:51:07 -0500
+Subject: [PATCH] feat(21-02): implement closed supervision transport
+
+---
+ .../prometheus_supervision_transport_codec.cc | 771 +++++++++++++++++-
+ 1 file changed, 758 insertions(+), 13 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_supervision_transport_codec.cc b/chrome/browser/prometheus/prometheus_supervision_transport_codec.cc
+index c7a923fc7a..c6978fbe2c 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_transport_codec.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_transport_codec.cc
+@@ -4,9 +4,590 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_supervision_transport_codec.h"
+ 
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <initializer_list>
++#include <optional>
++#include <string>
++#include <string_view>
+ #include <utility>
+ 
++#include "base/json/json_reader.h"
++#include "base/json/json_writer.h"
++#include "base/strings/string_util.h"
++#include "base/values.h"
++
+ namespace prometheus {
++namespace {
++
++struct OperationEntry {
++  std::string_view name;
++  SupervisionTransportOperation operation;
++};
++
++constexpr std::array<OperationEntry, kSupervisionTransportOperationCount>
++    kOperationEntries = {{
++        {"redeem", SupervisionTransportOperation::kRedeem},
++        {"baseline", SupervisionTransportOperation::kBaseline},
++        {"diff", SupervisionTransportOperation::kDiff},
++        {"ack", SupervisionTransportOperation::kAck},
++        {"action", SupervisionTransportOperation::kAction},
++        {"heartbeat", SupervisionTransportOperation::kHeartbeat},
++        {"end", SupervisionTransportOperation::kEnd},
++    }};
++
++struct ErrorEntry {
++  SupervisionTransportErrorCode code;
++  std::string_view name;
++};
++
++constexpr std::array<ErrorEntry, 8> kErrorEntries = {{
++    {SupervisionTransportErrorCode::kNone, "NONE"},
++    {SupervisionTransportErrorCode::kInvalidOperation, "INVALID_OPERATION"},
++    {SupervisionTransportErrorCode::kInvalidRequest, "INVALID_REQUEST"},
++    {SupervisionTransportErrorCode::kRequestTooLarge, "REQUEST_TOO_LARGE"},
++    {SupervisionTransportErrorCode::kForbiddenField, "FORBIDDEN_FIELD"},
++    {SupervisionTransportErrorCode::kOutputNotSanitized,
++     "OUTPUT_NOT_SANITIZED"},
++    {SupervisionTransportErrorCode::kUnavailable, "UNAVAILABLE"},
++    {SupervisionTransportErrorCode::kInternal, "INTERNAL"},
++}};
++
++constexpr size_t kMaxRecursiveDepth = 8;
++constexpr size_t kMaxRecursiveFields = 256;
++
++SupervisionTransportResult ParseFailure(
++    SupervisionTransportOperation operation,
++    SupervisionTransportErrorCode error_code,
++    std::string_view message,
++    std::string_view recovery) {
++  return SupervisionTransportResult::TransportFailure(
++      operation, error_code, std::string(message), std::string(recovery));
++}
++
++SupervisionTransportResult InvalidRequest(
++    SupervisionTransportOperation operation) {
++  return ParseFailure(
++      operation, SupervisionTransportErrorCode::kInvalidRequest,
++      "Request does not match the closed supervision operation schema",
++      "Send the exact documented fields with bounded values");
++}
++
++SupervisionTransportResult InvalidOperation() {
++  return ParseFailure(
++      SupervisionTransportOperation::kRedeem,
++      SupervisionTransportErrorCode::kInvalidOperation,
++      "Unknown supervision operation",
++      "Use redeem, baseline, diff, ack, action, heartbeat, or end");
++}
++
++SupervisionTransportResult RequestTooLarge(
++    SupervisionTransportOperation operation) {
++  return ParseFailure(
++      operation, SupervisionTransportErrorCode::kRequestTooLarge,
++      "Supervision transport value exceeds its fixed byte ceiling",
++      "Reduce the request or result size and retry");
++}
++
++SupervisionTransportResult ForbiddenField(
++    SupervisionTransportOperation operation) {
++  return ParseFailure(
++      operation, SupervisionTransportErrorCode::kForbiddenField,
++      "Request contains a prohibited authority or content field",
++      "Remove caller-selected identity, authority, route, script, and secret "
++      "fields");
++}
++
++SupervisionTransportResult OutputNotSanitized(
++    SupervisionTransportOperation operation) {
++  return ParseFailure(
++      operation, SupervisionTransportErrorCode::kOutputNotSanitized,
++      "Supervision result is not a valid sanitized projection",
++      "Project the result through the native sanitized supervision types");
++}
++
++bool HasOnlyKeys(const base::DictValue& value,
++                 std::initializer_list<std::string_view> allowed) {
++  for (const auto [key, ignored] : value) {
++    static_cast<void>(ignored);
++    if (std::find(allowed.begin(), allowed.end(), key) == allowed.end()) {
++      return false;
++    }
++  }
++  return true;
++}
++
++std::string NormalizeFieldName(std::string_view value) {
++  std::string normalized;
++  normalized.reserve(value.size());
++  for (char character : value) {
++    if (base::IsAsciiAlphaNumeric(character)) {
++      normalized.push_back(base::ToLowerASCII(character));
++    }
++  }
++  return normalized;
++}
++
++bool IsForbiddenField(std::string_view field) {
++  constexpr std::string_view kForbiddenFields[] = {
++      "proto",
++      "constructor",
++      "prototype",
++      "profile",
++      "profileid",
++      "profilepath",
++      "browser",
++      "browserid",
++      "browsersessionid",
++      "window",
++      "windowid",
++      "windowsessionid",
++      "tab",
++      "tabid",
++      "tabindex",
++      "tabselector",
++      "target",
++      "owner",
++      "ownerid",
++      "ownersession",
++      "ownersessionid",
++      "principal",
++      "principalid",
++      "controller",
++      "controllerid",
++      "controllerlease",
++      "session",
++      "sessionid",
++      "gatewaysessionid",
++      "document",
++      "documentid",
++      "documenttoken",
++      "route",
++      "routename",
++      "arbitraryroute",
++      "script",
++      "javascript",
++      "executejs",
++      "vault",
++      "vaultid",
++      "secret",
++      "bearer",
++      "authorization",
++      "password",
++      "token",
++      "apikey",
++      "selector",
++      "typedvalue",
++      "pagecontent",
++      "html",
++      "content",
++      "credential",
++  };
++  const std::string normalized = NormalizeFieldName(field);
++  return std::ranges::find(kForbiddenFields, normalized) !=
++         std::end(kForbiddenFields);
++}
++
++enum class RecursiveFieldScan {
++  kSafe,
++  kForbidden,
++  kBounds,
++};
++
++RecursiveFieldScan ScanFields(const base::Value& value,
++                              size_t depth,
++                              size_t* visited) {
++  if (depth > kMaxRecursiveDepth || ++*visited > kMaxRecursiveFields) {
++    return RecursiveFieldScan::kBounds;
++  }
++  if (value.is_dict()) {
++    for (const auto [key, child] : value.GetDict()) {
++      if (IsForbiddenField(key)) {
++        return RecursiveFieldScan::kForbidden;
++      }
++      const RecursiveFieldScan nested = ScanFields(child, depth + 1, visited);
++      if (nested != RecursiveFieldScan::kSafe) {
++        return nested;
++      }
++    }
++  } else if (value.is_list()) {
++    for (const base::Value& child : value.GetList()) {
++      const RecursiveFieldScan nested = ScanFields(child, depth + 1, visited);
++      if (nested != RecursiveFieldScan::kSafe) {
++        return nested;
++      }
++    }
++  }
++  return RecursiveFieldScan::kSafe;
++}
++
++bool IsBoundedUtf8(const std::string& value,
++                   size_t max_bytes,
++                   bool allow_empty = false) {
++  return (allow_empty || !value.empty()) && value.size() <= max_bytes &&
++         base::IsStringUTF8(value);
++}
++
++bool IsWireToken(const std::string& value, size_t max_bytes) {
++  return IsBoundedUtf8(value, max_bytes) &&
++         std::ranges::all_of(value, [](char character) {
++           return base::IsAsciiAlphaNumeric(character) || character == '-' ||
++                  character == '_' || character == '.';
++         });
++}
++
++bool ReadRequiredString(const base::DictValue& value,
++                        std::string_view key,
++                        size_t max_bytes,
++                        std::string* output) {
++  const std::string* field = value.FindString(key);
++  if (!field || !IsBoundedUtf8(*field, max_bytes)) {
++    return false;
++  }
++  *output = *field;
++  return true;
++}
++
++bool ReadWireToken(const base::DictValue& value,
++                   std::string_view key,
++                   size_t max_bytes,
++                   std::string* output) {
++  const std::string* field = value.FindString(key);
++  if (!field || !IsWireToken(*field, max_bytes)) {
++    return false;
++  }
++  *output = *field;
++  return true;
++}
++
++bool ReadSequence(const base::DictValue& value,
++                  std::string_view key,
++                  uint64_t* output) {
++  const base::Value* field = value.Find(key);
++  if (!field || (!field->is_int() && !field->is_double())) {
++    return false;
++  }
++  const double number = field->is_int() ? field->GetInt() : field->GetDouble();
++  if (!std::isfinite(number) || std::trunc(number) != number || number < 1 ||
++      number > static_cast<double>(kMaxSupervisionTransportSequence)) {
++    return false;
++  }
++  *output = static_cast<uint64_t>(number);
++  return true;
++}
++
++bool ReadOptionalScrollDelta(const base::DictValue& value,
++                             std::string_view key,
++                             std::optional<int32_t>* output) {
++  const base::Value* field = value.Find(key);
++  if (!field) {
++    output->reset();
++    return true;
++  }
++  if (!field->is_int() && !field->is_double()) {
++    return false;
++  }
++  const double number = field->is_int() ? field->GetInt() : field->GetDouble();
++  if (!std::isfinite(number) || std::trunc(number) != number ||
++      std::abs(number) > kMaxSupervisionTransportScrollDelta) {
++    return false;
++  }
++  *output = static_cast<int32_t>(number);
++  return true;
++}
++
++std::optional<std::string> NormalizePairingCode(std::string_view value) {
++  if (value.size() > 32 || !base::IsStringUTF8(value)) {
++    return std::nullopt;
++  }
++  std::string normalized;
++  normalized.reserve(value.size());
++  for (char character : value) {
++    if (base::IsAsciiWhitespace(character) || character == '-') {
++      continue;
++    }
++    normalized.push_back(base::ToUpperASCII(character));
++  }
++  if (!IsValidSupervisionPairingCode(normalized)) {
++    return std::nullopt;
++  }
++  return normalized;
++}
++
++bool ParseRemoteAction(const base::DictValue& value,
++                       SupervisionRemoteActionRequest* output) {
++  const std::string* category_name = value.FindString("category");
++  if (!category_name || category_name->size() > 32) {
++    return false;
++  }
++  const std::optional<SupervisionRemoteActionCategory> category =
++      SupervisionRemoteActionCategoryFromString(*category_name);
++  if (!category.has_value()) {
++    return false;
++  }
++
++  SupervisionRemoteActionRequest parsed;
++  parsed.category = *category;
++  switch (*category) {
++    case SupervisionRemoteActionCategory::kClick:
++    case SupervisionRemoteActionCategory::kHover:
++    case SupervisionRemoteActionCategory::kClear:
++    case SupervisionRemoteActionCategory::kDrop: {
++      if (!HasOnlyKeys(value, {"category", "ref"})) {
++        return false;
++      }
++      std::string element_ref;
++      if (!ReadRequiredString(value, "ref",
++                              kMaxSupervisionTransportElementRefBytes,
++                              &element_ref)) {
++        return false;
++      }
++      parsed.element_ref = std::move(element_ref);
++      break;
++    }
++    case SupervisionRemoteActionCategory::kType: {
++      if (!HasOnlyKeys(value, {"category", "ref", "text"})) {
++        return false;
++      }
++      std::string element_ref;
++      std::string text;
++      if (!ReadRequiredString(value, "ref",
++                              kMaxSupervisionTransportElementRefBytes,
++                              &element_ref) ||
++          !ReadRequiredString(value, "text", kMaxSupervisionTransportTextBytes,
++                              &text)) {
++        return false;
++      }
++      parsed.element_ref = std::move(element_ref);
++      parsed.text = std::move(text);
++      break;
++    }
++    case SupervisionRemoteActionCategory::kKeyPress: {
++      if (!HasOnlyKeys(value, {"category", "key"})) {
++        return false;
++      }
++      std::string key;
++      if (!ReadRequiredString(value, "key", kMaxSupervisionTransportKeyBytes,
++                              &key)) {
++        return false;
++      }
++      parsed.key = std::move(key);
++      break;
++    }
++    case SupervisionRemoteActionCategory::kScroll: {
++      if (!HasOnlyKeys(value, {"category", "delta_x", "delta_y"}) ||
++          !ReadOptionalScrollDelta(value, "delta_x", &parsed.scroll_delta_x) ||
++          !ReadOptionalScrollDelta(value, "delta_y", &parsed.scroll_delta_y) ||
++          (!parsed.scroll_delta_x.has_value() &&
++           !parsed.scroll_delta_y.has_value()) ||
++          (parsed.scroll_delta_x.value_or(0) == 0 &&
++           parsed.scroll_delta_y.value_or(0) == 0)) {
++        return false;
++      }
++      break;
++    }
++    case SupervisionRemoteActionCategory::kSelect: {
++      if (!HasOnlyKeys(value, {"category", "ref", "option"})) {
++        return false;
++      }
++      std::string element_ref;
++      std::string option;
++      if (!ReadRequiredString(value, "ref",
++                              kMaxSupervisionTransportElementRefBytes,
++                              &element_ref) ||
++          !ReadRequiredString(value, "option",
++                              kMaxSupervisionTransportOptionBytes, &option)) {
++        return false;
++      }
++      parsed.element_ref = std::move(element_ref);
++      parsed.option = std::move(option);
++      break;
++    }
++    case SupervisionRemoteActionCategory::kDrag: {
++      if (!HasOnlyKeys(value, {"category", "ref", "target_ref"})) {
++        return false;
++      }
++      std::string element_ref;
++      std::string target_element_ref;
++      if (!ReadRequiredString(value, "ref",
++                              kMaxSupervisionTransportElementRefBytes,
++                              &element_ref) ||
++          !ReadRequiredString(value, "target_ref",
++                              kMaxSupervisionTransportElementRefBytes,
++                              &target_element_ref) ||
++          element_ref == target_element_ref) {
++        return false;
++      }
++      parsed.element_ref = std::move(element_ref);
++      parsed.target_element_ref = std::move(target_element_ref);
++      break;
++    }
++    case SupervisionRemoteActionCategory::kNavigate: {
++      if (!HasOnlyKeys(value, {"category", "navigation"})) {
++        return false;
++      }
++      std::string navigation;
++      if (!ReadRequiredString(value, "navigation",
++                              kMaxSupervisionTransportNavigationBytes,
++                              &navigation)) {
++        return false;
++      }
++      parsed.navigation = std::move(navigation);
++      break;
++    }
++  }
++  *output = std::move(parsed);
++  return true;
++}
++
++bool ValidOutputString(const std::string& value) {
++  return IsBoundedUtf8(value, kMaxSupervisionTransportMessageBytes, true);
++}
++
++bool HasValidStatus(const SupervisionTransportResult& result) {
++  const bool has_transport_error =
++      result.transport_error != SupervisionTransportErrorCode::kNone;
++  const bool has_supervision_error =
++      result.supervision_error != SupervisionErrorCode::kNone;
++  if (result.ok) {
++    return !has_transport_error && !has_supervision_error;
++  }
++  return has_transport_error != has_supervision_error;
++}
++
++bool HasValidPayloadShape(const SupervisionTransportResult& result) {
++  if (!result.ok) {
++    return !result.dashboard_authority.has_value() &&
++           !result.sanitized_snapshot.has_value() &&
++           !result.no_change.has_value() &&
++           !result.requires_baseline.has_value() && !result.ended.has_value();
++  }
++  if (result.no_change.has_value() &&
++      result.operation != SupervisionTransportOperation::kDiff) {
++    return false;
++  }
++  if (result.requires_baseline.has_value() &&
++      result.operation != SupervisionTransportOperation::kDiff &&
++      result.operation != SupervisionTransportOperation::kAction) {
++    return false;
++  }
++  return !result.ended.has_value() ||
++         result.operation == SupervisionTransportOperation::kEnd;
++}
++
++bool HasValidDashboardAuthority(const SupervisionTransportResult& result) {
++  if (!result.ok || !result.dashboard_authority.has_value()) {
++    return !result.ok || !result.dashboard_authority.has_value();
++  }
++  const SupervisionDashboardWireAuthority& authority =
++      *result.dashboard_authority;
++  if (!IsWireToken(authority.dashboard_session,
++                   kMaxSupervisionTransportSessionBytes)) {
++    return false;
++  }
++  const bool has_epoch = authority.document_epoch.has_value();
++  const bool has_sequence = authority.sequence.has_value();
++  if (has_epoch != has_sequence ||
++      (has_epoch && !IsWireToken(*authority.document_epoch,
++                                 kMaxSupervisionTransportEpochBytes)) ||
++      (has_sequence &&
++       (*authority.sequence == 0 ||
++        *authority.sequence > kMaxSupervisionTransportSequence))) {
++    return false;
++  }
++  switch (result.operation) {
++    case SupervisionTransportOperation::kRedeem:
++    case SupervisionTransportOperation::kHeartbeat:
++    case SupervisionTransportOperation::kEnd:
++      return !has_epoch && !has_sequence;
++    case SupervisionTransportOperation::kBaseline:
++    case SupervisionTransportOperation::kDiff:
++    case SupervisionTransportOperation::kAck:
++    case SupervisionTransportOperation::kAction:
++      return has_epoch && has_sequence;
++  }
++}
++
++base::expected<std::string, SupervisionTransportResult> SerializeResult(
++    const SupervisionTransportResult& result,
++    bool include_dashboard_authority) {
++  if (!ValidOutputString(result.message) ||
++      !ValidOutputString(result.recovery)) {
++    return base::unexpected(RequestTooLarge(result.operation));
++  }
++  if (!HasValidStatus(result) || !HasValidPayloadShape(result)) {
++    return base::unexpected(OutputNotSanitized(result.operation));
++  }
++  const std::optional<std::string_view> operation =
++      SupervisionTransportOperationToString(result.operation);
++  if (!operation.has_value()) {
++    return base::unexpected(OutputNotSanitized(result.operation));
++  }
++
++  std::optional<std::string_view> error_code;
++  if (result.transport_error != SupervisionTransportErrorCode::kNone) {
++    error_code = SupervisionTransportErrorCodeToString(result.transport_error);
++  } else {
++    error_code = SupervisionErrorCodeToString(result.supervision_error);
++  }
++  if (!error_code.has_value()) {
++    return base::unexpected(OutputNotSanitized(result.operation));
++  }
++
++  base::DictValue payload;
++  if (result.ok) {
++    if (include_dashboard_authority && !HasValidDashboardAuthority(result)) {
++      return base::unexpected(OutputNotSanitized(result.operation));
++    }
++    if (include_dashboard_authority && result.dashboard_authority.has_value()) {
++      const SupervisionDashboardWireAuthority& authority =
++          *result.dashboard_authority;
++      payload.Set("dashboard_session", authority.dashboard_session);
++      if (authority.document_epoch.has_value()) {
++        payload.Set("document_epoch", *authority.document_epoch);
++      }
++      if (authority.sequence.has_value()) {
++        payload.Set("sequence", static_cast<double>(*authority.sequence));
++      }
++    }
++    if (result.sanitized_snapshot.has_value()) {
++      std::optional<base::DictValue> snapshot =
++          SanitizedSupervisionSnapshotToValue(*result.sanitized_snapshot);
++      if (!snapshot.has_value()) {
++        return base::unexpected(OutputNotSanitized(result.operation));
++      }
++      payload.Set("snapshot", std::move(*snapshot));
++    }
++    if (result.no_change.has_value()) {
++      payload.Set("no_change", *result.no_change);
++    }
++    if (result.requires_baseline.has_value()) {
++      payload.Set("requires_baseline", *result.requires_baseline);
++    }
++    if (result.ended.has_value()) {
++      payload.Set("ended", *result.ended);
++    }
++  }
++
++  base::DictValue root;
++  root.Set("ok", result.ok);
++  root.Set("error_code", *error_code);
++  root.Set("message", result.message);
++  root.Set("recovery", result.recovery);
++  root.Set("operation", *operation);
++  root.Set("result", std::move(payload));
++  std::optional<std::string> json = base::WriteJson(root);
++  if (!json.has_value()) {
++    return base::unexpected(OutputNotSanitized(result.operation));
++  }
++  if (json->size() > kMaxSupervisionTransportOutputBytes) {
++    return base::unexpected(RequestTooLarge(result.operation));
++  }
++  return std::move(*json);
++}
++
++}  // namespace
+ 
+ SupervisionTransportResult SupervisionTransportResult::Success(
+     SupervisionTransportOperation operation) {
+@@ -44,43 +625,207 @@ SupervisionTransportResult SupervisionTransportResult::SupervisionFailure(
+ 
+ std::optional<SupervisionTransportOperation>
+ SupervisionTransportOperationFromString(std::string_view value) {
++  for (const auto& entry : kOperationEntries) {
++    if (entry.name == value) {
++      return entry.operation;
++    }
++  }
+   return std::nullopt;
+ }
+ 
+ std::optional<std::string_view> SupervisionTransportOperationToString(
+     SupervisionTransportOperation operation) {
++  for (const auto& entry : kOperationEntries) {
++    if (entry.operation == operation) {
++      return entry.name;
++    }
++  }
+   return std::nullopt;
+ }
+ 
+ std::optional<std::string_view> SupervisionTransportErrorCodeToString(
+     SupervisionTransportErrorCode error_code) {
++  for (const auto& entry : kErrorEntries) {
++    if (entry.code == error_code) {
++      return entry.name;
++    }
++  }
+   return std::nullopt;
+ }
+ 
+ base::expected<SupervisionTransportRequest, SupervisionTransportResult>
+ ParseSupervisionTransportRequest(std::string_view json) {
+-  return base::unexpected(SupervisionTransportResult::TransportFailure(
+-      SupervisionTransportOperation::kRedeem,
+-      SupervisionTransportErrorCode::kInvalidRequest,
+-      "Supervision transport codec is not implemented",
+-      "Use the closed dashboard request contract"));
++  if (json.size() > kMaxSupervisionTransportInputBytes) {
++    return base::unexpected(
++        RequestTooLarge(SupervisionTransportOperation::kRedeem));
++  }
++  std::optional<base::DictValue> root =
++      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
++  if (!root.has_value()) {
++    return base::unexpected(
++        InvalidRequest(SupervisionTransportOperation::kRedeem));
++  }
++  const std::string* operation_name = root->FindString("operation");
++  const std::optional<SupervisionTransportOperation> operation =
++      operation_name ? SupervisionTransportOperationFromString(*operation_name)
++                     : std::nullopt;
++  const SupervisionTransportOperation error_operation =
++      operation.value_or(SupervisionTransportOperation::kRedeem);
++
++  base::Value root_value(root->Clone());
++  size_t visited = 0;
++  switch (ScanFields(root_value, 0, &visited)) {
++    case RecursiveFieldScan::kSafe:
++      break;
++    case RecursiveFieldScan::kForbidden:
++      return base::unexpected(ForbiddenField(error_operation));
++    case RecursiveFieldScan::kBounds:
++      return base::unexpected(InvalidRequest(error_operation));
++  }
++
++  const base::DictValue* params = root->FindDict("params");
++  if (!HasOnlyKeys(*root, {"operation", "params"}) || !operation_name ||
++      !params || operation_name->size() > 32) {
++    return base::unexpected(InvalidRequest(error_operation));
++  }
++  if (!operation.has_value()) {
++    return base::unexpected(InvalidOperation());
++  }
++
++  SupervisionTransportRequest request;
++  request.operation = *operation;
++  auto invalid = [&]() { return base::unexpected(InvalidRequest(*operation)); };
++  switch (*operation) {
++    case SupervisionTransportOperation::kRedeem: {
++      if (!HasOnlyKeys(*params, {"pairing_code", "client_label"})) {
++        return invalid();
++      }
++      const std::string* pairing_code = params->FindString("pairing_code");
++      const std::string* client_label = params->FindString("client_label");
++      if (!pairing_code || !client_label ||
++          !IsBoundedUtf8(*client_label, kMaxSupervisionSafeLabelBytes)) {
++        return invalid();
++      }
++      std::optional<std::string> normalized_code =
++          NormalizePairingCode(*pairing_code);
++      if (!normalized_code.has_value()) {
++        return invalid();
++      }
++      request.params = SupervisionRedeemParams{
++          .pairing_code = std::move(*normalized_code),
++          .client_label = DeriveSupervisionSafeClientLabel(*client_label),
++      };
++      break;
++    }
++    case SupervisionTransportOperation::kBaseline: {
++      if (!HasOnlyKeys(*params, {"dashboard_session"})) {
++        return invalid();
++      }
++      SupervisionBaselineParams parsed;
++      if (!ReadWireToken(*params, "dashboard_session",
++                         kMaxSupervisionTransportSessionBytes,
++                         &parsed.dashboard_session)) {
++        return invalid();
++      }
++      request.params = std::move(parsed);
++      break;
++    }
++    case SupervisionTransportOperation::kDiff: {
++      if (!HasOnlyKeys(*params, {"dashboard_session", "document_epoch",
++                                 "after_sequence"})) {
++        return invalid();
++      }
++      SupervisionDiffParams parsed;
++      if (!ReadWireToken(*params, "dashboard_session",
++                         kMaxSupervisionTransportSessionBytes,
++                         &parsed.dashboard_session) ||
++          !ReadWireToken(*params, "document_epoch",
++                         kMaxSupervisionTransportEpochBytes,
++                         &parsed.document_epoch) ||
++          !ReadSequence(*params, "after_sequence", &parsed.after_sequence)) {
++        return invalid();
++      }
++      request.params = std::move(parsed);
++      break;
++    }
++    case SupervisionTransportOperation::kAck: {
++      if (!HasOnlyKeys(*params,
++                       {"dashboard_session", "document_epoch", "sequence"})) {
++        return invalid();
++      }
++      SupervisionAckParams parsed;
++      if (!ReadWireToken(*params, "dashboard_session",
++                         kMaxSupervisionTransportSessionBytes,
++                         &parsed.dashboard_session) ||
++          !ReadWireToken(*params, "document_epoch",
++                         kMaxSupervisionTransportEpochBytes,
++                         &parsed.document_epoch) ||
++          !ReadSequence(*params, "sequence", &parsed.sequence)) {
++        return invalid();
++      }
++      request.params = std::move(parsed);
++      break;
++    }
++    case SupervisionTransportOperation::kAction: {
++      if (!HasOnlyKeys(*params, {"dashboard_session", "document_epoch",
++                                 "sequence", "action"})) {
++        return invalid();
++      }
++      const base::DictValue* action = params->FindDict("action");
++      SupervisionActionParams parsed;
++      if (!action ||
++          !ReadWireToken(*params, "dashboard_session",
++                         kMaxSupervisionTransportSessionBytes,
++                         &parsed.dashboard_session) ||
++          !ReadWireToken(*params, "document_epoch",
++                         kMaxSupervisionTransportEpochBytes,
++                         &parsed.document_epoch) ||
++          !ReadSequence(*params, "sequence", &parsed.sequence) ||
++          !ParseRemoteAction(*action, &parsed.action)) {
++        return invalid();
++      }
++      request.params = std::move(parsed);
++      break;
++    }
++    case SupervisionTransportOperation::kHeartbeat: {
++      if (!HasOnlyKeys(*params, {"dashboard_session"})) {
++        return invalid();
++      }
++      SupervisionHeartbeatParams parsed;
++      if (!ReadWireToken(*params, "dashboard_session",
++                         kMaxSupervisionTransportSessionBytes,
++                         &parsed.dashboard_session)) {
++        return invalid();
++      }
++      request.params = std::move(parsed);
++      break;
++    }
++    case SupervisionTransportOperation::kEnd: {
++      if (!HasOnlyKeys(*params, {"dashboard_session"})) {
++        return invalid();
++      }
++      SupervisionEndParams parsed;
++      if (!ReadWireToken(*params, "dashboard_session",
++                         kMaxSupervisionTransportSessionBytes,
++                         &parsed.dashboard_session)) {
++        return invalid();
++      }
++      request.params = std::move(parsed);
++      break;
++    }
++  }
++  return request;
+ }
+ 
+ base::expected<std::string, SupervisionTransportResult>
+ SerializeSupervisionDashboardResult(const SupervisionTransportResult& result) {
+-  return base::unexpected(SupervisionTransportResult::TransportFailure(
+-      result.operation, SupervisionTransportErrorCode::kInternal,
+-      "Supervision transport codec is not implemented",
+-      "Retry after the native codec is available"));
++  return SerializeResult(result, true);
+ }
+ 
+ base::expected<std::string, SupervisionTransportResult>
+ SerializeSupervisionCompatibilityResult(
+     const SupervisionTransportResult& result) {
+-  return base::unexpected(SupervisionTransportResult::TransportFailure(
+-      result.operation, SupervisionTransportErrorCode::kInternal,
+-      "Supervision transport codec is not implemented",
+-      "Retry after the native codec is available"));
++  return SerializeResult(result, false);
+ }
+ 
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

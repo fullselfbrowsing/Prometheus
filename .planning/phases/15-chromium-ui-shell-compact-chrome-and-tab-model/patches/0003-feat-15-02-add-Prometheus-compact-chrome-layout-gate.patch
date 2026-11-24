@@ -1,0 +1,204 @@
+From 007c5620d24378b631518063abdafe340b458973 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Tue, 7 Jul 2026 00:36:44 -0500
+Subject: [PATCH 03/11] feat(15-02): add Prometheus compact chrome layout gate
+
+- Add compact chrome sizing and reserved-control allocation helpers
+- Gate BrowserView tabbed layout on prometheus.chrome.mode
+- Preserve Chromium's conventional layout for separate/default mode
+---
+ chrome/browser/ui/BUILD.gn                    |  3 ++
+ .../layout/browser_view_tabbed_layout_impl.cc | 27 ++++++++++
+ .../frame/prometheus_compact_chrome_layout.cc | 53 +++++++++++++++++++
+ .../frame/prometheus_compact_chrome_layout.h  | 24 +++++++++
+ 4 files changed, 107 insertions(+)
+ create mode 100644 chrome/browser/ui/views/frame/prometheus_compact_chrome_layout.cc
+ create mode 100644 chrome/browser/ui/views/frame/prometheus_compact_chrome_layout.h
+
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+index 28daf56818..305ff2a695 100644
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -567,6 +567,7 @@ static_library("ui") {
+     "//chrome/browser/preloading/prefetch/no_state_prefetch",
+     "//chrome/browser/privacy_sandbox:headers",
+     "//chrome/browser/private_ai",
++    "//chrome/browser/prometheus:prometheus_chrome_mode",
+     "//chrome/browser/profiles",
+     "//chrome/browser/profiles:misc",
+     "//chrome/browser/profiles:profile",
+@@ -4089,6 +4090,8 @@ static_library("ui") {
+       "views/frame/multi_contents_view_mini_toolbar.h",
+       "views/frame/picture_in_picture_browser_frame_view.cc",
+       "views/frame/picture_in_picture_browser_frame_view.h",
++      "views/frame/prometheus_compact_chrome_layout.cc",
++      "views/frame/prometheus_compact_chrome_layout.h",
+       "views/frame/scrim_view.cc",
+       "views/frame/scrim_view.h",
+       "views/frame/scrim_view_controller.cc",
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+index 7b150ac4df..c2cf06e0de 100644
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -13,7 +13,10 @@
+ #include "base/trace_event/common/trace_event_common.h"
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
++#include "chrome/browser/prometheus/prometheus_chrome_mode.h"
++#include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/animation/browser_animation_controller.h"
++#include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/layout_constants.h"
+ #include "chrome/browser/ui/ui_features.h"
+@@ -29,6 +32,7 @@
+ #include "chrome/browser/ui/views/frame/layout/browser_view_layout_params.h"
+ #include "chrome/browser/ui/views/frame/main_background_region_view.h"
+ #include "chrome/browser/ui/views/frame/multi_contents_view.h"
++#include "chrome/browser/ui/views/frame/prometheus_compact_chrome_layout.h"
+ #include "chrome/browser/ui/views/frame/shadow_frame_view.h"
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
+@@ -98,6 +102,12 @@ void InsetHorizontal(gfx::Rect& rect, int amount, bool leading) {
+       gfx::Insets::TLBR(0, leading ? amount : 0, 0, !leading ? amount : 0));
+ }
+ 
++bool ShouldUsePrometheusCompactChrome(const Browser* browser) {
++  return browser && browser->profile() &&
++         GetPrometheusChromeMode(*browser->profile()->GetPrefs()) ==
++             PrometheusChromeMode::kCompact;
++}
++
+ }  // namespace
+ 
+ // Allocate space across the vertical tabstrip, toolbar, and side panels,
+@@ -1206,6 +1216,15 @@ gfx::Rect BrowserViewTabbedLayoutImpl::CalculateTopContainerLayout(
+     BrowserLayoutParams params,
+     bool needs_exclusion) const {
+   const int original_top = params.visual_client_area.y();
++  const bool prometheus_compact_chrome =
++      ShouldUsePrometheusCompactChrome(browser()) &&
++      layout_data_->tab_strip_type == TabStripType::kHorizontal;
++  if (prometheus_compact_chrome) {
++    ApplyPrometheusCompactChromeReservation(params);
++  } else {
++    // Separate/default Prometheus chrome mode keeps Chromium's conventional
++    // top-container layout unchanged.
++  }
+ 
+   if (IsParentedTo(views().horizontal_tab_strip_region_view,
+                    views().top_container)) {
+@@ -1214,6 +1233,10 @@ gfx::Rect BrowserViewTabbedLayoutImpl::CalculateTopContainerLayout(
+       const int leading_margin = GetHorizontalTabStripLeadingMargin(params);
+       tabstrip_bounds = GetBoundsWithExclusion(
+           params, views().horizontal_tab_strip_region_view, leading_margin);
++      if (prometheus_compact_chrome) {
++        tabstrip_bounds.set_height(std::max(
++            tabstrip_bounds.height(), kPrometheusCompactChromeHeight));
++      }
+       params.SetTop(tabstrip_bounds.bottom() -
+                     GetLayoutConstant(LayoutConstant::kTabstripToolbarOverlap));
+       needs_exclusion = false;
+@@ -1235,6 +1258,10 @@ gfx::Rect BrowserViewTabbedLayoutImpl::CalculateTopContainerLayout(
+                           params.visual_client_area.y(),
+                           params.visual_client_area.width(),
+                           views().toolbar->GetPreferredSize().height());
++      if (prometheus_compact_chrome) {
++        toolbar_bounds.set_height(std::max(toolbar_bounds.height(),
++                                           kPrometheusCompactChromeHeight));
++      }
+       params.SetTop(toolbar_bounds.bottom());
+       needs_exclusion = false;
+     }
+diff --git a/chrome/browser/ui/views/frame/prometheus_compact_chrome_layout.cc b/chrome/browser/ui/views/frame/prometheus_compact_chrome_layout.cc
+new file mode 100644
+index 0000000000..f6c5a3d510
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/prometheus_compact_chrome_layout.cc
+@@ -0,0 +1,53 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/frame/prometheus_compact_chrome_layout.h"
++
++#include <algorithm>
++
++#include "base/numerics/safe_conversions.h"
++
++namespace {
++
++constexpr int kPrometheusCompactNavigationReserveWidth = 132;
++constexpr int kPrometheusCompactTabSearchReserveWidth = 40;
++constexpr int kPrometheusCompactSidePanelReserveWidth = 40;
++constexpr int kPrometheusCompactMenuReserveWidth = 40;
++
++int ExclusionWidth(const BrowserLayoutExclusionArea& exclusion) {
++  return base::ClampCeil(exclusion.ContentWithPadding().width());
++}
++
++}  // namespace
++
++PrometheusCompactChromeAllocation CalculatePrometheusCompactChromeAllocation(
++    const BrowserLayoutParams& params) {
++  PrometheusCompactChromeAllocation allocation;
++  allocation.reserved_control_width =
++      kPrometheusCompactNavigationReserveWidth +
++      kPrometheusCompactTabSearchReserveWidth +
++      kPrometheusCompactSidePanelReserveWidth +
++      kPrometheusCompactMenuReserveWidth;
++
++  allocation.available_location_width =
++      std::max(0, params.visual_client_area.width() -
++                      ExclusionWidth(params.leading_exclusion) -
++                      ExclusionWidth(params.trailing_exclusion) -
++                      allocation.reserved_control_width);
++  allocation.protects_min_location_width =
++      allocation.available_location_width >= kPrometheusCompactMinLocationWidth;
++  return allocation;
++}
++
++void ApplyPrometheusCompactChromeReservation(BrowserLayoutParams& params) {
++  const PrometheusCompactChromeAllocation allocation =
++      CalculatePrometheusCompactChromeAllocation(params);
++  if (!allocation.protects_min_location_width) {
++    return;
++  }
++
++  params.trailing_exclusion.horizontal_padding = std::max(
++      params.trailing_exclusion.horizontal_padding,
++      static_cast<float>(allocation.reserved_control_width));
++}
+diff --git a/chrome/browser/ui/views/frame/prometheus_compact_chrome_layout.h b/chrome/browser/ui/views/frame/prometheus_compact_chrome_layout.h
+new file mode 100644
+index 0000000000..58c5e83aa0
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/prometheus_compact_chrome_layout.h
+@@ -0,0 +1,24 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_FRAME_PROMETHEUS_COMPACT_CHROME_LAYOUT_H_
++#define CHROME_BROWSER_UI_VIEWS_FRAME_PROMETHEUS_COMPACT_CHROME_LAYOUT_H_
++
++#include "chrome/browser/ui/views/frame/layout/browser_view_layout_params.h"
++
++inline constexpr int kPrometheusCompactChromeHeight = 50;
++inline constexpr int kPrometheusCompactMinLocationWidth = 240;
++
++struct PrometheusCompactChromeAllocation {
++  int reserved_control_width = 0;
++  int available_location_width = 0;
++  bool protects_min_location_width = false;
++};
++
++PrometheusCompactChromeAllocation CalculatePrometheusCompactChromeAllocation(
++    const BrowserLayoutParams& params);
++
++void ApplyPrometheusCompactChromeReservation(BrowserLayoutParams& params);
++
++#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_PROMETHEUS_COMPACT_CHROME_LAYOUT_H_
+-- 
+2.50.1 (Apple Git-155)
+

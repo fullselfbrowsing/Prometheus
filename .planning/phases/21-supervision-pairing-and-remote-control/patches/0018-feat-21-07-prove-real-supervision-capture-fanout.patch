@@ -1,0 +1,709 @@
+From 10d8c0f63c888472c5586df6aff2b55bcfc99116 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Wed, 22 Jul 2026 01:06:31 -0500
+Subject: [PATCH 18/18] feat(21-07): prove real supervision capture fanout
+
+---
+ .../prometheus_supervision_capture_hub.cc     | 143 +++++++-
+ .../prometheus_supervision_capture_hub.h      |   6 +-
+ ...eus_supervision_capture_hub_browsertest.cc | 340 ++++++++++++++++--
+ 3 files changed, 447 insertions(+), 42 deletions(-)
+
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc b/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
+index e546960a81..98444505b9 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub.cc
+@@ -6,7 +6,9 @@
+ 
+ #include <algorithm>
+ #include <optional>
++#include <string_view>
+ #include <utility>
++#include <vector>
+ 
+ #include "base/functional/bind.h"
+ #include "base/location.h"
+@@ -29,6 +31,9 @@ namespace prometheus {
+ 
+ namespace {
+ 
++constexpr base::TimeDelta kSubframeDisconnectRecoveryDelay =
++    base::Milliseconds(100);
++
+ SupervisionLimits ClampCaptureHubLimits(const SupervisionLimits& limits) {
+   SupervisionLimits clamped = ClampSupervisionLimits(limits);
+   clamped.baseline_nodes =
+@@ -47,6 +52,80 @@ SupervisionLimits ClampCaptureHubLimits(const SupervisionLimits& limits) {
+   return clamped;
+ }
+ 
++// APC can repeat an input value in accessibility-derived label/text nodes.
++// Collect first so the browser projection can remove every copy, not only the
++// canonical FormControlData field.
++bool CollectRawFormValuesForSupervision(
++    const optimization_guide::proto::ContentNode& node,
++    std::vector<std::string>* raw_values,
++    size_t* raw_value_bytes) {
++  if (node.has_content_attributes() &&
++      node.content_attributes().has_form_control_data()) {
++    const auto& form_control =
++        node.content_attributes().form_control_data();
++    if (form_control.has_field_value() && !form_control.field_value().empty()) {
++      if (raw_values->size() >= kDefaultSupervisionBaselineNodes ||
++          form_control.field_value().size() >
++              kDefaultSupervisionBaselineBytes - *raw_value_bytes) {
++        return false;
++      }
++      *raw_value_bytes += form_control.field_value().size();
++      raw_values->push_back(form_control.field_value());
++    }
++  }
++  for (const auto& child : node.children_nodes()) {
++    if (!CollectRawFormValuesForSupervision(child, raw_values,
++                                            raw_value_bytes)) {
++      return false;
++    }
++  }
++  return true;
++}
++
++bool ContainsRawFormValue(std::string_view text,
++                          const std::vector<std::string>& raw_values) {
++  return std::ranges::any_of(raw_values, [text](const std::string& raw_value) {
++    return text.find(raw_value) != std::string_view::npos;
++  });
++}
++
++void RemoveRawFormValuesForSupervision(
++    optimization_guide::proto::ContentNode* node,
++    const std::vector<std::string>& raw_values) {
++  if (node->has_content_attributes()) {
++    auto* attributes = node->mutable_content_attributes();
++    if (ContainsRawFormValue(attributes->label(), raw_values)) {
++      attributes->clear_label();
++    }
++    if (attributes->has_text_data() &&
++        ContainsRawFormValue(attributes->text_data().text_content(),
++                             raw_values)) {
++      attributes->mutable_text_data()->clear_text_content();
++    }
++  }
++  if (node->has_content_attributes() &&
++      node->content_attributes().has_form_control_data()) {
++    auto* form_control =
++        node->mutable_content_attributes()->mutable_form_control_data();
++    form_control->clear_field_value();
++    if (ContainsRawFormValue(form_control->field_name(), raw_values)) {
++      form_control->clear_field_name();
++    }
++    if (ContainsRawFormValue(form_control->placeholder(), raw_values)) {
++      form_control->clear_placeholder();
++    }
++    for (auto& option : *form_control->mutable_select_options()) {
++      option.clear_value();
++      if (ContainsRawFormValue(option.text(), raw_values)) {
++        option.clear_text();
++      }
++    }
++  }
++  for (auto& child : *node->mutable_children_nodes()) {
++    RemoveRawFormValuesForSupervision(&child, raw_values);
++  }
++}
++
+ }  // namespace
+ 
+ // Every document control pipe and dirty-host receiver is confined to this
+@@ -365,9 +444,9 @@ void PrometheusSupervisionCaptureHub::DisconnectRendererForTesting() {
+ 
+ void PrometheusSupervisionCaptureHub::RenderFrameCreated(
+     content::RenderFrameHost* render_frame_host) {
+-  if (observing_) {
+-    BindFrame(render_frame_host);
+-  }
++  // A newly created RenderFrameHost can still be speculative. Its committed
++  // navigation rotates the shared epoch and binds the then-current frame set.
++  static_cast<void>(render_frame_host);
+ }
+ 
+ void PrometheusSupervisionCaptureHub::RenderFrameDeleted(
+@@ -380,8 +459,8 @@ void PrometheusSupervisionCaptureHub::RenderFrameDeleted(
+     ++disable_count_;
+   }
+   frames_.erase(frame);
+-  if (observing_ && !destroyed_ && web_contents() &&
+-      !web_contents()->IsBeingDestroyed()) {
++  if (!render_frame_host->GetParent() && observing_ && !destroyed_ &&
++      web_contents() && !web_contents()->IsBeingDestroyed()) {
+     StartNewDocumentEpoch();
+   }
+ }
+@@ -457,7 +536,6 @@ void PrometheusSupervisionCaptureHub::StopObservation() {
+     weak_factory_.InvalidateWeakPtrs();
+   }
+   capture_in_flight_ = false;
+-  dirty_while_capturing_ = false;
+   force_baseline_after_capture_ = false;
+ 
+   UnbindCurrentFrames();
+@@ -487,7 +565,6 @@ void PrometheusSupervisionCaptureHub::StartNewDocumentEpoch() {
+     weak_factory_.InvalidateWeakPtrs();
+   }
+   capture_in_flight_ = false;
+-  dirty_while_capturing_ = false;
+   force_baseline_after_capture_ = false;
+ 
+   UnbindCurrentFrames();
+@@ -571,6 +648,7 @@ void PrometheusSupervisionCaptureHub::OnFrameDirty(
+       frame->second->generation() != frame_generation) {
+     return;
+   }
++  ++dirty_signal_count_;
+   RequestCapture(overflow);
+ }
+ 
+@@ -582,6 +660,33 @@ void PrometheusSupervisionCaptureHub::OnFrameDisconnected(
+       frame->second->generation() != frame_generation) {
+     return;
+   }
++  if (render_frame_host->GetParent()) {
++    // A subframe's old document pipe can close just before its replacement
++    // commits. Invalidate immediately, then let the committed navigation win;
++    // the generation-fenced fallback repairs a standalone pipe failure.
++    baseline_ = SupervisionBaseline();
++    history_.clear();
++    retained_bytes_ = 0;
++    RequireBaselineForAll();
++    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
++        FROM_HERE,
++        base::BindOnce(
++            &PrometheusSupervisionCaptureHub::RecoverDisconnectedSubframe,
++            weak_factory_.GetWeakPtr(), render_frame_host, frame_generation),
++        kSubframeDisconnectRecoveryDelay);
++    return;
++  }
++  StartNewDocumentEpoch();
++}
++
++void PrometheusSupervisionCaptureHub::RecoverDisconnectedSubframe(
++    content::RenderFrameHost* render_frame_host,
++    uint64_t frame_generation) {
++  auto frame = frames_.find(render_frame_host);
++  if (!observing_ || frame == frames_.end() ||
++      frame->second->generation() != frame_generation) {
++    return;
++  }
+   StartNewDocumentEpoch();
+ }
+ 
+@@ -591,7 +696,6 @@ void PrometheusSupervisionCaptureHub::RequestCapture(bool force_baseline) {
+   }
+   force_baseline_after_capture_ |= force_baseline;
+   if (capture_in_flight_) {
+-    dirty_while_capturing_ = true;
+     return;
+   }
+ 
+@@ -606,7 +710,6 @@ void PrometheusSupervisionCaptureHub::RequestCapture(bool force_baseline) {
+   const bool requested_force_baseline = force_baseline_after_capture_;
+   force_baseline_after_capture_ = false;
+   capture_in_flight_ = true;
+-  dirty_while_capturing_ = false;
+   ++capture_count_;
+ 
+   if (capture_for_testing_) {
+@@ -668,7 +771,7 @@ void PrometheusSupervisionCaptureHub::RequestCapture(bool force_baseline) {
+                 requested_frame->IsRenderFrameLive() && observed_web_contents &&
+                 !observed_web_contents->IsBeingDestroyed() &&
+                 !observed_web_contents->IsCrashed() && result.has_value()) {
+-              const auto& page_content = result->proto;
++              auto& page_content = result->proto;
+               if (page_content.has_main_frame_data() &&
+                   page_content.main_frame_data().has_document_identifier()) {
+                 const std::string& document_token =
+@@ -681,8 +784,16 @@ void PrometheusSupervisionCaptureHub::RequestCapture(bool force_baseline) {
+                     document != result->document_identifiers.end() &&
+                     document->second.AsRenderFrameHostIfValid() ==
+                         requested_frame) {
+-                  projected = BuildSupervisionBaseline(
+-                      page_content, document_token, hub->limits_);
++                  std::vector<std::string> raw_form_values;
++                  size_t raw_form_value_bytes = 0u;
++                  if (CollectRawFormValuesForSupervision(
++                          page_content.root_node(), &raw_form_values,
++                          &raw_form_value_bytes)) {
++                    RemoveRawFormValuesForSupervision(
++                        page_content.mutable_root_node(), raw_form_values);
++                    projected = BuildSupervisionBaseline(
++                        page_content, document_token, hub->limits_);
++                  }
+                 }
+               }
+             }
+@@ -703,9 +814,7 @@ void PrometheusSupervisionCaptureHub::OnCapturedForTesting(
+     return;
+   }
+   capture_in_flight_ = false;
+-  const bool request_follow_up = dirty_while_capturing_;
+-  const bool follow_up_force_baseline = force_baseline_after_capture_;
+-  dirty_while_capturing_ = false;
++  force_baseline |= force_baseline_after_capture_;
+   force_baseline_after_capture_ = false;
+ 
+   if (!IsUsableBaseline(baseline)) {
+@@ -770,10 +879,6 @@ void PrometheusSupervisionCaptureHub::OnCapturedForTesting(
+       }
+     }
+   }
+-
+-  if (request_follow_up && observing_ && !destroyed_) {
+-    RequestCapture(follow_up_force_baseline);
+-  }
+ }
+ 
+ bool PrometheusSupervisionCaptureHub::IsUsableBaseline(
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub.h b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+index fb600b9600..e6cc99bb7d 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub.h
+@@ -103,6 +103,7 @@ class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
+   size_t enable_count_for_testing() const { return enable_count_; }
+   size_t disable_count_for_testing() const { return disable_count_; }
+   size_t capture_count_for_testing() const { return capture_count_; }
++  size_t dirty_signal_count_for_testing() const { return dirty_signal_count_; }
+   size_t retained_batch_count_for_testing() const { return history_.size(); }
+   size_t retained_bytes_for_testing() const { return retained_bytes_; }
+   bool capture_in_flight_for_testing() const { return capture_in_flight_; }
+@@ -147,6 +148,9 @@ class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
+                     bool overflow);
+   void OnFrameDisconnected(content::RenderFrameHost* render_frame_host,
+                            uint64_t frame_generation);
++  void RecoverDisconnectedSubframe(
++      content::RenderFrameHost* render_frame_host,
++      uint64_t frame_generation);
+   void RequestCapture(bool force_baseline);
+   void OnCapturedForTesting(uint64_t capture_generation,
+                             bool force_baseline,
+@@ -177,12 +181,12 @@ class PrometheusSupervisionCaptureHub : public content::WebContentsObserver {
+   SupervisionCaptureConsumerId next_consumer_id_ = 0;
+   bool observing_ = false;
+   bool capture_in_flight_ = false;
+-  bool dirty_while_capturing_ = false;
+   bool force_baseline_after_capture_ = false;
+   bool destroyed_ = false;
+   size_t enable_count_ = 0;
+   size_t disable_count_ = 0;
+   size_t capture_count_ = 0;
++  size_t dirty_signal_count_ = 0;
+ 
+   base::WeakPtrFactory<PrometheusSupervisionCaptureHub> weak_factory_{this};
+ };
+diff --git a/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc b/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc
+index 54a7412d34..d84159a634 100644
+--- a/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_supervision_capture_hub_browsertest.cc
+@@ -4,31 +4,168 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_supervision_capture_hub.h"
+ 
++#include <memory>
++#include <optional>
++#include <string>
++#include <string_view>
++
++#include "base/functional/bind.h"
++#include "base/test/run_until.h"
+ #include "base/time/time.h"
+ #include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/browser_tabstrip.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+ #include "chrome/test/base/ui_test_utils.h"
++#include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/render_process_host.h"
+ #include "content/public/browser/web_contents.h"
++#include "content/public/common/result_codes.h"
+ #include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "content/public/test/no_renderer_crashes_assertion.h"
++#include "content/public/test/test_utils.h"
+ #include "net/dns/mock_host_resolver.h"
++#include "net/http/http_status_code.h"
++#include "net/test/embedded_test_server/controllable_http_response.h"
++#include "net/test/embedded_test_server/http_request.h"
++#include "net/test/embedded_test_server/http_response.h"
+ 
+ namespace prometheus {
+ 
+-class PrometheusSupervisionCaptureHubBrowserTest
+-    : public InProcessBrowserTest {
++namespace {
++
++constexpr char kHubPagePath[] = "/prometheus-supervision-hub.html";
++constexpr char kFramePagePath[] = "/prometheus-supervision-frame.html";
++constexpr char kReleasePath[] = "/prometheus-supervision-release";
++constexpr char kMutationMarker[] = "released-visible-marker";
++constexpr char kPasswordSentinel[] = "PASSWORD_SENTINEL_21_07";
++constexpr char kPaymentSentinel[] = "4111111111112107";
++constexpr char kOtpSentinel[] = "927107";
++
++constexpr char kHubPage[] = R"HTML(
++<!doctype html>
++<meta charset="utf-8">
++<title>Supervision capture hub</title>
++<main>
++  <h1>Initial supervision state</h1>
++  <section id="mutation-region" aria-label="Supervision mutation region">
++    <p id="mutation-status">waiting for server release</p>
++  </section>
++  <label>Password
++    <input type="password" autocomplete="current-password"
++           value="PASSWORD_SENTINEL_21_07">
++  </label>
++  <label>Payment number
++    <input type="text" autocomplete="cc-number" inputmode="numeric"
++           value="4111111111112107">
++  </label>
++  <label>One-time code
++    <input type="text" autocomplete="one-time-code" inputmode="numeric"
++           value="927107">
++  </label>
++</main>
++<script>
++fetch('/prometheus-supervision-release')
++  .then(response => response.text())
++  .then(message => {
++    const button = document.createElement('button');
++    button.id = 'server-released-button';
++    button.textContent = message;
++    document.querySelector('#mutation-region').append(button);
++    document.querySelector('#mutation-status').textContent =
++        'server mutation committed';
++  });
++</script>
++)HTML";
++
++constexpr char kFramePage[] = R"HTML(
++<!doctype html>
++<meta charset="utf-8">
++<title>Supervision frame lifecycle</title>
++<main>
++  <h1>Frame lifecycle state</h1>
++  <iframe id="supervision-child" src="/title1.html"></iframe>
++</main>
++)HTML";
++
++bool Omits(std::string_view payload, std::string_view forbidden) {
++  return payload.find(forbidden) == std::string_view::npos;
++}
++
++}  // namespace
++
++class PrometheusSupervisionCaptureHubBrowserTest : public InProcessBrowserTest {
+  public:
+   void SetUpOnMainThread() override {
+     InProcessBrowserTest::SetUpOnMainThread();
+     host_resolver()->AddRule("*", "127.0.0.1");
++    release_response_ =
++        std::make_unique<net::test_server::ControllableHttpResponse>(
++            embedded_test_server(), kReleasePath);
++    embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
++        &PrometheusSupervisionCaptureHubBrowserTest::HandleRequest,
++        base::Unretained(this)));
+     ASSERT_TRUE(embedded_test_server()->Start());
+     ASSERT_TRUE(ui_test_utils::NavigateToURL(
+-        browser(), embedded_test_server()->GetURL("/title1.html")));
++        browser(), embedded_test_server()->GetURL(kHubPagePath)));
+   }
+ 
+   content::WebContents* contents() {
+     return browser()->tab_strip_model()->GetActiveWebContents();
+   }
++
++  std::optional<SupervisionCaptureBaselineDelivery> WaitForBaseline(
++      PrometheusSupervisionCaptureHub& hub,
++      SupervisionCaptureConsumerId consumer_id) {
++    std::optional<SupervisionCaptureBaselineDelivery> delivery;
++    EXPECT_TRUE(base::test::RunUntil([&]() {
++      delivery = hub.ReadBaseline(consumer_id);
++      return delivery.has_value() || !hub.capture_in_flight_for_testing();
++    }));
++    EXPECT_TRUE(delivery.has_value())
++        << "enables=" << hub.enable_count_for_testing()
++        << ", disables=" << hub.disable_count_for_testing()
++        << ", captures=" << hub.capture_count_for_testing()
++        << ", dirty signals=" << hub.dirty_signal_count_for_testing()
++        << ", in flight=" << hub.capture_in_flight_for_testing();
++    return delivery;
++  }
++
++  std::optional<SupervisionCaptureDiffDelivery> WaitForDiff(
++      PrometheusSupervisionCaptureHub& hub,
++      SupervisionCaptureConsumerId consumer_id) {
++    std::optional<SupervisionCaptureDiffDelivery> delivery;
++    EXPECT_TRUE(base::test::RunUntil([&]() {
++      delivery = hub.ReadNext(consumer_id);
++      return delivery.has_value();
++    }));
++    return delivery;
++  }
++
++  net::test_server::ControllableHttpResponse& release_response() {
++    return *release_response_;
++  }
++
++ private:
++  std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
++      const net::test_server::HttpRequest& request) {
++    std::string_view content;
++    if (request.relative_url == kHubPagePath) {
++      content = kHubPage;
++    } else if (request.relative_url == kFramePagePath) {
++      content = kFramePage;
++    } else {
++      return nullptr;
++    }
++    auto response = std::make_unique<net::test_server::BasicHttpResponse>();
++    response->set_code(net::HTTP_OK);
++    response->set_content_type("text/html; charset=utf-8");
++    response->set_content(content);
++    return response;
++  }
++
++  std::unique_ptr<net::test_server::ControllableHttpResponse> release_response_;
+ };
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
+@@ -36,51 +173,210 @@ IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
+   ASSERT_TRUE(contents());
+   PrometheusSupervisionCaptureHub hub(contents(), 23);
+ 
+-  const auto first = hub.AttachConsumer(
+-      SupervisionCaptureConsumerKind::kDashboard,
+-      base::Time::Now() + base::Minutes(5));
+-  const auto second = hub.AttachConsumer(
+-      SupervisionCaptureConsumerKind::kAgentCompatibility,
+-      base::Time::Now() + base::Minutes(5));
+-
+-  EXPECT_TRUE(first.has_value());
+-  EXPECT_TRUE(second.has_value());
++  const auto first =
++      hub.AttachConsumer(SupervisionCaptureConsumerKind::kDashboard,
++                         base::Time::Now() + base::Minutes(5));
++  const auto second =
++      hub.AttachConsumer(SupervisionCaptureConsumerKind::kAgentCompatibility,
++                         base::Time::Now() + base::Minutes(5));
++  ASSERT_TRUE(first.has_value());
++  ASSERT_TRUE(second.has_value());
+   EXPECT_EQ(1u, hub.enable_count_for_testing());
+   EXPECT_EQ(1u, hub.capture_count_for_testing());
++
++  const auto first_baseline = WaitForBaseline(hub, *first);
++  const auto second_baseline = WaitForBaseline(hub, *second);
++  ASSERT_TRUE(first_baseline.has_value());
++  ASSERT_TRUE(second_baseline.has_value());
++  EXPECT_EQ(first_baseline->baseline, second_baseline->baseline);
++  EXPECT_EQ(first_baseline->stamp.document_epoch,
++            second_baseline->stamp.document_epoch);
++  EXPECT_NE(first_baseline->stamp.session, second_baseline->stamp.session);
++  ASSERT_TRUE(hub.Ack(*first, first_baseline->stamp));
++  ASSERT_TRUE(hub.Ack(*second, second_baseline->stamp));
++  const size_t dirty_signals_before_release =
++      hub.dirty_signal_count_for_testing();
++  const size_t captures_before_release = hub.capture_count_for_testing();
++
++  for (std::string_view forbidden :
++       {kPasswordSentinel, kPaymentSentinel, kOtpSentinel, "attributeName",
++        "oldValue", "addedNodes", "removedNodes"}) {
++    EXPECT_TRUE(Omits(first_baseline->baseline.serialized_json, forbidden))
++        << forbidden;
++  }
++
++  release_response().WaitForRequest();
++  release_response().Send(net::HTTP_OK, "text/plain", kMutationMarker);
++  release_response().Done();
++
++  const auto first_diff = WaitForDiff(hub, *first);
++  const auto second_diff = WaitForDiff(hub, *second);
++  ASSERT_TRUE(first_diff.has_value());
++  ASSERT_TRUE(second_diff.has_value());
++  EXPECT_EQ(dirty_signals_before_release + 1u,
++            hub.dirty_signal_count_for_testing());
++  EXPECT_EQ(captures_before_release + 1u, hub.capture_count_for_testing());
++  EXPECT_EQ(first_diff->diff, second_diff->diff);
++  EXPECT_EQ(first_diff->stamp.document_epoch,
++            first_baseline->stamp.document_epoch);
++  EXPECT_EQ(first_diff->stamp.sequence, second_diff->stamp.sequence);
++  EXPECT_NE(std::string::npos,
++            first_diff->diff.serialized_json.find(kMutationMarker));
++  for (std::string_view forbidden :
++       {kPasswordSentinel, kPaymentSentinel, kOtpSentinel, "attributeName",
++        "oldValue", "addedNodes", "removedNodes"}) {
++    EXPECT_TRUE(Omits(first_diff->diff.serialized_json, forbidden))
++        << forbidden;
++  }
++
++  ASSERT_TRUE(hub.Ack(*first, first_diff->stamp));
++  EXPECT_FALSE(hub.ReadNext(*first).has_value());
++  ASSERT_TRUE(hub.ReadNext(*second).has_value());
++  ASSERT_TRUE(hub.Ack(*second, second_diff->stamp));
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
+                        NavigationTearsDownOldDocumentBeforeRebinding) {
+   ASSERT_TRUE(contents());
+   PrometheusSupervisionCaptureHub hub(contents(), 24);
+-  EXPECT_TRUE(hub.AttachConsumer(SupervisionCaptureConsumerKind::kDashboard,
+-                                 base::Time::Now() + base::Minutes(5))
+-                  .has_value());
++  const auto consumer =
++      hub.AttachConsumer(SupervisionCaptureConsumerKind::kDashboard,
++                         base::Time::Now() + base::Minutes(5));
++  ASSERT_TRUE(consumer.has_value());
++  const auto old_baseline = WaitForBaseline(hub, *consumer);
++  ASSERT_TRUE(old_baseline.has_value());
++  ASSERT_TRUE(hub.Ack(*consumer, old_baseline->stamp));
+ 
+   ASSERT_TRUE(ui_test_utils::NavigateToURL(
+       browser(), embedded_test_server()->GetURL("/title2.html")));
++  const auto new_baseline = WaitForBaseline(hub, *consumer);
++  ASSERT_TRUE(new_baseline.has_value());
++  EXPECT_NE(old_baseline->stamp.document_epoch,
++            new_baseline->stamp.document_epoch);
++  EXPECT_FALSE(hub.Ack(*consumer, old_baseline->stamp));
++  const auto reoffered_baseline = WaitForBaseline(hub, *consumer);
++  ASSERT_TRUE(reoffered_baseline.has_value());
++  ASSERT_TRUE(hub.Ack(*consumer, reoffered_baseline->stamp));
++  EXPECT_EQ(2u, hub.enable_count_for_testing());
++  EXPECT_EQ(1u, hub.disable_count_for_testing());
++  EXPECT_EQ(2u, hub.capture_count_for_testing());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
++                       SubframeReplacementRotatesOneSharedEpoch) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL(kFramePagePath)));
++  content::RenderFrameHost* child =
++      content::ChildFrameAt(contents()->GetPrimaryMainFrame(), 0);
++  ASSERT_TRUE(child);
++
++  PrometheusSupervisionCaptureHub hub(contents(), 25);
++  const auto consumer =
++      hub.AttachConsumer(SupervisionCaptureConsumerKind::kDashboard,
++                         base::Time::Now() + base::Minutes(5));
++  ASSERT_TRUE(consumer.has_value());
++  const auto old_baseline = WaitForBaseline(hub, *consumer);
++  ASSERT_TRUE(old_baseline.has_value());
++  ASSERT_TRUE(hub.Ack(*consumer, old_baseline->stamp));
+   EXPECT_EQ(2u, hub.enable_count_for_testing());
++
++  ASSERT_TRUE(content::NavigateIframeToURL(
++      contents(), "supervision-child",
++      embedded_test_server()->GetURL("/title2.html")));
++  const auto new_baseline = WaitForBaseline(hub, *consumer);
++  ASSERT_TRUE(new_baseline.has_value());
++  EXPECT_NE(old_baseline->stamp.document_epoch,
++            new_baseline->stamp.document_epoch);
++  EXPECT_EQ(4u, hub.enable_count_for_testing());
++  EXPECT_EQ(2u, hub.disable_count_for_testing());
++  EXPECT_EQ(2u, hub.capture_count_for_testing());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
++                       RendererDisconnectFailsClosedAndRebindsOnce) {
++  ASSERT_TRUE(contents());
++  PrometheusSupervisionCaptureHub hub(contents(), 26);
++  const auto consumer =
++      hub.AttachConsumer(SupervisionCaptureConsumerKind::kDashboard,
++                         base::Time::Now() + base::Minutes(5));
++  ASSERT_TRUE(consumer.has_value());
++  const auto old_baseline = WaitForBaseline(hub, *consumer);
++  ASSERT_TRUE(old_baseline.has_value());
++  ASSERT_TRUE(hub.Ack(*consumer, old_baseline->stamp));
++
++  content::RenderProcessHost* process =
++      contents()->GetPrimaryMainFrame()->GetProcess();
++  content::ScopedAllowRendererCrashes allow_renderer_crash(process);
++  content::RenderProcessHostWatcher process_exit(
++      process, content::RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
++  ASSERT_TRUE(process->Shutdown(content::RESULT_CODE_KILLED));
++  process_exit.Wait();
++  ASSERT_TRUE(base::test::RunUntil(
++      [&]() { return hub.capture_count_for_testing() >= 2u; }));
++  EXPECT_TRUE(hub.ConsumerNeedsBaseline(*consumer));
+   EXPECT_EQ(1u, hub.disable_count_for_testing());
++  EXPECT_EQ(1u, hub.enable_count_for_testing());
+   EXPECT_EQ(2u, hub.capture_count_for_testing());
++
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("/title2.html")));
++  const auto new_baseline = WaitForBaseline(hub, *consumer);
++  ASSERT_TRUE(new_baseline.has_value());
++  EXPECT_NE(old_baseline->stamp.document_epoch,
++            new_baseline->stamp.document_epoch);
++  EXPECT_EQ(2u, hub.enable_count_for_testing());
++  EXPECT_EQ(1u, hub.disable_count_for_testing());
++  EXPECT_EQ(3u, hub.capture_count_for_testing());
++}
++
++IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
++                       TargetCloseEndsConsumersAndDisablesDocument) {
++  content::WebContents* target = contents();
++  ASSERT_TRUE(target);
++  PrometheusSupervisionCaptureHub hub(target, 27);
++  const auto consumer =
++      hub.AttachConsumer(SupervisionCaptureConsumerKind::kDashboard,
++                         base::Time::Now() + base::Minutes(5));
++  ASSERT_TRUE(consumer.has_value());
++  ASSERT_TRUE(WaitForBaseline(hub, *consumer).has_value());
++
++  chrome::AddTabAt(browser(), GURL("about:blank"), -1,
++                   /*foreground=*/false);
++  const int target_index =
++      browser()->tab_strip_model()->GetIndexOfWebContents(target);
++  ASSERT_NE(TabStripModel::kNoTab, target_index);
++  content::WebContentsDestroyedWatcher destroyed_watcher(target);
++  browser()->tab_strip_model()->CloseWebContentsAt(target_index,
++                                                   TabCloseTypes::CLOSE_NONE);
++  destroyed_watcher.Wait();
++
++  EXPECT_EQ(0u, hub.consumer_count());
++  EXPECT_EQ(1u, hub.disable_count_for_testing());
++  EXPECT_FALSE(hub.AttachConsumer(SupervisionCaptureConsumerKind::kDashboard,
++                                  base::Time::Now() + base::Minutes(5))
++                   .has_value());
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(PrometheusSupervisionCaptureHubBrowserTest,
+                        LastDetachDisablesTheOnlyRendererGeneration) {
+   ASSERT_TRUE(contents());
+-  PrometheusSupervisionCaptureHub hub(contents(), 25);
+-  const auto first = hub.AttachConsumer(
+-      SupervisionCaptureConsumerKind::kDashboard,
+-      base::Time::Now() + base::Minutes(5));
+-  const auto second = hub.AttachConsumer(
+-      SupervisionCaptureConsumerKind::kDashboard,
+-      base::Time::Now() + base::Minutes(5));
++  PrometheusSupervisionCaptureHub hub(contents(), 28);
++  const auto first =
++      hub.AttachConsumer(SupervisionCaptureConsumerKind::kDashboard,
++                         base::Time::Now() + base::Minutes(5));
++  const auto second =
++      hub.AttachConsumer(SupervisionCaptureConsumerKind::kDashboard,
++                         base::Time::Now() + base::Minutes(5));
+   ASSERT_TRUE(first.has_value());
+   ASSERT_TRUE(second.has_value());
++  ASSERT_TRUE(WaitForBaseline(hub, *first).has_value());
+ 
+   EXPECT_TRUE(hub.DetachConsumer(*first));
+   EXPECT_EQ(0u, hub.disable_count_for_testing());
+   EXPECT_TRUE(hub.DetachConsumer(*second));
+   EXPECT_EQ(1u, hub.disable_count_for_testing());
++  EXPECT_EQ(0u, hub.retained_batch_count_for_testing());
++  EXPECT_FALSE(hub.capture_in_flight_for_testing());
+ }
+ 
+ }  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,260 @@
+From b49829295a312a9b5b36cea7d1b16a89b42c27d9 Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Fri, 24 Jul 2026 23:04:10 -0500
+Subject: [PATCH] test(21-25): prove production supervision shutdown
+
+---
+ .../prometheus_mcp_integration_browsertest.cc | 209 ++++++++++++++++++
+ 1 file changed, 209 insertions(+)
+
+diff --git a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+index 2366798fab..fde2c2dcd0 100644
+--- a/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
++++ b/chrome/browser/prometheus/prometheus_mcp_integration_browsertest.cc
+@@ -38,13 +38,17 @@
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_agent_profile_service_factory.h"
++#include "chrome/browser/prometheus/prometheus_browser_main_extra_parts.h"
+ #include "chrome/browser/prometheus/prometheus_provider_registry.h"
+ #include "chrome/browser/prometheus/prometheus_provider_transport.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service.h"
+ #include "chrome/browser/prometheus/prometheus_runtime_profile_service_factory.h"
+ #include "chrome/browser/prometheus/prometheus_secret_store.h"
++#include "chrome/browser/prometheus/prometheus_supervision_profile_service.h"
++#include "chrome/browser/prometheus/prometheus_supervision_profile_service_factory.h"
+ #include "chrome/browser/tab_list/tab_list_interface.h"
+ #include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/views/prometheus/prometheus_runtime_dialogs.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+ #include "components/tabs/public/tab_interface.h"
+ #include "content/public/browser/render_frame_host.h"
+@@ -480,6 +484,14 @@ class PrometheusMcpIntegrationBrowserTest : public InProcessBrowserTest {
+   }
+ 
+   void TearDownOnMainThread() override {
++    if (production_parts_) {
++      if (gateway_) {
++        gateway_->SetSupervisionGatewayDispatcher({});
++      }
++      production_parts_->UnbindSupervisionAgentForTesting();
++      production_parts_->PostMainMessageLoopRun();
++      production_parts_.reset();
++    }
+     if (gateway_) {
+       base::test::TestFuture<void> stopped;
+       gateway_->Shutdown(stopped.GetCallback());
+@@ -619,6 +631,7 @@ class PrometheusMcpIntegrationBrowserTest : public InProcessBrowserTest {
+ 
+   base::ScopedTempDir temp_dir_;
+   std::unique_ptr<PrometheusAgentGateway> gateway_;
++  std::unique_ptr<PrometheusBrowserMainExtraParts> production_parts_;
+   base::Time now_ = base::Time::FromSecondsSinceUnixEpoch(1000);
+ };
+ 
+@@ -1505,6 +1518,202 @@ IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
+   }
+ }
+ 
++IN_PROC_BROWSER_TEST_F(
++    PrometheusMcpIntegrationBrowserTest,
++    SupervisionProductionBindingCancelsPendingDiffBeforeGatewayShutdown) {
++  auto supervision_status = [](const base::DictValue& health) {
++    const base::ListValue* diagnostics = health.FindList("diagnostics");
++    if (!diagnostics) {
++      return std::string();
++    }
++    for (const base::Value& value : *diagnostics) {
++      const base::DictValue* component = value.GetIfDict();
++      if (component && component->FindString("key") &&
++          *component->FindString("key") == "supervision") {
++        const std::string* status = component->FindString("status");
++        return status ? *status : std::string();
++      }
++    }
++    return std::string();
++  };
++
++  HttpResult before_binding_raw = Exchange("GET", "/v1/health");
++  base::DictValue before_binding = Parse(before_binding_raw);
++  EXPECT_EQ("not_ready", supervision_status(before_binding));
++
++  tabs::TabInterface* const target_tab =
++      TabListInterface::From(browser())->GetActiveTab();
++  ASSERT_TRUE(target_tab);
++  ASSERT_TRUE(content::NavigateToURL(target_tab->GetContents(),
++                                     Fixture("read_page.html")));
++  const int32_t stable_tab_id = target_tab->GetHandle().raw_value();
++
++  production_parts_ = std::make_unique<PrometheusBrowserMainExtraParts>(true);
++  production_parts_->PostBrowserStart();
++  ASSERT_TRUE(
++      production_parts_->BindSupervisionGatewayForTesting(gateway_.get()));
++
++  HttpResult bound_health_raw = Exchange("GET", "/v1/health");
++  base::DictValue bound_health = Parse(bound_health_raw);
++  EXPECT_EQ("ready", supervision_status(bound_health));
++
++  const std::string agent_session =
++      SessionId(CreateSession("Production supervision integration"));
++  ASSERT_FALSE(agent_session.empty());
++  base::DictValue activated =
++      Command(agent_session, "activate_tab",
++              Target(stable_tab_id, browser()->GetSessionID().id()));
++  ASSERT_TRUE(activated.FindBool("ok").value_or(false));
++
++  PrometheusSupervisionProfileService* const supervision =
++      PrometheusSupervisionProfileServiceFactory::GetForProfile(
++          browser()->profile());
++  ASSERT_TRUE(supervision);
++
++  std::vector<std::string> pairing_codes;
++  auto redeem = [&](std::string_view label) {
++    SupervisionPairingCreationResult pairing =
++        supervision->CreatePairing(browser(), target_tab);
++    EXPECT_TRUE(pairing.ok) << pairing.message;
++    pairing_codes.push_back(pairing.pairing_code);
++    base::DictValue params;
++    params.Set("pairing_code", pairing.pairing_code);
++    params.Set("client_label", label);
++    base::DictValue request;
++    request.Set("operation", "redeem");
++    request.Set("params", std::move(params));
++    base::DictValue response =
++        Parse(Exchange("POST", "/v1/supervision", Json(std::move(request))));
++    EXPECT_TRUE(response.FindBool("ok").value_or(false));
++    const base::DictValue* result = response.FindDict("result");
++    const std::string* dashboard_session =
++        result ? result->FindString("dashboard_session") : nullptr;
++    EXPECT_TRUE(dashboard_session);
++    return dashboard_session ? *dashboard_session : std::string();
++  };
++  const std::string viewer_a = redeem("Production viewer A");
++  const std::string viewer_b = redeem("Production viewer B");
++  ASSERT_FALSE(viewer_a.empty());
++  ASSERT_FALSE(viewer_b.empty());
++  ASSERT_NE(viewer_a, viewer_b);
++
++  auto baseline = [&](std::string_view dashboard_session) {
++    base::DictValue params;
++    params.Set("dashboard_session", dashboard_session);
++    base::DictValue request;
++    request.Set("operation", "baseline");
++    request.Set("params", std::move(params));
++    base::DictValue response =
++        Parse(Exchange("POST", "/v1/supervision", Json(std::move(request))));
++    EXPECT_TRUE(response.FindBool("ok").value_or(false));
++    const base::DictValue* result = response.FindDict("result");
++    const std::string* document_epoch =
++        result ? result->FindString("document_epoch") : nullptr;
++    const std::optional<double> sequence =
++        result ? result->FindDouble("sequence") : std::nullopt;
++    EXPECT_TRUE(document_epoch);
++    EXPECT_TRUE(sequence.has_value());
++    return std::pair<std::string, double>(
++        document_epoch ? *document_epoch : std::string(),
++        sequence.value_or(0));
++  };
++  const auto baseline_a = baseline(viewer_a);
++  const auto baseline_b = baseline(viewer_b);
++  ASSERT_FALSE(baseline_a.first.empty());
++  ASSERT_FALSE(baseline_b.first.empty());
++  EXPECT_EQ(baseline_a.first, baseline_b.first);
++
++  base::DictValue agent_started =
++      Command(agent_session, "start_supervision_session");
++  ASSERT_TRUE(agent_started.FindBool("ok").value_or(false));
++  EXPECT_FALSE(agent_started.contains("dashboard_session"));
++  EXPECT_EQ(3u,
++            supervision->capture_consumer_count_for_testing(stable_tab_id));
++
++  base::DictValue end_b_params;
++  end_b_params.Set("dashboard_session", viewer_b);
++  base::DictValue end_b_request;
++  end_b_request.Set("operation", "end");
++  end_b_request.Set("params", std::move(end_b_params));
++  base::DictValue ended_b = Parse(Exchange(
++      "POST", "/v1/supervision", Json(std::move(end_b_request))));
++  ASSERT_TRUE(ended_b.FindBool("ok").value_or(false));
++
++  base::DictValue agent_ended =
++      Command(agent_session, "end_supervision_session");
++  ASSERT_TRUE(agent_ended.FindBool("ok").value_or(false));
++  EXPECT_EQ(1u,
++            supervision->capture_consumer_count_for_testing(stable_tab_id));
++
++  base::DictValue pending_params;
++  pending_params.Set("dashboard_session", viewer_a);
++  pending_params.Set("document_epoch", baseline_a.first);
++  pending_params.Set("after_sequence", baseline_a.second);
++  base::DictValue pending_request;
++  pending_request.Set("operation", "diff");
++  pending_request.Set("params", std::move(pending_params));
++  RawHttpClient pending_dashboard(gateway_->endpoint_for_testing());
++  pending_dashboard.Send(
++      MakeRequest("POST", "/v1/supervision", gateway_->port_for_testing(),
++                  gateway_->bearer_for_testing(),
++                  Json(std::move(pending_request))));
++  ASSERT_TRUE(base::test::RunUntil([&]() {
++    return gateway_->pending_supervision_request_count_for_testing() == 1u;
++  }));
++
++  int late_dialog_callbacks = 0;
++  SetPrometheusSupervisionDialogAutomationForTesting(base::BindRepeating(
++      [](int* callbacks, BrowserWindowInterface*,
++         PrometheusSupervisionDialogKind) {
++        ++*callbacks;
++        return PrometheusSupervisionDialogAutomationResponse::kNoResponse;
++      },
++      &late_dialog_callbacks));
++
++  SetPrometheusSupervisionDialogAutomationForTesting({});
++  gateway_->SetSupervisionTestHandoffDispatcher({});
++  gateway_->SetSupervisionGatewayDispatcher({});
++  production_parts_->UnbindSupervisionAgentForTesting();
++
++  HttpResult cancelled = pending_dashboard.ReadResponse();
++  EXPECT_EQ(200, cancelled.status) << cancelled.raw;
++  EXPECT_NE(std::string::npos, cancelled.body.find("UNAVAILABLE"));
++  EXPECT_EQ(cancelled.raw.find("HTTP/1.1"), cancelled.raw.rfind("HTTP/1.1"));
++  EXPECT_EQ(0u, gateway_->pending_supervision_request_count_for_testing());
++
++  base::DictValue unavailable_params;
++  unavailable_params.Set("dashboard_session", viewer_a);
++  base::DictValue unavailable_request;
++  unavailable_request.Set("operation", "baseline");
++  unavailable_request.Set("params", std::move(unavailable_params));
++  HttpResult dashboard_unavailable = Exchange(
++      "POST", "/v1/supervision", Json(std::move(unavailable_request)));
++  EXPECT_NE(std::string::npos,
++            dashboard_unavailable.body.find("UNAVAILABLE"));
++  base::DictValue agent_unavailable =
++      Command(agent_session, "get_supervision_diff");
++  ExpectCode(agent_unavailable, "CAPABILITY_NOT_READY");
++
++  HttpResult after_unbind_raw = Exchange("GET", "/v1/health");
++  base::DictValue after_unbind = Parse(after_unbind_raw);
++  EXPECT_EQ("not_ready", supervision_status(after_unbind));
++  for (const std::string& secret :
++       {pairing_codes[0], pairing_codes[1], viewer_a, viewer_b, agent_session,
++        gateway_->bearer_for_testing()}) {
++    ASSERT_FALSE(secret.empty());
++    EXPECT_EQ(std::string::npos, after_unbind_raw.raw.find(secret));
++  }
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ(0, late_dialog_callbacks);
++
++  production_parts_->PostMainMessageLoopRun();
++  production_parts_.reset();
++  base::test::TestFuture<void> stopped;
++  gateway_->Shutdown(stopped.GetCallback());
++  ASSERT_TRUE(stopped.Wait());
++  gateway_.reset();
++}
++
+ IN_PROC_BROWSER_TEST_F(PrometheusMcpIntegrationBrowserTest,
+                        ShutdownDuringPageCommandCompletesOnce) {
+   const std::string session_id = SessionId(CreateSession("Shutdown race"));
+-- 
+2.50.1 (Apple Git-155)
+

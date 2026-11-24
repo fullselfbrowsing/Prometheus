@@ -1,0 +1,918 @@
+From 73651ebeac19c5ac94893a4c7480278fc30ebd1b Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 05:18:25 -0500
+Subject: [PATCH 16/16] feat(20-07): add closed provider bootstrap
+
+---
+ chrome/browser/prometheus/BUILD.gn            |  15 +
+ .../prometheus_runtime_test_bootstrap.cc      | 359 ++++++++++++++++
+ .../prometheus_runtime_test_bootstrap.h       |  89 ++++
+ ...metheus_runtime_test_bootstrap_unittest.cc | 394 ++++++++++++++++++
+ 4 files changed, 857 insertions(+)
+ create mode 100644 chrome/browser/prometheus/prometheus_runtime_test_bootstrap.cc
+ create mode 100644 chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h
+ create mode 100644 chrome/browser/prometheus/prometheus_runtime_test_bootstrap_unittest.cc
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index fe46d14ba6..5a3d65be6a 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -373,6 +373,19 @@ source_set("prometheus_provider_transport") {
+   ]
+ }
+ 
++source_set("prometheus_runtime_test_bootstrap") {
++  sources = [
++    "prometheus_runtime_test_bootstrap.cc",
++    "prometheus_runtime_test_bootstrap.h",
++  ]
++
++  deps = [
++    ":prometheus_provider_registry",
++    "//base",
++    "//url",
++  ]
++}
++
+ source_set("prometheus_agent_gateway_contract") {
+   sources = [
+     "prometheus_agent_gateway.h",
+@@ -434,6 +447,7 @@ test("prometheus_unittests") {
+     "prometheus_provider_registry_unittest.cc",
+     "prometheus_provider_transport_unittest.cc",
+     "prometheus_runtime_store_unittest.cc",
++    "prometheus_runtime_test_bootstrap_unittest.cc",
+     "prometheus_runtime_types_unittest.cc",
+     "prometheus_secret_store_unittest.cc",
+     "prometheus_tab_state_unittest.cc",
+@@ -465,6 +479,7 @@ test("prometheus_unittests") {
+     ":prometheus_provider_transport",
+     ":prometheus_runtime_prefs",
+     ":prometheus_runtime_store",
++    ":prometheus_runtime_test_bootstrap",
+     ":prometheus_runtime_types",
+     ":prometheus_secret_store",
+     ":prometheus_tab_state",
+diff --git a/chrome/browser/prometheus/prometheus_runtime_test_bootstrap.cc b/chrome/browser/prometheus/prometheus_runtime_test_bootstrap.cc
+new file mode 100644
+index 0000000000..c6cf103ed0
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_runtime_test_bootstrap.cc
+@@ -0,0 +1,359 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h"
++
++#include <algorithm>
++#include <array>
++#include <cctype>
++#include <set>
++#include <string_view>
++#include <utility>
++#include <vector>
++
++#include "base/containers/span.h"
++#include "base/files/file.h"
++#include "base/files/file_util.h"
++#include "base/functional/bind.h"
++#include "base/json/json_reader.h"
++#include "base/strings/string_util.h"
++#include "build/build_config.h"
++#include "chrome/browser/prometheus/prometheus_provider_registry.h"
++#include "url/gurl.h"
++
++#if BUILDFLAG(IS_POSIX)
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
++
++namespace prometheus {
++
++namespace {
++
++constexpr int kRequiredFilePermissions = 0600;
++constexpr std::array<std::string_view, 7> kSchemaKeys = {
++    "schema_version", "provider_id", "kind",    "route",
++    "endpoint",       "model",       "enabled",
++};
++
++enum class FlatObjectScanResult {
++  kValid,
++  kMalformed,
++  kDuplicateKey,
++};
++
++void SkipWhitespace(std::string_view input, size_t* position) {
++  while (*position < input.size() &&
++         std::isspace(static_cast<unsigned char>(input[*position]))) {
++    ++*position;
++  }
++}
++
++bool SkipJsonString(std::string_view input, size_t* position) {
++  if (*position >= input.size() || input[*position] != '"') {
++    return false;
++  }
++  ++*position;
++  bool escaped = false;
++  while (*position < input.size()) {
++    const char current = input[(*position)++];
++    if (escaped) {
++      escaped = false;
++      continue;
++    }
++    if (current == '\\') {
++      escaped = true;
++      continue;
++    }
++    if (current == '"') {
++      return true;
++    }
++  }
++  return false;
++}
++
++FlatObjectScanResult ScanFlatObjectKeys(std::string_view input) {
++  size_t position = 0;
++  SkipWhitespace(input, &position);
++  if (position >= input.size() || input[position++] != '{') {
++    return FlatObjectScanResult::kMalformed;
++  }
++
++  std::set<std::string> keys;
++  SkipWhitespace(input, &position);
++  if (position < input.size() && input[position] == '}') {
++    ++position;
++    SkipWhitespace(input, &position);
++    return position == input.size() ? FlatObjectScanResult::kValid
++                                    : FlatObjectScanResult::kMalformed;
++  }
++
++  while (position < input.size()) {
++    if (input[position] != '"') {
++      return FlatObjectScanResult::kMalformed;
++    }
++    const size_t key_start = ++position;
++    while (position < input.size() && input[position] != '"') {
++      if (input[position] == '\\' ||
++          static_cast<unsigned char>(input[position]) < 0x20) {
++        return FlatObjectScanResult::kMalformed;
++      }
++      ++position;
++    }
++    if (position >= input.size()) {
++      return FlatObjectScanResult::kMalformed;
++    }
++    std::string key(input.substr(key_start, position - key_start));
++    ++position;
++    if (!keys.insert(std::move(key)).second) {
++      return FlatObjectScanResult::kDuplicateKey;
++    }
++
++    SkipWhitespace(input, &position);
++    if (position >= input.size() || input[position++] != ':') {
++      return FlatObjectScanResult::kMalformed;
++    }
++    SkipWhitespace(input, &position);
++    if (position >= input.size() || input[position] == '{' ||
++        input[position] == '[') {
++      return FlatObjectScanResult::kMalformed;
++    }
++    if (input[position] == '"') {
++      if (!SkipJsonString(input, &position)) {
++        return FlatObjectScanResult::kMalformed;
++      }
++    } else {
++      const size_t value_start = position;
++      while (position < input.size() && input[position] != ',' &&
++             input[position] != '}') {
++        ++position;
++      }
++      size_t value_end = position;
++      while (value_end > value_start &&
++             std::isspace(static_cast<unsigned char>(input[value_end - 1]))) {
++        --value_end;
++      }
++      if (value_end == value_start) {
++        return FlatObjectScanResult::kMalformed;
++      }
++    }
++
++    SkipWhitespace(input, &position);
++    if (position >= input.size()) {
++      return FlatObjectScanResult::kMalformed;
++    }
++    if (input[position] == '}') {
++      ++position;
++      SkipWhitespace(input, &position);
++      return position == input.size() ? FlatObjectScanResult::kValid
++                                      : FlatObjectScanResult::kMalformed;
++    }
++    if (input[position++] != ',') {
++      return FlatObjectScanResult::kMalformed;
++    }
++    SkipWhitespace(input, &position);
++  }
++  return FlatObjectScanResult::kMalformed;
++}
++
++bool HasExactSchemaKeys(const base::DictValue& value) {
++  if (value.size() != kSchemaKeys.size()) {
++    return false;
++  }
++  return std::ranges::all_of(kSchemaKeys, [&value](std::string_view key) {
++    return value.contains(key);
++  });
++}
++
++std::optional<PrometheusRuntimeTestBootstrapFileFacts> InspectConfigFile(
++    const base::FilePath& path) {
++#if BUILDFLAG(IS_POSIX)
++  base::stat_wrapper_t information;
++  if (base::File::Lstat(path, &information) != 0) {
++    return std::nullopt;
++  }
++  return PrometheusRuntimeTestBootstrapFileFacts{
++      .is_regular_file = S_ISREG(information.st_mode),
++      .is_symbolic_link = S_ISLNK(information.st_mode),
++      .is_owned_by_current_user = information.st_uid == geteuid(),
++      .posix_permissions = information.st_mode & 0777,
++      .size = information.st_size,
++  };
++#else
++  return std::nullopt;
++#endif
++}
++
++std::optional<std::string> ReadConfigFile(const base::FilePath& path,
++                                          size_t max_bytes) {
++#if BUILDFLAG(IS_POSIX)
++  base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ |
++                            base::File::FLAG_NO_FOLLOW);
++  if (!file.IsValid()) {
++    return std::nullopt;
++  }
++  base::stat_wrapper_t information;
++  if (base::File::Fstat(file.GetPlatformFile(), &information) != 0 ||
++      !S_ISREG(information.st_mode) || information.st_uid != geteuid() ||
++      (information.st_mode & 0777) != kRequiredFilePermissions ||
++      information.st_size <= 0 ||
++      static_cast<uint64_t>(information.st_size) > max_bytes) {
++    return std::nullopt;
++  }
++  std::string contents(static_cast<size_t>(information.st_size), '\0');
++  if (!file.ReadAndCheck(0, base::as_writable_byte_span(contents))) {
++    return std::nullopt;
++  }
++  return contents;
++#else
++  return std::nullopt;
++#endif
++}
++
++}  // namespace
++
++PrometheusRuntimeTestBootstrapResult ApplyRuntimeTestProviderBootstrap(
++    const base::CommandLine& command_line,
++    bool is_official_build,
++    PrometheusRuntimeTestBootstrapProfileFacts profile_facts,
++    const PrometheusRuntimeTestBootstrapFileAccess& file_access,
++    PrometheusProviderRegistry* registry) {
++  const bool has_test_type =
++      command_line.HasSwitch(kPrometheusRuntimeTestTypeSwitch);
++  const bool has_config =
++      command_line.HasSwitch(kPrometheusRuntimeTestProviderConfigSwitch);
++  if (!has_test_type && !has_config) {
++    return PrometheusRuntimeTestBootstrapResult::kNotRequested;
++  }
++  if (!has_test_type || !has_config ||
++      command_line.GetSwitchValueASCII(kPrometheusRuntimeTestTypeSwitch) !=
++          kPrometheusRuntimeTestType) {
++    return PrometheusRuntimeTestBootstrapResult::kLaunchDenied;
++  }
++#if defined(OFFICIAL_BUILD)
++  return PrometheusRuntimeTestBootstrapResult::kOfficialBuildDenied;
++#endif
++  if (is_official_build) {
++    return PrometheusRuntimeTestBootstrapResult::kOfficialBuildDenied;
++  }
++  if (!profile_facts.is_regular_profile ||
++      !profile_facts.is_disposable_profile) {
++    return PrometheusRuntimeTestBootstrapResult::kProfileDenied;
++  }
++  if (!registry || file_access.inspect.is_null() ||
++      file_access.read.is_null()) {
++    return PrometheusRuntimeTestBootstrapResult::kFileDenied;
++  }
++
++  const base::FilePath requested_path = command_line.GetSwitchValuePath(
++      kPrometheusRuntimeTestProviderConfigSwitch);
++  if (requested_path.empty() || !requested_path.IsAbsolute() ||
++      requested_path.ReferencesParent()) {
++    return PrometheusRuntimeTestBootstrapResult::kPathDenied;
++  }
++  base::FilePath path;
++#if BUILDFLAG(IS_POSIX)
++  const std::optional<base::FilePath> resolved_path =
++      base::MakeAbsoluteFilePathNoResolveSymbolicLinks(requested_path);
++  if (!resolved_path) {
++    return PrometheusRuntimeTestBootstrapResult::kPathDenied;
++  }
++  path = *resolved_path;
++#else
++  return PrometheusRuntimeTestBootstrapResult::kPathDenied;
++#endif
++  const std::optional<PrometheusRuntimeTestBootstrapFileFacts> file_facts =
++      file_access.inspect.Run(path);
++  if (!file_facts || !file_facts->is_regular_file ||
++      file_facts->is_symbolic_link || !file_facts->is_owned_by_current_user ||
++      file_facts->posix_permissions != kRequiredFilePermissions ||
++      file_facts->size <= 0 ||
++      static_cast<uint64_t>(file_facts->size) >
++          kMaxPrometheusRuntimeTestProviderConfigBytes) {
++    return PrometheusRuntimeTestBootstrapResult::kFileDenied;
++  }
++
++  const std::optional<std::string> contents =
++      file_access.read.Run(path, kMaxPrometheusRuntimeTestProviderConfigBytes);
++  if (!contents || contents->size() != static_cast<size_t>(file_facts->size)) {
++    return PrometheusRuntimeTestBootstrapResult::kReadDenied;
++  }
++  if (!base::IsStringUTF8(*contents)) {
++    return PrometheusRuntimeTestBootstrapResult::kJsonDenied;
++  }
++  const FlatObjectScanResult scan = ScanFlatObjectKeys(*contents);
++  if (scan == FlatObjectScanResult::kDuplicateKey) {
++    return PrometheusRuntimeTestBootstrapResult::kSchemaDenied;
++  }
++  if (scan != FlatObjectScanResult::kValid) {
++    return PrometheusRuntimeTestBootstrapResult::kJsonDenied;
++  }
++
++  std::optional<base::DictValue> parsed =
++      base::JSONReader::ReadDict(*contents, base::JSON_PARSE_RFC, 2);
++  if (!parsed) {
++    return PrometheusRuntimeTestBootstrapResult::kJsonDenied;
++  }
++  if (!HasExactSchemaKeys(*parsed)) {
++    return PrometheusRuntimeTestBootstrapResult::kSchemaDenied;
++  }
++
++  const std::optional<int> schema_version = parsed->FindInt("schema_version");
++  const std::string* provider_id = parsed->FindString("provider_id");
++  const std::string* kind = parsed->FindString("kind");
++  const std::string* route = parsed->FindString("route");
++  const std::string* endpoint = parsed->FindString("endpoint");
++  const std::string* model = parsed->FindString("model");
++  const std::optional<bool> enabled = parsed->FindBool("enabled");
++  if (schema_version != 1 || !provider_id ||
++      *provider_id != kPrometheusRuntimeTestProviderId || !kind ||
++      *kind != "lm_studio" || !route || *route != "local" || !endpoint ||
++      !model || *model != kPrometheusRuntimeTestProviderModel ||
++      enabled != true) {
++    return PrometheusRuntimeTestBootstrapResult::kSchemaDenied;
++  }
++
++  const GURL endpoint_url(*endpoint);
++  const std::optional<std::string> canonical_endpoint =
++      CanonicalizePrometheusProviderEndpoint(
++          PrometheusProviderKind::kLMStudio,
++          PrometheusProviderRouteClass::kLocal, *endpoint);
++  if (!endpoint_url.is_valid() || !endpoint_url.SchemeIs("http") ||
++      !canonical_endpoint || *canonical_endpoint != *endpoint) {
++    return PrometheusRuntimeTestBootstrapResult::kEndpointDenied;
++  }
++
++  PrometheusProviderConfig provider{
++      .provider_id = kPrometheusRuntimeTestProviderId,
++      .label = "Phase 20 smoke local",
++      .kind = PrometheusProviderKind::kLMStudio,
++      .family = PrometheusProviderFamily::kOpenAICompatible,
++      .route_class = PrometheusProviderRouteClass::kLocal,
++      .canonical_endpoint = *canonical_endpoint,
++      .model_id = kPrometheusRuntimeTestProviderModel,
++      .enabled = true,
++      .health = PrometheusProviderHealth::kHealthy,
++      .discovery_state = PrometheusProviderDiscoveryState::kNotStarted,
++      .capabilities = {.tool_calling = true,
++                       .model_discovery = true,
++                       .responses_api = true},
++      .secret_configured = false,
++      .fallback_rank = 0,
++  };
++  if (registry->UpsertProvider(std::move(provider)) !=
++      PrometheusProviderError::kNone) {
++    return PrometheusRuntimeTestBootstrapResult::kRegistryDenied;
++  }
++  return PrometheusRuntimeTestBootstrapResult::kApplied;
++}
++
++PrometheusRuntimeTestBootstrapFileAccess
++CreatePrometheusRuntimeTestBootstrapFileAccess() {
++  return {
++      .inspect = base::BindRepeating(&InspectConfigFile),
++      .read = base::BindRepeating(&ReadConfigFile),
++  };
++}
++
++}  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h b/chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h
+new file mode 100644
+index 0000000000..16a526c461
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h
+@@ -0,0 +1,89 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PROMETHEUS_PROMETHEUS_RUNTIME_TEST_BOOTSTRAP_H_
++#define CHROME_BROWSER_PROMETHEUS_PROMETHEUS_RUNTIME_TEST_BOOTSTRAP_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <optional>
++#include <string>
++
++#include "base/command_line.h"
++#include "base/files/file_path.h"
++#include "base/functional/callback.h"
++
++namespace prometheus {
++
++class PrometheusProviderRegistry;
++
++inline constexpr char kPrometheusRuntimeTestTypeSwitch[] = "test-type";
++inline constexpr char kPrometheusRuntimeTestType[] = "prometheus-runtime";
++inline constexpr char kPrometheusRuntimeTestProviderConfigSwitch[] =
++    "prometheus-runtime-test-provider-config";
++inline constexpr char kPrometheusRuntimeTestProviderId[] =
++    "phase20-smoke-local";
++inline constexpr char kPrometheusRuntimeTestProviderModel[] =
++    "phase20-fixture-model";
++inline constexpr size_t kMaxPrometheusRuntimeTestProviderConfigBytes =
++    16 * 1024;
++
++enum class PrometheusRuntimeTestBootstrapResult {
++  kApplied,
++  kNotRequested,
++  kOfficialBuildDenied,
++  kLaunchDenied,
++  kProfileDenied,
++  kPathDenied,
++  kFileDenied,
++  kReadDenied,
++  kJsonDenied,
++  kSchemaDenied,
++  kEndpointDenied,
++  kRegistryDenied,
++};
++
++struct PrometheusRuntimeTestBootstrapProfileFacts {
++  bool is_regular_profile = false;
++  bool is_disposable_profile = false;
++};
++
++struct PrometheusRuntimeTestBootstrapFileFacts {
++  bool is_regular_file = false;
++  bool is_symbolic_link = false;
++  bool is_owned_by_current_user = false;
++  int posix_permissions = 0;
++  int64_t size = 0;
++};
++
++struct PrometheusRuntimeTestBootstrapFileAccess {
++  using InspectCallback = base::RepeatingCallback<std::optional<
++      PrometheusRuntimeTestBootstrapFileFacts>(const base::FilePath&)>;
++  using ReadCallback =
++      base::RepeatingCallback<std::optional<std::string>(const base::FilePath&,
++                                                         size_t max_bytes)>;
++
++  InspectCallback inspect;
++  ReadCallback read;
++};
++
++// Applies the closed test-provider metadata schema. Callers provide explicit
++// build/profile facts so the startup owner remains responsible for profile
++// classification; tests inject the same facts and file boundary
++// deterministically.
++PrometheusRuntimeTestBootstrapResult ApplyRuntimeTestProviderBootstrap(
++    const base::CommandLine& command_line,
++    bool is_official_build,
++    PrometheusRuntimeTestBootstrapProfileFacts profile_facts,
++    const PrometheusRuntimeTestBootstrapFileAccess& file_access,
++    PrometheusProviderRegistry* registry);
++
++// Returns the no-follow, mode-checked local file boundary used by the built
++// application. Tests use injected access instead of touching production paths.
++PrometheusRuntimeTestBootstrapFileAccess
++CreatePrometheusRuntimeTestBootstrapFileAccess();
++
++}  // namespace prometheus
++
++#endif  // CHROME_BROWSER_PROMETHEUS_PROMETHEUS_RUNTIME_TEST_BOOTSTRAP_H_
+diff --git a/chrome/browser/prometheus/prometheus_runtime_test_bootstrap_unittest.cc b/chrome/browser/prometheus/prometheus_runtime_test_bootstrap_unittest.cc
+new file mode 100644
+index 0000000000..c6d58f8a48
+--- /dev/null
++++ b/chrome/browser/prometheus/prometheus_runtime_test_bootstrap_unittest.cc
+@@ -0,0 +1,394 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prometheus/prometheus_runtime_test_bootstrap.h"
++
++#include <array>
++#include <memory>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <utility>
++#include <vector>
++
++#include "base/files/file_util.h"
++#include "base/files/scoped_temp_dir.h"
++#include "base/functional/bind.h"
++#include "base/json/json_writer.h"
++#include "chrome/browser/prometheus/prometheus_provider_registry.h"
++#include "chrome/browser/prometheus/prometheus_runtime_prefs.h"
++#include "components/sync_preferences/testing_pref_service_syncable.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace prometheus {
++namespace {
++
++constexpr char kAbsoluteConfigPath[] = "/tmp/prometheus-phase20-provider.json";
++constexpr char kEndpoint[] = "http://127.0.0.1:1234/v1/";
++
++std::string MakeConfig(std::string_view endpoint = kEndpoint) {
++  return "{\"schema_version\":1,\"provider_id\":\"" +
++         std::string(kPrometheusRuntimeTestProviderId) +
++         "\",\"kind\":\"lm_studio\",\"route\":\"local\",\"endpoint\":\"" +
++         std::string(endpoint) + "\",\"model\":\"" +
++         std::string(kPrometheusRuntimeTestProviderModel) +
++         "\",\"enabled\":true}";
++}
++
++base::CommandLine MakeLaunch(const base::FilePath& path) {
++  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
++  command_line.AppendSwitchASCII(kPrometheusRuntimeTestTypeSwitch,
++                                 kPrometheusRuntimeTestType);
++  command_line.AppendSwitchPath(kPrometheusRuntimeTestProviderConfigSwitch,
++                                path);
++  return command_line;
++}
++
++class PrometheusRuntimeTestBootstrapTest : public testing::Test {
++ protected:
++  PrometheusRuntimeTestBootstrapTest() {
++    RegisterPrometheusRuntimeProfilePrefs(prefs_.registry());
++    // Reconstruct after registering the shared root dictionary.
++    registry_ = std::make_unique<PrometheusProviderRegistry>(&prefs_);
++    contents_ = MakeConfig();
++    facts_ = ValidFileFacts();
++    access_ = {
++        .inspect =
++            base::BindRepeating(&PrometheusRuntimeTestBootstrapTest::Inspect,
++                                base::Unretained(this)),
++        .read = base::BindRepeating(&PrometheusRuntimeTestBootstrapTest::Read,
++                                    base::Unretained(this)),
++    };
++  }
++
++  static PrometheusRuntimeTestBootstrapFileFacts ValidFileFacts() {
++    return {
++        .is_regular_file = true,
++        .is_symbolic_link = false,
++        .is_owned_by_current_user = true,
++        .posix_permissions = 0600,
++        .size = static_cast<int64_t>(MakeConfig().size()),
++    };
++  }
++
++  std::optional<PrometheusRuntimeTestBootstrapFileFacts> Inspect(
++      const base::FilePath&) {
++    ++inspect_calls_;
++    return inspect_succeeds_ ? std::optional(facts_) : std::nullopt;
++  }
++
++  std::optional<std::string> Read(const base::FilePath&, size_t max_bytes) {
++    ++read_calls_;
++    last_max_bytes_ = max_bytes;
++    return read_succeeds_ ? std::optional(contents_) : std::nullopt;
++  }
++
++  PrometheusRuntimeTestBootstrapResult Apply(
++      const base::CommandLine& command_line,
++      bool official_build = false,
++      PrometheusRuntimeTestBootstrapProfileFacts profile = {
++          .is_regular_profile = true,
++          .is_disposable_profile = true}) {
++    return ApplyRuntimeTestProviderBootstrap(command_line, official_build,
++                                             profile, access_, registry_.get());
++  }
++
++  void SetContents(std::string contents) {
++    contents_ = std::move(contents);
++    facts_.size = static_cast<int64_t>(contents_.size());
++  }
++
++  std::string PersistedBytes() const {
++    return base::WriteJson(prefs_.GetDict(kPrometheusRuntimeProfileData))
++        .value_or(std::string());
++  }
++
++  sync_preferences::TestingPrefServiceSyncable prefs_;
++  std::unique_ptr<PrometheusProviderRegistry> registry_;
++  PrometheusRuntimeTestBootstrapFileFacts facts_;
++  std::string contents_;
++  bool inspect_succeeds_ = true;
++  bool read_succeeds_ = true;
++  int inspect_calls_ = 0;
++  int read_calls_ = 0;
++  size_t last_max_bytes_ = 0;
++  PrometheusRuntimeTestBootstrapFileAccess access_;
++};
++
++TEST_F(PrometheusRuntimeTestBootstrapTest,
++       ExactNonOfficialDisposableLaunchRegistersClosedMetadata) {
++  EXPECT_EQ(Apply(MakeLaunch(base::FilePath(kAbsoluteConfigPath))),
++            PrometheusRuntimeTestBootstrapResult::kApplied);
++  EXPECT_EQ(inspect_calls_, 1);
++  EXPECT_EQ(read_calls_, 1);
++  EXPECT_EQ(last_max_bytes_, kMaxPrometheusRuntimeTestProviderConfigBytes);
++
++  const std::vector<PrometheusProviderConfig> providers =
++      registry_->ListProviders();
++  ASSERT_EQ(providers.size(), 1u);
++  const PrometheusProviderConfig& provider = providers.front();
++  EXPECT_EQ(provider.provider_id, kPrometheusRuntimeTestProviderId);
++  EXPECT_EQ(provider.kind, PrometheusProviderKind::kLMStudio);
++  EXPECT_EQ(provider.family, PrometheusProviderFamily::kOpenAICompatible);
++  EXPECT_EQ(provider.route_class, PrometheusProviderRouteClass::kLocal);
++  EXPECT_EQ(provider.canonical_endpoint, kEndpoint);
++  EXPECT_EQ(provider.model_id, kPrometheusRuntimeTestProviderModel);
++  EXPECT_TRUE(provider.enabled);
++  EXPECT_FALSE(provider.secret_configured);
++}
++
++TEST_F(PrometheusRuntimeTestBootstrapTest,
++       OrdinaryLaunchIsInertWithoutReadingOrMutation) {
++  base::CommandLine ordinary(base::CommandLine::NO_PROGRAM);
++  const std::string before = PersistedBytes();
++  EXPECT_EQ(Apply(ordinary),
++            PrometheusRuntimeTestBootstrapResult::kNotRequested);
++  EXPECT_EQ(inspect_calls_, 0);
++  EXPECT_EQ(read_calls_, 0);
++  EXPECT_TRUE(registry_->ListProviders().empty());
++  EXPECT_EQ(PersistedBytes(), before);
++}
++
++TEST_F(PrometheusRuntimeTestBootstrapTest,
++       RequiresBothSwitchesAndExactTestTypeBeforeFileAccess) {
++  const base::FilePath path(kAbsoluteConfigPath);
++  base::CommandLine test_type_only(base::CommandLine::NO_PROGRAM);
++  test_type_only.AppendSwitchASCII(kPrometheusRuntimeTestTypeSwitch,
++                                   kPrometheusRuntimeTestType);
++  EXPECT_EQ(Apply(test_type_only),
++            PrometheusRuntimeTestBootstrapResult::kLaunchDenied);
++
++  base::CommandLine config_only(base::CommandLine::NO_PROGRAM);
++  config_only.AppendSwitchPath(kPrometheusRuntimeTestProviderConfigSwitch,
++                               path);
++  EXPECT_EQ(Apply(config_only),
++            PrometheusRuntimeTestBootstrapResult::kLaunchDenied);
++
++  base::CommandLine wrong_type = MakeLaunch(path);
++  wrong_type.AppendSwitchASCII(kPrometheusRuntimeTestTypeSwitch,
++                               "browser-test");
++  EXPECT_EQ(Apply(wrong_type),
++            PrometheusRuntimeTestBootstrapResult::kLaunchDenied);
++  EXPECT_EQ(inspect_calls_, 0);
++  EXPECT_EQ(read_calls_, 0);
++  EXPECT_TRUE(registry_->ListProviders().empty());
++}
++
++TEST_F(PrometheusRuntimeTestBootstrapTest,
++       OfficialBuildIsDeniedBeforeFileAccessAndMutation) {
++  const std::string before = PersistedBytes();
++  EXPECT_EQ(Apply(MakeLaunch(base::FilePath(kAbsoluteConfigPath)), true),
++            PrometheusRuntimeTestBootstrapResult::kOfficialBuildDenied);
++  EXPECT_EQ(inspect_calls_, 0);
++  EXPECT_EQ(read_calls_, 0);
++  EXPECT_TRUE(registry_->ListProviders().empty());
++  EXPECT_EQ(PersistedBytes(), before);
++}
++
++TEST_F(PrometheusRuntimeTestBootstrapTest,
++       OtrPersistentAndNondisposableProfilesAreDeniedBeforeFileAccess) {
++  const base::CommandLine launch =
++      MakeLaunch(base::FilePath(kAbsoluteConfigPath));
++  for (PrometheusRuntimeTestBootstrapProfileFacts profile :
++       {PrometheusRuntimeTestBootstrapProfileFacts{
++            .is_regular_profile = false, .is_disposable_profile = true},
++        PrometheusRuntimeTestBootstrapProfileFacts{
++            .is_regular_profile = true, .is_disposable_profile = false},
++        PrometheusRuntimeTestBootstrapProfileFacts{
++            .is_regular_profile = false, .is_disposable_profile = false}}) {
++    EXPECT_EQ(Apply(launch, false, profile),
++              PrometheusRuntimeTestBootstrapResult::kProfileDenied);
++  }
++  EXPECT_EQ(inspect_calls_, 0);
++  EXPECT_EQ(read_calls_, 0);
++  EXPECT_TRUE(registry_->ListProviders().empty());
++}
++
++TEST_F(PrometheusRuntimeTestBootstrapTest,
++       RelativeEmptyAndParentPathsAreDeniedBeforeInspection) {
++  for (const base::FilePath& path :
++       {base::FilePath(), base::FilePath("relative.json"),
++        base::FilePath("/tmp/../provider.json")}) {
++    EXPECT_EQ(Apply(MakeLaunch(path)),
++              PrometheusRuntimeTestBootstrapResult::kPathDenied);
++  }
++  EXPECT_EQ(inspect_calls_, 0);
++  EXPECT_EQ(read_calls_, 0);
++  EXPECT_TRUE(registry_->ListProviders().empty());
++}
++
++TEST_F(PrometheusRuntimeTestBootstrapTest,
++       InvalidFileFactsAreDeniedBeforeReadAndMutation) {
++  const base::CommandLine launch =
++      MakeLaunch(base::FilePath(kAbsoluteConfigPath));
++  const PrometheusRuntimeTestBootstrapFileFacts valid = facts_;
++  std::vector<PrometheusRuntimeTestBootstrapFileFacts> invalid;
++  invalid.push_back(valid);
++  invalid.back().is_regular_file = false;
++  invalid.push_back(valid);
++  invalid.back().is_symbolic_link = true;
++  invalid.push_back(valid);
++  invalid.back().is_owned_by_current_user = false;
++  invalid.push_back(valid);
++  invalid.back().posix_permissions = 0644;
++  invalid.push_back(valid);
++  invalid.back().size = 0;
++  invalid.push_back(valid);
++  invalid.back().size =
++      static_cast<int64_t>(kMaxPrometheusRuntimeTestProviderConfigBytes + 1);
++
++  for (const auto& bad_facts : invalid) {
++    facts_ = bad_facts;
++    EXPECT_EQ(Apply(launch), PrometheusRuntimeTestBootstrapResult::kFileDenied);
++  }
++  inspect_succeeds_ = false;
++  EXPECT_EQ(Apply(launch), PrometheusRuntimeTestBootstrapResult::kFileDenied);
++  EXPECT_EQ(read_calls_, 0);
++  EXPECT_TRUE(registry_->ListProviders().empty());
++}
++
++TEST_F(PrometheusRuntimeTestBootstrapTest,
++       ReadFailureOrChangedSizeIsDeniedWithoutMutation) {
++  const base::CommandLine launch =
++      MakeLaunch(base::FilePath(kAbsoluteConfigPath));
++  read_succeeds_ = false;
++  EXPECT_EQ(Apply(launch), PrometheusRuntimeTestBootstrapResult::kReadDenied);
++  read_succeeds_ = true;
++  facts_.size += 1;
++  EXPECT_EQ(Apply(launch), PrometheusRuntimeTestBootstrapResult::kReadDenied);
++  EXPECT_TRUE(registry_->ListProviders().empty());
++}
++
++TEST_F(PrometheusRuntimeTestBootstrapTest,
++       MalformedInvalidUtf8NestedAndDuplicateJsonAreDenied) {
++  const base::CommandLine launch =
++      MakeLaunch(base::FilePath(kAbsoluteConfigPath));
++  for (std::string bad_json :
++       {std::string("not json"), std::string("{\"schema_version\":1"),
++        std::string("{\"schema_version\":{\"nested\":1}}"),
++        std::string("{\"schema_version\":1,\"schema_version\":1,"
++                    "\"provider_id\":\"phase20-smoke-local\","
++                    "\"kind\":\"lm_studio\",\"route\":\"local\","
++                    "\"endpoint\":\"http://127.0.0.1:1234/v1/\","
++                    "\"model\":\"phase20-fixture-model\",\"enabled\":true}")}) {
++    SetContents(std::move(bad_json));
++    EXPECT_NE(Apply(launch), PrometheusRuntimeTestBootstrapResult::kApplied);
++  }
++  std::string invalid_utf8 = MakeConfig();
++  invalid_utf8.insert(invalid_utf8.size() - 1, 1, static_cast<char>(0xff));
++  SetContents(std::move(invalid_utf8));
++  EXPECT_EQ(Apply(launch), PrometheusRuntimeTestBootstrapResult::kJsonDenied);
++  EXPECT_TRUE(registry_->ListProviders().empty());
++}
++
++TEST_F(PrometheusRuntimeTestBootstrapTest,
++       ExtraMissingWrongTypedAndSecretBearingFieldsAreDenied) {
++  const base::CommandLine launch =
++      MakeLaunch(base::FilePath(kAbsoluteConfigPath));
++  const std::array<std::string, 6> invalid = {
++      "{\"schema_version\":1}",
++      "{\"schema_version\":\"1\",\"provider_id\":\"phase20-smoke-local\","
++      "\"kind\":\"lm_studio\",\"route\":\"local\","
++      "\"endpoint\":\"http://127.0.0.1:1234/v1/\","
++      "\"model\":\"phase20-fixture-model\",\"enabled\":true}",
++      MakeConfig().substr(0, MakeConfig().size() - 1) +
++          ",\"api_key\":\"secret-sentinel\"}",
++      MakeConfig().substr(0, MakeConfig().size() - 1) +
++          ",\"authorization_header\":\"sentinel\"}",
++      MakeConfig().substr(0, MakeConfig().size() - 1) +
++          ",\"ciphertext\":\"sentinel\"}",
++      "{\"schema_version\":2,\"provider_id\":\"phase20-smoke-local\","
++      "\"kind\":\"lm_studio\",\"route\":\"local\","
++      "\"endpoint\":\"http://127.0.0.1:1234/v1/\","
++      "\"model\":\"phase20-fixture-model\",\"enabled\":true}",
++  };
++  for (const std::string& bad_schema : invalid) {
++    SetContents(bad_schema);
++    EXPECT_EQ(Apply(launch),
++              PrometheusRuntimeTestBootstrapResult::kSchemaDenied);
++  }
++  EXPECT_TRUE(registry_->ListProviders().empty());
++}
++
++TEST_F(PrometheusRuntimeTestBootstrapTest,
++       HttpsRemoteUserinfoQueryAndAmbiguousEndpointsAreDenied) {
++  const base::CommandLine launch =
++      MakeLaunch(base::FilePath(kAbsoluteConfigPath));
++  for (std::string_view endpoint :
++       {"https://localhost:1234/v1/", "http://example.test:1234/v1/",
++        "http://user:password@localhost:1234/v1/",
++        "http://localhost:1234/v1/?token=secret-sentinel",
++        "http://localhost:1234/v1/#authorization=sentinel",
++        "http://localhost:1234/v1/../ciphertext/"}) {
++    SetContents(MakeConfig(endpoint));
++    EXPECT_EQ(Apply(launch),
++              PrometheusRuntimeTestBootstrapResult::kEndpointDenied);
++  }
++  EXPECT_TRUE(registry_->ListProviders().empty());
++}
++
++TEST_F(PrometheusRuntimeTestBootstrapTest,
++       RegistryRejectionLeavesExistingProvidersAndBytesUnchanged) {
++  PrometheusProviderConfig existing{
++      .provider_id = "existing-local",
++      .label = "Existing local",
++      .kind = PrometheusProviderKind::kLocal,
++      .family = PrometheusProviderFamily::kOpenAICompatible,
++      .route_class = PrometheusProviderRouteClass::kLocal,
++      .canonical_endpoint = "http://localhost:8080/v1/",
++      .model_id = "existing-model",
++      .enabled = true,
++      .health = PrometheusProviderHealth::kHealthy,
++      .discovery_state = PrometheusProviderDiscoveryState::kNotSupported,
++      .capabilities = {.tool_calling = true,
++                       .model_discovery = false,
++                       .responses_api = true},
++      .secret_configured = false,
++      .fallback_rank = 0,
++  };
++  ASSERT_EQ(registry_->UpsertProvider(existing),
++            PrometheusProviderError::kNone);
++  const std::string before = PersistedBytes();
++  EXPECT_EQ(Apply(MakeLaunch(base::FilePath(kAbsoluteConfigPath))),
++            PrometheusRuntimeTestBootstrapResult::kRegistryDenied);
++  ASSERT_EQ(registry_->ListProviders().size(), 1u);
++  EXPECT_EQ(registry_->ListProviders().front(), existing);
++  EXPECT_EQ(PersistedBytes(), before);
++}
++
++TEST_F(PrometheusRuntimeTestBootstrapTest,
++       RealFileBoundaryAccepts0600AndRejectsSymlinkAndWrongMode) {
++  base::ScopedTempDir temp_dir;
++  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
++  const base::FilePath config_path =
++      temp_dir.GetPath().AppendASCII("config.json");
++  ASSERT_TRUE(base::WriteFile(config_path, MakeConfig()));
++  ASSERT_TRUE(base::SetPosixFilePermissions(config_path, 0600));
++
++  const PrometheusRuntimeTestBootstrapFileAccess real_access =
++      CreatePrometheusRuntimeTestBootstrapFileAccess();
++  EXPECT_EQ(ApplyRuntimeTestProviderBootstrap(
++                MakeLaunch(config_path), false,
++                {.is_regular_profile = true, .is_disposable_profile = true},
++                real_access, registry_.get()),
++            PrometheusRuntimeTestBootstrapResult::kApplied);
++
++  ASSERT_TRUE(base::SetPosixFilePermissions(config_path, 0644));
++  EXPECT_EQ(ApplyRuntimeTestProviderBootstrap(
++                MakeLaunch(config_path), false,
++                {.is_regular_profile = true, .is_disposable_profile = true},
++                real_access, registry_.get()),
++            PrometheusRuntimeTestBootstrapResult::kFileDenied);
++
++  const base::FilePath link_path = temp_dir.GetPath().AppendASCII("link.json");
++  ASSERT_TRUE(base::CreateSymbolicLink(config_path, link_path));
++  EXPECT_EQ(ApplyRuntimeTestProviderBootstrap(
++                MakeLaunch(link_path), false,
++                {.is_regular_profile = true, .is_disposable_profile = true},
++                real_access, registry_.get()),
++            PrometheusRuntimeTestBootstrapResult::kFileDenied);
++}
++
++}  // namespace
++}  // namespace prometheus
+-- 
+2.50.1 (Apple Git-155)
+

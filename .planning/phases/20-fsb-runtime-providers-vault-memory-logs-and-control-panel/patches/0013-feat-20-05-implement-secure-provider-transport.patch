@@ -1,0 +1,726 @@
+From 07389da241f0daeecd0ac5e7f0ef9222d89d4a1d Mon Sep 17 00:00:00 2001
+From: Lakshman <lakshman@lakshman-GG9LQ90J61.local>
+Date: Thu, 16 Jul 2026 04:06:01 -0500
+Subject: [PATCH] feat(20-05): implement secure provider transport
+
+Allow the Anthropic models route only when registry discovery capability explicitly enables it, preserving registry-only URL authority.
+---
+ chrome/browser/prometheus/BUILD.gn            |   4 +
+ .../prometheus_provider_registry.cc           |   3 +-
+ .../prometheus_provider_registry_unittest.cc  |  19 +
+ .../prometheus_provider_transport.cc          | 528 +++++++++++++++++-
+ .../prometheus_provider_transport.h           |  11 +
+ .../prometheus_provider_transport_unittest.cc |  21 +-
+ 6 files changed, 578 insertions(+), 8 deletions(-)
+
+diff --git a/chrome/browser/prometheus/BUILD.gn b/chrome/browser/prometheus/BUILD.gn
+index c521064194..1854f4f680 100644
+--- a/chrome/browser/prometheus/BUILD.gn
++++ b/chrome/browser/prometheus/BUILD.gn
+@@ -362,7 +362,11 @@ source_set("prometheus_provider_transport") {
+     ":prometheus_provider_registry",
+     ":prometheus_secret_store",
+     "//base",
++    "//crypto",
++    "//net",
+     "//services/network/public/cpp",
++    "//services/network/public/mojom",
++    "//url",
+   ]
+ }
+ 
+diff --git a/chrome/browser/prometheus/prometheus_provider_registry.cc b/chrome/browser/prometheus/prometheus_provider_registry.cc
+index d574cbbd40..5f4c21b654 100644
+--- a/chrome/browser/prometheus/prometheus_provider_registry.cc
++++ b/chrome/browser/prometheus/prometheus_provider_registry.cc
+@@ -917,8 +917,7 @@ std::optional<GURL> PrometheusProviderRegistry::BuildRequestUrl(
+       }
+       break;
+     case PrometheusProviderRequestRoute::kModels:
+-      if (!provider.capabilities.model_discovery ||
+-          provider.family == PrometheusProviderFamily::kAnthropicMessages) {
++      if (!provider.capabilities.model_discovery) {
+         return std::nullopt;
+       }
+       relative_path = "models";
+diff --git a/chrome/browser/prometheus/prometheus_provider_registry_unittest.cc b/chrome/browser/prometheus/prometheus_provider_registry_unittest.cc
+index 15c3aacbb6..28bf0ccf1e 100644
+--- a/chrome/browser/prometheus/prometheus_provider_registry_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_provider_registry_unittest.cc
+@@ -306,6 +306,25 @@ TEST_F(PrometheusProviderRegistryTest,
+       "openai", static_cast<PrometheusProviderRequestRoute>(999)));
+ }
+ 
++TEST_F(PrometheusProviderRegistryTest,
++       AnthropicModelsRouteIsExactlyCapabilityGated) {
++  PrometheusProviderRegistry registry(&prefs_);
++  PrometheusProviderConfig provider =
++      MakeProvider(PrometheusProviderKind::kAnthropic, "anthropic", 0);
++  ASSERT_EQ(registry.UpsertProvider(provider), PrometheusProviderError::kNone);
++  EXPECT_FALSE(registry.BuildRequestUrl(
++      "anthropic", PrometheusProviderRequestRoute::kModels));
++
++  provider.capabilities.model_discovery = true;
++  provider.discovery_state = PrometheusProviderDiscoveryState::kNotStarted;
++  ASSERT_EQ(registry.UpsertProvider(provider), PrometheusProviderError::kNone);
++  std::optional<GURL> models = registry.BuildRequestUrl(
++      "anthropic", PrometheusProviderRequestRoute::kModels);
++  ASSERT_TRUE(models);
++  EXPECT_EQ(models->spec(), "https://api.anthropic.com/v1/models");
++  EXPECT_FALSE(models->has_query());
++}
++
+ TEST_F(PrometheusProviderRegistryTest,
+        CorruptPrefsAreSkippedAndSnapshotsContainNoSecretMaterial) {
+   base::DictValue root = prefs_.GetDict(kPrometheusRuntimeProfileData).Clone();
+diff --git a/chrome/browser/prometheus/prometheus_provider_transport.cc b/chrome/browser/prometheus/prometheus_provider_transport.cc
+index 4a5b89059d..715dd3d83d 100644
+--- a/chrome/browser/prometheus/prometheus_provider_transport.cc
++++ b/chrome/browser/prometheus/prometheus_provider_transport.cc
+@@ -4,12 +4,144 @@
+ 
+ #include "chrome/browser/prometheus/prometheus_provider_transport.h"
+ 
++#include <algorithm>
++#include <optional>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "base/containers/span.h"
++#include "base/functional/bind.h"
+ #include "base/time/default_tick_clock.h"
++#include "base/time/tick_clock.h"
++#include "chrome/browser/prometheus/prometheus_provider_registry.h"
++#include "chrome/browser/prometheus/prometheus_secret_store.h"
++#include "crypto/secure_util.h"
++#include "net/base/isolation_info.h"
++#include "net/base/load_flags.h"
++#include "net/base/net_errors.h"
++#include "net/http/http_request_headers.h"
++#include "net/http/http_response_headers.h"
++#include "net/http/http_status_code.h"
++#include "net/traffic_annotation/network_traffic_annotation.h"
++#include "services/network/public/cpp/resource_request.h"
+ #include "services/network/public/cpp/shared_url_loader_factory.h"
++#include "services/network/public/cpp/simple_url_loader.h"
++#include "services/network/public/mojom/fetch_api.mojom.h"
++#include "services/network/public/mojom/url_loader_factory.mojom.h"
++#include "services/network/public/mojom/url_response_head.mojom.h"
++#include "url/gurl.h"
+ 
+ namespace prometheus {
++namespace {
++
++constexpr base::TimeDelta kMaximumProviderTimeout = base::Seconds(30);
++
++constexpr net::NetworkTrafficAnnotationTag kProviderTrafficAnnotation =
++    net::DefineNetworkTrafficAnnotation("prometheus_provider_transport", R"(
++      semantics {
++        sender: "Prometheus Provider Transport"
++        description:
++          "Sends a user-requested browser task turn or model-list request to "
++          "the model provider configured in the user's Prometheus profile."
++        trigger:
++          "The user starts a Prometheus task or explicitly requests model "
++          "discovery for a configured provider."
++        data:
++          "For task turns, bounded task instructions and closed browser tool "
++          "schemas. A provider API credential is sent only in the configured "
++          "provider family's authentication header. Model discovery sends no "
++          "task content."
++        destination: WEBSITE
++      }
++      policy {
++        cookies_allowed: NO
++        setting:
++          "Users control provider configuration and Prometheus task execution "
++          "from the browser's Prometheus settings and task surfaces."
++        policy_exception_justification:
++          "Not implemented because direct provider access is the core function "
++          "of user-configured hosted model execution."
++      })");
++
++void SecureClearString(std::string* value) {
++  if (!value->empty()) {
++    crypto::SecureZeroBuffer(base::as_writable_byte_span(*value));
++    value->clear();
++  }
++}
++
++void SecureClearOptionalString(std::optional<std::string>* value) {
++  if (value->has_value()) {
++    SecureClearString(&value->value());
++    value->reset();
++  }
++}
++
++ProviderFailureKind RegistryErrorToTurnFailure(PrometheusProviderError error) {
++  if (error == PrometheusProviderError::kSecretUnavailable) {
++    return ProviderFailureKind::kSecretUnavailable;
++  }
++  return ProviderFailureKind::kEndpointPolicy;
++}
++
++ProviderFailureKind NetworkErrorToTurnFailure(int net_error) {
++  if (net_error == net::ERR_TIMED_OUT) {
++    return ProviderFailureKind::kTimeout;
++  }
++  if (net_error == net::ERR_INSUFFICIENT_RESOURCES) {
++    return ProviderFailureKind::kBounds;
++  }
++  return ProviderFailureKind::kNetwork;
++}
++
++ProviderFailureKind HttpStatusToTurnFailure(int response_code) {
++  if (response_code == net::HTTP_UNAUTHORIZED ||
++      response_code == net::HTTP_FORBIDDEN) {
++    return ProviderFailureKind::kAuthentication;
++  }
++  if (response_code == net::HTTP_TOO_MANY_REQUESTS) {
++    return ProviderFailureKind::kRateLimited;
++  }
++  if (response_code >= 500 && response_code <= 599) {
++    return ProviderFailureKind::kServer;
++  }
++  if (response_code >= 300 && response_code <= 399) {
++    return ProviderFailureKind::kEndpointPolicy;
++  }
++  return ProviderFailureKind::kInvalidOutput;
++}
++
++bool IsSuccessfulHttpStatus(int response_code) {
++  return response_code >= 200 && response_code <= 299;
++}
+ 
+-struct PrometheusProviderTransport::Operation {};
++}  // namespace
++
++struct PrometheusProviderTransport::Operation {
++  enum class Kind {
++    kTurn,
++    kModels,
++  };
++
++  ~Operation() {
++    SecureClearString(&encoded_request);
++    SecureClearString(&active_credential);
++  }
++
++  Kind kind = Kind::kTurn;
++  PrometheusProviderConfig provider;
++  GURL request_url;
++  std::optional<PrometheusSecretBinding> secret_binding;
++  std::optional<ProviderTurnRequest> turn_request;
++  ProviderModelListRequest model_list_request;
++  std::string encoded_request;
++  std::string active_credential;
++  base::TimeTicks started_at;
++  TurnCallback turn_callback;
++  ModelsCallback models_callback;
++  std::unique_ptr<network::SimpleURLLoader> loader;
++};
+ 
+ PrometheusProviderTransport::PrometheusProviderTransport(
+     PrometheusProviderRegistry* registry,
+@@ -22,7 +154,14 @@ PrometheusProviderTransport::PrometheusProviderTransport(
+       url_loader_factory_(std::move(url_loader_factory)),
+       limits_(limits),
+       tick_clock_(tick_clock ? tick_clock
+-                             : base::DefaultTickClock::GetInstance()) {}
++                             : base::DefaultTickClock::GetInstance()) {
++  limits_.max_request_bytes =
++      std::min(limits_.max_request_bytes, kMaxProviderRequestBytes);
++  limits_.max_response_bytes =
++      std::min(limits_.max_response_bytes, kMaxProviderResponseBytes);
++  limits_.timeout = std::clamp(limits_.timeout, base::Milliseconds(1),
++                               kMaximumProviderTimeout);
++}
+ 
+ PrometheusProviderTransport::~PrometheusProviderTransport() = default;
+ 
+@@ -31,7 +170,76 @@ PrometheusProviderTransport::ExecuteTurn(std::string provider_id,
+                                          ProviderTurnRequest request,
+                                          TurnCallback callback) {
+   const OperationId operation_id = next_operation_id_++;
+-  std::move(callback).Run({.failure = ProviderFailureKind::kInvalidOutput});
++  if (!registry_ || !secret_store_ || !url_loader_factory_) {
++    std::move(callback).Run({.failure = ProviderFailureKind::kEndpointPolicy});
++    return operation_id;
++  }
++  PrometheusProviderResolution resolution =
++      registry_->ResolveProvider(provider_id);
++  if (!resolution.provider) {
++    std::move(callback).Run(
++        {.failure = RegistryErrorToTurnFailure(resolution.error)});
++    return operation_id;
++  }
++  PrometheusProviderConfig provider = std::move(*resolution.provider);
++  if (request.family != provider.family ||
++      request.use_responses_api != provider.capabilities.responses_api ||
++      request.model != provider.model_id ||
++      (!provider.capabilities.tool_calling && !request.tools.empty())) {
++    std::move(callback).Run({.failure = ProviderFailureKind::kEndpointPolicy});
++    return operation_id;
++  }
++  std::optional<std::string> encoded = EncodeProviderTurnRequest(request);
++  if (!encoded) {
++    std::move(callback).Run({.failure = ProviderFailureKind::kInvalidOutput});
++    return operation_id;
++  }
++  if (encoded->size() > limits_.max_request_bytes) {
++    SecureClearString(&*encoded);
++    std::move(callback).Run({.failure = ProviderFailureKind::kBounds});
++    return operation_id;
++  }
++  std::optional<GURL> request_url = registry_->BuildRequestUrl(
++      provider_id, PrometheusProviderRequestRoute::kInference);
++  if (!request_url) {
++    SecureClearString(&*encoded);
++    std::move(callback).Run({.failure = ProviderFailureKind::kEndpointPolicy});
++    return operation_id;
++  }
++
++  auto operation = std::make_unique<Operation>();
++  operation->kind = Operation::Kind::kTurn;
++  operation->provider = provider;
++  operation->request_url = *request_url;
++  operation->secret_binding =
++      MakePrometheusProviderSecretBinding(operation->provider);
++  operation->turn_request.emplace(std::move(request));
++  operation->encoded_request = std::move(*encoded);
++  operation->started_at = tick_clock_->NowTicks();
++  operation->turn_callback = std::move(callback);
++  operations_.emplace(operation_id, std::move(operation));
++
++  if (provider.route_class == PrometheusProviderRouteClass::kLocal) {
++    Send(operation_id, std::string());
++    return operation_id;
++  }
++  Operation* stored = operations_.at(operation_id).get();
++  if (!stored->secret_binding) {
++    FinishTurn(operation_id, {.failure = ProviderFailureKind::kEndpointPolicy});
++    return operation_id;
++  }
++  secret_store_->Read(
++      *stored->secret_binding,
++      base::BindOnce(
++          [](base::WeakPtr<PrometheusProviderTransport> transport,
++             OperationId id, PrometheusSecretReadResult result) {
++            if (!transport) {
++              SecureClearOptionalString(&result.value);
++              return;
++            }
++            transport->OnSecretRead(id, std::move(result));
++          },
++          weak_factory_.GetWeakPtr(), operation_id));
+   return operation_id;
+ }
+ 
+@@ -39,12 +247,322 @@ PrometheusProviderTransport::OperationId
+ PrometheusProviderTransport::DiscoverModels(std::string provider_id,
+                                             ModelsCallback callback) {
+   const OperationId operation_id = next_operation_id_++;
+-  std::move(callback).Run({.state = ProviderModelListState::kInvalidOutput});
++  if (!registry_ || !secret_store_ || !url_loader_factory_) {
++    std::move(callback).Run({.state = ProviderModelListState::kInvalidOutput});
++    return operation_id;
++  }
++  std::optional<PrometheusProviderConfig> configured =
++      registry_->FindProvider(provider_id);
++  if (!configured) {
++    std::move(callback).Run({.state = ProviderModelListState::kInvalidOutput});
++    return operation_id;
++  }
++  ProviderModelListRequest model_request =
++      MakeProviderModelListRequest(*configured);
++  if (!model_request.supported) {
++    std::move(callback).Run({.state = ProviderModelListState::kUnsupported});
++    return operation_id;
++  }
++  PrometheusProviderResolution resolution =
++      registry_->ResolveProvider(provider_id);
++  if (!resolution.provider) {
++    std::move(callback).Run({.state = ProviderModelListState::kInvalidOutput});
++    return operation_id;
++  }
++  PrometheusProviderConfig provider = std::move(*resolution.provider);
++  std::optional<GURL> request_url = registry_->BuildRequestUrl(
++      provider_id, PrometheusProviderRequestRoute::kModels);
++  if (!request_url) {
++    std::move(callback).Run({.state = ProviderModelListState::kInvalidOutput});
++    return operation_id;
++  }
++
++  auto operation = std::make_unique<Operation>();
++  operation->kind = Operation::Kind::kModels;
++  operation->provider = provider;
++  operation->request_url = *request_url;
++  operation->secret_binding =
++      MakePrometheusProviderSecretBinding(operation->provider);
++  operation->model_list_request = model_request;
++  operation->started_at = tick_clock_->NowTicks();
++  operation->models_callback = std::move(callback);
++  operations_.emplace(operation_id, std::move(operation));
++
++  if (provider.route_class == PrometheusProviderRouteClass::kLocal) {
++    Send(operation_id, std::string());
++    return operation_id;
++  }
++  Operation* stored = operations_.at(operation_id).get();
++  if (!stored->secret_binding) {
++    FinishModels(operation_id,
++                 {.state = ProviderModelListState::kInvalidOutput});
++    return operation_id;
++  }
++  secret_store_->Read(
++      *stored->secret_binding,
++      base::BindOnce(
++          [](base::WeakPtr<PrometheusProviderTransport> transport,
++             OperationId id, PrometheusSecretReadResult result) {
++            if (!transport) {
++              SecureClearOptionalString(&result.value);
++              return;
++            }
++            transport->OnSecretRead(id, std::move(result));
++          },
++          weak_factory_.GetWeakPtr(), operation_id));
+   return operation_id;
+ }
+ 
+ bool PrometheusProviderTransport::Cancel(OperationId operation_id) {
+-  return false;
++  auto operation = operations_.find(operation_id);
++  if (operation == operations_.end()) {
++    return false;
++  }
++  operations_.erase(operation);
++  return true;
++}
++
++void PrometheusProviderTransport::OnSecretRead(
++    OperationId operation_id,
++    PrometheusSecretReadResult result) {
++  std::string credential;
++  if (result.value) {
++    credential = std::move(*result.value);
++    result.value.reset();
++  }
++  auto operation = operations_.find(operation_id);
++  if (operation == operations_.end()) {
++    SecureClearString(&credential);
++    return;
++  }
++  if (result.error != PrometheusSecretError::kNone || credential.empty() ||
++      credential.size() > kMaxPrometheusSecretBytes) {
++    SecureClearString(&credential);
++    if (operation->second->kind == Operation::Kind::kTurn) {
++      FinishTurn(operation_id,
++                 {.failure = ProviderFailureKind::kSecretUnavailable});
++    } else {
++      FinishModels(operation_id,
++                   {.state = ProviderModelListState::kInvalidOutput});
++    }
++    return;
++  }
++  Send(operation_id, std::move(credential));
++}
++
++void PrometheusProviderTransport::Send(OperationId operation_id,
++                                       std::string credential) {
++  auto operation_it = operations_.find(operation_id);
++  if (operation_it == operations_.end()) {
++    SecureClearString(&credential);
++    return;
++  }
++  Operation* operation = operation_it->second.get();
++  operation->active_credential = std::move(credential);
++
++  std::optional<PrometheusProviderConfig> current =
++      registry_->FindProvider(operation->provider.provider_id);
++  const PrometheusProviderRequestRoute route =
++      operation->kind == Operation::Kind::kTurn
++          ? PrometheusProviderRequestRoute::kInference
++          : PrometheusProviderRequestRoute::kModels;
++  std::optional<GURL> current_url =
++      registry_->BuildRequestUrl(operation->provider.provider_id, route);
++  std::optional<PrometheusSecretBinding> current_binding =
++      current ? MakePrometheusProviderSecretBinding(*current) : std::nullopt;
++  if (!current || *current != operation->provider || !current_url ||
++      *current_url != operation->request_url ||
++      current_binding != operation->secret_binding) {
++    if (operation->kind == Operation::Kind::kTurn) {
++      FinishTurn(operation_id,
++                 {.failure = ProviderFailureKind::kEndpointPolicy});
++    } else {
++      FinishModels(operation_id,
++                   {.state = ProviderModelListState::kInvalidOutput});
++    }
++    return;
++  }
++
++  auto resource_request = std::make_unique<network::ResourceRequest>();
++  resource_request->url = operation->request_url;
++  resource_request->method =
++      operation->kind == Operation::Kind::kTurn ? "POST" : "GET";
++  resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
++  resource_request->redirect_mode = network::mojom::RedirectMode::kError;
++  resource_request->load_flags =
++      net::LOAD_DISABLE_CACHE | net::LOAD_BYPASS_CACHE;
++  resource_request->trusted_params = network::ResourceRequest::TrustedParams();
++  resource_request->trusted_params->isolation_info =
++      net::IsolationInfo::CreateTransient(std::nullopt);
++
++  if (!operation->active_credential.empty()) {
++    switch (operation->provider.family) {
++      case PrometheusProviderFamily::kOpenAICompatible:
++        resource_request->headers.SetHeader(
++            net::HttpRequestHeaders::kAuthorization,
++            "Bearer " + operation->active_credential);
++        break;
++      case PrometheusProviderFamily::kAnthropicMessages:
++        resource_request->headers.SetHeader("x-api-key",
++                                            operation->active_credential);
++        resource_request->headers.SetHeader("anthropic-version", "2023-06-01");
++        break;
++      case PrometheusProviderFamily::kGeminiGenerateContent:
++        resource_request->headers.SetHeader("x-goog-api-key",
++                                            operation->active_credential);
++        break;
++    }
++  }
++
++  operation->loader = network::SimpleURLLoader::Create(
++      std::move(resource_request), kProviderTrafficAnnotation);
++  operation->loader->SetAllowHttpErrorResults(true);
++  operation->loader->SetTimeoutDuration(limits_.timeout);
++  operation->loader->SetURLLoaderFactoryOptions(
++      network::mojom::kURLLoadOptionBlockAllCookies);
++  operation->loader->SetOnRedirectCallback(base::BindRepeating(
++      [](base::WeakPtr<PrometheusProviderTransport> transport, OperationId id,
++         const GURL&, const net::RedirectInfo&,
++         const network::mojom::URLResponseHead&, std::vector<std::string>*) {
++        if (transport) {
++          transport->RejectRedirect(id);
++        }
++      },
++      weak_factory_.GetWeakPtr(), operation_id));
++  if (operation->kind == Operation::Kind::kTurn) {
++    operation->loader->AttachStringForUpload(operation->encoded_request,
++                                             "application/json");
++    SecureClearString(&operation->encoded_request);
++  }
++  operation->loader->DownloadToString(
++      url_loader_factory_.get(),
++      base::BindOnce(&PrometheusProviderTransport::OnResponse,
++                     weak_factory_.GetWeakPtr(), operation_id),
++      limits_.max_response_bytes);
++}
++
++void PrometheusProviderTransport::RejectRedirect(OperationId operation_id) {
++  auto operation = operations_.find(operation_id);
++  if (operation == operations_.end()) {
++    return;
++  }
++  if (operation->second->kind == Operation::Kind::kTurn) {
++    FinishTurn(operation_id, {.failure = ProviderFailureKind::kEndpointPolicy});
++  } else {
++    FinishModels(operation_id,
++                 {.state = ProviderModelListState::kInvalidOutput});
++  }
++}
++
++void PrometheusProviderTransport::OnResponse(
++    OperationId operation_id,
++    std::optional<std::string> response_body) {
++  auto operation_it = operations_.find(operation_id);
++  if (operation_it == operations_.end()) {
++    SecureClearOptionalString(&response_body);
++    return;
++  }
++  Operation* operation = operation_it->second.get();
++  const int net_error = operation->loader->NetError();
++  int response_code = -1;
++  if (operation->loader->ResponseInfo() &&
++      operation->loader->ResponseInfo()->headers) {
++    response_code = operation->loader->ResponseInfo()->headers->response_code();
++  }
++  if (net_error != net::OK) {
++    SecureClearOptionalString(&response_body);
++    if (operation->kind == Operation::Kind::kTurn) {
++      FinishTurn(operation_id,
++                 {.failure = NetworkErrorToTurnFailure(net_error)});
++    } else {
++      FinishModels(operation_id,
++                   {.state = net_error == net::ERR_INSUFFICIENT_RESOURCES
++                                 ? ProviderModelListState::kBounds
++                                 : ProviderModelListState::kInvalidOutput});
++    }
++    return;
++  }
++  if (!IsSuccessfulHttpStatus(response_code)) {
++    SecureClearOptionalString(&response_body);
++    if (operation->kind == Operation::Kind::kTurn) {
++      FinishTurn(operation_id,
++                 {.failure = HttpStatusToTurnFailure(response_code)});
++    } else {
++      FinishModels(operation_id,
++                   {.state = ProviderModelListState::kInvalidOutput});
++    }
++    return;
++  }
++  if (!response_body) {
++    if (operation->kind == Operation::Kind::kTurn) {
++      FinishTurn(operation_id,
++                 {.failure = ProviderFailureKind::kInvalidOutput});
++    } else {
++      FinishModels(operation_id,
++                   {.state = ProviderModelListState::kInvalidOutput});
++    }
++    return;
++  }
++  if (response_body->size() > limits_.max_response_bytes) {
++    SecureClearOptionalString(&response_body);
++    if (operation->kind == Operation::Kind::kTurn) {
++      FinishTurn(operation_id, {.failure = ProviderFailureKind::kBounds});
++    } else {
++      FinishModels(operation_id, {.state = ProviderModelListState::kBounds});
++    }
++    return;
++  }
++
++  if (operation->kind == Operation::Kind::kTurn) {
++    ProviderTurnResult result = ParseProviderTurnResponse(
++        *operation->turn_request, std::move(*response_body),
++        operation->active_credential);
++    FinishTurn(operation_id, std::move(result));
++    return;
++  }
++  ProviderModelListResult result = ParseProviderModelListResponse(
++      operation->model_list_request, std::move(*response_body));
++  if (!operation->active_credential.empty() &&
++      std::ranges::any_of(result.models, [&](const std::string& model) {
++        return model.find(operation->active_credential) != std::string::npos;
++      })) {
++    result = {.state = ProviderModelListState::kInvalidOutput};
++  }
++  FinishModels(operation_id, std::move(result));
++}
++
++void PrometheusProviderTransport::FinishTurn(OperationId operation_id,
++                                             ProviderTurnResult result) {
++  auto operation_it = operations_.find(operation_id);
++  if (operation_it == operations_.end()) {
++    return;
++  }
++  std::unique_ptr<Operation> operation = std::move(operation_it->second);
++  operations_.erase(operation_it);
++  base::TimeDelta elapsed = tick_clock_->NowTicks() - operation->started_at;
++  result.usage.duration_ms =
++      std::clamp<int64_t>(elapsed.is_negative() ? 0 : elapsed.InMilliseconds(),
++                          0, kHardRuntimeDurationMs);
++  TurnCallback callback = std::move(operation->turn_callback);
++  operation.reset();
++  if (callback) {
++    std::move(callback).Run(std::move(result));
++  }
++}
++
++void PrometheusProviderTransport::FinishModels(OperationId operation_id,
++                                               ProviderModelListResult result) {
++  auto operation_it = operations_.find(operation_id);
++  if (operation_it == operations_.end()) {
++    return;
++  }
++  std::unique_ptr<Operation> operation = std::move(operation_it->second);
++  operations_.erase(operation_it);
++  ModelsCallback callback = std::move(operation->models_callback);
++  operation.reset();
++  if (callback) {
++    std::move(callback).Run(std::move(result));
++  }
+ }
+ 
+ }  // namespace prometheus
+diff --git a/chrome/browser/prometheus/prometheus_provider_transport.h b/chrome/browser/prometheus/prometheus_provider_transport.h
+index 522a71ddaa..cd96d8303c 100644
+--- a/chrome/browser/prometheus/prometheus_provider_transport.h
++++ b/chrome/browser/prometheus/prometheus_provider_transport.h
+@@ -9,6 +9,7 @@
+ #include <cstdint>
+ #include <map>
+ #include <memory>
++#include <optional>
+ #include <string>
+ 
+ #include "base/functional/callback.h"
+@@ -30,6 +31,7 @@ namespace prometheus {
+ 
+ class PrometheusProviderRegistry;
+ class PrometheusSecretStore;
++struct PrometheusSecretReadResult;
+ 
+ struct ProviderTransportLimits {
+   size_t max_request_bytes = kMaxProviderRequestBytes;
+@@ -66,6 +68,15 @@ class PrometheusProviderTransport {
+  private:
+   struct Operation;
+ 
++  void OnSecretRead(OperationId operation_id,
++                    PrometheusSecretReadResult result);
++  void Send(OperationId operation_id, std::string credential);
++  void RejectRedirect(OperationId operation_id);
++  void OnResponse(OperationId operation_id,
++                  std::optional<std::string> response_body);
++  void FinishTurn(OperationId operation_id, ProviderTurnResult result);
++  void FinishModels(OperationId operation_id, ProviderModelListResult result);
++
+   raw_ptr<PrometheusProviderRegistry> registry_;
+   raw_ptr<PrometheusSecretStore> secret_store_;
+   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+diff --git a/chrome/browser/prometheus/prometheus_provider_transport_unittest.cc b/chrome/browser/prometheus/prometheus_provider_transport_unittest.cc
+index 5975230b09..4002a4c2cc 100644
+--- a/chrome/browser/prometheus/prometheus_provider_transport_unittest.cc
++++ b/chrome/browser/prometheus/prometheus_provider_transport_unittest.cc
+@@ -220,6 +220,10 @@ TEST_F(PrometheusProviderTransportTest,
+   EXPECT_TRUE(request->referrer.is_empty());
+   EXPECT_TRUE(request->load_flags & net::LOAD_DISABLE_CACHE);
+   EXPECT_TRUE(request->load_flags & net::LOAD_BYPASS_CACHE);
++  ASSERT_TRUE(request->trusted_params);
++  EXPECT_TRUE(
++      request->trusted_params->isolation_info.network_anonymization_key()
++          .IsTransient());
+   EXPECT_FALSE(request->headers.GetHeader(net::HttpRequestHeaders::kCookie));
+   EXPECT_EQ(request->headers.GetHeader(net::HttpRequestHeaders::kAuthorization),
+             "Bearer " + std::string(kProviderSecret));
+@@ -292,11 +296,26 @@ TEST_F(PrometheusProviderTransportTest,
+   ASSERT_TRUE(result);
+   EXPECT_EQ(result->state, ProviderModelListState::kReady);
+   EXPECT_EQ(result->models, (std::vector<std::string>{"claude-a", "claude-b"}));
++
++  std::optional<ProviderModelListResult> echo_result;
++  transport_->DiscoverModels(
++      provider_.provider_id,
++      base::BindLambdaForTesting([&](ProviderModelListResult value) {
++        echo_result = std::move(value);
++      }));
++  EXPECT_TRUE(test_url_loader_factory_.SimulateResponseForPendingRequest(
++      url.spec(), R"json({"data":[{"id":"provider-secret-20-05"}]})json"));
++  ASSERT_TRUE(echo_result);
++  EXPECT_EQ(echo_result->state, ProviderModelListState::kInvalidOutput);
++  EXPECT_TRUE(echo_result->models.empty());
+ }
+ 
+ TEST_F(PrometheusProviderTransportTest,
+        UnsupportedDiscoveryCreatesNoLoaderOrSecretRead) {
+-  SetProvider(MakeProvider(PrometheusProviderKind::kAnthropic, false));
++  PrometheusProviderConfig provider =
++      MakeProvider(PrometheusProviderKind::kAnthropic, false);
++  provider.secret_configured = false;
++  SetProvider(std::move(provider));
+   CreateTransport();
+   std::optional<ProviderModelListResult> result;
+   transport_->DiscoverModels(
+-- 
+2.50.1 (Apple Git-155)
+
