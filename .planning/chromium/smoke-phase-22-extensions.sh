@@ -283,7 +283,7 @@ validate_result() {
     my $record = decode_json(<>);
     die "result must be an object\n" unless ref($record) eq "HASH";
     my @expected = sort qw(
-      background_denied inspected options_routing_visible outcome
+      hidden_target_denied inspected options_routing_visible outcome
       policy_default_blocked policy_interact_applied
       policy_read_only_applied reason reload_transitions_seen schema_version
       stage
@@ -298,7 +298,7 @@ validate_result() {
       unless $record->{reload_transitions_seen} >= 1;
     for my $key (qw(
       inspected policy_default_blocked policy_read_only_applied
-      policy_interact_applied options_routing_visible background_denied
+      policy_interact_applied options_routing_visible hidden_target_denied
     )) {
       die "$key not proven\n" unless JSON::PP::is_bool($record->{$key}) &&
         $record->{$key};
@@ -371,6 +371,7 @@ LIB_INSTALLED=true
 PROFILE_DIR="${TEMP_ROOT}/profile"
 CONFIG_FILE="${TEMP_ROOT}/bootstrap.json"
 RESULT_FILE="${TEMP_ROOT}/result.json"
+ENDPOINT_FILE="${TEMP_ROOT}/endpoint.json"
 LAUNCH_LOG="${TEMP_ROOT}/browser.log"
 mkdir -m 700 "${PROFILE_DIR}"
 umask 077
@@ -385,6 +386,7 @@ chmod 600 "${CONFIG_FILE}"
 LAUNCH_ARGS=(
   "--test-type=prometheus-runtime"
   "--prometheus-extension-smoke-bootstrap=${CONFIG_FILE}"
+  "--prometheus-agent-endpoint-descriptor=${ENDPOINT_FILE}"
   "--user-data-dir=${PROFILE_DIR}"
   "--no-first-run"
   "--no-default-browser-check"
@@ -448,5 +450,5 @@ printf '  runtime_sha256=%s\n' "${CURRENT_LIB_SHA256}"
 printf '  fixture_sha256=%s\n' "${FIXTURE_SHA256}"
 printf '  native_lifecycle=install,inspect,reload,disable,enable,remove\n'
 printf '  policy=blocked,read-only,confirmed-interact\n'
-printf '  surface=options-visible,background-denied\n'
+printf '  surface=options-visible,hidden-target-denied\n'
 printf '  store=Unverified (optional probe not run; use Load unpacked)\n'

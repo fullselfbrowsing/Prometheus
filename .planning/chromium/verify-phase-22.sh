@@ -11,14 +11,23 @@ PATCH_DIR="${PHASE_DIR}/patches"
 LOG_DIR="${OUT_DIR}/phase22-closeout"
 BASELINE='de937473bd1b5e99aec391ea003545ecd205e367'
 EXPECTED_PATCH_COUNT=26
-EXPECTED_POLICY_COUNT=68
+EXPECTED_POLICY_COUNT=67
 EXPECTED_WEBUI_COUNT=4
 EXPECTED_MCP_NATIVE_COUNT=2
 EXPECTED_MCP_NODE_COUNT=2
 EXPECTED_FIXTURE_COUNT=5
-EXPECTED_CATALOG_COUNT=12
+EXPECTED_CATALOG_COUNT=13
 EXPECTED_MV2_COUNT=1
 EXPECTED_SMOKE_COUNT=32
+EXPECTED_PHASE21_NATIVE_COUNT=190
+EXPECTED_PHASE21_RENDERER_TOTAL=17
+EXPECTED_PHASE21_BROWSER_COUNT=52
+EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT=208
+EXPECTED_PHASE17_19_NATIVE_REGRESSION_COUNT=84
+EXPECTED_PHASE20_CONTENT_REGRESSION_COUNT=21
+EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT=37
+EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT=83
+EXPECTED_PHASE21_NODE_COUNT=81
 EXPECTED_NINJA_LOG_SHA256='7f9616af7116a16c5655753a7e2858cebbbe6767095101b1c3eb09a77228472e'
 EXPECTED_NINJA_DEPS_SHA256='ab1a6ad4639e8db53459384f8636dc53f396397363f3c2751bcdadc0349947c0'
 EXPECTED_BLINK_MODULES_SHA256='663af12ba1a986db789c4c05967dda8b3b3615030e6cecb569de0f74ba01ff8e'
@@ -29,6 +38,8 @@ EXPECTED_APP_SHA256='154b7e74caf99e158d0856abb00aac8aaa2be8e8a1b73bb586f8ef3770b
 REPLAY_INDEX=""
 MUTATION_INDEX=""
 MUTATED_PATCH=""
+PHASE21_LIVE_DIR="${OUT_DIR}/phase21-live-regressions"
+PHASE21_RUN_MARKER="${LOG_DIR}/phase21-live-started.marker"
 
 fail() {
   printf 'Phase 22 verification failed: %s\n' "$1" >&2
@@ -152,26 +163,84 @@ verify_phase22_counts() {
     "${EXPECTED_SMOKE_COUNT}"
 }
 
-verify_phase21_regression_record() {
-  local verification="${ROOT_DIR}/.planning/phases/21-supervision-pairing-and-remote-control/21-VERIFICATION.md"
-  require_file "${verification}"
-  for literal in \
-    'status: passed' \
-    '| Phase 21 native | 190/190 passed; fail 0; skip 0 |' \
-    '| Phase 21 Blink renderer | 14/14 passed |' \
-    '| Phase 21 browser | 52/52 passed; fail 0; skip 0; jobs 1; retries 0 |' \
-    '| Complete Node TAP | 81/81 passed; fail 0; cancelled 0; skipped 0; todo 0 |' \
-    '| Phase 20 native regression | 208/208 passed; fail 0; skip 0 |' \
-    '| Phase 17–19 native regression | 84/84 passed; fail 0; skip 0 |' \
-    '| Phase 20 content regression | 21/21 passed; fail 0; skip 0 |' \
-    '| Phase 19 renderer security regression | 3/3 passed |' \
-    '| Phase 20 browser regression | 37/37 passed; fail 0; skip 0; jobs 1; retries 0 |' \
-    '| Phase 17–19 browser regression | 83/83 passed; fail 0; skip 0; jobs 1; retries 0 |' \
-    'exact `Prometheus MCP live smoke passed.` marker'; do
-    rg -Fq -- "${literal}" "${verification}" \
-      || fail "Phase 21 regression record missing: ${literal}"
+verify_phase21_live_regressions() {
+  local cohorts=(
+    phase21-native
+    phase20-native-regression
+    phase17-19-native-regression
+    phase20-content-regression
+    phase21-browser
+    phase20-browser-regression
+    phase17-19-browser-regression
+  )
+  local expected=(
+    "${EXPECTED_PHASE21_NATIVE_COUNT}"
+    "${EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT}"
+    "${EXPECTED_PHASE17_19_NATIVE_REGRESSION_COUNT}"
+    "${EXPECTED_PHASE20_CONTENT_REGRESSION_COUNT}"
+    "${EXPECTED_PHASE21_BROWSER_COUNT}"
+    "${EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT}"
+    "${EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT}"
+  )
+  local index name count list_log test_log
+  for index in "${!cohorts[@]}"; do
+    name="${cohorts[$index]}"
+    count="${expected[$index]}"
+    list_log="${PHASE21_LIVE_DIR}/${name}-list.log"
+    test_log="${PHASE21_LIVE_DIR}/${name}.log"
+    require_file "${list_log}"
+    require_file "${test_log}"
+    [[ "${list_log}" -nt "${PHASE21_RUN_MARKER}" &&
+       "${test_log}" -nt "${PHASE21_RUN_MARKER}" ]] \
+      || fail "Phase 21 live ${name} logs are stale"
+    [[ "$(count_gtests "${list_log}")" -eq "${count}" ]] \
+      || fail "Phase 21 live ${name} discovery count changed"
+    rg -q "\\[${count}/${count}\\]" "${test_log}" \
+      || fail "Phase 21 live ${name} did not pass ${count}/${count}"
+    rg -q 'SUCCESS: all tests passed\.' "${test_log}" \
+      || fail "Phase 21 live ${name} lacks the success marker"
+    if rg -q \
+        '^\[  FAILED  \]|^\[  SKIPPED \] [1-9]|Retrying|retry attempt' \
+        "${test_log}"; then
+      fail "Phase 21 live ${name} reported a failure, skip, or retry"
+    fi
   done
-  note 'Phase 17-21 frozen regression record: PASS 208/84/21/3/37/83 plus Phase 21 190/14/52/81'
+
+  local renderer_list="${PHASE21_LIVE_DIR}/phase21-renderer-list.log"
+  local renderer_test="${PHASE21_LIVE_DIR}/phase21-renderer.log"
+  require_file "${renderer_list}"
+  require_file "${renderer_test}"
+  [[ "${renderer_list}" -nt "${PHASE21_RUN_MARKER}" &&
+     "${renderer_test}" -nt "${PHASE21_RUN_MARKER}" ]] \
+    || fail 'Phase 21 live renderer logs are stale'
+  [[ "$(count_gtests "${renderer_list}")" -eq \
+      "${EXPECTED_PHASE21_RENDERER_TOTAL}" ]] \
+    || fail 'Phase 21 live renderer discovery count changed'
+  rg -q "\\[${EXPECTED_PHASE21_RENDERER_TOTAL}/${EXPECTED_PHASE21_RENDERER_TOTAL}\\]" \
+    "${renderer_test}" \
+    || fail 'Phase 21 live renderer regressions did not all pass'
+  if rg -q '^\[  FAILED  \]|^\[  SKIPPED \] [1-9]|Retrying|retry attempt' \
+      "${renderer_test}"; then
+    fail 'Phase 21 live renderer regressions reported failure, skip, or retry'
+  fi
+
+  local node_list="${PHASE21_LIVE_DIR}/phase21-node-list.log"
+  local node_test="${PHASE21_LIVE_DIR}/phase21-node-tap.log"
+  require_file "${node_list}"
+  require_file "${node_test}"
+  [[ "${node_list}" -nt "${PHASE21_RUN_MARKER}" &&
+     "${node_test}" -nt "${PHASE21_RUN_MARKER}" ]] \
+    || fail 'Phase 21 live Node logs are stale'
+  [[ "$(awk 'NF { count += 1 } END { print count + 0 }' "${node_list}")" \
+      -eq "${EXPECTED_PHASE21_NODE_COUNT}" ]] \
+    || fail 'Phase 21 live Node discovery count changed'
+  rg -q "^(#|ℹ) tests ${EXPECTED_PHASE21_NODE_COUNT}$" "${node_test}" \
+    || fail 'Phase 21 live Node regressions did not report the exact count'
+  for field in fail cancelled skipped todo; do
+    rg -q "^(#|ℹ) ${field} 0$" "${node_test}" \
+      || fail "Phase 21 live Node ${field} count is not zero"
+  done
+  note 'fresh Phase 17-21 live regressions: PASS native=190/208/84, renderer=17, content=21, browser=52/37/83, node=81'
 }
 
 stable_patch_id_for_file() {
@@ -333,11 +402,12 @@ run_gate fixtures bash "${SCRIPT_DIR}/verify-phase-22-extension-fixtures.sh"
 run_gate extension-smoke bash "${SCRIPT_DIR}/verify-phase-22-extension-smoke.sh" --focused
 run_gate packaged-extension-smoke bash \
   "${SCRIPT_DIR}/smoke-phase-22-extensions.sh" --deterministic
-run_gate phase21-node-regression bash "${SCRIPT_DIR}/verify-phase-21.sh" \
-  --focus-node '.*'
+: >"${PHASE21_RUN_MARKER}"
+run_gate phase21-live-regression bash "${SCRIPT_DIR}/verify-phase-21.sh" \
+  --live-regressions-only
 
 verify_phase22_counts
-verify_phase21_regression_record
+verify_phase21_live_regressions
 verify_patches
 verify_claims_and_documents
 run_gate preservation bash "${ROOT_DIR}/.planning/preservation/verify-preservation.sh"
@@ -351,6 +421,6 @@ cmp -s "${LOG_DIR}/reviewed-hashes.before" \
   "${LOG_DIR}/reviewed-hashes.after" \
   || fail 'reviewed build/resource artifacts changed during verification'
 
-note 'exact Phase 22 counts: policy=68 webui=4 mcp-native=2 mcp-node=2 fixtures=5 catalog=12 mv2=1 smoke=32'
+note 'exact Phase 22 counts: policy=67 webui=4 mcp-native=2 mcp-node=2 fixtures=5 catalog=13 mv2=1 smoke=32'
 note 'Store=Unverified; MV2=observation-only; human UAT=not_run'
 printf 'Phase 22 verification passed. Logs: %s\n' "${LOG_DIR}"

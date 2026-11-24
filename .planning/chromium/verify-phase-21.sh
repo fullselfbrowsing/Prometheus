@@ -6,9 +6,10 @@ FOCUS_FILTER=''
 FOCUS_KIND=''
 EXPECT_FAILURE=false
 CLOSEOUT_MODE=false
+LIVE_REGRESSIONS_ONLY=false
 
 usage() {
-  printf 'Usage: %s [--focus FILTER | --focus-browser FILTER | --focus-content FILTER | --focus-blink FILTER | --focus-node PATTERN] [--expect-failure]\n' "$0" >&2
+  printf 'Usage: %s [--focus FILTER | --focus-browser FILTER | --focus-content FILTER | --focus-blink FILTER | --focus-node PATTERN | --live-regressions-only] [--expect-failure]\n' "$0" >&2
 }
 
 if [[ "$#" -eq 0 ]]; then
@@ -91,6 +92,15 @@ while [[ "$#" -gt 0 ]]; do
       EXPECT_FAILURE=true
       shift
       ;;
+    --live-regressions-only)
+      [[ "${LIVE_REGRESSIONS_ONLY}" == false && -z "${FOCUS_FILTER}" ]] || {
+        usage
+        exit 2
+      }
+      LIVE_REGRESSIONS_ONLY=true
+      FOCUS_KIND='browser-integration'
+      shift
+      ;;
     *)
       usage
       exit 2
@@ -99,6 +109,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 if [[ "${CLOSEOUT_MODE}" == false &&
+      "${LIVE_REGRESSIONS_ONLY}" == false &&
       -z "${FOCUS_FILTER//[[:space:]]/}" ]]; then
   printf 'Phase 21 focused verification failed: focus selector must be non-empty\n' >&2
   exit 2
@@ -108,7 +119,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
 CHROMIUM_DIR="${ROOT_DIR}/.context/chromium/src"
 OUT_DIR="${CHROMIUM_DIR}/out/Default"
-if [[ "${CLOSEOUT_MODE}" == true ]]; then
+if [[ "${LIVE_REGRESSIONS_ONLY}" == true ]]; then
+  LOG_DIR="${OUT_DIR}/phase21-live-regressions"
+elif [[ "${CLOSEOUT_MODE}" == true ]]; then
   LOG_DIR="${OUT_DIR}/phase21-closeout"
 else
   LOG_DIR="${OUT_DIR}/phase21-focused"
@@ -2793,6 +2806,37 @@ verify_closeout() {
   printf 'Phase 21 verification passed. Logs: %s\n' "${LOG_DIR}"
 }
 
+verify_live_regressions() {
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE21_NATIVE_FILTER}" \
+    phase21-native "${EXPECTED_PHASE21_NATIVE_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE20_NATIVE_REGRESSION_FILTER}" \
+    phase20-native-regression "${EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE17_19_NATIVE_REGRESSION_FILTER}" \
+    phase17-19-native-regression \
+    "${EXPECTED_PHASE17_19_NATIVE_REGRESSION_COUNT}" true
+  verify_gtest_cohort "${CONTENT_FOCUSED_BINARY}" \
+    "${PHASE20_CONTENT_REGRESSION_FILTER}" \
+    phase20-content-regression "${EXPECTED_PHASE20_CONTENT_REGRESSION_COUNT}" \
+    true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE21_BROWSER_FILTER}" \
+    phase21-browser "${EXPECTED_PHASE21_BROWSER_COUNT}" true
+  verify_gtest_cohort "${FOCUSED_BINARY}" "${PHASE20_BROWSER_REGRESSION_FILTER}" \
+    phase20-browser-regression "${EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT}" \
+    true
+  verify_gtest_cohort "${FOCUSED_BINARY}" \
+    "${PHASE17_19_BROWSER_REGRESSION_FILTER}" \
+    phase17-19-browser-regression \
+    "${EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT}" true
+  verify_renderer_closeout
+  verify_node_closeout
+
+  note "live Phase 17-21 regressions passed at $(git -C "${CHROMIUM_DIR}" rev-parse HEAD)"
+  note "exact live counts: phase21-native=${EXPECTED_PHASE21_NATIVE_COUNT}, phase21-renderer=${EXPECTED_PHASE21_RENDERER_COUNT}, phase21-browser=${EXPECTED_PHASE21_BROWSER_COUNT}, node=${EXPECTED_NODE_COUNT}"
+  note "exact live regression counts: phase20-native=${EXPECTED_PHASE20_NATIVE_REGRESSION_COUNT}, phase17-19-native=${EXPECTED_PHASE17_19_NATIVE_REGRESSION_COUNT}, phase20-content=${EXPECTED_PHASE20_CONTENT_REGRESSION_COUNT}, phase19-renderer=${EXPECTED_PHASE19_RENDERER_REGRESSION_COUNT}, phase20-browser=${EXPECTED_PHASE20_BROWSER_REGRESSION_COUNT}, phase17-19-browser=${EXPECTED_PHASE17_19_BROWSER_REGRESSION_COUNT}"
+  printf 'Phase 21 live regression verification passed. Logs: %s\n' \
+    "${LOG_DIR}"
+}
+
 list_selected_tests() {
   if ! "${FOCUSED_BINARY}" --gtest_list_tests \
       --gtest_filter="${FOCUS_FILTER}" >"${LIST_LOG}" 2>&1; then
@@ -2924,7 +2968,9 @@ else
     verify_capture_hub_contract
   fi
   build_focused_binary
-  if [[ "${CLOSEOUT_MODE}" == true || "${FOCUS_KIND}" == 'content' ]]; then
+  if [[ "${CLOSEOUT_MODE}" == true ||
+        "${LIVE_REGRESSIONS_ONLY}" == true ||
+        "${FOCUS_KIND}" == 'content' ]]; then
     build_content_focused_binary
   fi
   if [[ "${FOCUS_KIND}" == 'browser-integration' ]]; then
@@ -2933,6 +2979,10 @@ else
 fi
 if [[ "${FOCUS_KIND}" == 'content' ]]; then
   FOCUSED_BINARY="${CONTENT_FOCUSED_BINARY}"
+fi
+if [[ "${LIVE_REGRESSIONS_ONLY}" == true ]]; then
+  verify_live_regressions
+  exit 0
 fi
 if [[ "${CLOSEOUT_MODE}" == true ]]; then
   verify_closeout

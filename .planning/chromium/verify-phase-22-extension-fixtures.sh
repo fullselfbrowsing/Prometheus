@@ -243,6 +243,18 @@ verify_source_contract() {
     || fail 'MV2 observation test does not use the ordinary UnpackedInstaller path'
   rg -q 'RecordProperty\("mv2_observation_result"' "${SOURCE}" \
     || fail 'MV2 observation test does not record a closed accepted/rejected property'
+  for required_flow in \
+      'ExtensionActionTestHelper::Create' \
+      'OpenGlobalExtensionSidePanel' \
+      'SetGrantThroughControlPanel' \
+      'ExecuteRoute'; do
+    rg -Fq "${required_flow}" "${SOURCE}" \
+      || fail "fixture browser tests do not exercise production flow: ${required_flow}"
+  done
+  if rg -q 'FixtureMatrixImplementedForTesting|EvaluateAdmissionForTesting' \
+      "${SOURCE}"; then
+    fail 'fixture acceptance still relies on marker or synthetic admission assertions'
+  fi
   note 'fixture source and no-bypass contract passed'
 }
 
@@ -557,11 +569,19 @@ verify_catalog_matches_fixtures_on_disk() {
     rg -qF "\"${name}\"" "${CATALOG_SOURCE}" \
       || fail "compiled catalog is missing the ${name} category key"
   done
+  if rg -q \
+      'kPrometheusBuild|kChromiumRevision|kLastVerified|\.prometheus_build|\.chromium_revision|\.last_verified' \
+      "${CATALOG_SOURCE}"; then
+    fail 'compiled catalog contains mutable build, revision, or timestamp metadata'
+  fi
+  rg -Fq 'See generated 22-COMPATIBILITY.json' "${CATALOG_SOURCE}" \
+    || fail 'compiled catalog does not direct exact-run claims to generated evidence'
   note 'compiled catalog SHA-256 constants match the current on-disk fixtures'
 }
 
 generate_compatibility_evidence() {
   local revision build_version generated_at
+  require_file "${TEST_LOG}"
   revision="$(git -C "${CHROMIUM_DIR}" rev-parse HEAD)"
   build_version="$(awk -F= '
       /^MAJOR=/ { major = $2 }
@@ -576,16 +596,21 @@ generate_compatibility_evidence() {
     const fs = require("node:fs");
     const crypto = require("node:crypto");
     const path = require("node:path");
-    const [fixtureDir, revision, buildVersion, generatedAt, outJson, outMd] =
+    const [fixtureDir, testLogPath, revision, buildVersion, generatedAt,
+      outJson, outMd] =
         process.argv.slice(1);
+    const testLog = fs.readFileSync(testLogPath, "utf8");
+    const passedTests = new Set(
+        [...testLog.matchAll(/^\[       OK \] ([^ ]+) \([0-9]+ ms\)$/gm)]
+            .map(match => match[1]));
 
     const categories = [
       {
         key: "password_manager_like",
         label: "Password manager",
-        actions: "Unpacked load; popup/options visibility; bounded DOM " +
-            "read; Blocked/Read only/Interact admission matrix; execute_js " +
-            "denial.",
+        actions: "Native action popup; local control-panel Blocked/Read " +
+            "only/Interact grants with identity confirmation; Agent bounded " +
+            "read; execute_js denial.",
         limitation: "Synthetic values only; no vault, session, or gateway " +
             "access.",
         regularMode: true,
@@ -622,8 +647,9 @@ generate_compatibility_evidence() {
       {
         key: "side_panel_tooling",
         label: "Side panel and tooling",
-        actions: "Unpacked load; active visible side panel accepted for " +
-            "routing; inactive/hidden panel and DevTools contexts denied.",
+        actions: "Native side panel; local control-panel Read only/Interact " +
+            "grants with identity confirmation; Agent bounded read and typed " +
+            "action; closed panel denied.",
         limitation: "Only the active, visible panel is Agent-routable.",
         regularMode: true,
         privateMode: false,
@@ -633,9 +659,8 @@ generate_compatibility_evidence() {
       {
         key: "developer_workflow",
         label: "Developer extension",
-        actions: "Unpacked load; manual reload; disable; enable; " +
-            "uninstall lifecycle; background service worker confirmed " +
-            "denied as Agent-routable.",
+        actions: "Unpacked load; reload; disable; enable; uninstall; visible " +
+            "options read through Agent routing; inactive tab denied.",
         limitation: "Background/service worker stays outside the Agent " +
             "route surface.",
         regularMode: true,
@@ -646,6 +671,10 @@ generate_compatibility_evidence() {
     ];
 
     const rows = categories.map((category) => {
+      if (!passedTests.has(category.evidence)) {
+        throw new Error(
+            `no fresh passing browser-test result for ${category.evidence}`);
+      }
       const manifestPath = path.join(fixtureDir, category.key, "manifest.json");
       const manifestText = fs.readFileSync(manifestPath, "utf8");
       const manifest = JSON.parse(manifestText);
@@ -672,6 +701,7 @@ generate_compatibility_evidence() {
         evidence_artifact:
             "chrome/browser/prometheus/prometheus_extension_fixtures_" +
             `browsertest.cc:${category.evidence}`,
+        observed_test_status: "passed",
         last_verified: generatedAt,
       };
     });
@@ -707,8 +737,8 @@ generate_compatibility_evidence() {
         "fixtures. This is not a Chrome Web Store or general " +
         "third-party extension compatibility claim.");
     fs.writeFileSync(outMd, lines.join("\n") + "\n");
-  ' "${FIXTURE_DIR}" "${revision}" "${build_version}" "${generated_at}" \
-    "${COMPAT_JSON}" "${COMPAT_MD}"
+  ' "${FIXTURE_DIR}" "${TEST_LOG}" "${revision}" "${build_version}" \
+    "${generated_at}" "${COMPAT_JSON}" "${COMPAT_MD}"
 
   require_file "${COMPAT_JSON}"
   require_file "${COMPAT_MD}"
@@ -754,6 +784,9 @@ verify_compatibility_json_schema() {
       }
       if (!row.evidence_artifact || !row.limitation) {
         throw new Error(`row ${row.category} is missing bounded evidence text`);
+      }
+      if (row.observed_test_status !== "passed") {
+        throw new Error(`row ${row.category} lacks a fresh observed pass`);
       }
     }
     if (seen.size !== required.length) {
